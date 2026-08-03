@@ -23,12 +23,65 @@ pub struct SegmentResponse {
 #[derive(Clone, Debug, Serialize)]
 pub struct GenerateRequest {
     pub prompt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steps: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<ComputeDevice>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputeDevice {
+    Auto,
+    Cuda,
+    Mps,
+    Cpu,
+}
+
+impl GenerateRequest {
+    pub fn new(prompt: impl Into<String>) -> Self {
+        Self {
+            prompt: prompt.into(),
+            width: None,
+            height: None,
+            steps: None,
+            seed: None,
+            model: None,
+            device: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct GenerateResponse {
     pub status: String,
     pub image_path: Option<String>,
+    pub model: Option<String>,
+    pub device: Option<String>,
+    pub dtype: Option<String>,
+    pub seed: Option<u64>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub duration_ms: Option<u64>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct DeviceCapabilitiesResponse {
+    pub torch_available: bool,
+    pub torch_version: Option<String>,
+    pub cuda_available: bool,
+    pub cuda_devices: Vec<String>,
+    pub mps_available: bool,
+    pub recommended_device: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -65,6 +118,10 @@ impl VisionClient {
 
     pub async fn health(&self) -> Result<HealthResponse, VisionClientError> {
         self.get("health").await
+    }
+
+    pub async fn capabilities(&self) -> Result<DeviceCapabilitiesResponse, VisionClientError> {
+        self.get("capabilities").await
     }
 
     pub async fn segment(
@@ -136,4 +193,26 @@ impl VisionClient {
     }
 }
 
-// TODO: Add typed model capabilities and job progress streaming.
+// TODO: Add job progress streaming before long-running production inference.
+
+#[cfg(test)]
+mod tests {
+    use super::{ComputeDevice, GenerateRequest};
+
+    #[test]
+    fn generation_request_omits_unspecified_options() {
+        let request = GenerateRequest::new("a storyboard frame");
+        let value = serde_json::to_value(request).expect("request should serialize");
+
+        assert_eq!(value, serde_json::json!({"prompt": "a storyboard frame"}));
+    }
+
+    #[test]
+    fn compute_device_uses_python_contract_name() {
+        let mut request = GenerateRequest::new("a storyboard frame");
+        request.device = Some(ComputeDevice::Mps);
+        let value = serde_json::to_value(request).expect("request should serialize");
+
+        assert_eq!(value["device"], "mps");
+    }
+}

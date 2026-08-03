@@ -1,0 +1,13 @@
+{
+  "model": "Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers",
+  "prompt": "A cinematic storyboard frame of a red lighthouse above a stormy sea, dramatic clouds, wide composition, no text",
+  "device": "mps",
+  "dtype": "bfloat16",
+  "seed": 42,
+  "steps": 2,
+  "width": 1024,
+  "height": 1024,
+  "duration_ms": 19831,
+  "includes_pipeline_load": true,
+  "output": "lighthouse-seed-42.png"
+}

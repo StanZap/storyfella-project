@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from models.schemas import (
     CaptionRequest,
     CaptionResponse,
+    DeviceCapabilitiesResponse,
     GenerateRequest,
     GenerateResponse,
     HealthResponse,
@@ -18,6 +19,11 @@ service = VisionService()
 @router.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(status="ok")
+
+
+@router.get("/capabilities", response_model=DeviceCapabilitiesResponse)
+def runtime_capabilities() -> DeviceCapabilitiesResponse:
+    return service.capabilities()
 
 
 @router.post("/segment", response_model=SegmentResponse)

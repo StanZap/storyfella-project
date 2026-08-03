@@ -1,14 +1,14 @@
 # Smart Visual Sequencer
 
-Smart Visual Sequencer is a cross-platform Dioxus desktop application for planning, generating, and arranging visual stories. This repository is an intentionally thin bootstrap: the application shell, process boundary, configuration, and HTTP contracts are present, while AI models and orchestration are not.
+Smart Visual Sequencer is a cross-platform Dioxus desktop application for planning, generating, and arranging visual stories. The application shell, process boundary, configuration, HTTP contracts, and isolated Visual LLM and image-generation proofs of concept are present. Product orchestration is not implemented yet.
 
-The supported targets are macOS on Apple Silicon (future MPS inference) and Linux with NVIDIA CUDA. LM Studio is an external prerequisite and is never installed or bundled by this project.
+The supported targets are macOS on Apple Silicon (MPS) and Linux with NVIDIA CUDA. LM Studio is an external prerequisite and is never installed or bundled by this project.
 
 ## Architecture
 
 - **Rust** owns the Dioxus UI, application state, storyboard/timeline models, project persistence boundary, model-download boundary, directory resolution, process lifecycle, LM Studio integration, and Python runtime client.
 - **Python** owns all future model framework and vision implementation details. Rust must not depend on or know about PyTorch.
-- **HTTP** is the explicit boundary between them. The local FastAPI runtime exposes `GET /health` and placeholder `POST /segment`, `/generate`, and `/caption` endpoints.
+- **HTTP** is the explicit boundary between them. The local FastAPI runtime exposes `GET /health`, `GET /capabilities`, and `POST /segment`, `/generate`, and `/caption`. Generation has a working POC backend; segmentation and captioning remain placeholders.
 - **LM Studio** is accessed directly from Rust through its OpenAI-compatible `/v1/chat/completions` endpoint. The bootstrap contains the client but no planner business logic.
 
 ## Project layout
@@ -27,7 +27,7 @@ src/
 python/
   api/           FastAPI construction and routes
   models/        Pydantic request/response contracts
-  runtime/       Placeholder model service
+  runtime/       Device discovery and model adapters
   main.py        Runtime entry point
 models/          Optional project-local model storage
 assets/          Dioxus/static and project assets
@@ -54,9 +54,15 @@ From the repository root:
 uv sync --project python
 ```
 
-This creates `python/.venv` and installs FastAPI, Uvicorn, Pydantic, Pillow, and NumPy. PyTorch is intentionally not installed.
+This creates `python/.venv` and installs FastAPI, Uvicorn, Pydantic, Pillow, and NumPy. ML frameworks are intentionally absent from the base environment.
 
-For development, start the placeholder service directly:
+To install the optional image-generation POC dependencies:
+
+```bash
+uv sync --project python --extra image-generation
+```
+
+For development, start the service directly:
 
 ```bash
 cd python
@@ -117,12 +123,16 @@ No part of this orchestration loop is implemented in the bootstrap.
 
 The first isolated proof of concept exercises vision-capable models through LM Studio's OpenAI-compatible chat-completions endpoint. It uses deterministic synthetic fixtures, structured JSON output, per-request latency and token capture, and machine-readable results. See [`docs/poc/vlm/README.md`](docs/poc/vlm/README.md) for commands and scoring limitations.
 
+## Image-generation probe
+
+The second proof of concept runs a small SANA Sprint Diffusers pipeline behind the Python `/generate` contract. It selects CUDA, MPS, or CPU at runtime, loads lazily, serializes accelerator access, and records deterministic output metadata. See [`docs/poc/image-generation/README.md`](docs/poc/image-generation/README.md) for setup, the first checked-in result, licensing notes, and limitations.
+
 ## Roadmap
 
 1. Add versioned project persistence and asset indexing.
 2. Wire Python lifecycle and health status into application startup/shutdown.
 3. Add resumable model downloads with checksums and platform-aware storage.
-4. Define an internal `Segmenter` adapter and integrate SAM 3.1 in Python.
-5. Define an `ImageGenerator` adapter with MPS and CUDA backends.
+4. Define an internal `Segmenter` adapter and evaluate SAM 3.1 or a stronger fit.
+5. Benchmark warm image-generation latency and add Rust-provisioned model manifests.
 6. Add planner schemas, evaluator metrics, cancellation, and job progress events.
-7. Add unit, API contract, and platform CI coverage.
+7. Add API integration tests and macOS/Linux platform CI coverage.
