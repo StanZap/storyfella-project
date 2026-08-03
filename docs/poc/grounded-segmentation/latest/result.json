@@ -1,0 +1,14 @@
+{
+  "prompt": "lighthouse",
+  "grounding_model": "IDEA-Research/grounding-dino-tiny",
+  "grounding_score": 0.9270913600921631,
+  "grounding_box_xyxy": [458.3022, 108.1692, 576.6061, 594.7587],
+  "segmentation_model": "facebook/sam2.1-hiera-tiny",
+  "mask_score": 0.9641222357749939,
+  "mask_area_pixels": 35849,
+  "mask_bounding_box_xyxy": [461, 112, 574, 575],
+  "device": "mps",
+  "dtype": "float32",
+  "duration_ms": 7934,
+  "output": "lighthouse-grounded-mask.png"
+}

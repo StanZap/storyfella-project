@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from models.schemas import GenerateRequest, SegmentBox, SegmentRequest
 from runtime.device import capabilities, select_device
 from runtime.image_generator import GenerationOptions, GenerationResult
+from runtime.grounder import GroundingResult
 from runtime.service import VisionService
 from runtime.segmenter import (
     BoxPrompt,
@@ -46,6 +47,15 @@ class FakeSegmenter:
             device="cpu",
             dtype="float32",
             duration_ms=15,
+        )
+
+
+class FakeGrounder:
+    def ground(self, image_path: Path, prompt: str, device: str) -> GroundingResult:
+        del image_path, prompt, device
+        return GroundingResult(
+            boxes=(BoxPrompt(10.0, 20.0, 100.0, 200.0),),
+            scores=(0.95,),
         )
 
 
@@ -93,13 +103,17 @@ class GenerateContractTests(unittest.TestCase):
         self.assertEqual(response.masks[0].path, "/tmp/mask.png")
         self.assertEqual(response.masks[0].area_pixels, 1234)
 
-    def test_text_only_segmentation_fails_explicitly(self) -> None:
-        response = VisionService(segmenter=FakeSegmenter()).segment(
+    def test_text_only_segmentation_uses_grounding_backend(self) -> None:
+        response = VisionService(
+            segmenter=FakeSegmenter(), grounder=FakeGrounder()
+        ).segment(
             SegmentRequest(image_path="frame.png", prompt="lighthouse")
         )
 
-        self.assertEqual(response.status, "failed")
-        self.assertIn("grounding backend", response.error or "")
+        self.assertEqual(response.status, "completed")
+        self.assertEqual(response.masks[0].area_pixels, 1234)
+        self.assertEqual(response.detections[0].label, "lighthouse")
+        self.assertEqual(response.detections[0].score, 0.95)
 
     def test_segmenter_saves_highest_scoring_mask(self) -> None:
         try:

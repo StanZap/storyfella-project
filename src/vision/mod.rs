@@ -47,9 +47,17 @@ pub struct SegmentMask {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+pub struct SegmentDetection {
+    pub label: String,
+    pub score: f64,
+    pub bounding_box: SegmentBox,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct SegmentResponse {
     pub status: String,
     pub masks: Vec<SegmentMask>,
+    pub detections: Vec<SegmentDetection>,
     pub model: Option<String>,
     pub device: Option<String>,
     pub dtype: Option<String>,

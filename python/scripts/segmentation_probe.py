@@ -11,13 +11,14 @@ from runtime.service import VisionService
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the segmentation proof of concept")
     parser.add_argument("image_path")
-    parser.add_argument(
+    prompts = parser.add_mutually_exclusive_group(required=True)
+    prompts.add_argument(
         "--box",
         nargs=4,
         type=float,
-        required=True,
         metavar=("X1", "Y1", "X2", "Y2"),
     )
+    prompts.add_argument("--prompt")
     parser.add_argument("--model", default=DEFAULT_SEGMENTATION_MODEL)
     parser.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"), default="auto")
     return parser.parse_args()
@@ -28,14 +29,19 @@ def main() -> int:
     response = VisionService().segment(
         SegmentRequest(
             image_path=args.image_path,
-            boxes=[
-                SegmentBox(
-                    x_min=args.box[0],
-                    y_min=args.box[1],
-                    x_max=args.box[2],
-                    y_max=args.box[3],
-                )
-            ],
+            prompt=args.prompt,
+            boxes=(
+                [
+                    SegmentBox(
+                        x_min=args.box[0],
+                        y_min=args.box[1],
+                        x_max=args.box[2],
+                        y_max=args.box[3],
+                    )
+                ]
+                if args.box
+                else []
+            ),
             model=args.model,
             device=args.device,
         )

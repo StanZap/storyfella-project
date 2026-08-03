@@ -25,7 +25,7 @@ HF_HOME=../models/huggingface uv run python -m scripts.segmentation_probe \
   --box 430 70 600 620 --device auto
 ```
 
-The adapter accepts either one or more boxes, or a set of positive/negative points describing one object. It deliberately rejects text-only requests until a grounding adapter exists. Pretending SAM 2.1 understands text would make the API appear more capable than it is.
+The adapter accepts either one or more boxes, or a set of positive/negative points describing one object. Text-only requests first pass through the separate Grounding DINO adapter; SAM 2.1 itself remains geometry-only.
 
 Masks are written to `cache/masks` unless `SVS_MASK_DIR` is set. As with the image-generation POC, direct Hugging Face downloads are temporary development behavior; production model acquisition and verification remain Rust responsibilities.
 
@@ -37,5 +37,5 @@ On an Apple M3 Max, SAM 2.1 Tiny isolated the generated lighthouse at 1024×1024
 
 - Warm inference latency and repeated-image embedding reuse.
 - Point prompts, negative refinement points, and multiple boxes.
-- A text-to-box grounding adapter, evaluated independently from mask quality.
+- Broader text-grounding fixtures, evaluated independently from mask quality.
 - SAM 3.1 on Linux/CUDA after checkpoint access is approved.

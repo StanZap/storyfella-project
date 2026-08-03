@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 
 from models.schemas import (
@@ -8,10 +9,12 @@ from models.schemas import (
     GenerateResponse,
     SegmentRequest,
     SegmentBox,
+    SegmentDetection,
     SegmentMask,
     SegmentResponse,
 )
 from runtime.device import capabilities
+from runtime.grounder import GroundingDinoGrounder, GroundingError, TextGrounder
 from runtime.image_generator import (
     DEFAULT_MODEL,
     DiffusersImageGenerator,
@@ -37,11 +40,13 @@ class VisionService:
         self,
         image_generator: ImageGenerator | None = None,
         segmenter: Segmenter | None = None,
+        grounder: TextGrounder | None = None,
     ) -> None:
         self._image_generator = (
             image_generator if image_generator is not None else DiffusersImageGenerator()
         )
         self._segmenter = segmenter if segmenter is not None else Sam2Segmenter()
+        self._grounder = grounder if grounder is not None else GroundingDinoGrounder()
 
     def capabilities(self) -> DeviceCapabilitiesResponse:
         detected = capabilities()
@@ -55,29 +60,31 @@ class VisionService:
         )
 
     def segment(self, request: SegmentRequest) -> SegmentResponse:
+        started = time.monotonic()
         model = request.model or DEFAULT_SEGMENTATION_MODEL
-        if request.prompt and not request.points and not request.boxes:
-            return SegmentResponse(
-                status="failed",
-                model=model,
-                error="text-only segmentation needs a grounding backend; provide points or boxes",
-            )
         try:
+            boxes = tuple(
+                BoxPrompt(box.x_min, box.y_min, box.x_max, box.y_max)
+                for box in request.boxes
+            )
+            grounding = None
+            if request.prompt and not request.points and not boxes:
+                grounding = self._grounder.ground(
+                    Path(request.image_path), request.prompt, request.device
+                )
+                boxes = grounding.boxes
             result = self._segmenter.segment(
                 SegmentationOptions(
                     image_path=Path(request.image_path),
                     points=tuple(
                         PointPrompt(point.x, point.y, point.label) for point in request.points
                     ),
-                    boxes=tuple(
-                        BoxPrompt(box.x_min, box.y_min, box.x_max, box.y_max)
-                        for box in request.boxes
-                    ),
+                    boxes=boxes,
                     model=model,
                     device=request.device,
                 )
             )
-        except (SegmentationError, RuntimeError, ValueError) as error:
+        except (GroundingError, SegmentationError, RuntimeError, ValueError) as error:
             return SegmentResponse(status="failed", model=model, error=str(error))
 
         return SegmentResponse(
@@ -96,10 +103,27 @@ class VisionService:
                 )
                 for mask in result.masks
             ],
+            detections=(
+                [
+                    SegmentDetection(
+                        label=request.prompt or "object",
+                        score=score,
+                        bounding_box=SegmentBox(
+                            x_min=box.x_min,
+                            y_min=box.y_min,
+                            x_max=box.x_max,
+                            y_max=box.y_max,
+                        ),
+                    )
+                    for box, score in zip(grounding.boxes, grounding.scores, strict=True)
+                ]
+                if grounding is not None
+                else []
+            ),
             model=result.model,
             device=result.device,
             dtype=result.dtype,
-            duration_ms=result.duration_ms,
+            duration_ms=round((time.monotonic() - started) * 1000),
         )
 
     def generate(self, request: GenerateRequest) -> GenerateResponse:

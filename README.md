@@ -130,14 +130,14 @@ The second proof of concept runs a small SANA Sprint Diffusers pipeline behind t
 
 ## Segmentation probe
 
-The third proof of concept runs SAM 2.1 Tiny behind `/segment` with point or box prompts. It produces scored mask PNGs and runs on MPS, CUDA, or CPU. Text-only segmentation is explicitly deferred to a separate grounding adapter. See [`docs/poc/segmentation/README.md`](docs/poc/segmentation/README.md) for the model decision, commands, first checked-in mask, and SAM 3.1 constraints.
+The third proof of concept runs SAM 2.1 Tiny behind `/segment` with point or box prompts. Text prompts are grounded to boxes by Grounding DINO Tiny before SAM refinement. Both stages expose their own scores, and the chain runs on MPS, CUDA, or CPU. See [`docs/poc/segmentation/README.md`](docs/poc/segmentation/README.md) for the SAM decision and [`docs/poc/grounded-segmentation/README.md`](docs/poc/grounded-segmentation/README.md) for the connected pipeline result.
 
 ## Roadmap
 
 1. Add versioned project persistence and asset indexing.
 2. Wire Python lifecycle and health status into application startup/shutdown.
 3. Add resumable model downloads with checksums and platform-aware storage.
-4. Add text-to-box grounding and benchmark SAM 3.1 on Linux/CUDA.
+4. Benchmark grounded segmentation across diverse fixtures and SAM 3.1 on Linux/CUDA.
 5. Benchmark warm image-generation latency and add Rust-provisioned model manifests.
 6. Add planner schemas, evaluator metrics, cancellation, and job progress events.
 7. Add API integration tests and macOS/Linux platform CI coverage.

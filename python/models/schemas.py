@@ -51,9 +51,16 @@ class SegmentMask(BaseModel):
     bounding_box: SegmentBox
 
 
+class SegmentDetection(BaseModel):
+    label: str
+    score: float
+    bounding_box: SegmentBox
+
+
 class SegmentResponse(BaseModel):
     status: str
     masks: list[SegmentMask] = Field(default_factory=list)
+    detections: list[SegmentDetection] = Field(default_factory=list)
     model: str | None = None
     device: str | None = None
     dtype: str | None = None
