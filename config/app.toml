@@ -1,0 +1,13 @@
+[lm_studio]
+base_url = "http://localhost:1234/v1"
+model = "local-model"
+# api_key = "lm-studio"
+timeout_seconds = 60
+
+[paths]
+python_runtime = "python"
+# model_dir, cache_dir, and asset_dir default to platform-appropriate application directories.
+# Uncomment to override them with project-local paths:
+# model_dir = "models"
+# cache_dir = "cache"
+# asset_dir = "assets"

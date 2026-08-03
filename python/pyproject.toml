@@ -1,0 +1,18 @@
+[project]
+name = "smart-visual-sequencer-runtime"
+version = "0.1.0"
+description = "Placeholder vision runtime for Smart Visual Sequencer"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.116,<1",
+    "numpy>=2,<3",
+    "pillow>=11,<13",
+    "pydantic>=2,<3",
+    "uvicorn>=0.35,<1",
+]
+
+[tool.uv]
+package = false
+
+# TODO: Add platform-specific PyTorch sources and vision model dependencies when
+# SAM 3.1 and image generation integration begins. PyTorch is intentionally absent.

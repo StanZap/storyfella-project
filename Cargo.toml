@@ -1,0 +1,28 @@
+[package]
+name = "smart-visual-sequencer"
+version = "0.1.0"
+authors = ["Stanley <Zapata>"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.104"
+dioxus = { version = "0.7.1", features = [] }
+directories = "6.0.0"
+image = "0.25.10"
+parking_lot = "0.12.5"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.19"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "process", "time", "signal"] }
+toml = "1.1.4"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+uuid = { version = "1.24.0", features = ["v4", "serde"] }
+
+[features]
+default = ["desktop"]
+web = ["dioxus/web"]
+desktop = ["dioxus/desktop"]
+mobile = ["dioxus/mobile"]
