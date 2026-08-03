@@ -1,6 +1,6 @@
 # Smart Visual Sequencer
 
-Smart Visual Sequencer is a cross-platform Dioxus desktop application for planning, generating, and arranging visual stories. The application shell, process boundary, configuration, HTTP contracts, and isolated Visual LLM and image-generation proofs of concept are present. Product orchestration is not implemented yet.
+Smart Visual Sequencer is a cross-platform Dioxus desktop application for planning, generating, and arranging visual stories. The application shell, process boundary, configuration, HTTP contracts, and isolated Visual LLM, image-generation, and segmentation proofs of concept are present. Product orchestration is not implemented yet.
 
 The supported targets are macOS on Apple Silicon (MPS) and Linux with NVIDIA CUDA. LM Studio is an external prerequisite and is never installed or bundled by this project.
 
@@ -8,7 +8,7 @@ The supported targets are macOS on Apple Silicon (MPS) and Linux with NVIDIA CUD
 
 - **Rust** owns the Dioxus UI, application state, storyboard/timeline models, project persistence boundary, model-download boundary, directory resolution, process lifecycle, LM Studio integration, and Python runtime client.
 - **Python** owns all future model framework and vision implementation details. Rust must not depend on or know about PyTorch.
-- **HTTP** is the explicit boundary between them. The local FastAPI runtime exposes `GET /health`, `GET /capabilities`, and `POST /segment`, `/generate`, and `/caption`. Generation has a working POC backend; segmentation and captioning remain placeholders.
+- **HTTP** is the explicit boundary between them. The local FastAPI runtime exposes `GET /health`, `GET /capabilities`, and `POST /segment`, `/generate`, and `/caption`. Generation and geometric-prompt segmentation have working POC backends; captioning remains a placeholder.
 - **LM Studio** is accessed directly from Rust through its OpenAI-compatible `/v1/chat/completions` endpoint. The bootstrap contains the client but no planner business logic.
 
 ## Project layout
@@ -56,10 +56,11 @@ uv sync --project python
 
 This creates `python/.venv` and installs FastAPI, Uvicorn, Pydantic, Pillow, and NumPy. ML frameworks are intentionally absent from the base environment.
 
-To install the optional image-generation POC dependencies:
+To install optional POC dependencies:
 
 ```bash
 uv sync --project python --extra image-generation
+uv sync --project python --extra segmentation
 ```
 
 For development, start the service directly:
@@ -127,12 +128,16 @@ The first isolated proof of concept exercises vision-capable models through LM S
 
 The second proof of concept runs a small SANA Sprint Diffusers pipeline behind the Python `/generate` contract. It selects CUDA, MPS, or CPU at runtime, loads lazily, serializes accelerator access, and records deterministic output metadata. See [`docs/poc/image-generation/README.md`](docs/poc/image-generation/README.md) for setup, the first checked-in result, licensing notes, and limitations.
 
+## Segmentation probe
+
+The third proof of concept runs SAM 2.1 Tiny behind `/segment` with point or box prompts. It produces scored mask PNGs and runs on MPS, CUDA, or CPU. Text-only segmentation is explicitly deferred to a separate grounding adapter. See [`docs/poc/segmentation/README.md`](docs/poc/segmentation/README.md) for the model decision, commands, first checked-in mask, and SAM 3.1 constraints.
+
 ## Roadmap
 
 1. Add versioned project persistence and asset indexing.
 2. Wire Python lifecycle and health status into application startup/shutdown.
 3. Add resumable model downloads with checksums and platform-aware storage.
-4. Define an internal `Segmenter` adapter and evaluate SAM 3.1 or a stronger fit.
+4. Add text-to-box grounding and benchmark SAM 3.1 on Linux/CUDA.
 5. Benchmark warm image-generation latency and add Rust-provisioned model manifests.
 6. Add planner schemas, evaluator metrics, cancellation, and job progress events.
 7. Add API integration tests and macOS/Linux platform CI coverage.

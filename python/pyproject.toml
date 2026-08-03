@@ -20,6 +20,13 @@ image-generation = [
     "torch>=2.13.0",
     "transformers>=5.14.1",
 ]
+segmentation = [
+    "accelerate>=1.14.0",
+    "safetensors>=0.8.0",
+    "torch>=2.13.0",
+    "torchvision>=0.24.0",
+    "transformers>=5.14.1",
+]
 
 [tool.uv]
 package = false

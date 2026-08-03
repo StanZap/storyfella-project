@@ -11,13 +11,63 @@ pub struct VisionClient {
 #[derive(Clone, Debug, Serialize)]
 pub struct SegmentRequest {
     pub image_path: String,
-    pub prompt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub points: Vec<SegmentPoint>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub boxes: Vec<SegmentBox>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<ComputeDevice>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SegmentPoint {
+    pub x: f64,
+    pub y: f64,
+    pub label: u8,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SegmentBox {
+    pub x_min: f64,
+    pub y_min: f64,
+    pub x_max: f64,
+    pub y_max: f64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct SegmentMask {
+    pub path: String,
+    pub score: f64,
+    pub area_pixels: u64,
+    pub bounding_box: SegmentBox,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct SegmentResponse {
     pub status: String,
-    pub masks: Vec<String>,
+    pub masks: Vec<SegmentMask>,
+    pub model: Option<String>,
+    pub device: Option<String>,
+    pub dtype: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub error: Option<String>,
+}
+
+impl SegmentRequest {
+    pub fn new(image_path: impl Into<String>) -> Self {
+        Self {
+            image_path: image_path.into(),
+            prompt: None,
+            points: Vec::new(),
+            boxes: Vec::new(),
+            model: None,
+            device: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -197,7 +247,7 @@ impl VisionClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{ComputeDevice, GenerateRequest};
+    use super::{ComputeDevice, GenerateRequest, SegmentBox, SegmentRequest};
 
     #[test]
     fn generation_request_omits_unspecified_options() {
@@ -214,5 +264,20 @@ mod tests {
         let value = serde_json::to_value(request).expect("request should serialize");
 
         assert_eq!(value["device"], "mps");
+    }
+
+    #[test]
+    fn segmentation_request_serializes_box_prompt() {
+        let mut request = SegmentRequest::new("frame.png");
+        request.boxes.push(SegmentBox {
+            x_min: 10.0,
+            y_min: 20.0,
+            x_max: 100.0,
+            y_max: 200.0,
+        });
+        let value = serde_json::to_value(request).expect("request should serialize");
+
+        assert_eq!(value["boxes"][0]["x_max"], 100.0);
+        assert!(value.get("points").is_none());
     }
 }

@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class HealthResponse(BaseModel):
@@ -16,14 +16,49 @@ class DeviceCapabilitiesResponse(BaseModel):
     recommended_device: str
 
 
+class SegmentPoint(BaseModel):
+    x: float = Field(ge=0)
+    y: float = Field(ge=0)
+    label: Literal[0, 1] = 1
+
+
+class SegmentBox(BaseModel):
+    x_min: float = Field(ge=0)
+    y_min: float = Field(ge=0)
+    x_max: float = Field(ge=0)
+    y_max: float = Field(ge=0)
+
+    @model_validator(mode="after")
+    def coordinates_are_ordered(self) -> "SegmentBox":
+        if self.x_max <= self.x_min or self.y_max <= self.y_min:
+            raise ValueError("box maximums must be greater than minimums")
+        return self
+
+
 class SegmentRequest(BaseModel):
     image_path: str
-    prompt: str
+    prompt: str | None = None
+    points: list[SegmentPoint] = Field(default_factory=list)
+    boxes: list[SegmentBox] = Field(default_factory=list)
+    model: str | None = None
+    device: Literal["auto", "cuda", "mps", "cpu"] = "auto"
+
+
+class SegmentMask(BaseModel):
+    path: str
+    score: float
+    area_pixels: int
+    bounding_box: SegmentBox
 
 
 class SegmentResponse(BaseModel):
     status: str
-    masks: list[str] = Field(default_factory=list)
+    masks: list[SegmentMask] = Field(default_factory=list)
+    model: str | None = None
+    device: str | None = None
+    dtype: str | None = None
+    duration_ms: int | None = None
+    error: str | None = None
 
 
 class GenerateRequest(BaseModel):

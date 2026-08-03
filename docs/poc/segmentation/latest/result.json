@@ -1,0 +1,13 @@
+{
+  "model": "facebook/sam2.1-hiera-tiny",
+  "input": "../../image-generation/latest/lighthouse-seed-42.png",
+  "box_xyxy": [430, 70, 600, 620],
+  "device": "mps",
+  "dtype": "float32",
+  "score": 0.9659910202026367,
+  "area_pixels": 36445,
+  "mask_bounding_box_xyxy": [460, 112, 574, 578],
+  "duration_ms": 9433,
+  "includes_model_load": true,
+  "output": "lighthouse-mask.png"
+}

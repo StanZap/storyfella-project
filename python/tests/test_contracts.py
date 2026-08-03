@@ -1,12 +1,20 @@
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from pydantic import ValidationError
 
-from models.schemas import GenerateRequest
+from models.schemas import GenerateRequest, SegmentBox, SegmentRequest
 from runtime.device import capabilities, select_device
 from runtime.image_generator import GenerationOptions, GenerationResult
 from runtime.service import VisionService
+from runtime.segmenter import (
+    BoxPrompt,
+    MaskResult,
+    SegmentationOptions,
+    SegmentationResult,
+    Sam2Segmenter,
+)
 
 
 class FakeImageGenerator:
@@ -20,6 +28,24 @@ class FakeImageGenerator:
             width=options.width,
             height=options.height,
             duration_ms=12,
+        )
+
+
+class FakeSegmenter:
+    def segment(self, options: SegmentationOptions) -> SegmentationResult:
+        return SegmentationResult(
+            masks=(
+                MaskResult(
+                    path=Path("/tmp/mask.png"),
+                    score=0.98,
+                    area_pixels=1234,
+                    bounding_box=BoxPrompt(10.0, 20.0, 100.0, 200.0),
+                ),
+            ),
+            model=options.model,
+            device="cpu",
+            dtype="float32",
+            duration_ms=15,
         )
 
 
@@ -53,6 +79,45 @@ class GenerateContractTests(unittest.TestCase):
         self.assertEqual(response.image_path, "/tmp/generated.png")
         self.assertEqual(response.seed, 7)
         self.assertEqual(response.duration_ms, 12)
+
+    def test_service_maps_segmentation_result_to_http_contract(self) -> None:
+        service = VisionService(segmenter=FakeSegmenter())
+        response = service.segment(
+            SegmentRequest(
+                image_path="frame.png",
+                boxes=[SegmentBox(x_min=10, y_min=20, x_max=100, y_max=200)],
+            )
+        )
+
+        self.assertEqual(response.status, "completed")
+        self.assertEqual(response.masks[0].path, "/tmp/mask.png")
+        self.assertEqual(response.masks[0].area_pixels, 1234)
+
+    def test_text_only_segmentation_fails_explicitly(self) -> None:
+        response = VisionService(segmenter=FakeSegmenter()).segment(
+            SegmentRequest(image_path="frame.png", prompt="lighthouse")
+        )
+
+        self.assertEqual(response.status, "failed")
+        self.assertIn("grounding backend", response.error or "")
+
+    def test_segmenter_saves_highest_scoring_mask(self) -> None:
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("optional segmentation dependencies are absent")
+
+        masks = torch.zeros((1, 2, 4, 4), dtype=torch.bool)
+        masks[0, 0, :2, :2] = True
+        masks[0, 1, 1:4, 1:4] = True
+        scores = torch.tensor([[0.2, 0.9]])
+        with TemporaryDirectory() as directory:
+            results = Sam2Segmenter(Path(directory))._save_best_masks(masks, scores)
+
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].area_pixels, 9)
+            self.assertTrue(results[0].path.is_file())
+            self.assertEqual(results[0].bounding_box.x_min, 1.0)
 
 
 if __name__ == "__main__":
