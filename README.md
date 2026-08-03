@@ -41,6 +41,7 @@ By default, generated model, cache, and asset data resolve through platform-appr
 
 - Rust stable
 - The current stable Dioxus CLI (`dx`)
+- Node.js/npm (for the pinned Tailwind CSS 4 toolchain)
 - `uv`
 - LM Studio, running separately when LLM features are exercised
 - Linux desktop builds: the system packages required by Dioxus/WebKitGTK
@@ -65,6 +66,14 @@ cd python
 Then verify it with `curl http://127.0.0.1:8765/health`.
 
 ## Run the desktop application
+
+Install the frontend toolchain once:
+
+```bash
+npm install
+```
+
+The root `tailwind.css` file selects Tailwind CSS 4 and lets `dx` automatically compile `assets/tailwind.css`. Most component styling is expressed as Tailwind utility classes in RSX. To build or watch CSS independently, use `npm run css:build` or `npm run css:watch`.
 
 ```bash
 dx serve --platform desktop
