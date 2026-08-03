@@ -113,6 +113,10 @@ Repeat until quality threshold
 
 No part of this orchestration loop is implemented in the bootstrap.
 
+## Visual LLM probe
+
+The first isolated proof of concept exercises vision-capable models through LM Studio's OpenAI-compatible chat-completions endpoint. It uses deterministic synthetic fixtures, structured JSON output, per-request latency and token capture, and machine-readable results. See [`docs/poc/vlm/README.md`](docs/poc/vlm/README.md) for commands and scoring limitations.
+
 ## Roadmap
 
 1. Add versioned project persistence and asset indexing.

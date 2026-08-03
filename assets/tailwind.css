@@ -194,6 +194,9 @@
   .relative {
     position: relative;
   }
+  .static {
+    position: static;
+  }
   .col-span-2 {
     grid-column: span 2 / span 2;
   }
@@ -241,6 +244,12 @@
   }
   .grid {
     display: grid;
+  }
+  .hidden {
+    display: none;
+  }
+  .table {
+    display: table;
   }
   .size-2 {
     width: calc(var(--spacing) * 2);

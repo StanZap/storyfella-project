@@ -1,0 +1,589 @@
+{
+  "generated_unix_seconds": 1785784415,
+  "base_url": "http://localhost:1234/v1",
+  "models": [
+    "google/gemma-4-e4b",
+    "gemma-4-12b-it-uncensored",
+    "glm-ocr"
+  ],
+  "fixtures": [
+    "colors-and-shapes",
+    "simple-landscape",
+    "counting-grid"
+  ],
+  "results": [
+    {
+      "model": "google/gemma-4-e4b",
+      "fixture": "colors-and-shapes",
+      "duration_ms": 5940,
+      "status": "passed",
+      "checks_passed": 4,
+      "checks_total": 4,
+      "checks": [
+        {
+          "name": "red circle",
+          "passed": true
+        },
+        {
+          "name": "blue square",
+          "passed": true
+        },
+        {
+          "name": "one circle",
+          "passed": true
+        },
+        {
+          "name": "one square",
+          "passed": true
+        }
+      ],
+      "score_percent": 100.0,
+      "analysis": {
+        "summary": "A red circle is positioned on the left, and a blue square is positioned on the right, both centered vertically against a white background.",
+        "objects": [
+          {
+            "label": "Circle",
+            "color": "Red",
+            "position": "Left side of the frame.",
+            "count": 1
+          },
+          {
+            "label": "Square/Rectangle",
+            "color": "Blue",
+            "position": "Right side of the frame, adjacent to the red circle.",
+            "count": 1
+          }
+        ],
+        "dominant_colors": [
+          "White",
+          "Red",
+          "Blue"
+        ],
+        "composition": "Two geometric shapes are placed horizontally on a white background.",
+        "confidence": 1.0
+      },
+      "raw_response": "{\n  \"composition\": \"Two geometric shapes are placed horizontally on a white background.\",\n  \"confidence\": 1.0,\n  \"dominant_colors\": [\n    \"White\",\n    \"Red\",\n    \"Blue\"\n  ],\n  \"objects\": [\n    {\n      \"color\": \"Red\",\n      \"count\": 1,\n      \"label\": \"Circle\",\n      \"position\": \"Left side of the frame.\"\n    },\n    {\n      \"color\": \"Blue\",\n      \"count\": 1,\n      \"label\": \"Square/Rectangle\",\n      \"position\": \"Right side of the frame, adjacent to the red circle.\"\n    }\n  ],\n  \"summary\": \"A red circle is positioned on the left, and a blue square is positioned on the right, both centered vertically against a white background.\"\n}",
+      "error": null,
+      "prompt_tokens": 164,
+      "completion_tokens": 399
+    },
+    {
+      "model": "google/gemma-4-e4b",
+      "fixture": "simple-landscape",
+      "duration_ms": 14796,
+      "status": "passed",
+      "checks_passed": 4,
+      "checks_total": 4,
+      "checks": [
+        {
+          "name": "house",
+          "passed": true
+        },
+        {
+          "name": "sun",
+          "passed": true
+        },
+        {
+          "name": "blue sky",
+          "passed": true
+        },
+        {
+          "name": "green ground",
+          "passed": true
+        }
+      ],
+      "score_percent": 100.0,
+      "analysis": {
+        "summary": "The scene features a light blue sky and a green ground. Centered on the ground is a brown house with a red roof, featuring two white windows and one dark brown door. A yellow sun is visible in the upper right corner.",
+        "objects": [
+          {
+            "label": "Sky background",
+            "color": "Light Blue",
+            "position": "Fills the upper portion of the frame.",
+            "count": 1
+          },
+          {
+            "label": "Ground plane",
+            "color": "Green",
+            "position": "A solid horizontal band across the bottom third of the frame.",
+            "count": 1
+          },
+          {
+            "label": "Roof",
+            "color": "Red",
+            "position": "Triangular shape centered on the ground plane.",
+            "count": 1
+          },
+          {
+            "label": "House body",
+            "color": "Brown",
+            "position": "A rectangular structure sitting centrally on the green ground. It supports the red roof.",
+            "count": 1
+          },
+          {
+            "label": "Windows",
+            "color": "White/Light",
+            "position": "Two small square shapes visible on the front face of the brown house body.",
+            "count": 2
+          },
+          {
+            "label": "Door",
+            "color": "Dark Brown",
+            "position": "A central rectangular shape located on the lower face of the brown house body.",
+            "count": 1
+          },
+          {
+            "label": "Sun",
+            "color": "Yellow/Orange-yellow",
+            "position": "A solid circle positioned in the upper right quadrant, above the green ground plane.",
+            "count": 1
+          }
+        ],
+        "dominant_colors": [
+          "Light Blue",
+          "Green",
+          "Red",
+          "Brown",
+          "Yellow"
+        ],
+        "composition": "A simple, stylized scene divided into distinct horizontal planes.",
+        "confidence": 1.0
+      },
+      "raw_response": "{\n  \"composition\": \"A simple, stylized scene divided into distinct horizontal planes.\",\n  \"confidence\": 1.0,\n  \"dominant_colors\": [\n    \"Light Blue\",\n    \"Green\",\n    \"Red\",\n    \"Brown\",\n    \"Yellow\"\n  ],\n  \"objects\": [\n    {\n      \"color\": \"Light Blue\",\n      \"count\": 1,\n      \"label\": \"Sky background\",\n      \"position\": \"Fills the upper portion of the frame.\"\n    },\n    {\n      \"color\": \"Green\",\n      \"count\": 1,\n      \"label\": \"Ground plane\",\n      \"position\": \"A solid horizontal band across the bottom third of the frame.\"\n    },\n    {\n      \"color\": \"Red\",\n      \"count\": 1,\n      \"label\": \"Roof\",\n      \"position\": \"Triangular shape centered on the ground plane.\"\n    },\n    {\n      \"color\": \"Brown\",\n      \"count\": 1,\n      \"label\": \"House body\",\n      \"position\": \"A rectangular structure sitting centrally on the green ground. It supports the red roof.\"\n    },\n    {\n      \"color\": \"White/Light\",\n      \"count\": 2,\n      \"label\": \"Windows\",\n      \"position\": \"Two small square shapes visible on the front face of the brown house body.\"\n    },\n    {\n      \"color\": \"Dark Brown\",\n      \"count\": 1,\n      \"label\": \"Door\",\n      \"position\": \"A central rectangular shape located on the lower face of the brown house body.\"\n    },\n    {\n      \"color\": \"Yellow/Orange-yellow\",\n      \"count\": 1,\n      \"label\": \"Sun\",\n      \"position\": \"A solid circle positioned in the upper right quadrant, above the green ground plane.\"\n    }\n  ],\n  \"summary\": \"The scene features a light blue sky and a green ground. Centered on the ground is a brown house with a red roof, featuring two white windows and one dark brown door. A yellow sun is visible in the upper right corner.\"\n}",
+      "error": null,
+      "prompt_tokens": 164,
+      "completion_tokens": 1037
+    },
+    {
+      "model": "google/gemma-4-e4b",
+      "fixture": "counting-grid",
+      "duration_ms": 7439,
+      "status": "passed",
+      "checks_passed": 4,
+      "checks_total": 4,
+      "checks": [
+        {
+          "name": "three circles",
+          "passed": true
+        },
+        {
+          "name": "two squares",
+          "passed": true
+        },
+        {
+          "name": "red green blue circles",
+          "passed": true
+        },
+        {
+          "name": "black squares",
+          "passed": true
+        }
+      ],
+      "score_percent": 100.0,
+      "analysis": {
+        "summary": "Three colored circles (red, green, blue) are aligned horizontally in the upper section. Two black squares are aligned horizontally below them.",
+        "objects": [
+          {
+            "label": "Circle",
+            "color": "Red",
+            "position": "Top row, far left.",
+            "count": 1
+          },
+          {
+            "label": "Circle",
+            "color": "Green",
+            "position": "Top row, center.",
+            "count": 1
+          },
+          {
+            "label": "Circle",
+            "color": "Blue",
+            "position": "Top row, far right.",
+            "count": 1
+          },
+          {
+            "label": "Square",
+            "color": "Black",
+            "position": "Bottom row, spaced apart.",
+            "count": 2
+          }
+        ],
+        "dominant_colors": [
+          "Red",
+          "Green",
+          "Blue",
+          "Black"
+        ],
+        "composition": "The frame contains two distinct horizontal rows of shapes against a white background.",
+        "confidence": 1.0
+      },
+      "raw_response": "{\n  \"composition\": \"The frame contains two distinct horizontal rows of shapes against a white background.\",\n  \"confidence\": 1.0,\n  \"dominant_colors\": [\n    \"Red\",\n    \"Green\",\n    \"Blue\",\n    \"Black\"\n  ],\n  \"objects\": [\n    {\n      \"color\": \"Red\",\n      \"count\": 1,\n      \"label\": \"Circle\",\n      \"position\": \"Top row, far left.\"\n    },\n    {\n      \"color\": \"Green\",\n      \"count\": 1,\n      \"label\": \"Circle\",\n      \"position\": \"Top row, center.\"\n    },\n    {\n      \"color\": \"Blue\",\n      \"count\": 1,\n      \"label\": \"Circle\",\n      \"position\": \"Top row, far right.\"\n    },\n    {\n      \"color\": \"Black\",\n      \"count\": 2,\n      \"label\": \"Square\",\n      \"position\": \"Bottom row, spaced apart.\"\n    }\n  ],\n  \"summary\": \"Three colored circles (red, green, blue) are aligned horizontally in the upper section. Two black squares are aligned horizontally below them.\"\n}",
+      "error": null,
+      "prompt_tokens": 164,
+      "completion_tokens": 502
+    },
+    {
+      "model": "gemma-4-12b-it-uncensored",
+      "fixture": "colors-and-shapes",
+      "duration_ms": 19333,
+      "status": "passed",
+      "checks_passed": 4,
+      "checks_total": 4,
+      "checks": [
+        {
+          "name": "red circle",
+          "passed": true
+        },
+        {
+          "name": "blue square",
+          "passed": true
+        },
+        {
+          "name": "one circle",
+          "passed": true
+        },
+        {
+          "name": "one square",
+          "passed": true
+        }
+      ],
+      "score_percent": 100.0,
+      "analysis": {
+        "summary": "A red circle is positioned on the left side of a gray frame, and a blue square is positioned on the right side.",
+        "objects": [
+          {
+            "label": "circle",
+            "color": "red",
+            "position": "left center",
+            "count": 1
+          },
+          {
+            "label": "square",
+            "color": "blue",
+            "position": "right center",
+            "count": 1
+          }
+        ],
+        "dominant_colors": [
+          "red",
+          "blue",
+          "gray"
+        ],
+        "composition": "A horizontal layout featuring two primary geometric shapes against a solid background.",
+        "confidence": 1.0
+      },
+      "raw_response": "{\n  \"composition\": \"A horizontal layout featuring two primary geometric shapes against a solid background.\",\n  \"confidence\": 1.0,\n  \"dominant_colors\": [\n    \"red\",\n    \"blue\",\n    \"gray\"\n  ],\n  \"objects\": [\n    {\n      \"color\": \"red\",\n      \"count\": 1,\n      \"label\": \"circle\",\n      \"position\": \"left center\"\n    },\n    {\n      \"color\": \"blue\",\n      \"count\": 1,\n      \"label\": \"square\",\n      \"position\": \"right center\"\n    }\n  ],\n  \"summary\": \"A red circle is positioned on the left side of a gray frame, and a blue square is positioned on the right side.\"\n}",
+      "error": null,
+      "prompt_tokens": 164,
+      "completion_tokens": 557
+    },
+    {
+      "model": "gemma-4-12b-it-uncensored",
+      "fixture": "simple-landscape",
+      "duration_ms": 31098,
+      "status": "passed",
+      "checks_passed": 4,
+      "checks_total": 4,
+      "checks": [
+        {
+          "name": "house",
+          "passed": true
+        },
+        {
+          "name": "sun",
+          "passed": true
+        },
+        {
+          "name": "blue sky",
+          "passed": true
+        },
+        {
+          "name": "green ground",
+          "passed": true
+        }
+      ],
+      "score_percent": 100.0,
+      "analysis": {
+        "summary": "A minimalist scene with a red-roofed brown house centered on green ground against a light blue sky, featuring two white windows and one dark door. A yellow sun is located in the upper right corner.",
+        "objects": [
+          {
+            "label": "sky",
+            "color": "light blue",
+            "position": "background",
+            "count": 1
+          },
+          {
+            "label": "ground",
+            "color": "green",
+            "position": "bottom",
+            "count": 1
+          },
+          {
+            "label": "sun",
+            "color": "yellow",
+            "position": "top right",
+            "count": 1
+          },
+          {
+            "label": "roof",
+            "color": "red",
+            "position": "center top of house",
+            "count": 1
+          },
+          {
+            "label": "house body",
+            "color": "brown",
+            "position": "center",
+            "count": 1
+          },
+          {
+            "label": "windows",
+            "color": "white",
+            "position": "front of house",
+            "count": 2
+          },
+          {
+            "label": "door",
+            "color": "dark brown",
+            "position": "bottom center of house",
+            "count": 1
+          }
+        ],
+        "dominant_colors": [
+          "light blue",
+          "green",
+          "red",
+          "yellow",
+          "brown"
+        ],
+        "composition": "A simple 2D landscape featuring a house under a sun.",
+        "confidence": 1.0
+      },
+      "raw_response": "{\n  \"composition\": \"A simple 2D landscape featuring a house under a sun.\",\n  \"confidence\": 1.0,\n  \"dominant_colors\": [\n    \"light blue\",\n    \"green\",\n    \"red\",\n    \"yellow\",\n    \"brown\"\n  ],\n  \"objects\": [\n    {\n      \"color\": \"light blue\",\n      \"count\": 1,\n      \"label\": \"sky\",\n      \"position\": \"background\"\n    },\n    {\n      \"color\": \"green\",\n      \"count\": 1,\n      \"label\": \"ground\",\n      \"position\": \"bottom\"\n    },\n    {\n      \"color\": \"yellow\",\n      \"count\": 1,\n      \"label\": \"sun\",\n      \"position\": \"top right\"\n    },\n    {\n      \"color\": \"red\",\n      \"count\": 1,\n      \"label\": \"roof\",\n      \"position\": \"center top of house\"\n    },\n    {\n      \"color\": \"brown\",\n      \"count\": 1,\n      \"label\": \"house body\",\n      \"position\": \"center\"\n    },\n    {\n      \"color\": \"white\",\n      \"count\": 2,\n      \"label\": \"windows\",\n      \"position\": \"front of house\"\n    },\n    {\n      \"color\": \"dark brown\",\n      \"count\": 1,\n      \"label\": \"door\",\n      \"position\": \"bottom center of house\"\n    }\n  ],\n  \"summary\": \"A minimalist scene with a red-roofed brown house centered on green ground against a light blue sky, featuring two white windows and one dark door. A yellow sun is located in the upper right corner.\"\n}",
+      "error": null,
+      "prompt_tokens": 164,
+      "completion_tokens": 1014
+    },
+    {
+      "model": "gemma-4-12b-it-uncensored",
+      "fixture": "counting-grid",
+      "duration_ms": 48179,
+      "status": "invalid_json",
+      "checks_passed": 0,
+      "checks_total": 4,
+      "checks": [
+        {
+          "name": "three circles",
+          "passed": false
+        },
+        {
+          "name": "two squares",
+          "passed": false
+        },
+        {
+          "name": "red green blue circles",
+          "passed": false
+        },
+        {
+          "name": "black squares",
+          "passed": false
+        }
+      ],
+      "score_percent": 0.0,
+      "analysis": null,
+      "raw_response": "",
+      "error": "EOF while parsing a value at line 1 column 0",
+      "prompt_tokens": 164,
+      "completion_tokens": 1400
+    },
+    {
+      "model": "glm-ocr",
+      "fixture": "colors-and-shapes",
+      "duration_ms": 2583,
+      "status": "passed",
+      "checks_passed": 0,
+      "checks_total": 4,
+      "checks": [
+        {
+          "name": "red circle",
+          "passed": false
+        },
+        {
+          "name": "blue square",
+          "passed": false
+        },
+        {
+          "name": "one circle",
+          "passed": false
+        },
+        {
+          "name": "one square",
+          "passed": false
+        }
+      ],
+      "score_percent": 0.0,
+      "analysis": {
+        "summary": "A circle and square combination is depicted in this image.",
+        "objects": [
+          {
+            "label": "blue",
+            "color": "red",
+            "position": "right",
+            "count": 75
+          }
+        ],
+        "dominant_colors": [
+          "red",
+          "blue"
+        ],
+        "composition": "circle and square combination",
+        "confidence": 1.0
+      },
+      "raw_response": "{\n    \"composition\": \"circle and square combination\",\n    \"confidence\": 1.0,\n    \"dominant_colors\": [\n        \"red\",\n        \"blue\"\n    ],\n    \"objects\": [\n        {\n            \"color\": \"red\",\n            \"count\":\n       75,\n        \"label\": \"blue\",\n        \"position\": \"right\"\n        }\n    ],\n    \"summary\": \"A circle and square combination is depicted in this image.\"\n}",
+      "error": null,
+      "prompt_tokens": 379,
+      "completion_tokens": 115
+    },
+    {
+      "model": "glm-ocr",
+      "fixture": "simple-landscape",
+      "duration_ms": 1565,
+      "status": "passed",
+      "checks_passed": 4,
+      "checks_total": 4,
+      "checks": [
+        {
+          "name": "house",
+          "passed": true
+        },
+        {
+          "name": "sun",
+          "passed": true
+        },
+        {
+          "name": "blue sky",
+          "passed": true
+        },
+        {
+          "name": "green ground",
+          "passed": true
+        }
+      ],
+      "score_percent": 100.0,
+      "analysis": {
+        "summary": "A simple illustration of a house with a red roof, orange walls, and white windows, set against a blue sky with a yellow sun, on a green grassy field.",
+        "objects": [
+          {
+            "label": "",
+            "color": "orange",
+            "position": "center",
+            "count": 2
+          },
+          {
+            "label": "",
+            "color": "red",
+            "position": "top left",
+            "count": 1
+          },
+          {
+            "label": "",
+            "color": "blue",
+            "position": "bottom left",
+            "count": 2
+          },
+          {
+            "label": "",
+            "color": "green",
+            "position": "top right",
+            "count": 1
+          }
+        ],
+        "dominant_colors": [
+          "orange",
+          "red",
+          "blue",
+          "green"
+        ],
+        "composition": "image of a house with a red roof, orange walls, and white windows, set against a blue sky with a yellow sun, on a green grassy field.",
+        "confidence": 1.0
+      },
+      "raw_response": "{\n    \"composition\": \"image of a house with a red roof, orange walls, and white windows, set against a blue sky with a yellow sun, on a green grassy field.\",\n    \"confidence\": 1.0,\n    \"dominant_colors\": [\n        \"orange\",\n        \"red\",\n        \"blue\",\n        \"green\"\n    ],\n    \"objects\": [\n        {\n            \"color\": \"orange\",\n            \"count\": 2,\n            \"label\": \"\",\n            \"position\": \"center\"\n        },\n        {\n            \"color\": \"red\",\n            \"count\": 1,\n            \"label\": \"\",\n            \"position\": \"top left\"\n        },\n        {\n            \"color\": \"blue\",\n            \"count\": 2,\n            \"label\": \"\",\n            \"position\": \"bottom left\"\n        },\n        {\n            \"color\": \"green\",\n            \"count\": 1,\n            \"label\": \"\",\n            \"position\": \"top right\"\n        }\n    ],\n    \"summary\": \"A simple illustration of a house with a red roof, orange walls, and white windows, set against a blue sky with a yellow sun, on a green grassy field.\"\n}",
+      "error": null,
+      "prompt_tokens": 379,
+      "completion_tokens": 284
+    },
+    {
+      "model": "glm-ocr",
+      "fixture": "counting-grid",
+      "duration_ms": 1537,
+      "status": "passed",
+      "checks_passed": 3,
+      "checks_total": 4,
+      "checks": [
+        {
+          "name": "three circles",
+          "passed": true
+        },
+        {
+          "name": "two squares",
+          "passed": false
+        },
+        {
+          "name": "red green blue circles",
+          "passed": true
+        },
+        {
+          "name": "black squares",
+          "passed": true
+        }
+      ],
+      "score_percent": 75.0,
+      "analysis": {
+        "summary": "three circular shapes (red, green, blue) above two square shapes (black, black)",
+        "objects": [
+          {
+            "label": "circle one",
+            "color": "red",
+            "position": "top center",
+            "count": 1
+          },
+          {
+            "label": "circle two",
+            "color": "green",
+            "position": "top center",
+            "count": 1
+          },
+          {
+            "label": "circle three",
+            "color": "blue",
+            "position": "top center",
+            "count": 1
+          },
+          {
+            "label": "square one",
+            "color": "black",
+            "position": "bottom left",
+            "count": 2
+          },
+          {
+            "label": "square two",
+            "color": "black",
+            "position": "bottom right",
+            "count": 2
+          }
+        ],
+        "dominant_colors": [
+          "red",
+          "green",
+          "blue"
+        ],
+        "composition": "three circular shapes (red, green, blue) above two square shapes (black, black)",
+        "confidence": 1.0
+      },
+      "raw_response": "{\n    \"composition\": \"three circular shapes (red, green, blue) above two square shapes (black, black)\",\n    \"confidence\": 1.0,\n    \"dominant_colors\": [\n        \"red\",\n        \"green\",\n        \"blue\"\n    ],\n    \"objects\": [\n        {\n            \"color\": \"red\",\n            \"count\": 1,\n            \"label\": \"circle one\",\n            \"position\": \"top center\"\n        },\n        {\n            \"color\": \"green\",\n            \"count\": 1,\n            \"label\": \"circle two\",\n            \"position\": \"top center\"\n        },\n        {\n            \"color\": \"blue\",\n            \"count\": 1,\n            \"label\": \"circle three\",\n            \"position\": \"top center\"\n        },\n        {\n            \"color\": \"black\",\n            \"count\": 2,\n            \"label\": \"square one\",\n            \"position\": \"bottom left\"\n        },\n        {\n            \"color\": \"black\",\n            \"count\": 2,\n            \"label\": \"square two\",\n            \"position\": \"bottom right\"\n        }\n    ],\n    \"summary\": \"three circular shapes (red, green, blue) above two square shapes (black, black)\"\n}",
+      "error": null,
+      "prompt_tokens": 379,
+      "completion_tokens": 276
+    }
+  ]
+}
