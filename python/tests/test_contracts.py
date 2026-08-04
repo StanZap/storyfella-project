@@ -65,7 +65,7 @@ class GenerateContractTests(unittest.TestCase):
 
         self.assertEqual(request.width, 1024)
         self.assertEqual(request.height, 1024)
-        self.assertEqual(request.steps, 2)
+        self.assertEqual(request.steps, 8)
         self.assertEqual(request.seed, 0)
         self.assertEqual(request.device, "auto")
 

@@ -1,3 +1,4 @@
+import threading
 import time
 from pathlib import Path
 
@@ -7,6 +8,7 @@ from models.schemas import (
     DeviceCapabilitiesResponse,
     GenerateRequest,
     GenerateResponse,
+    GenerationJobResponse,
     SegmentRequest,
     SegmentBox,
     SegmentDetection,
@@ -17,11 +19,12 @@ from runtime.device import capabilities
 from runtime.grounder import GroundingDinoGrounder, GroundingError, TextGrounder
 from runtime.image_generator import (
     DEFAULT_MODEL,
-    DiffusersImageGenerator,
     GenerationOptions,
     ImageGenerationError,
     ImageGenerator,
+    RoutedImageGenerator,
 )
+from runtime.sd_cpp import LoraSelection, StableDiffusionCppClient, StableDiffusionCppError
 from runtime.segmenter import (
     DEFAULT_SEGMENTATION_MODEL,
     BoxPrompt,
@@ -41,12 +44,16 @@ class VisionService:
         image_generator: ImageGenerator | None = None,
         segmenter: Segmenter | None = None,
         grounder: TextGrounder | None = None,
+        native_client: StableDiffusionCppClient | None = None,
     ) -> None:
         self._image_generator = (
-            image_generator if image_generator is not None else DiffusersImageGenerator()
+            image_generator if image_generator is not None else RoutedImageGenerator()
         )
         self._segmenter = segmenter if segmenter is not None else Sam2Segmenter()
         self._grounder = grounder if grounder is not None else GroundingDinoGrounder()
+        self._native_client = native_client or StableDiffusionCppClient()
+        self._generation_jobs: dict[str, tuple[str, str]] = {}
+        self._generation_jobs_lock = threading.Lock()
 
     def capabilities(self) -> DeviceCapabilitiesResponse:
         detected = capabilities()
@@ -138,6 +145,10 @@ class VisionService:
                     seed=request.seed,
                     model=model,
                     device=request.device,
+                    loras=tuple(
+                        LoraSelection(path=item.path, multiplier=item.multiplier)
+                        for item in request.loras
+                    ),
                 )
             )
         except (ImageGenerationError, RuntimeError, ValueError) as error:
@@ -154,6 +165,108 @@ class VisionService:
             height=result.height,
             duration_ms=result.duration_ms,
         )
+
+    def submit_generation(
+        self, request: GenerateRequest, priority: str = "interactive"
+    ) -> GenerationJobResponse:
+        model = request.model or DEFAULT_MODEL
+        if model not in {"krea-2-turbo-q2", "krea-2-turbo-q4"}:
+            return GenerationJobResponse(
+                id="not_submitted",
+                status="failed",
+                model=model,
+                priority=priority,
+                error="background jobs require a native Krea 2 profile",
+            )
+        try:
+            self._native_client.assert_profile(model)
+            job = self._native_client.submit(
+                prompt=request.prompt,
+                width=request.width,
+                height=request.height,
+                steps=request.steps,
+                seed=request.seed,
+                loras=tuple(
+                    LoraSelection(path=item.path, multiplier=item.multiplier)
+                    for item in request.loras
+                ),
+            )
+        except StableDiffusionCppError as error:
+            return GenerationJobResponse(
+                id="not_submitted",
+                status="failed",
+                model=model,
+                priority=priority,
+                error=str(error),
+            )
+        with self._generation_jobs_lock:
+            self._generation_jobs[job.id] = (model, priority)
+        return GenerationJobResponse(
+            id=job.id,
+            status=job.status,
+            model=model,
+            priority=priority,
+        )
+
+    def generation_job(self, job_id: str) -> GenerationJobResponse:
+        model, priority = self._job_metadata(job_id)
+        try:
+            job = self._native_client.job(job_id)
+        except StableDiffusionCppError as error:
+            return GenerationJobResponse(
+                id=job_id,
+                status="failed",
+                model=model,
+                priority=priority,
+                error=str(error),
+            )
+        return GenerationJobResponse(
+            id=job.id,
+            status=job.status,
+            queue_position=job.queue_position,
+            image_path=str(job.image_path) if job.image_path else None,
+            model=model,
+            priority=priority,
+            error=job.error,
+        )
+
+    def cancel_generation(self, job_id: str) -> GenerationJobResponse:
+        model, priority = self._job_metadata(job_id)
+        try:
+            job = self._native_client.cancel(job_id)
+        except StableDiffusionCppError as error:
+            try:
+                current = self._native_client.job(job_id, save_result=False)
+            except StableDiffusionCppError:
+                current = None
+            if current is not None and current.status in {"queued", "generating"}:
+                return GenerationJobResponse(
+                    id=job_id,
+                    status=current.status,
+                    queue_position=current.queue_position,
+                    model=model,
+                    priority=priority,
+                    error=str(error),
+                )
+            return GenerationJobResponse(
+                id=job_id,
+                status="failed",
+                model=model,
+                priority=priority,
+                error=str(error),
+            )
+        return GenerationJobResponse(
+            id=job.id,
+            status=job.status,
+            queue_position=job.queue_position,
+            model=model,
+            priority=priority,
+            error=job.error,
+        )
+
+    def _job_metadata(self, job_id: str) -> tuple[str, str]:
+        with self._generation_jobs_lock:
+            return self._generation_jobs.get(job_id, (DEFAULT_MODEL, "interactive"))
 
     def caption(self, request: CaptionRequest) -> CaptionResponse:
         del request

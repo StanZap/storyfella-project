@@ -1,6 +1,6 @@
 mod config;
 
-pub use config::{AppConfig, ConfigError};
+pub use config::{AppConfig, ConfigError, GenerationConfig};
 
 use dioxus::prelude::*;
 

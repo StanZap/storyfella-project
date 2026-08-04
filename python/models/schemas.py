@@ -68,14 +68,27 @@ class SegmentResponse(BaseModel):
     error: str | None = None
 
 
+class LoraSelection(BaseModel):
+    path: str = Field(min_length=1, max_length=255)
+    multiplier: float = Field(default=1.0, ge=-2.0, le=2.0)
+
+    @field_validator("path")
+    @classmethod
+    def path_is_relative_and_safe(cls, value: str) -> str:
+        if value.startswith(("/", "\\")) or ".." in value.replace("\\", "/").split("/"):
+            raise ValueError("LoRA path must be relative to the configured LoRA directory")
+        return value
+
+
 class GenerateRequest(BaseModel):
     prompt: str
     width: int = Field(default=1024, ge=256, le=2048)
     height: int = Field(default=1024, ge=256, le=2048)
-    steps: int = Field(default=2, ge=1, le=50)
+    steps: int = Field(default=8, ge=1, le=50)
     seed: int = Field(default=0, ge=0)
     model: str | None = None
     device: Literal["auto", "cuda", "mps", "cpu"] = "auto"
+    loras: list[LoraSelection] = Field(default_factory=list, max_length=8)
 
     @field_validator("width", "height")
     @classmethod
@@ -95,6 +108,16 @@ class GenerateResponse(BaseModel):
     width: int | None = None
     height: int | None = None
     duration_ms: int | None = None
+    error: str | None = None
+
+
+class GenerationJobResponse(BaseModel):
+    id: str
+    status: Literal["queued", "generating", "completed", "failed", "cancelled"]
+    queue_position: int = 0
+    image_path: str | None = None
+    model: str
+    priority: Literal["interactive", "background"] = "interactive"
     error: str | None = None
 
 

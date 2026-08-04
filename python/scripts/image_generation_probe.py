@@ -4,14 +4,14 @@ import argparse
 import json
 
 from models.schemas import GenerateRequest
-from runtime.image_generator import DEFAULT_MODEL
+from runtime.image_generator import SANA_MODEL
 from runtime.service import VisionService
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the image-generation proof of concept")
     parser.add_argument("prompt")
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--model", default=SANA_MODEL)
     parser.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"), default="auto")
     parser.add_argument("--width", type=int, default=1024)
     parser.add_argument("--height", type=int, default=1024)

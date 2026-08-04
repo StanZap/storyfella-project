@@ -4,6 +4,13 @@ model = "local-model"
 # api_key = "lm-studio"
 timeout_seconds = 60
 
+[generation]
+base_url = "http://127.0.0.1:7861"
+profile = "krea-2-turbo-q2"
+# executable and lora_dir default beneath model_dir.
+# executable = "models/runtime/stable-diffusion.cpp/bin/sd-server"
+# lora_dir = "models/loras"
+
 [paths]
 python_runtime = "python"
 # model_dir, cache_dir, and asset_dir default to platform-appropriate application directories.

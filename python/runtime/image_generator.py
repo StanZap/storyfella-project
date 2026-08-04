@@ -9,8 +9,11 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from runtime.device import RuntimeDependencyError, select_device
+from runtime.model_manifest import PROFILES
+from runtime.sd_cpp import LoraSelection, StableDiffusionCppClient, StableDiffusionCppError
 
-DEFAULT_MODEL = "Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers"
+DEFAULT_MODEL = "krea-2-turbo-q2"
+SANA_MODEL = "Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers"
 
 
 class ImageGenerationError(RuntimeError):
@@ -26,6 +29,7 @@ class GenerationOptions:
     seed: int
     model: str
     device: str
+    loras: tuple[LoraSelection, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -121,5 +125,55 @@ class DiffusersImageGenerator:
         return self._pipeline, torch, selection.name, selection.dtype
 
 
-# TODO: Add a production model registry supplied by Rust instead of allowing the
-# Python runtime to resolve model identifiers through Hugging Face.
+class StableDiffusionCppImageGenerator:
+    """Delegates to one persistent native process; inference never unloads it."""
+
+    def __init__(self, client: StableDiffusionCppClient | None = None) -> None:
+        self.client = client or StableDiffusionCppClient()
+
+    def generate(self, options: GenerationOptions) -> GenerationResult:
+        if options.model not in PROFILES:
+            raise ImageGenerationError(f"{options.model!r} is not a native Krea profile")
+        started = time.monotonic()
+        try:
+            self.client.assert_profile(options.model)
+            job = self.client.submit(
+                prompt=options.prompt,
+                width=options.width,
+                height=options.height,
+                steps=options.steps,
+                seed=options.seed,
+                loras=options.loras,
+            )
+            job = self.client.wait(job.id, timeout_seconds=600.0)
+        except StableDiffusionCppError as error:
+            raise ImageGenerationError(str(error)) from error
+        if job.status != "completed" or job.image_path is None:
+            raise ImageGenerationError(job.error or f"generation job ended as {job.status}")
+        return GenerationResult(
+            image_path=job.image_path,
+            model=options.model,
+            device="native",
+            dtype=PROFILES[options.model].quantization,
+            seed=options.seed,
+            width=options.width,
+            height=options.height,
+            duration_ms=round((time.monotonic() - started) * 1000),
+        )
+
+
+class RoutedImageGenerator:
+    """Keeps both backend choices explicit while Krea is the product default."""
+
+    def __init__(self) -> None:
+        self._native = StableDiffusionCppImageGenerator()
+        self._diffusers = DiffusersImageGenerator()
+
+    def generate(self, options: GenerationOptions) -> GenerationResult:
+        if options.model in PROFILES:
+            return self._native.generate(options)
+        return self._diffusers.generate(options)
+
+
+# TODO: Remove the legacy SANA/Hugging Face fallback once native Krea quality
+# gates pass on both target platforms. Rust already provisions native models.

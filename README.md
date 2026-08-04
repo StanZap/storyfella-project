@@ -7,8 +7,8 @@ The supported targets are macOS on Apple Silicon (MPS) and Linux with NVIDIA CUD
 ## Architecture
 
 - **Rust** owns the Dioxus UI, application state, storyboard/timeline models, project persistence boundary, model-download boundary, directory resolution, process lifecycle, LM Studio integration, and Python runtime client.
-- **Python** owns all future model framework and vision implementation details. Rust must not depend on or know about PyTorch.
-- **HTTP** is the explicit boundary between them. The local FastAPI runtime exposes `GET /health`, `GET /capabilities`, and `POST /segment`, `/generate`, and `/caption`. Generation and geometric-prompt segmentation have working POC backends; captioning remains a placeholder.
+- **Python** owns all future model framework and vision implementation details. Rust must not depend on or know about PyTorch. Krea 2 generation uses a separate native `stable-diffusion.cpp` process owned by Rust; it is not ComfyUI.
+- **HTTP** is the explicit boundary between them. The local FastAPI runtime exposes `GET /health`, `GET /capabilities`, `POST /segment`, `/generate`, and `/caption`, plus asynchronous generation-job endpoints. Generation and geometric-prompt segmentation have working POC backends; captioning remains a placeholder.
 - **LM Studio** is accessed directly from Rust through its OpenAI-compatible `/v1/chat/completions` endpoint. The bootstrap contains the client but no planner business logic.
 
 ## Project layout
@@ -128,6 +128,8 @@ The first isolated proof of concept exercises vision-capable models through LM S
 
 The second proof of concept runs a small SANA Sprint Diffusers pipeline behind the Python `/generate` contract. It selects CUDA, MPS, or CPU at runtime, loads lazily, serializes accelerator access, and records deterministic output metadata. See [`docs/poc/image-generation/README.md`](docs/poc/image-generation/README.md) for setup, the first checked-in result, licensing notes, and limitations.
 
+The product-oriented native path supports resident Krea 2 Turbo Q2_K and IQ4_XS profiles, a shared quantized Qwen3-VL 4B encoder, explicit request-time LoRAs, Metal/CUDA, and background jobs without ComfyUI. See [`docs/poc/native-generation/README.md`](docs/poc/native-generation/README.md) for model layout, build instructions, memory assumptions, and remaining benchmark gates.
+
 ## Segmentation probe
 
 The third proof of concept runs SAM 2.1 Tiny behind `/segment` with point or box prompts. Text prompts are grounded to boxes by Grounding DINO Tiny before SAM refinement. Both stages expose their own scores, and the chain runs on MPS, CUDA, or CPU. See [`docs/poc/segmentation/README.md`](docs/poc/segmentation/README.md) for the SAM decision and [`docs/poc/grounded-segmentation/README.md`](docs/poc/grounded-segmentation/README.md) for the connected pipeline result.
@@ -136,8 +138,8 @@ The third proof of concept runs SAM 2.1 Tiny behind `/segment` with point or box
 
 1. Add versioned project persistence and asset indexing.
 2. Wire Python lifecycle and health status into application startup/shutdown.
-3. Add resumable model downloads with checksums and platform-aware storage.
+3. Wire model-download progress/cancellation and native-runtime installation into the UI.
 4. Benchmark grounded segmentation across diverse fixtures and SAM 3.1 on Linux/CUDA.
-5. Benchmark warm image-generation latency and add Rust-provisioned model manifests.
-6. Add planner schemas, evaluator metrics, cancellation, and job progress events.
+5. Complete Q2/Q4 warm-latency and peak-memory gates on 24 GiB Metal and CUDA targets.
+6. Add an interactive-first scheduler, planner schemas, and evaluator metrics.
 7. Add API integration tests and macOS/Linux platform CI coverage.

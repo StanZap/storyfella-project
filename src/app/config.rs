@@ -9,6 +9,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use crate::llm::LmStudioConfig;
+use crate::runtime::KreaQuantization;
 
 const DEFAULT_CONFIG_PATH: &str = "config/app.toml";
 
@@ -19,6 +20,15 @@ pub struct AppConfig {
     pub model_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub asset_dir: PathBuf,
+    pub generation: GenerationConfig,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GenerationConfig {
+    pub base_url: String,
+    pub executable: PathBuf,
+    pub lora_dir: PathBuf,
+    pub profile: KreaQuantization,
 }
 
 #[derive(Debug, Error)]
@@ -35,6 +45,10 @@ pub enum ConfigError {
         path: PathBuf,
         source: toml::de::Error,
     },
+    #[error(
+        "unsupported Krea generation profile {0}; expected krea-2-turbo-q2 or krea-2-turbo-q4"
+    )]
+    GenerationProfile(String),
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -43,6 +57,29 @@ struct FileConfig {
     lm_studio: LmStudioFileConfig,
     #[serde(default)]
     paths: PathOverrides,
+    #[serde(default)]
+    generation: GenerationFileConfig,
+}
+
+#[derive(Debug, Deserialize)]
+struct GenerationFileConfig {
+    #[serde(default = "default_generation_url")]
+    base_url: String,
+    #[serde(default = "default_generation_profile")]
+    profile: String,
+    executable: Option<PathBuf>,
+    lora_dir: Option<PathBuf>,
+}
+
+impl Default for GenerationFileConfig {
+    fn default() -> Self {
+        Self {
+            base_url: default_generation_url(),
+            profile: default_generation_profile(),
+            executable: None,
+            lora_dir: None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,6 +137,31 @@ impl AppConfig {
             .ok_or(ConfigError::PlatformDirectories)?;
         let data_dir = dirs.data_dir();
 
+        let model_dir = file
+            .paths
+            .model_dir
+            .unwrap_or_else(|| data_dir.join("models"));
+        let profile = match file.generation.profile.as_str() {
+            "krea-2-turbo-q2" => KreaQuantization::Q2,
+            "krea-2-turbo-q4" => KreaQuantization::Q4,
+            other => return Err(ConfigError::GenerationProfile(other.to_owned())),
+        };
+        let generation = GenerationConfig {
+            base_url: file.generation.base_url,
+            executable: file.generation.executable.unwrap_or_else(|| {
+                model_dir
+                    .join("runtime")
+                    .join("stable-diffusion.cpp")
+                    .join("bin")
+                    .join("sd-server")
+            }),
+            lora_dir: file
+                .generation
+                .lora_dir
+                .unwrap_or_else(|| model_dir.join("loras")),
+            profile,
+        };
+
         Ok(Self {
             lm_studio: LmStudioConfig {
                 base_url: file.lm_studio.base_url,
@@ -111,10 +173,7 @@ impl AppConfig {
                 .paths
                 .python_runtime
                 .unwrap_or_else(|| PathBuf::from("python")),
-            model_dir: file
-                .paths
-                .model_dir
-                .unwrap_or_else(|| data_dir.join("models")),
+            model_dir,
             cache_dir: file
                 .paths
                 .cache_dir
@@ -123,6 +182,7 @@ impl AppConfig {
                 .paths
                 .asset_dir
                 .unwrap_or_else(|| data_dir.join("assets")),
+            generation,
         })
     }
 }
@@ -137,4 +197,12 @@ fn default_lm_model() -> String {
 
 const fn default_timeout() -> u64 {
     60
+}
+
+fn default_generation_url() -> String {
+    "http://127.0.0.1:7861".to_owned()
+}
+
+fn default_generation_profile() -> String {
+    "krea-2-turbo-q2".to_owned()
 }

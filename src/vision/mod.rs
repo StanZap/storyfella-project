@@ -93,6 +93,14 @@ pub struct GenerateRequest {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device: Option<ComputeDevice>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub loras: Vec<LoraSelection>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LoraSelection {
+    pub path: String,
+    pub multiplier: f32,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -114,6 +122,7 @@ impl GenerateRequest {
             seed: None,
             model: None,
             device: None,
+            loras: Vec::new(),
         }
     }
 }
@@ -129,6 +138,17 @@ pub struct GenerateResponse {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub duration_ms: Option<u64>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct GenerationJobResponse {
+    pub id: String,
+    pub status: String,
+    pub queue_position: u32,
+    pub image_path: Option<String>,
+    pub model: String,
+    pub priority: String,
     pub error: Option<String>,
 }
 
@@ -194,6 +214,35 @@ impl VisionClient {
         request: &GenerateRequest,
     ) -> Result<GenerateResponse, VisionClientError> {
         self.post("generate", request).await
+    }
+
+    pub async fn submit_generation(
+        &self,
+        request: &GenerateRequest,
+        background: bool,
+    ) -> Result<GenerationJobResponse, VisionClientError> {
+        let priority = if background {
+            "background"
+        } else {
+            "interactive"
+        };
+        self.post(&format!("generation/jobs?priority={priority}"), request)
+            .await
+    }
+
+    pub async fn generation_job(
+        &self,
+        job_id: &str,
+    ) -> Result<GenerationJobResponse, VisionClientError> {
+        self.get(&format!("generation/jobs/{job_id}")).await
+    }
+
+    pub async fn cancel_generation(
+        &self,
+        job_id: &str,
+    ) -> Result<GenerationJobResponse, VisionClientError> {
+        self.post(&format!("generation/jobs/{job_id}/cancel"), &())
+            .await
     }
 
     pub async fn caption(

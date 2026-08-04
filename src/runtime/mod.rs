@@ -1,6 +1,11 @@
+mod generation_runtime;
 mod model_store;
 
-pub use model_store::{ModelStore, ModelStoreError};
+pub use generation_runtime::{
+    krea_profile, GenerationRuntime, GenerationRuntimeError, KreaProfile, KreaQuantization,
+    ModelArtifact,
+};
+pub use model_store::{DownloadProgress, ModelStore, ModelStoreError};
 
 use std::{
     path::{Path, PathBuf},
@@ -13,6 +18,7 @@ use tokio::process::{Child, Command};
 
 pub struct PythonRuntime {
     runtime_dir: PathBuf,
+    generation_url: Option<String>,
     child: Mutex<Option<Child>>,
 }
 
@@ -32,8 +38,14 @@ impl PythonRuntime {
     pub fn new(runtime_dir: impl Into<PathBuf>) -> Self {
         Self {
             runtime_dir: runtime_dir.into(),
+            generation_url: None,
             child: Mutex::new(None),
         }
+    }
+
+    pub fn with_generation_url(mut self, url: impl Into<String>) -> Self {
+        self.generation_url = Some(url.into());
+        self
     }
 
     pub fn start(&self, host: &str, port: u16) -> Result<(), RuntimeError> {
@@ -47,7 +59,8 @@ impl PythonRuntime {
             return Err(RuntimeError::MissingPython(python));
         }
 
-        let child = Command::new(&python)
+        let mut command = Command::new(&python);
+        command
             .arg("main.py")
             .arg("--host")
             .arg(host)
@@ -57,9 +70,11 @@ impl PythonRuntime {
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(RuntimeError::Start)?;
+            .kill_on_drop(true);
+        if let Some(url) = &self.generation_url {
+            command.env("SVS_SD_CPP_URL", url);
+        }
+        let child = command.spawn().map_err(RuntimeError::Start)?;
 
         tracing::info!(pid = child.id(), "started Python vision runtime");
         *slot = Some(child);

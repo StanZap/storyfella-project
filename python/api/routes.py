@@ -6,6 +6,7 @@ from models.schemas import (
     DeviceCapabilitiesResponse,
     GenerateRequest,
     GenerateResponse,
+    GenerationJobResponse,
     HealthResponse,
     SegmentRequest,
     SegmentResponse,
@@ -34,6 +35,24 @@ def segment(request: SegmentRequest) -> SegmentResponse:
 @router.post("/generate", response_model=GenerateResponse)
 def generate(request: GenerateRequest) -> GenerateResponse:
     return service.generate(request)
+
+
+@router.post("/generation/jobs", response_model=GenerationJobResponse, status_code=202)
+def submit_generation_job(
+    request: GenerateRequest, priority: str = "interactive"
+) -> GenerationJobResponse:
+    normalized_priority = priority if priority in {"interactive", "background"} else "interactive"
+    return service.submit_generation(request, normalized_priority)
+
+
+@router.get("/generation/jobs/{job_id}", response_model=GenerationJobResponse)
+def generation_job(job_id: str) -> GenerationJobResponse:
+    return service.generation_job(job_id)
+
+
+@router.post("/generation/jobs/{job_id}/cancel", response_model=GenerationJobResponse)
+def cancel_generation_job(job_id: str) -> GenerationJobResponse:
+    return service.cancel_generation(job_id)
 
 
 @router.post("/caption", response_model=CaptionResponse)
