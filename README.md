@@ -1,8 +1,10 @@
 # Smart Visual Sequencer
 
-Smart Visual Sequencer is a cross-platform Dioxus desktop application for planning, generating, and arranging visual stories. The application shell, process boundary, configuration, HTTP contracts, and isolated Visual LLM, image-generation, and segmentation proofs of concept are present. Product orchestration is not implemented yet.
+Smart Visual Sequencer is a cross-platform Dioxus desktop application for planning, generating, and arranging visual stories. The first product shell now includes project creation, a prompt-first editor, storyboard and timeline views, a properties surface, and sectioned runtime settings. The process boundary, configuration, HTTP contracts, and isolated Visual LLM, image-generation, and segmentation proofs of concept are also present. Product orchestration is not connected to the interface yet.
 
 The supported targets are macOS on Apple Silicon (MPS) and Linux with NVIDIA CUDA. LM Studio is an external prerequisite and is never installed or bundled by this project.
+
+This is intentionally a desktop-only application. Web, mobile, and WASM targets are not supported.
 
 ## Architecture
 
@@ -10,6 +12,16 @@ The supported targets are macOS on Apple Silicon (MPS) and Linux with NVIDIA CUD
 - **Python** owns all future model framework and vision implementation details. Rust must not depend on or know about PyTorch. Krea 2 generation uses a separate native `stable-diffusion.cpp` process owned by Rust; it is not ComfyUI.
 - **HTTP** is the explicit boundary between them. The local FastAPI runtime exposes `GET /health`, `GET /capabilities`, `POST /segment`, `/generate`, and `/caption`, plus asynchronous generation-job endpoints. Generation and geometric-prompt segmentation have working POC backends; captioning remains a placeholder.
 - **LM Studio** is accessed directly from Rust through its OpenAI-compatible `/v1/chat/completions` endpoint. The bootstrap contains the client but no planner business logic.
+
+## Product surface
+
+- **Projects** creates a fresh story and reopens the current in-memory project.
+- **Canvas** is the quiet prompt-first workspace. Submitting a prompt creates a storyboard beat and a matching five-second timeline clip; it does not invoke AI yet.
+- **Storyboard** presents the visual beats and reserves generation actions for the orchestration slice.
+- **Timeline** shows the temporal arrangement derived from those beats.
+- **Settings** separates general behavior, LM Studio/VLM configuration, Krea generation, and storage. It reflects resolved configuration without claiming that idle services are connected.
+
+The shell deliberately uses a small reusable component vocabulary, low-contrast boundaries, and progressive disclosure instead of a dense card dashboard. Styling is primarily Tailwind CSS 4 utility classes in RSX, with a small shared CSS layer for global browser behavior and form controls.
 
 ## Project layout
 
@@ -98,7 +110,7 @@ Configuration lives in `config/app.toml`. The default LM Studio URL is `http://l
 
 ## How Rust starts Python
 
-`runtime::PythonRuntime` resolves the interpreter inside `python/.venv`, launches `python/main.py` with an explicit host and port, inherits logs, and retains the child handle for shutdown. The UI does not start it automatically yet; lifecycle wiring will be added with project/session management. Readiness should be determined through `/health`, not merely by successful process creation.
+`runtime::PythonRuntime` resolves the interpreter inside `python/.venv`, launches `python/main.py` with an explicit host and port, inherits logs, and retains the child handle for shutdown. The UI does not start it automatically yet; lifecycle wiring will be added with project/session management. Until then the shell reports the runtime as idle. Readiness must be determined through `/health`, not merely by successful process creation.
 
 ## Intended pipeline (documentation only)
 
@@ -136,10 +148,11 @@ The third proof of concept runs SAM 2.1 Tiny behind `/segment` with point or box
 
 ## Roadmap
 
-1. Add versioned project persistence and asset indexing.
-2. Wire Python lifecycle and health status into application startup/shutdown.
-3. Wire model-download progress/cancellation and native-runtime installation into the UI.
-4. Benchmark grounded segmentation across diverse fixtures and SAM 3.1 on Linux/CUDA.
-5. Complete Q2/Q4 warm-latency and peak-memory gates on 24 GiB Metal and CUDA targets.
-6. Add an interactive-first scheduler, planner schemas, and evaluator metrics.
-7. Add API integration tests and macOS/Linux platform CI coverage.
+1. Define the typed planner output and connect Canvas submissions to LM Studio.
+2. Add the interactive-first job scheduler and wire Krea generation results into storyboard frames.
+3. Wire Python/native runtime lifecycle, health, and resident-model state into the shell.
+4. Add versioned project persistence, generated-asset indexing, and autosave.
+5. Wire model-download progress/cancellation, LoRA discovery, and runtime installation into Settings.
+6. Connect grounded segmentation to image editing and benchmark SAM 3.1 on Linux/CUDA.
+7. Complete Q2/Q4 warm-latency and peak-memory gates on 24 GiB Metal and CUDA targets.
+8. Add evaluator metrics, API integration tests, and macOS/Linux platform CI coverage.

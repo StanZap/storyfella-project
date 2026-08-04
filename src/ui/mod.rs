@@ -1,50 +1,72 @@
+mod components;
+mod editor;
+mod icons;
+mod projects;
+mod settings;
+
 use dioxus::prelude::*;
 
 use crate::{app::AppConfig, state::AppState};
 
+use components::{RailButton, StatusDot};
+use editor::Studio;
+use icons::{Icon, IconName};
+use projects::Projects;
+use settings::Settings;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum AppScreen {
+    Projects,
+    Studio,
+    Settings,
+}
+
 #[component]
 pub fn Workspace(config: AppConfig, app_state: Signal<AppState>) -> Element {
-    let project_name = app_state.read().project_name.clone();
+    let mut screen = use_signal(|| AppScreen::Studio);
+    let project_name = app_state.read().project.name.clone();
+    let dirty = app_state.read().has_unsaved_changes;
 
     rsx! {
-        main { class: "grid min-h-screen min-w-[720px] grid-cols-[minmax(0,1fr)_280px] grid-rows-[84px_minmax(0,1fr)_116px] bg-[radial-gradient(circle_at_45%_20%,#20283a_0,#11151f_38%,#0b0e14_100%)] font-sans text-slate-100",
-            header { class: "col-span-2 flex items-center justify-between border-b border-slate-700/70 bg-slate-950/85 px-6 py-4 backdrop-blur",
-                div {
-                    p { class: "m-0 text-[10px] font-medium tracking-[0.16em] text-slate-400", "SMART VISUAL SEQUENCER" }
-                    h1 { class: "mt-1 text-xl font-semibold tracking-tight text-slate-100", "{project_name}" }
+        main { class: "grid h-screen min-h-[640px] min-w-[900px] grid-cols-[64px_minmax(0,1fr)] grid-rows-[58px_minmax(0,1fr)] overflow-hidden bg-[#0b0b0e] font-sans text-zinc-100 selection:bg-violet-500/30",
+            aside { class: "row-span-2 flex flex-col items-center border-r border-white/[0.055] bg-[#09090b] py-3",
+                button { class: "mb-6 grid size-10 place-items-center text-violet-300", aria_label: "Smart Visual Sequencer", onclick: move |_| screen.set(AppScreen::Studio),
+                    Icon { name: IconName::Sparkles, class: "size-[21px]" }
                 }
-                span { class: "rounded-full border border-emerald-800 bg-emerald-950/30 px-3 py-1.5 text-xs font-medium text-emerald-200", "Bootstrap ready" }
+                nav { class: "flex flex-1 flex-col items-center gap-2",
+                    RailButton { label: "Projects", icon: IconName::Home, active: screen() == AppScreen::Projects, onclick: move |_| screen.set(AppScreen::Projects) }
+                    RailButton { label: "Create", icon: IconName::Canvas, active: screen() == AppScreen::Studio, onclick: move |_| screen.set(AppScreen::Studio) }
+                }
+                RailButton { label: "Settings", icon: IconName::Settings, active: screen() == AppScreen::Settings, onclick: move |_| screen.set(AppScreen::Settings) }
             }
-            section { class: "grid place-items-center p-8",
-                div { class: "max-w-lg text-center text-slate-400",
-                    div { class: "mx-auto mb-5 grid size-14 place-items-center rounded-2xl border border-slate-700/80 bg-slate-900/70 text-2xl shadow-xl shadow-black/20", "✦" }
-                    h2 { class: "mb-2 text-2xl font-semibold tracking-tight text-slate-100", "Your visual workspace starts here" }
-                    p { class: "text-sm leading-6", "The desktop shell, runtime boundary, and API clients are ready. AI pipeline orchestration comes next." }
-                }
-            }
-            aside { class: "overflow-hidden border-l border-slate-700/70 bg-slate-950/70 p-5 backdrop-blur",
-                div { class: "mb-5 flex items-center justify-between",
-                    h2 { class: "text-sm font-semibold text-slate-100", "Runtime" }
-                    span { class: "size-2 rounded-full bg-emerald-400 shadow-[0_0_10px] shadow-emerald-400/60" }
-                }
-                dl { class: "space-y-4",
-                    div {
-                        dt { class: "text-[10px] font-medium uppercase tracking-wider text-slate-500", "LM Studio" }
-                        dd { class: "mt-1 truncate text-xs text-slate-300", title: "{config.lm_studio.base_url}", "{config.lm_studio.base_url}" }
+
+            header { class: "flex min-w-0 items-center justify-between border-b border-white/[0.055] bg-[#0b0b0e]/90 px-5 backdrop-blur-xl",
+                div { class: "flex min-w-0 items-center gap-3",
+                    if screen() == AppScreen::Studio {
+                        button { class: "truncate text-[12px] font-medium text-zinc-300 transition hover:text-white", "{project_name}" }
+                        if dirty { span { class: "size-1 rounded-full bg-zinc-600", title: "Unsaved changes" } }
+                    } else {
+                        p { class: "text-[12px] font-medium text-zinc-400", if screen() == AppScreen::Projects { "Projects" } else { "Settings" } }
                     }
-                    div {
-                        dt { class: "text-[10px] font-medium uppercase tracking-wider text-slate-500", "Python" }
-                        dd { class: "mt-1 truncate text-xs text-slate-300", title: "{config.python_runtime.display()}", "{config.python_runtime.display()}" }
-                    }
-                    div {
-                        dt { class: "text-[10px] font-medium uppercase tracking-wider text-slate-500", "Models" }
-                        dd { class: "mt-1 truncate text-xs text-slate-300", title: "{config.model_dir.display()}", "{config.model_dir.display()}" }
+                }
+                div { class: "flex items-center gap-4",
+                    div { class: "flex items-center gap-2 text-[10px] text-zinc-600", StatusDot { online: false } span { "Runtime idle" } }
+                    if screen() == AppScreen::Studio {
+                        button { class: "flex h-8 items-center gap-2 rounded-lg bg-white/[0.055] px-3 text-[10px] font-medium text-zinc-400 transition hover:bg-white/[0.08] hover:text-white",
+                            Icon { name: IconName::Play, class: "size-3" }
+                            "Preview"
+                        }
+                        button { class: "h-8 rounded-lg bg-zinc-100 px-3 text-[10px] font-semibold text-zinc-950 transition hover:bg-white", "Export" }
                     }
                 }
             }
-            footer { class: "col-span-2 flex items-start gap-6 border-t border-slate-700/70 bg-slate-950 px-6 py-4 text-xs text-slate-500",
-                strong { class: "font-semibold text-slate-200", "Timeline" }
-                span { class: "rounded-md border border-dashed border-slate-700 px-3 py-1.5", "No clips yet" }
+
+            div { class: "min-h-0 min-w-0",
+                match screen() {
+                    AppScreen::Projects => rsx! { Projects { app_state, on_open: move |_| screen.set(AppScreen::Studio) } },
+                    AppScreen::Studio => rsx! { Studio { app_state } },
+                    AppScreen::Settings => rsx! { Settings { config: config.clone() } },
+                }
             }
         }
     }

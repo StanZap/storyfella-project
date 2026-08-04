@@ -28,6 +28,4 @@ uuid = { version = "1.24.0", features = ["v4", "serde"] }
 
 [features]
 default = ["desktop"]
-web = ["dioxus/web"]
 desktop = ["dioxus/desktop"]
-mobile = ["dioxus/mobile"]
