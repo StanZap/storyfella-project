@@ -520,14 +520,20 @@ writer connection behind a mutex and WAL mode for a Dioxus desktop app.
 
 ## 12. Suggested implementation order
 
-Phased; each phase is usable on its own:
+Active directive: **the API first — no SQLite and no GUI work for now.**
+The in-memory model + TOML `ProjectStore` stay as-is while the API is built
+and validated through tests and the CLI.
 
-1. **Foundation:** SQLite schema + storage layer; one-time TOML import.
-2. **The API:** typed operation set + pipeline builder; `mask_path` in the
-   generation contract; slice-1 op compilers (create, variant, regenerate,
-   compose, draft, plus the mask-edit path).
-3. **The CLI (`svs`):** ops, `stack run`/`propose`, `--out` golden runs —
+1. **The API:** artifact domain model (artifact kinds, variants, scenes,
+   beats — the registry), typed operation set + pipeline builder (closed
+   vocabulary, typed intermediates, static validation at `build()`, linear
+   fail-fast stacks), `mask_path` in the generation contract, and the
+   slice-1 op compilers (create, variant, regenerate, compose, draft, plus
+   the mask-edit path).
+2. **The CLI (`svs`):** ops, `stack run`/`propose`, `--out` golden runs —
    drives and validates the API without the UI.
+3. **SQLite foundation (deferred):** schema + storage layer (§10), one-time
+   TOML import.
 4. **The canvas:** artboard viewport, artifact cards, prompt bar (slash
    parsing, autocomplete, `c:` chips).
 5. **Studio integration:** scenes group the timeline; re-sync flows per
@@ -548,8 +554,9 @@ Krea revision flow). Work follows §12.
 ### Entry points (existing code)
 
 - `src/models/mod.rs`, `src/models/persistence.rs` — current
-  Project/StoryboardFrame model + TOML store; SQLite replaces this (with a
-  one-time import).
+  Project/StoryboardFrame model + TOML store; stays as-is for now (SQLite is
+  deferred). The artifact registry (kinds, variants, scenes) is new domain
+  model work layered onto this.
 - `src/state/mod.rs` — AppState invariants (beat ↔ clip, revisions,
   selection).
 - `src/vision/mod.rs` ↔ `python/models/schemas.py` — Rust/Python HTTP
@@ -561,14 +568,14 @@ Krea revision flow). Work follows §12.
 
 ### Open decisions to settle first (with the user)
 
-1. SQLite crate: `rusqlite` (lean) vs `sqlx` (async).
-2. Execution model: user-typed ops instant + undo; LLM proposals gated by
+1. Execution model: user-typed ops instant + undo; LLM proposals gated by
    approval — proposed, unconfirmed.
-3. Approval granularity: whole stack vs per-step checkpoints (the hair-mask
+2. Approval granularity: whole stack vs per-step checkpoints (the hair-mask
    confirm is a checkpoint).
-4. Short-id format for `c:` references.
-5. Native mask support for Krea (open question 6) — decides whether the
+3. Short-id format for `c:` references.
+4. Native mask support for Krea (open question 6) — decides whether the
    composite fallback is primary.
+5. Deferred with SQLite: crate choice (`rusqlite` vs `sqlx`).
 
 ### Pitfalls
 
