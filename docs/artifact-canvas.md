@@ -19,6 +19,9 @@ storyboard beat → Krea generation → revision history. The target shape adds:
   propose/approve semantics;
 - full per-beat generation history, mask-based regional edits, and a LoRA
   registry for character/environment consistency.
+- the **Storyfella DSL** as the authored story surface: `.sf` files that
+  reference registry artifacts, with the canvas as the visual-asset editor
+  (see §9).
 
 **Model focus:** Krea 2 (served by the native `stable-diffusion.cpp` process)
 is the primary generation model. The stack stays as documented in
@@ -360,7 +363,9 @@ Dioxus UI: the crate gains a `src/lib.rs` with the shared modules; `main.rs`
 
 - A single **story document** per story: premise → plot → bible (characters,
   environments) → scenes → beat narration. Written in stages; the LLM assists
-  at each stage via `/draft`, always propose/approve — no auto-apply.
+  at each stage via `/draft`, always propose/approve — no auto-apply. This
+  story document *is* the `.sf` file (see §9); there is no separate
+  `story_documents` table.
 - **Recursive refinement via provenance:** beats/scenes store *references* to
   characters, variants, and locations by id. When the bible changes, affected
   beats are flagged ("uses Kitchen v2 — re-sync?") and re-sync is
@@ -369,7 +374,42 @@ Dioxus UI: the crate gains a `src/lib.rs` with the shared modules; `main.rs`
   with bible context auto-injected; generated image → narration text via
   captioning (captioning endpoint is currently a placeholder).
 
-## 9. Persistence: SQLite
+## 9. Storyfella DSL (built in this project)
+
+Storyfella is a DSL and toolkit for interactive narrative experiences. It is
+**built from scratch in this repository** — the earlier `../storyfella`
+prototype is reference material only, not code to integrate. Modern Rust
+stack: a workspace-member crate (`storyfella-dsl`) with its own lexer,
+parser, compiler, CLI, and runtime; serde for wire schemas; clap for the
+CLI. The sequencer becomes the visual-authoring surface for `.sf` projects.
+Three surfaces share one artifact registry:
+
+| Surface | Role |
+| --- | --- |
+| Story Writer | Edits `.sf` with syntax highlighting; asset references resolve to live chips (name, thumbnail) as you type; click a chip to jump to canvas |
+| Canvas | Creates/edits the artifacts the `.sf` references |
+| Studio | Sequence/timeline view, *derived* from `.sf` structure (scenes in order, choices as branches) |
+
+Decisions:
+
+- **Text-driven sync:** writing `scene kitchen:` in the writer auto-creates
+  or links the kitchen scene artifact; the registry follows the text. The
+  canvas is the visual-detail editor for things the text only names.
+- **`.sf` is the story source of truth** — diffable, greppable, versionable.
+  SQLite keeps only the asset side (artifacts, revisions, masks, operation
+  log); the `story_documents` table is dropped from the schema.
+- **References by name in the DSL** (`character: mia`), ids under the hood;
+  the compiler catches collisions; the writer's autocomplete resolves names
+  to ids as you type.
+- **Validation extends to assets:** `character: mia` where `mia` does not
+  exist is a compile error, with the canvas as the fix surface.
+- **The writer reuses the tokenized-editor primitive** designed for the
+  prompt bar (`/op` highlighting, `c:` chips) — one editor component, two
+  uses.
+- Per-beat visual references (variant, composition mode) in the DSL are the
+  next design layer below this one.
+
+## 10. Persistence: SQLite
 
 Decision: SQLite replaces the TOML `ProjectStore` as the project format, with
 a one-time import path from existing TOML files. Assets (PNGs) stay as files
@@ -456,21 +496,15 @@ CREATE TABLE operation_log (
   created_at TEXT NOT NULL
 );
 
--- Story prose, separate from artifact descriptions.
-CREATE TABLE story_documents (
-  id TEXT PRIMARY KEY,
-  story_id TEXT NOT NULL REFERENCES artifacts(id),
-  section TEXT NOT NULL,         -- premise | plot | …
-  content TEXT NOT NULL DEFAULT '',
-  updated_at TEXT NOT NULL
-);
+-- Story prose: not stored in the database. `.sf` files (see §9) are the
+-- story source of truth; SQLite stores the asset side only.
 ```
 
 Implementation notes: prefer `rusqlite` (bundled, synchronous) with a single
 writer connection behind a mutex and WAL mode for a Dioxus desktop app.
 *(Crate choice not yet confirmed.)*
 
-## 10. Open questions
+## 11. Open questions
 
 1. **Canvas vs Studio:** creation canvas as the main workspace, or
    side-by-side with Studio for sequencing? *(Lean: side-by-side.)*
@@ -484,14 +518,64 @@ writer connection behind a mutex and WAL mode for a Dioxus desktop app.
 7. **SQLite crate** (`rusqlite` vs `sqlx`) and TOML coexistence during
    migration.
 
-## 11. Suggested implementation order
+## 12. Suggested implementation order
 
-1. SQLite schema + storage layer; keep a one-time TOML import path.
-2. Typed operation set in Rust (`src/operations/` or similar).
-3. Artifact registry models (unify storyboard frames into artifact space).
-4. Creation canvas shell: artboard viewport + artifact cards.
-5. Prompt bar: slash parsing, autocomplete, `c:` chips.
-6. Wire operations to generation/segmentation; add `mask_path` to the
-   generation contract.
-7. LoRA registry UI + auto-injection into generations.
-8. Studio integration: scenes group the timeline; re-sync flows per mode.
+Phased; each phase is usable on its own:
+
+1. **Foundation:** SQLite schema + storage layer; one-time TOML import.
+2. **The API:** typed operation set + pipeline builder; `mask_path` in the
+   generation contract; slice-1 op compilers (create, variant, regenerate,
+   compose, draft, plus the mask-edit path).
+3. **The CLI (`svs`):** ops, `stack run`/`propose`, `--out` golden runs —
+   drives and validates the API without the UI.
+4. **The canvas:** artboard viewport, artifact cards, prompt bar (slash
+   parsing, autocomplete, `c:` chips).
+5. **Studio integration:** scenes group the timeline; re-sync flows per
+   mode.
+6. **LoRA registry** UI + auto-injection into generations.
+7. **Storyfella DSL (in-repo):** the language crate (lexer/parser/compiler,
+   CLI), the writer with the tokenized editor, asset chips and autocomplete;
+   DSL asset references + validation; round-trip to canvas.
+8. **LSP-style tooling** as the DSL matures (go-to-definition, refactor,
+   diagnostics).
+
+## 13. Implementation handoff
+
+Design status: this document is design notes; nothing in it is implemented.
+The current codebase is the pre-design product (prompt → storyboard beat →
+Krea revision flow). Work follows §12.
+
+### Entry points (existing code)
+
+- `src/models/mod.rs`, `src/models/persistence.rs` — current
+  Project/StoryboardFrame model + TOML store; SQLite replaces this (with a
+  one-time import).
+- `src/state/mod.rs` — AppState invariants (beat ↔ clip, revisions,
+  selection).
+- `src/vision/mod.rs` ↔ `python/models/schemas.py` — Rust/Python HTTP
+  contracts; `mask_path` must be added to `GenerateRequest`.
+- `src/runtime/creative_runtime.rs`, `src/runtime/generation_runtime.rs` —
+  process lifecycle + job orchestration the pipeline builder wraps.
+- `src/llm/` — LM Studio client; the operation registry (this design) is the
+  planner business logic it will serve.
+
+### Open decisions to settle first (with the user)
+
+1. SQLite crate: `rusqlite` (lean) vs `sqlx` (async).
+2. Execution model: user-typed ops instant + undo; LLM proposals gated by
+   approval — proposed, unconfirmed.
+3. Approval granularity: whole stack vs per-step checkpoints (the hair-mask
+   confirm is a checkpoint).
+4. Short-id format for `c:` references.
+5. Native mask support for Krea (open question 6) — decides whether the
+   composite fallback is primary.
+
+### Pitfalls
+
+- Krea 2 is the focus model (native, via stable-diffusion.cpp); do not treat
+  "sd" as the product model.
+- Undo is state restore, never pipeline re-execution.
+- VLLM vocabulary is closed; LLM steps are soft dependencies.
+- The builder is substrate: linear, fail-fast, no branching/DAG in slice 1.
+- Storyfella is built from scratch in this repo; `../storyfella` is reference
+  material only.
