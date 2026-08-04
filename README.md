@@ -61,6 +61,10 @@ config/app.toml  Runtime and path configuration
 
 By default, generated model, cache, and asset data resolve through platform-appropriate application directories using the Rust `directories` crate. Paths can be overridden in `config/app.toml`.
 
+## Documentation
+
+In-depth material lives in [`docs/`](docs/README.md): a system [architecture overview](docs/architecture.md), the [developer guide](docs/development.md), the [vision runtime HTTP contract](docs/http-api.md), the [runtime lifecycle](docs/runtime-lifecycle.md), and the [data model and persistence format](docs/data-model.md). Proof-of-concept notes are indexed in [`docs/poc/`](docs/poc/README.md).
+
 ## Prerequisites
 
 - Rust stable
