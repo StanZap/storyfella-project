@@ -17,6 +17,7 @@ current product code.
 | [`http-api.md`](http-api.md) | The Python vision runtime's HTTP contract: endpoints, schemas, jobs, and error behavior. |
 | [`runtime-lifecycle.md`](runtime-lifecycle.md) | How Rust launches and supervises the Python runtime and the native Krea generation server, plus model provisioning. |
 | [`data-model.md`](data-model.md) | The project/storyboard/timeline domain model, the persistence format, and known gaps. |
+| [`artifact-canvas.md`](artifact-canvas.md) | Forward-looking product design: artifact registry, creation canvas, typed operations, and SQLite persistence. |
 
 ## Reading order
 
