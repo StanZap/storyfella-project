@@ -82,6 +82,7 @@ class LoraSelection(BaseModel):
 
 class GenerateRequest(BaseModel):
     prompt: str
+    reference_image_path: str | None = None
     width: int = Field(default=1024, ge=256, le=2048)
     height: int = Field(default=1024, ge=256, le=2048)
     steps: int = Field(default=8, ge=1, le=50)
@@ -118,6 +119,12 @@ class GenerationJobResponse(BaseModel):
     image_path: str | None = None
     model: str
     priority: Literal["interactive", "background"] = "interactive"
+    error: str | None = None
+
+
+class GenerationCapabilitiesResponse(BaseModel):
+    status: Literal["ready", "unavailable"]
+    model: str | None = None
     error: str | None = None
 
 

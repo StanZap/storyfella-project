@@ -9,6 +9,7 @@ from runtime.device import capabilities, select_device
 from runtime.image_generator import GenerationOptions, GenerationResult
 from runtime.grounder import GroundingResult
 from runtime.service import VisionService
+from runtime.sd_cpp import StableDiffusionCppError
 from runtime.segmenter import (
     BoxPrompt,
     MaskResult,
@@ -59,6 +60,16 @@ class FakeGrounder:
         )
 
 
+class FakeNativeClient:
+    def capabilities(self) -> dict[str, object]:
+        return {"model": {"name": "krea2_turbo-q2_k.gguf"}}
+
+
+class UnavailableNativeClient:
+    def capabilities(self) -> dict[str, object]:
+        raise StableDiffusionCppError("not running")
+
+
 class GenerateContractTests(unittest.TestCase):
     def test_generation_defaults_are_poc_defaults(self) -> None:
         request = GenerateRequest(prompt="a storyboard frame")
@@ -72,6 +83,23 @@ class GenerateContractTests(unittest.TestCase):
     def test_dimensions_must_be_multiples_of_32(self) -> None:
         with self.assertRaises(ValidationError):
             GenerateRequest(prompt="invalid", width=1000)
+
+    def test_reference_image_is_optional_and_explicit(self) -> None:
+        request = GenerateRequest(
+            prompt="make the light warmer", reference_image_path="frame.png"
+        )
+
+        self.assertEqual(request.reference_image_path, "frame.png")
+
+    def test_native_generation_readiness_is_explicit(self) -> None:
+        ready = VisionService(native_client=FakeNativeClient()).generation_capabilities()
+        unavailable = VisionService(
+            native_client=UnavailableNativeClient()
+        ).generation_capabilities()
+
+        self.assertEqual(ready.status, "ready")
+        self.assertEqual(ready.model, "krea2_turbo-q2_k.gguf")
+        self.assertEqual(unavailable.status, "unavailable")
 
     def test_auto_device_matches_capabilities(self) -> None:
         detected = capabilities()

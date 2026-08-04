@@ -13,8 +13,8 @@ profile = "krea-2-turbo-q2"
 
 [paths]
 python_runtime = "python"
-# model_dir, cache_dir, and asset_dir default to platform-appropriate application directories.
-# Uncomment to override them with project-local paths:
-# model_dir = "models"
-# cache_dir = "cache"
-# asset_dir = "assets"
+# Development uses the model artifacts already provisioned in this checkout.
+# Packaged builds may omit these overrides to use platform application directories.
+model_dir = "models"
+cache_dir = "cache"
+asset_dir = "assets"

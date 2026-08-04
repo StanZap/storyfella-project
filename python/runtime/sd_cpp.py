@@ -64,6 +64,7 @@ class StableDiffusionCppClient:
         steps: int,
         seed: int,
         loras: tuple[LoraSelection, ...] = (),
+        reference_images: tuple[Path, ...] = (),
     ) -> NativeJob:
         body: dict[str, Any] = {
             "prompt": prompt,
@@ -82,6 +83,16 @@ class StableDiffusionCppClient:
             body["lora"] = [
                 {"path": item.path, "multiplier": item.multiplier} for item in loras
             ]
+        if reference_images:
+            encoded_references: list[str] = []
+            for path in reference_images:
+                try:
+                    encoded_references.append(base64.b64encode(path.read_bytes()).decode())
+                except OSError as cause:
+                    raise StableDiffusionCppError(
+                        f"could not read reference image {path}: {cause}"
+                    ) from cause
+            body["ref_images"] = encoded_references
         result = self._request("POST", "/sdcpp/v1/img_gen", body)
         return NativeJob(id=str(result["id"]), status=str(result["status"]))
 

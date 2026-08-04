@@ -1,6 +1,6 @@
 # Smart Visual Sequencer
 
-Smart Visual Sequencer is a cross-platform Dioxus desktop application for planning, generating, and arranging visual stories. The first product shell now includes project creation, a prompt-first editor, storyboard and timeline views, a properties surface, and sectioned runtime settings. The process boundary, configuration, HTTP contracts, and isolated Visual LLM, image-generation, and segmentation proofs of concept are also present. Product orchestration is not connected to the interface yet.
+Smart Visual Sequencer is a cross-platform Dioxus desktop application for planning, generating, and arranging visual stories. The first product workflow includes project creation, a prompt-first editor, resident local Krea generation, reference-image follow-ups with revision history, storyboard and timeline views, a properties surface, and sectioned runtime settings. The Visual LLM planner and presentation/export orchestration are not connected yet.
 
 The supported targets are macOS on Apple Silicon (MPS) and Linux with NVIDIA CUDA. LM Studio is an external prerequisite and is never installed or bundled by this project.
 
@@ -16,12 +16,24 @@ This is intentionally a desktop-only application. Web, mobile, and WASM targets 
 ## Product surface
 
 - **Projects** creates a fresh story and reopens the current in-memory project.
-- **Canvas** is the quiet prompt-first workspace. Submitting a prompt creates a storyboard beat and a matching five-second timeline clip; it does not invoke AI yet.
-- **Storyboard** presents the visual beats and reserves generation actions for the orchestration slice.
+- **Canvas** is the quiet prompt-first workspace. Submitting a scene creates a storyboard beat and matching five-second timeline clip. Selecting that beat exposes image generation and contextual follow-up actions.
+- **Image generation** starts the configured native Krea Q2/Q4 runtime and lightweight Python adapter on demand, waits for both to become ready, and leaves the model resident for subsequent requests.
+- **Follow-ups** pass the current frame back to Krea as a reference image, import each result into application assets, and preserve prior revisions in the project model.
+- **Storyboard** presents the visual beats and opens a selected beat back in Canvas.
 - **Timeline** shows the temporal arrangement derived from those beats.
 - **Settings** separates general behavior, LM Studio/VLM configuration, Krea generation, and storage. It reflects resolved configuration without claiming that idle services are connected.
 
 The shell deliberately uses a small reusable component vocabulary, low-contrast boundaries, and progressive disclosure instead of a dense card dashboard. Styling is primarily Tailwind CSS 4 utility classes in RSX, with a small shared CSS layer for global browser behavior and form controls.
+
+### Current creative workflow
+
+1. Use the Canvas prompt to add a story beat.
+2. With that beat selected, choose **Generate image**. On a cold start the app loads Krea and starts the Python adapter; later requests reuse both resident processes.
+3. Describe a change beneath the generated frame and choose **Apply change**. The current image is sent as a Krea reference image.
+4. Use **Revision history** in Properties to restore any completed result.
+5. Select another beat from the bottom strip, or use **New beat** to continue the sequence.
+
+The interactive draft profile currently requests a 768×448 image at four steps to favor iteration speed. Final-quality rendering, planner-assisted prompt rewriting, and presentation export remain roadmap work.
 
 ## Project layout
 

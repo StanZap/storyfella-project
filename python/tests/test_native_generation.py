@@ -71,6 +71,30 @@ class NativeGenerationTests(unittest.TestCase):
             self.assertEqual(first.image_path, second.image_path)
             self.assertEqual(first.image_path.read_bytes(), b"png")
 
+    @patch("urllib.request.urlopen")
+    def test_submit_encodes_reference_images(self, urlopen: object) -> None:
+        urlopen.return_value = JsonResponse({"id": "job_edit", "status": "queued"})
+        with TemporaryDirectory() as directory:
+            reference = Path(directory) / "reference.png"
+            reference.write_bytes(b"reference-image")
+            client = StableDiffusionCppClient()
+
+            client.submit(
+                prompt="make the light warmer",
+                width=512,
+                height=512,
+                steps=4,
+                seed=9,
+                reference_images=(reference,),
+            )
+
+        request = urlopen.call_args.args[0]
+        body = json.loads(request.data)
+        self.assertEqual(
+            body["ref_images"],
+            [base64.b64encode(b"reference-image").decode()],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

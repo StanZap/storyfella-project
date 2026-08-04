@@ -82,6 +82,8 @@ impl SegmentRequest {
 pub struct GenerateRequest {
     pub prompt: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference_image_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<u32>,
@@ -116,6 +118,7 @@ impl GenerateRequest {
     pub fn new(prompt: impl Into<String>) -> Self {
         Self {
             prompt: prompt.into(),
+            reference_image_path: None,
             width: None,
             height: None,
             steps: None,
@@ -149,6 +152,13 @@ pub struct GenerationJobResponse {
     pub image_path: Option<String>,
     pub model: String,
     pub priority: String,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct GenerationCapabilitiesResponse {
+    pub status: String,
+    pub model: Option<String>,
     pub error: Option<String>,
 }
 
@@ -237,6 +247,12 @@ impl VisionClient {
         self.get(&format!("generation/jobs/{job_id}")).await
     }
 
+    pub async fn generation_capabilities(
+        &self,
+    ) -> Result<GenerationCapabilitiesResponse, VisionClientError> {
+        self.get("generation/capabilities").await
+    }
+
     pub async fn cancel_generation(
         &self,
         job_id: &str,
@@ -312,6 +328,15 @@ mod tests {
         let value = serde_json::to_value(request).expect("request should serialize");
 
         assert_eq!(value, serde_json::json!({"prompt": "a storyboard frame"}));
+    }
+
+    #[test]
+    fn generation_request_includes_an_explicit_reference_image() {
+        let mut request = GenerateRequest::new("make the light warmer");
+        request.reference_image_path = Some("assets/generated/frame.png".to_owned());
+        let value = serde_json::to_value(request).expect("request should serialize");
+
+        assert_eq!(value["reference_image_path"], "assets/generated/frame.png");
     }
 
     #[test]

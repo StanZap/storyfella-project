@@ -23,6 +23,9 @@ The Python runtime is an HTTP adapter and result store. It exposes:
 - `POST /generation/jobs?priority=interactive|background` for non-blocking work;
 - `GET /generation/jobs/{id}` for polling;
 - `POST /generation/jobs/{id}/cancel` for cancellation while queued.
+- `GET /generation/capabilities` for model-readiness checks during cold startup.
+
+Generation requests may include `reference_image_path`. The adapter reads that app-owned image, encodes it for sd.cpp's `ref_images` request field, and invokes Krea's edit mode. The desktop app uses this path for contextual follow-ups and stores every completed result as a selectable revision.
 
 `stable-diffusion.cpp` serializes inference on its resident context. Queued work can be cancelled; an already-generating diffusion graph cannot currently be preempted safely. The `priority` field is retained for the application scheduler, which should hold speculative background work until no interactive request is waiting.
 

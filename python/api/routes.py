@@ -7,6 +7,7 @@ from models.schemas import (
     GenerateRequest,
     GenerateResponse,
     GenerationJobResponse,
+    GenerationCapabilitiesResponse,
     HealthResponse,
     SegmentRequest,
     SegmentResponse,
@@ -43,6 +44,13 @@ def submit_generation_job(
 ) -> GenerationJobResponse:
     normalized_priority = priority if priority in {"interactive", "background"} else "interactive"
     return service.submit_generation(request, normalized_priority)
+
+
+@router.get(
+    "/generation/capabilities", response_model=GenerationCapabilitiesResponse
+)
+def generation_capabilities() -> GenerationCapabilitiesResponse:
+    return service.generation_capabilities()
 
 
 @router.get("/generation/jobs/{job_id}", response_model=GenerationJobResponse)

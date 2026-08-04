@@ -9,6 +9,7 @@ from models.schemas import (
     GenerateRequest,
     GenerateResponse,
     GenerationJobResponse,
+    GenerationCapabilitiesResponse,
     SegmentRequest,
     SegmentBox,
     SegmentDetection,
@@ -149,6 +150,11 @@ class VisionService:
                         LoraSelection(path=item.path, multiplier=item.multiplier)
                         for item in request.loras
                     ),
+                    reference_image_path=(
+                        Path(request.reference_image_path)
+                        if request.reference_image_path
+                        else None
+                    ),
                 )
             )
         except (ImageGenerationError, RuntimeError, ValueError) as error:
@@ -190,6 +196,9 @@ class VisionService:
                     LoraSelection(path=item.path, multiplier=item.multiplier)
                     for item in request.loras
                 ),
+                reference_images=(Path(request.reference_image_path),)
+                if request.reference_image_path
+                else (),
             )
         except StableDiffusionCppError as error:
             return GenerationJobResponse(
@@ -207,6 +216,16 @@ class VisionService:
             model=model,
             priority=priority,
         )
+
+    def generation_capabilities(self) -> GenerationCapabilitiesResponse:
+        try:
+            capabilities = self._native_client.capabilities()
+        except StableDiffusionCppError as error:
+            return GenerationCapabilitiesResponse(
+                status="unavailable", error=str(error)
+            )
+        model = str(capabilities.get("model", {}).get("name", "")) or None
+        return GenerationCapabilitiesResponse(status="ready", model=model)
 
     def generation_job(self, job_id: str) -> GenerationJobResponse:
         model, priority = self._job_metadata(job_id)

@@ -31,6 +31,30 @@ pub struct StoryboardFrame {
     pub id: Uuid,
     pub prompt: String,
     pub asset_path: Option<String>,
+    #[serde(default)]
+    pub revisions: Vec<ImageRevision>,
+    #[serde(default)]
+    pub active_revision_id: Option<Uuid>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImageRevision {
+    pub id: Uuid,
+    pub prompt: String,
+    pub asset_path: Option<String>,
+    pub status: RevisionStatus,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevisionStatus {
+    #[default]
+    Queued,
+    Generating,
+    Completed,
+    Failed,
+    Cancelled,
 }
 
 // TODO: Add explicit schema versions and migration support before the first public release.

@@ -1,6 +1,8 @@
+mod creative_runtime;
 mod generation_runtime;
 mod model_store;
 
+pub use creative_runtime::{CreativeRuntime, CreativeRuntimeError};
 pub use generation_runtime::{
     krea_profile, GenerationRuntime, GenerationRuntimeError, KreaProfile, KreaQuantization,
     ModelArtifact,
@@ -92,7 +94,22 @@ impl PythonRuntime {
     }
 
     pub fn is_running(&self) -> bool {
-        self.child.lock().is_some()
+        let mut slot = self.child.lock();
+        let Some(child) = slot.as_mut() else {
+            return false;
+        };
+        match child.try_wait() {
+            Ok(None) => true,
+            Ok(Some(status)) => {
+                tracing::warn!(?status, "Python vision runtime exited");
+                slot.take();
+                false
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not inspect Python vision runtime");
+                false
+            }
+        }
     }
 }
 
