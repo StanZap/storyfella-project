@@ -36,6 +36,11 @@ a tool complains about a path separator, that is the cause.
 # Rust UI toolchain
 npm install
 
+# Compiled stylesheet: `assets/tailwind.css` is git-ignored generated output.
+# `dx serve` compiles it automatically; for `cargo check`/`cargo test` on a
+# fresh clone, generate it once (the asset macro embeds the file at compile time):
+npm run css:build
+
 # Python runtime base environment (FastAPI, uvicorn, pydantic, pillow, numpy)
 uv sync --project python
 
@@ -155,6 +160,8 @@ shows the error screen on launch.
 
 - **`cargo`/`dx` fail with path errors** — the `:` in the parent directory; the
   `.cargo/config.toml` target-dir redirect is the fix, do not remove it.
+- **Starting a service from Settings fails with `failed to start Python runtime: No such file or directory`** — this was a resolved bug where a relative `paths.python_runtime` combined with a relative working directory made the child resolve `python/.venv/bin/python` against the wrong directory. Spawn paths are now absolutized; if you still see this, the venv itself is missing or broken — recreate it with `uv sync --project python`.
+- **`Python virtual environment executable not found`** — the venv is not provisioned; run `uv sync --project python` from the repository root.
 - **Generation says the runtime is not ready / job fails** — the sd-server
   binary or model artifacts are missing. Run `cargo run --bin model_setup`
   after reviewing the license, and confirm `generation.executable` in

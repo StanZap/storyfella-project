@@ -99,8 +99,9 @@ speed (`src/ui/editor.rs`, `generate_image`).
 | LM Studio | User (external) | External | LLM planning/VLM (future) |
 
 Rust does not start the Python runtime at app launch; the shell reports the
-runtime as idle until a generation request triggers `ensure_ready`
-(see [`runtime-lifecycle.md`](runtime-lifecycle.md#readiness)).
+runtime as idle until a generation request triggers `ensure_ready` — or until
+it is started manually from the Settings Status section
+(see [`runtime-lifecycle.md`](runtime-lifecycle.md#on-demand-start-and-stop)).
 
 ## Directory resolution
 

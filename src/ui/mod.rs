@@ -8,7 +8,11 @@ use std::path::{Path, PathBuf};
 
 use dioxus::prelude::*;
 
-use crate::{app::AppConfig, runtime::CreativeRuntime, state::AppState};
+use crate::{
+    app::AppConfig,
+    runtime::{CreativeRuntime, HealthStatus},
+    state::AppState,
+};
 
 use components::{RailButton, StatusDot};
 use editor::Studio;
@@ -58,7 +62,7 @@ pub fn Workspace(config: AppConfig, app_state: Signal<AppState>) -> Element {
                     }
                 }
                 div { class: "flex items-center gap-4",
-                    div { class: "flex items-center gap-2 text-[10px] text-zinc-600", StatusDot { online: false } span { "Local · starts on demand" } }
+                    div { class: "flex items-center gap-2 text-[10px] text-zinc-600", StatusDot { status: HealthStatus::Idle } span { "Local · starts on demand" } }
                     if screen() == AppScreen::Studio {
                         button { class: "flex h-8 items-center gap-2 rounded-lg bg-white/[0.055] px-3 text-[10px] font-medium text-zinc-400 transition hover:bg-white/[0.08] hover:text-white",
                             Icon { name: IconName::Play, class: "size-3" }
@@ -73,7 +77,7 @@ pub fn Workspace(config: AppConfig, app_state: Signal<AppState>) -> Element {
                 match screen() {
                     AppScreen::Projects => rsx! { Projects { app_state, on_open: move |_| screen.set(AppScreen::Studio) } },
                     AppScreen::Studio => rsx! { Studio { app_state, runtime: runtime.clone() } },
-                    AppScreen::Settings => rsx! { Settings { config: config.clone() } },
+                    AppScreen::Settings => rsx! { Settings { config: config.clone(), runtime: runtime.clone() } },
                 }
             }
         }

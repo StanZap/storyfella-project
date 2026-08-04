@@ -81,6 +81,14 @@ impl CreativeRuntime {
         self.profile
     }
 
+    pub(crate) fn python_runtime(&self) -> &PythonRuntime {
+        &self.python
+    }
+
+    pub(crate) fn generation_runtime(&self) -> &GenerationRuntime {
+        &self.generation
+    }
+
     pub async fn ensure_ready(&self) -> Result<(), CreativeRuntimeError> {
         if self.vision.health().await.is_ok() {
             if let Ok(capabilities) = self.vision.generation_capabilities().await {
@@ -154,6 +162,50 @@ impl CreativeRuntime {
         Err(CreativeRuntimeError::Job(
             "generation exceeded three minutes".to_owned(),
         ))
+    }
+
+    /// Starts only the Python vision runtime (segmentation, adapter) and waits
+    /// for its health endpoint.
+    pub async fn start_vision_runtime(&self) -> Result<(), CreativeRuntimeError> {
+        if self.vision.health().await.is_ok() {
+            return Ok(());
+        }
+        if !self.python.is_running() {
+            self.python.start("127.0.0.1", 8765)?;
+        }
+        self.wait_for_vision_health(Duration::from_secs(30)).await
+    }
+
+    pub async fn stop_vision_runtime(&self) -> Result<(), CreativeRuntimeError> {
+        self.python.stop().await?;
+        Ok(())
+    }
+
+    pub async fn restart_vision_runtime(&self) -> Result<(), CreativeRuntimeError> {
+        let _ = self.python.stop().await;
+        self.start_vision_runtime().await
+    }
+
+    /// Starts the resident native Krea server (and the vision runtime when it
+    /// is needed as the adapter) and waits until both are ready.
+    pub async fn start_generation_runtime(&self) -> Result<(), CreativeRuntimeError> {
+        self.ensure_ready().await
+    }
+
+    pub async fn stop_generation_runtime(&self) -> Result<(), CreativeRuntimeError> {
+        self.generation.stop().await?;
+        Ok(())
+    }
+
+    async fn wait_for_vision_health(&self, timeout: Duration) -> Result<(), CreativeRuntimeError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while tokio::time::Instant::now() < deadline {
+            if self.vision.health().await.is_ok() {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        Err(CreativeRuntimeError::ReadinessTimeout(timeout))
     }
 
     pub async fn import_asset(&self, source: PathBuf) -> Result<String, CreativeRuntimeError> {

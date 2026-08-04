@@ -214,3 +214,77 @@ match dog() {
 ```
 
 For fire-and-forget work (such as starting a generation and updating app state from a spawned task), use `spawn(async move { ... })` as in `src/ui/editor.rs`.
+
+## Dioxus 0.7 usage notes (learned while building this app)
+
+- `use_effect(move || { ... })` runs after the first render and re-runs whenever a signal it reads changes. The closure is `FnMut`, so it cannot move captured non-`Copy` values out — clone them inside (`runtime.clone()`) or move the originals in once and never use them again.
+- `Signal::set(value)` consumes a copy of the signal, so the binding must be declared `mut` at the call site (`let mut prompt = use_signal(...); prompt.set(...)`). Prefer `*prompt.write() = value` when the binding is not `mut`.
+- Signals are `Copy`. Pass them to child components as props (`Signal<T>`) and to plain helper functions that mutate them — the helper declares `mut signal: Signal<T>` parameters.
+- `EventHandler<T>` props receive closures at the call site (`onclick: move |event| ...`). Handlers are `Clone`, so one handler can be shared between several components by binding it once.
+- `use_hook` constructs one-time, non-reactive values (for example `CreativeRuntime::new(&config)` in `src/ui/mod.rs`).
+- In `spawn`ed tasks, never hold a signal `.read()`/`.write()` guard across an `await`; read or clone first, await, then write (see `start_generation` in `src/ui/editor.rs`).
+
+## Routing (reference only — this desktop-only app does not use Dioxus routing)
+
+All possible routes are defined in a single Rust `enum` that derives `Routable`. Each variant represents a route and is annotated with `#[route("/path")]`. Dynamic Segments can capture parts of the URL path as parameters by using `:name` in the route string. These become fields in the enum variant.
+
+The `Router<Route> {}` component is the entry point that manages rendering the correct component for the current URL.
+
+You can use the `#[layout(NavBar)]` to create a layout shared between pages and place an `Outlet<Route> {}` inside your layout component. The child routes will be rendered in the outlet.
+
+```rust
+#[derive(Routable, Clone, PartialEq)]
+enum Route {
+	#[layout(NavBar)] // This will use NavBar as the layout for all routes
+		#[route("/")]
+		Home {},
+		#[route("/blog/:id")] // Dynamic segment
+		BlogPost { id: i32 },
+}
+
+#[component]
+fn NavBar() -> Element {
+	rsx! {
+		a { href: "/", "Home" }
+		Outlet<Route> {} // Renders Home or BlogPost
+	}
+}
+
+#[component]
+fn App() -> Element {
+	rsx! { Router::<Route> {} }
+}
+```
+
+```toml
+dioxus = { version = "0.7.1", features = ["router"] }
+```
+
+## Fullstack (reference only — web/server targets are not used in this project)
+
+Fullstack enables server rendering and ipc calls. It uses Cargo features (`server` and a client feature like `web`) to split the code into a server and client binaries.
+
+```toml
+dioxus = { version = "0.7.1", features = ["fullstack"] }
+```
+
+### Server Functions
+
+Use the `#[post]` / `#[get]` macros to define an `async` function that will only run on the server. On the server, this macro generates an API endpoint. On the client, it generates a function that makes an HTTP request to that endpoint.
+
+```rust
+#[post("/api/double/:path/&query")]
+async fn double_server(number: i32, path: String, query: i32) -> Result<i32, ServerFnError> {
+	tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+	Ok(number * 2)
+}
+```
+
+### Hydration
+
+Hydration is the process of making a server-rendered HTML page interactive on the client. The server sends the initial HTML, and then the client-side runs, attaches event listeners, and takes control of future rendering.
+
+Errors: the initial UI rendered by the component on the client must be identical to the UI rendered on the server.
+
+- Use the `use_server_future` hook instead of `use_resource`. It runs the future on the server, serializes the result, and sends it to the client, ensuring the client has the data immediately for its first render.
+- Any code that relies on browser-specific APIs (like accessing `localStorage`) must be run *after* hydration. Place this code inside a `use_effect` hook.

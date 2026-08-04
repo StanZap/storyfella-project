@@ -1,5 +1,7 @@
 use dioxus::prelude::*;
 
+use crate::runtime::HealthStatus;
+
 use super::icons::{Icon, IconName};
 
 #[component]
@@ -26,11 +28,16 @@ pub fn RailButton(
 }
 
 #[component]
-pub fn StatusDot(online: bool) -> Element {
-    let class = if online {
-        "size-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,.55)]"
-    } else {
-        "size-1.5 rounded-full bg-zinc-600"
+pub fn StatusDot(status: HealthStatus) -> Element {
+    let class = match status {
+        HealthStatus::Online => {
+            "size-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,.55)]"
+        }
+        HealthStatus::Degraded => {
+            "size-1.5 rounded-full bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,.45)]"
+        }
+        HealthStatus::Idle => "size-1.5 rounded-full bg-zinc-600",
+        HealthStatus::Offline => "size-1.5 rounded-full bg-rose-400",
     };
     rsx! { span { class } }
 }

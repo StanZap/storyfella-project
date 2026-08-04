@@ -226,6 +226,19 @@ impl GenerationRuntime {
         *self.active_profile.lock()
     }
 
+    pub fn executable(&self) -> &Path {
+        &self.executable
+    }
+
+    /// Whether every artifact the profile needs exists under the model directory.
+    pub fn has_profile_artifacts(&self, quantization: KreaQuantization) -> bool {
+        let profile = krea_profile(quantization);
+        let model_root = self.model_directory.join("krea-2");
+        [profile.diffusion, profile.text_encoder, profile.vae]
+            .iter()
+            .all(|artifact| model_root.join(artifact.filename).is_file())
+    }
+
     fn command(&self, profile: KreaProfile, model_root: &Path, host: &str, port: u16) -> Command {
         let mut command = Command::new(&self.executable);
         command
@@ -254,7 +267,9 @@ impl GenerationRuntime {
 
 #[cfg(test)]
 mod tests {
-    use super::{krea_profile, KreaQuantization};
+    use std::fs;
+
+    use super::{krea_profile, GenerationRuntime, KreaQuantization};
 
     #[test]
     fn profiles_share_the_quantized_text_encoder_and_vae() {
@@ -264,5 +279,26 @@ mod tests {
         assert_eq!(q2.text_encoder, q4.text_encoder);
         assert_eq!(q2.vae, q4.vae);
         assert!(q2.diffusion.size_bytes < q4.diffusion.size_bytes);
+    }
+
+    #[test]
+    fn profile_artifacts_are_detected_on_disk() {
+        let directory =
+            std::env::temp_dir().join(format!("svs-artifacts-test-{}", uuid::Uuid::new_v4()));
+        let model_root = directory.join("krea-2");
+        let runtime = GenerationRuntime::new("/dev/null/sd-server", &directory, &directory);
+
+        assert!(!runtime.has_profile_artifacts(KreaQuantization::Q2));
+
+        let profile = krea_profile(KreaQuantization::Q2);
+        fs::create_dir_all(&model_root).expect("model root should be created");
+        for artifact in [profile.diffusion, profile.text_encoder, profile.vae] {
+            fs::write(model_root.join(artifact.filename), b"x")
+                .expect("artifact should be written");
+        }
+
+        assert!(runtime.has_profile_artifacts(KreaQuantization::Q2));
+        assert!(!runtime.has_profile_artifacts(KreaQuantization::Q4));
+        let _ = fs::remove_dir_all(&directory);
     }
 }

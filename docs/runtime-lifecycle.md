@@ -4,8 +4,8 @@ Rust supervises two child processes and one external service:
 
 | Process | Rust owner | Port | Started when |
 | --- | --- | --- | --- |
-| `python/main.py` (uvicorn) | `PythonRuntime` (`src/runtime/mod.rs`) | `127.0.0.1:8765` | First generation request |
-| `sd-server` (stable-diffusion.cpp) | `GenerationRuntime` (`src/runtime/generation_runtime.rs`) | `127.0.0.1:7861` | First generation request |
+| `python/main.py` (uvicorn) | `PythonRuntime` (`src/runtime/mod.rs`) | `127.0.0.1:8765` | First generation request, or manually from Settings |
+| `sd-server` (stable-diffusion.cpp) | `GenerationRuntime` (`src/runtime/generation_runtime.rs`) | `127.0.0.1:7861` | First generation request, or manually from Settings |
 | LM Studio | external, user-run | user-configured (`config/app.toml`) | external |
 
 The desktop app does **not** start either child at launch. The shell reports
@@ -67,6 +67,12 @@ which the UI stores on the frame/revision and serves back through the
 ```text
 python main.py --host 127.0.0.1 --port 8765
 ```
+
+The runtime directory is absolutized at spawn time, so relative config paths
+(like `paths.python_runtime = "python"`) work regardless of the process working
+directory. Without this, a relative executable path would be resolved against
+the child's *changed* working directory and fail with `ENOENT` even though the
+venv exists.
 
 Details:
 
@@ -160,6 +166,58 @@ models/
 LoRA paths in generation requests are relative to the LoRA directory; absolute
 paths and parent traversal are rejected (see [`http-api.md`](http-api.md)).
 
+## Health status checks
+
+The Settings **Status** section probes every service the application depends on
+(`src/runtime/health.rs`, triggered by `Settings` in `src/ui/settings.rs`). The
+checks are read-only: they never start or stop a process and never download
+anything. Each probe runs with a short timeout and reports one of four states:
+
+| State | Meaning | Dot |
+| --- | --- | --- |
+| `Online` | Ready and serving (or ready to serve when needed) | emerald |
+| `Degraded` | Reachable, but with a gap that prevents full function | amber |
+| `Idle` | Deliberately not running; the app starts it on demand | zinc |
+| `Offline` | Unreachable or unhealthy when it should be serving | rose |
+
+| Service | Probe | Reported as |
+| --- | --- | --- |
+| LM Studio | `GET /v1/models` | `Online` when reachable **and** the configured model is loaded; `Degraded` when reachable but the model is not; `Offline` when unreachable |
+| Vision runtime | process state + `GET /health` | `Online` when the API answers; `Idle` when the process is not running; `Offline` when the process is running but the API is unhealthy |
+| Image generation | `sd-server` binary, profile artifacts on disk, process state, `GET /generation/capabilities` | `Online` when the resident backend reports `ready`; `Degraded` when artifacts are missing, the backend is loading, or the native server is resident without the vision runtime; `Idle` when both it and the vision runtime are on-demand ("follows the vision runtime"); `Offline` when the binary is missing or the vision runtime is unavailable |
+| Segmentation (SAM 2 + DINO) | `GET /capabilities` via the vision runtime | `Online` when torch is available (reports the recommended device); `Degraded` when the torch extras are not installed; otherwise follows the vision runtime state |
+
+All four checks run in parallel (`tokio::join!`); the Status section shows the
+last-checked time and can be re-run with **Check now** or the **Test
+connection** button in Intelligence. The header status dot in the shell stays
+`Idle` because the vision runtime is intentionally on-demand.
+
+The generation and segmentation probes reach their backends *through* the
+vision runtime, so a down vision runtime is never misreported as a broken
+backend: those rows gate on the vision runtime's state first and only probe
+when it is reachable.
+
+### On-demand start and stop
+
+The Status section also controls the two local runtimes (`src/ui/settings.rs`,
+`operate_service`):
+
+- **Vision runtime** — `Start` launches the Python service and waits up to 30 s
+  for `/health`; `Stop` kills it; `Restart` does both. Segmentation and the
+  generation adapter come back with it.
+- **Image generation** — `Start` runs `ensure_ready` (starts sd-server and, if
+  needed, the vision runtime; waits up to 90 s for the model to be resident);
+  `Stop` kills only the native server. The vision runtime is left running so
+  segmentation keeps working.
+- **LM Studio** and **Segmentation** have no controls: the former is external,
+  the latter lives inside the vision runtime.
+
+While an operation runs, its row shows a spinner and the other buttons are
+disabled. When it finishes — successfully or not — a fresh health check runs
+immediately; failures appear in an error banner above the list. The controls
+use the same `CreativeRuntime` methods as generation, so manual starts and
+automatic starts behave identically.
+
 ## Environment variables
 
 The Python runtime reads these (set by the Rust parent or for manual runs):
@@ -172,8 +230,6 @@ The Python runtime reads these (set by the Rust parent or for manual runs):
 
 ## Known gaps
 
-- The UI reports the runtime as idle until first use; there is no manual
-  start/stop surface in the shell.
 - Application shutdown does not yet gracefully stop children (Rust relies on
   `kill_on_drop`); wiring graceful shutdown is planned with session
   management.

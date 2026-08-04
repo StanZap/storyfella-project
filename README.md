@@ -21,7 +21,7 @@ This is intentionally a desktop-only application. Web, mobile, and WASM targets 
 - **Follow-ups** pass the current frame back to Krea as a reference image, import each result into application assets, and preserve prior revisions in the project model.
 - **Storyboard** presents the visual beats and opens a selected beat back in Canvas.
 - **Timeline** shows the temporal arrangement derived from those beats.
-- **Settings** separates general behavior, LM Studio/VLM configuration, Krea generation, and storage. It reflects resolved configuration without claiming that idle services are connected.
+- **Settings** separates service status, general behavior, LM Studio/VLM configuration, Krea generation, and storage. A Status section probes LM Studio, the vision runtime, and the native generation backend on demand, reports readiness, model residency, and provisioning gaps, and can start, stop, or restart the two local runtimes. The Intelligence section discovers LM Studio's model list into a planner dropdown (selection applies for the session; `config/app.toml` holds the default).
 
 The shell deliberately uses a small reusable component vocabulary, low-contrast boundaries, and progressive disclosure instead of a dense card dashboard. Styling is primarily Tailwind CSS 4 utility classes in RSX, with a small shared CSS layer for global browser behavior and form controls.
 
