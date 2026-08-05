@@ -7,8 +7,9 @@
 //! (image, mask, composite) into a folder for the manual golden-run tier
 //! (`docs/ROADMAP.md` §7).
 //!
-//! The project is a stopgap JSON file (`.svs-project.json` by default)
-//! holding the artifact registry; SQLite persistence is deferred (§10).
+//! The project is a SQLite database (`.svs-project.db` by default, see
+//! `src/persistence/` and `docs/ROADMAP.md` §10); `svs import` migrates a
+//! legacy JSON project file in one step.
 
 use std::{
     io::{self, BufRead, Write},
@@ -21,6 +22,7 @@ use uuid::Uuid;
 
 use smart_visual_sequencer::app::AppConfig;
 use smart_visual_sequencer::llm::{ChatMessage, ChatOptions, LmStudioClient};
+use smart_visual_sequencer::persistence::ProjectDb;
 use smart_visual_sequencer::registry::backend::CreativeBackend;
 use smart_visual_sequencer::registry::ops::{
     self, ComposeLayer, ExecuteOptions, OpOrigin, OpStatus, Operation, OperationStack,
@@ -41,8 +43,9 @@ use smart_visual_sequencer::runtime::KreaQuantization;
     about = "Drive Smart Visual Sequencer operations from the command line"
 )]
 struct Cli {
-    /// Stopgap registry project file (SQLite is deferred).
-    #[arg(long, global = true, default_value = ".svs-project.json")]
+    /// SQLite project database (created on first use; `svs import` migrates
+    /// a legacy JSON project in one step).
+    #[arg(long, global = true, default_value = ".svs-project.db")]
     project: PathBuf,
     #[command(subcommand)]
     command: Command,
@@ -50,8 +53,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Open (load or create) the project file.
+    /// Open (load or create) the project database.
     Project { path: PathBuf },
+    /// One-time migration: import a legacy JSON project file into the
+    /// SQLite database given by `--project`.
+    Import { path: PathBuf },
     /// Apply a typed operation.
     Op {
         #[command(subcommand)]
@@ -291,6 +297,7 @@ async fn run(cli: Cli) -> Result<()> {
             );
             Ok(())
         }
+        Command::Import { path } => import_project(&cli.project, &path),
         Command::Op { op } => {
             let mut file = load_project(&cli.project)?;
             let (operation, cli_options) = build_operation(op)?;
@@ -377,25 +384,44 @@ fn kill_resident_generation_servers() -> Result<()> {
     Ok(())
 }
 
-// ------------------------------------------------------------------ project file
+// ------------------------------------------------------------------ project store
 
+/// Loads the registry snapshot from the SQLite database, creating the
+/// database (and schema) on first use.
 fn load_project(path: &Path) -> Result<ProjectFile> {
-    if !path.exists() {
-        let file = ProjectFile::default();
-        save_project(path, &file)?;
-        return Ok(file);
-    }
-    let contents = std::fs::read_to_string(path)
-        .with_context(|| format!("could not read project file {}", path.display()))?;
-    let file: ProjectFile = serde_json::from_str(&contents)
-        .with_context(|| format!("could not parse project file {}", path.display()))?;
-    Ok(file)
+    let db = ProjectDb::open(path).context("could not open project database")?;
+    let stored = db
+        .load()
+        .context("could not load registry from project database")?;
+    Ok(ProjectFile {
+        version: 1,
+        registry: stored.registry,
+    })
 }
 
+/// Replaces the stored snapshot with the in-memory registry (same semantics
+/// as the old stopgap JSON write: the database is a snapshot, not an event
+/// log).
 fn save_project(path: &Path, file: &ProjectFile) -> Result<()> {
-    let contents = serde_json::to_string_pretty(file).context("could not serialize project")?;
-    std::fs::write(path, contents)
-        .with_context(|| format!("could not write project file {}", path.display()))
+    let db = ProjectDb::open(path).context("could not open project database")?;
+    db.save_registry(&file.registry)
+        .context("could not save registry to project database")
+}
+
+/// One-time migration from the legacy JSON `ProjectFile` (`.svs-project.json`)
+/// into the SQLite database at `db_path`. Refuses to clobber a database that
+/// already holds artifacts.
+fn import_project(db_path: &Path, legacy_path: &Path) -> Result<()> {
+    let db = ProjectDb::open(db_path).context("could not open project database")?;
+    let (artifacts, log) = db
+        .import_json(legacy_path)
+        .context("could not import legacy project")?;
+    println!(
+        "imported {artifacts} artifacts and {log} log entries from {} into {}",
+        legacy_path.display(),
+        db_path.display()
+    );
+    Ok(())
 }
 
 // ------------------------------------------------------------------ operations
@@ -1041,6 +1067,51 @@ fn origin_str(origin: OpOrigin) -> &'static str {
 mod tests {
     use super::*;
     use smart_visual_sequencer::registry::pipeline::{OutputKind, PipelineRun, StepOutput};
+
+    #[test]
+    fn import_migrates_a_legacy_json_project_and_refuses_to_clobber() {
+        let dir = std::env::temp_dir().join(format!("svs-import-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let legacy = dir.join("legacy.svs-project.json");
+        let db_path = dir.join("project.db");
+
+        let mut file = ProjectFile::default();
+        file.registry
+            .artifacts
+            .push(smart_visual_sequencer::registry::Artifact {
+                id: Uuid::new_v4(),
+                kind: smart_visual_sequencer::registry::ArtifactKind::Story,
+                name: "The Lighthouse".to_owned(),
+                description: "A quiet lighthouse above a silver sea".to_owned(),
+                variant_of: None,
+                variant_axis: None,
+                parent_id: None,
+                composition: None,
+                active_revision_id: None,
+                revisions: Vec::new(),
+                drafts: Vec::new(),
+            });
+        std::fs::write(
+            &legacy,
+            serde_json::to_string_pretty(&file).expect("legacy file should serialize"),
+        )
+        .unwrap();
+
+        import_project(&db_path, &legacy).expect("import should succeed");
+        let db = ProjectDb::open(&db_path).expect("database should open");
+        let stored = db.load().expect("database should load");
+        assert_eq!(stored.registry.artifacts.len(), 1);
+
+        let error = import_project(&db_path, &legacy).expect_err("import must refuse to clobber");
+        assert!(
+            error
+                .chain()
+                .any(|cause| cause.to_string().contains("refusing to import over")),
+            "unexpected error: {error:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn golden_outputs_are_copied_with_step_prefixed_names() {

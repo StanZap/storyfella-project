@@ -2,6 +2,7 @@ pub mod app;
 pub mod assets;
 pub mod llm;
 pub mod models;
+pub mod persistence;
 pub mod registry;
 pub mod runtime;
 pub mod state;

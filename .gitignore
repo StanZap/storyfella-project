@@ -15,6 +15,9 @@ models/*
 # Generated images imported by the app at runtime
 /assets/generated/
 
+# SQLite project databases (replaces the stopgap JSON project file)
+.svs-project.db
+
 # Compiled Tailwind output; regenerate with `npm run css:build` (or `dx`, which
 # compiles it automatically from the root tailwind.css)
 /assets/tailwind.css

@@ -14,6 +14,7 @@ use crate::{
 use super::{
     components::{SectionHeading, SettingRow, StatusDot},
     icons::{Icon, IconName},
+    AutosaveMode,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -384,6 +385,8 @@ fn StatusSettings(
 
 #[component]
 fn GeneralSettings() -> Element {
+    let autosave = use_context::<Signal<AutosaveMode>>();
+    let mut autosave = autosave;
     rsx! {
         SectionHeading {
             eyebrow: "Application",
@@ -401,7 +404,14 @@ fn GeneralSettings() -> Element {
                 Toggle { enabled: true }
             }
             SettingRow { title: "Autosave", description: "Save project changes locally as you work.", last: true,
-                select { class: "setting-control", option { "After every change" } option { "Every minute" } }
+                select {
+                    class: "setting-control",
+                    value: autosave().as_str(),
+                    onchange: move |event| autosave.set(AutosaveMode::from_value(&event.value())),
+                    option { value: "on_change", "After every change" }
+                    option { value: "every_minute", "Every minute" }
+                    option { value: "off", "Off" }
+                }
             }
         }
     }

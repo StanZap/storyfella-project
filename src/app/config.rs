@@ -20,6 +20,8 @@ pub struct AppConfig {
     pub model_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub asset_dir: PathBuf,
+    /// Where the GUI keeps `.svs-project.db` files (the Projects screen).
+    pub project_dir: PathBuf,
     pub generation: GenerationConfig,
 }
 
@@ -111,6 +113,7 @@ struct PathOverrides {
     model_dir: Option<PathBuf>,
     cache_dir: Option<PathBuf>,
     asset_dir: Option<PathBuf>,
+    project_dir: Option<PathBuf>,
 }
 
 impl AppConfig {
@@ -182,6 +185,10 @@ impl AppConfig {
                 .paths
                 .asset_dir
                 .unwrap_or_else(|| data_dir.join("assets")),
+            project_dir: file
+                .paths
+                .project_dir
+                .unwrap_or_else(|| data_dir.join("projects")),
             generation,
         })
     }

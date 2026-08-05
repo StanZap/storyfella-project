@@ -4,7 +4,7 @@
 //! environment, object); `c:<ref>` references resolve here. This is new
 //! domain-model work layered onto the existing `Project` model: the registry
 //! lives alongside `Project` in `AppState`, and the TOML `ProjectStore`
-//! stays untouched (SQLite persistence is deferred — see
+//! stays untouched (SQLite lives in `src/persistence/` — see
 //! `docs/ROADMAP.md` §10).
 //!
 //! Invariants maintained by the registry API (mirroring the planned SQL
@@ -302,7 +302,8 @@ pub struct ArtifactRegistry {
     pub log: Vec<OperationLogEntry>,
 }
 
-/// The stopgap project file format until SQLite lands (§10 is deferred).
+/// The stopgap project file format kept for legacy JSON import
+/// (`svs import`); SQLite (`src/persistence/`) is the project format now.
 /// Contains only the registry; the `Project`/storyboard continues to use the
 /// TOML `ProjectStore`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

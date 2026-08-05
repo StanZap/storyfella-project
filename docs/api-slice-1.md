@@ -38,6 +38,7 @@ in-memory model and TOML `ProjectStore` are unchanged.
 | `src/registry/backend.rs` | `CreativeBackend` — the live backend (`CreativeRuntime` + `LmStudioClient`); LLM steps are soft dependencies that degrade to manual input |
 | `src/registry/image_ops.rs` | Pure image primitives: composite (masked blend), invert, feather, union — deterministic, property-tested |
 | `src/bin/svs.rs` | The `svs` CLI (clap, second binary on `src/lib.rs`) |
+| `src/persistence/mod.rs` | SQLite project store (`ProjectDb`): §10 schema, versioned migrations, WAL, snapshot save/load of the registry |
 | `src/vision/mod.rs` ↔ `python/models/schemas.py` | `mask_path` added to `GenerateRequest` on both sides |
 
 ## Pipeline rules (as implemented)
@@ -62,19 +63,20 @@ in-memory model and TOML `ProjectStore` are unchanged.
 ## CLI
 
 ```sh
-svs --project p.json project p.json                 # load or create (stopgap JSON registry)
-svs --project p.json op create character "Mia, a lighthouse keeper" --name mia
-svs --project p.json op create scene "The kitchen at dusk" --name kitchen
-svs --project p.json op compose c:<scene> "Mia lights the lantern" --background c:<env> --layer c:<char>
-svs --project p.json op variant c:<char> "in rain gear" --axis outfit
-svs --project p.json op regenerate c:<char> "make it warmer" --seed 42 --steps 4 --size 768x448 --out golden/
-svs --project p.json op draft c:<story> "write the opening"          # LLM + approval checkpoint
-svs --project p.json op draft c:<story> "write the opening" --text "…"   # manual, no checkpoint
-svs --project p.json op modify c:<char> "change her hair" --mask-prompt "her hair" --inpaint-prompt "a bob cut" --approve auto --out golden/
-svs --project p.json stack run stack.json --approve auto             # the VLLM contract test bed
-svs --project p.json stack propose "Add a rainy variant of the kitchen scene"   # LM Studio → JSON
-svs --project p.json runtime serve --force --model krea-2-turbo-q4   # resident generation profile
-svs --project p.json log [c:<ref>]
+svs --project p.db project p.db                       # load or create (SQLite registry)
+svs --project p.db import legacy.svs-project.json     # one-time migration from the JSON stopgap
+svs --project p.db op create character "Mia, a lighthouse keeper" --name mia
+svs --project p.db op create scene "The kitchen at dusk" --name kitchen
+svs --project p.db op compose c:<scene> "Mia lights the lantern" --background c:<env> --layer c:<char>
+svs --project p.db op variant c:<char> "in rain gear" --axis outfit
+svs --project p.db op regenerate c:<char> "make it warmer" --seed 42 --steps 4 --size 768x448 --out golden/
+svs --project p.db op draft c:<story> "write the opening"          # LLM + approval checkpoint
+svs --project p.db op draft c:<story> "write the opening" --text "…"   # manual, no checkpoint
+svs --project p.db op modify c:<char> "change her hair" --mask-prompt "her hair" --inpaint-prompt "a bob cut" --approve auto --out golden/
+svs --project p.db stack run stack.json --approve auto             # the VLLM contract test bed
+svs --project p.db stack propose "Add a rainy variant of the kitchen scene"   # LM Studio → JSON
+svs --project p.db runtime serve --force --model krea-2-turbo-q4   # resident generation profile
+svs --project p.db log [c:<ref>]
 ```
 
 `--approve auto|interactive` (default interactive) resolves checkpoints;
@@ -136,11 +138,13 @@ config points at the gemma model used on the dev machine.
 
 ## Divergences from the design doc (deferred, by directive)
 
-- **No SQLite.** The CLI persists to a stopgap JSON `ProjectFile`
-  (`svs project <path>`, not `svs project open <path>` — the CLI is
-  one-shot, no session state). The TOML `ProjectStore` is untouched.
-- **No GUI work.** `AppState` gained a `registry: ArtifactRegistry` field
-  (layering only); `src/ui/` is untouched.
+- **Storyboard still on the legacy model.** The GUI persists via SQLite
+  (schema v2 `project_json` on the `projects` row); the old beat/timeline
+  model survives until the canvas (roadmap item 4) replaces it. `svs
+  project <path>` stays one-shot, no session state.
+- **No canvas work.** `src/ui/` gained real project open/save/import and
+  autosave; the artifact registry is persisted but not yet surfaced in
+  Studio (item 4).
 - `paint_strokes` is vocabulary (a `Step` + builder method) but not
   executable in slice 1; `describe`/`critique` LLM steps degrade to manual
   input.

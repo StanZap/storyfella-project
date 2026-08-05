@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::{
     models::{ImageRevision, Project, RevisionStatus, StoryboardFrame},
     registry::ArtifactRegistry,
@@ -12,6 +14,9 @@ pub struct AppState {
     /// (`docs/ROADMAP.md` §3). Mutate it through
     /// `registry::ops::execute`, never by editing `artifacts` directly.
     pub registry: ArtifactRegistry,
+    /// The SQLite database file this project lives in (`None` until the
+    /// project is created or opened from the Projects screen).
+    pub project_path: Option<PathBuf>,
     pub has_unsaved_changes: bool,
     pub selected_frame_id: Option<Uuid>,
 }
@@ -30,6 +35,7 @@ impl AppState {
             storyboard: Vec::new(),
         };
         self.registry = ArtifactRegistry::default();
+        self.project_path = None;
         self.has_unsaved_changes = true;
         self.selected_frame_id = None;
     }
@@ -153,6 +159,16 @@ impl AppState {
         frame.asset_path = Some(asset_path);
         self.has_unsaved_changes = true;
     }
+
+    /// Replaces the in-memory state with a snapshot loaded from disk.
+    /// The caller is responsible for saving before navigating away.
+    pub fn open_project(&mut self, stored: crate::persistence::StoredProject, path: PathBuf) {
+        self.project = stored.project;
+        self.registry = stored.registry;
+        self.project_path = Some(path);
+        self.has_unsaved_changes = false;
+        self.selected_frame_id = None;
+    }
 }
 
 #[cfg(test)]
@@ -171,6 +187,48 @@ mod tests {
         assert!(state.project.timeline.clips.is_empty());
         assert!(state.has_unsaved_changes);
         assert!(state.selected_frame_id.is_none());
+    }
+
+    #[test]
+    fn opening_a_stored_project_replaces_state_and_marks_clean() {
+        let mut state = AppState::default();
+        state.add_storyboard_beat("Draft beat");
+        state.registry.artifacts.push(crate::registry::Artifact {
+            id: uuid::Uuid::new_v4(),
+            kind: crate::registry::ArtifactKind::Story,
+            name: "stored".to_owned(),
+            description: "From disk".to_owned(),
+            variant_of: None,
+            variant_axis: None,
+            parent_id: None,
+            composition: None,
+            active_revision_id: None,
+            revisions: Vec::new(),
+            drafts: Vec::new(),
+        });
+        state.has_unsaved_changes = true;
+
+        let stored = crate::persistence::StoredProject {
+            id: uuid::Uuid::new_v4(),
+            name: "Stored Story".to_owned(),
+            project: crate::models::Project {
+                id: uuid::Uuid::new_v4(),
+                name: "Stored Story".to_owned(),
+                timeline: crate::timeline::Timeline::default(),
+                storyboard: Vec::new(),
+            },
+            registry: crate::registry::ArtifactRegistry::default(),
+        };
+        state.open_project(stored, std::path::PathBuf::from("/tmp/stored.db"));
+
+        assert_eq!(state.project.name, "Stored Story");
+        assert!(state.project.storyboard.is_empty());
+        assert!(state.registry.artifacts.is_empty());
+        assert!(!state.has_unsaved_changes);
+        assert_eq!(
+            state.project_path.as_deref(),
+            Some(std::path::Path::new("/tmp/stored.db"))
+        );
     }
 
     #[test]

@@ -155,6 +155,7 @@ Configuration lives in [`config/app.toml`](../config/app.toml) and is loaded by
 | `paths.model_dir` | platform data dir + `models` | Model artifacts root |
 | `paths.cache_dir` | platform cache dir | Disposable cache data |
 | `paths.asset_dir` | platform data dir + `assets` | Imported/generated assets |
+| `paths.project_dir` | platform data dir + `projects` | Where the Projects screen keeps `.svs-project.db` files |
 
 An invalid `generation.profile` value is a hard configuration error and the app
 shows the error screen on launch. The checked-in `config/app.toml` sets

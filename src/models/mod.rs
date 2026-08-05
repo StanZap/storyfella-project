@@ -57,4 +57,8 @@ pub enum RevisionStatus {
     Cancelled,
 }
 
-// TODO: Add explicit schema versions and migration support before the first public release.
+// TODO: This legacy storyboard model is transitional: SQLite
+// (`src/persistence/`) carries versioned migrations and the GUI persists
+// there now; the TOML `ProjectStore` is a one-time import path only. Delete
+// `Project`/`StoryboardFrame`/`ProjectStore` when the canvas (roadmap item
+// 4) replaces this model.

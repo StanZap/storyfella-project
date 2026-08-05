@@ -4,12 +4,16 @@ mod icons;
 mod projects;
 mod settings;
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use dioxus::prelude::*;
 
 use crate::{
     app::AppConfig,
+    persistence::ProjectDb,
     runtime::{CreativeRuntime, HealthStatus},
     state::AppState,
 };
@@ -19,6 +23,49 @@ use editor::Studio;
 use icons::{Icon, IconName};
 use projects::Projects;
 use settings::Settings;
+
+/// How often the workspace writes the project to disk.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum AutosaveMode {
+    #[default]
+    OnChange,
+    EveryMinute,
+    Off,
+}
+
+impl AutosaveMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OnChange => "on_change",
+            Self::EveryMinute => "every_minute",
+            Self::Off => "off",
+        }
+    }
+
+    pub fn from_value(value: &str) -> Self {
+        match value {
+            "on_change" => Self::OnChange,
+            "every_minute" => Self::EveryMinute,
+            _ => Self::Off,
+        }
+    }
+}
+
+/// Writes the current project + registry to the project database. No-op
+/// when no project file is open; clears the dirty flag on success.
+pub fn persist_state(mut app_state: Signal<AppState>) {
+    let Some(path) = app_state.read().project_path.clone() else {
+        return;
+    };
+    let (project, registry) = {
+        let state = app_state.read();
+        (state.project.clone(), state.registry.clone())
+    };
+    match ProjectDb::open(&path).and_then(|db| db.save_project(&project, &registry)) {
+        Ok(()) => app_state.write().has_unsaved_changes = false,
+        Err(error) => tracing::error!("could not save project {}: {error}", path.display()),
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum AppScreen {
@@ -36,6 +83,44 @@ pub fn Workspace(config: AppConfig, app_state: Signal<AppState>) -> Element {
     dioxus::desktop::use_asset_handler("generated", move |request, responder| {
         serve_generated_asset(&generated_asset_directory, request, responder);
     });
+
+    // Autosave: the mode lives here and is shared with Settings via context.
+    let autosave = use_signal(AutosaveMode::default);
+    use_context_provider(|| autosave);
+
+    // Save after every change (the default): the effect re-runs on state
+    // changes, saves when the project is dirty, and clears the flag.
+    use_effect(move || {
+        if autosave() == AutosaveMode::OnChange && app_state.read().has_unsaved_changes {
+            persist_state(app_state);
+        }
+    });
+
+    // Every-minute mode: one background loop that checks the current mode on
+    // each tick (spawned once via use_hook, never duplicated).
+    let autosave_loop = autosave;
+    use_hook(move || {
+        spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            interval.tick().await; // the first tick fires immediately; skip it
+            loop {
+                interval.tick().await;
+                if autosave_loop() == AutosaveMode::EveryMinute
+                    && app_state.read().has_unsaved_changes
+                {
+                    persist_state(app_state);
+                }
+            }
+        });
+    });
+
+    // Cmd/Ctrl+S always saves, whatever the autosave mode.
+    let shortcut_app_state = app_state;
+    dioxus::desktop::use_global_shortcut("CmdOrCtrl+S", move |_| {
+        persist_state(shortcut_app_state);
+    })
+    .expect("shortcut registration should succeed");
+
     let project_name = app_state.read().project.name.clone();
     let dirty = app_state.read().has_unsaved_changes;
 
@@ -64,6 +149,10 @@ pub fn Workspace(config: AppConfig, app_state: Signal<AppState>) -> Element {
                 div { class: "flex items-center gap-4",
                     div { class: "flex items-center gap-2 text-[10px] text-zinc-600", StatusDot { status: HealthStatus::Idle } span { "Local · starts on demand" } }
                     if screen() == AppScreen::Studio {
+                        button { class: "flex h-8 items-center gap-2 rounded-lg bg-white/[0.055] px-3 text-[10px] font-medium text-zinc-400 transition hover:bg-white/[0.08] hover:text-white disabled:opacity-35", disabled: !dirty, title: "Save (Cmd/Ctrl+S)", onclick: move |_| persist_state(app_state),
+                            Icon { name: IconName::Save, class: "size-3" }
+                            "Save"
+                        }
                         button { class: "flex h-8 items-center gap-2 rounded-lg bg-white/[0.055] px-3 text-[10px] font-medium text-zinc-400 transition hover:bg-white/[0.08] hover:text-white",
                             Icon { name: IconName::Play, class: "size-3" }
                             "Preview"
@@ -75,7 +164,7 @@ pub fn Workspace(config: AppConfig, app_state: Signal<AppState>) -> Element {
 
             div { class: "min-h-0 min-w-0",
                 match screen() {
-                    AppScreen::Projects => rsx! { Projects { app_state, on_open: move |_| screen.set(AppScreen::Studio) } },
+                    AppScreen::Projects => rsx! { Projects { config: config.clone(), app_state, on_open: move |_| screen.set(AppScreen::Studio) } },
                     AppScreen::Studio => rsx! { Studio { app_state, runtime: runtime.clone() } },
                     AppScreen::Settings => rsx! { Settings { config: config.clone(), runtime: runtime.clone() } },
                 }

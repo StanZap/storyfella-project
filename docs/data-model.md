@@ -101,23 +101,46 @@ status = "queued"
 `PersistenceError` distinguishes read, write, parse, and serialize failures
 with the offending path attached, so the UI can present actionable messages.
 
+### SQLite (the project format)
+
+`ProjectDb` (`src/persistence/mod.rs`) is SQLite storage for the project:
+one `projects` row, then `artifacts`, `revisions`, `masks`, `layers`,
+`lora_registry` (schema-only until the LoRA feature lands), and
+`operation_log`. The legacy `Project` model (storyboard + timeline) is
+carried as `project_json` on the `projects` row (schema v2) until the
+canvas replaces it. The registry stays the in-memory source of truth; a
+save replaces the snapshot rows in one transaction. Schema versioning lives
+in `schema_meta`; migrations are appended scripts applied on open. The `svs`
+CLI persists to `.svs-project.db`; `svs import <legacy.json>` migrates a
+stopgap JSON project in one step (refusing to clobber a non-empty database).
+
+### The GUI save flow
+
+`AppState.project_path` names the open database file. The Projects screen
+scans `paths.project_dir` (config) for `.svs-project.db` files, creates new
+projects as `slug.svs-project.db`, and imports legacy files: `.toml`
+(`ProjectStore` → new database), `.json` (stopgap registry), or `.db`
+(opened in place). The workspace autosaves per the General settings
+select — after every change, every minute, or off — and `Cmd/Ctrl+S`
+saves manually; saving clears `has_unsaved_changes`.
+
 ## Known gaps
 
 These are documented deliberately because persistence is the current boundary
 between "in-memory prototype" and "real product":
 
-1. **Not wired into the UI.** `ProjectStore` is implemented but nothing calls
-   it. The Projects screen is a mock list and the Autosave setting is not
-   functional. Saving/loading a project is the natural next slice.
-2. **`has_unsaved_changes` is never cleared.** There is no save flow, so the
-   dirty indicator in the header stays on for the whole session.
+1. ~~**Not wired into the UI.**~~ The Projects screen opens/creates/imports
+   `.svs-project.db` files and the workspace autosaves or saves manually
+   (Cmd/Ctrl+S); saving clears the dirty flag.
+2. ~~**`has_unsaved_changes` is never cleared.**~~ Cleared on every successful
+   save (autosave, manual, or open).
 3. **Absolute asset paths.** `CreativeRuntime::import_asset` stores the
    canonical absolute path of each generated file. A project moved between
    machines (or even directories) loses its image references. A stable,
    relative-to-project asset reference is needed before shipping.
-4. **No schema version.** `models/mod.rs` carries an explicit TODO for versioned
-   schemas and migration support. Any format change before that lands will
-   silently break older files.
+4. ~~**No schema version.**~~ SQLite carries versioned migrations
+   (`schema_meta`, `src/persistence/`); the TOML `Project` format is only
+   read for legacy import now.
 5. **No generated-asset index.** `src/assets/mod.rs` (`AssetCatalog`) is a stub;
    there is no central registry of imported/generated files, thumbnails, or
    usage counts.

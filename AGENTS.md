@@ -5,6 +5,8 @@ Current shape: the artifact registry + typed operation layer (`src/registry/`) i
 # Project rules
 
 - **Desktop only.** Never add web, mobile, WASM, routing, or fullstack features. The `Cargo.toml` features are limited to `default = ["desktop"]` / `dioxus/desktop`. Ignore any Dioxus docs about routers, server functions, or hydration.
+- **No stale/dead code; no backward-compatibility shims.** We are pre-1.0 and not in production — formats, models, and APIs change freely. When a change replaces an older shape, remove the old one **in the same change**: no deprecated aliases, no "keep for old files" parse/import paths, no unused fields, no `#[allow(dead_code)]` for hypothetical future use, no leaving a superseded implementation around "for reference". The only sanctioned migration is a documented one-time import of a legacy format into the current one (like `svs import` and the GUI's TOML/JSON import) — and that disappears once nothing needs it. Deferred vocabulary is allowed only when a roadmap item explicitly names it (e.g. slice-1 pipeline steps marked "vocabulary, not executable"); mark it with a doc comment naming the deferred item, never with `allow(dead_code)`. Concrete implication: when the canvas (roadmap item 4) replaces the storyboard model, delete `StoryboardFrame`/`ProjectStore`/`project_json` rather than keeping them alongside.
+- **Reusable components before repetition.** Isolate repeated patterns into small shared components/modules and reuse them everywhere. The UI vocabulary in `src/ui/components.rs` (`SettingRow`, `EmptyVisual`, `StatusDot`, …) and `src/ui/icons.rs` is the model; apply the same instinct outside the UI (registry ops, pipeline steps, persistence helpers, config). When a new use case needs a variant, extend the shared component instead of copy-pasting a near-identical one, and keep similar use cases looking and behaving the same. A new control for a case an existing control already covers is a code smell.
 - **Rust/Python boundary.** Rust talks to Python only over HTTP (`VisionClient` in `src/vision/mod.rs` ↔ contracts in `python/models/schemas.py`). Keep the two sides' request/response types in sync.
 - **No ML frameworks in Rust.** Rust must never depend on or know about PyTorch, Transformers, or SAM. Those details live in `python/` only.
 - **LM Studio is external** and never bundled or started by the app; `src/llm/` is the client only. The planner vocabulary (typed operations + pipelines) lives in `src/registry/`; LLM steps are soft dependencies that degrade to manual input, never hard-fail.
@@ -25,14 +27,16 @@ Current shape: the artifact registry + typed operation layer (`src/registry/`) i
 
 # Current status
 
-The API slice (`docs/ROADMAP.md` §12 items 1–2) is implemented and CLI-validated:
+The API slice (`docs/ROADMAP.md` §12 items 1–3) is implemented and CLI-validated:
 
 - `src/registry/` — artifact registry (kinds, variants, scenes/beats + layers, revisions + masks, drafts), typed slice-1 operations (`create`, `variant`, `regenerate`, `compose`, `draft`, `modify`), pipeline builder (closed step vocabulary, typed handles, static validation at `build()`, linear fail-fast stacks, checkpoints), composite mask fallback, live backend (`CreativeBackend`).
 - `c:<name>` references are primary (case-insensitive exact match, ambiguity rejected; UUID/8-hex fallbacks).
-- `svs` CLI — `op`, `stack run`/`propose`, `runtime serve --force`, `log`, `project`; `--out` golden runs; `--approve auto|interactive`.
+- `src/persistence/` — SQLite project store (`ProjectDb`): §10 schema (v2 adds `project_json` for the legacy storyboard), versioned migrations (`schema_meta`), WAL, lossless round-trip; the CLI persists to `.svs-project.db`; `svs import <legacy.json>` migrates the old JSON stopgap.
+- `src/ui/` — the Projects screen lists, creates, opens, and imports `.svs-project.db` files (legacy TOML/JSON included); the workspace saves via autosave (after every change / every minute / off) or Cmd/Ctrl+S; `AppState.project_path` tracks the open database.
+- `svs` CLI — `op`, `stack run`/`propose`, `runtime serve --force`, `log`, `project`, `import`; `--out` golden runs; `--approve auto|interactive`.
 - `mask_path` in the Rust ↔ Python `GenerateRequest` contract (best-effort native passthrough; composite fallback is primary).
-- 62 Rust + 17 Python tests pass; q2 generation validated on macOS. `modify`'s mask path, LLM `draft`, and `stack propose` await live validation (Linux/CUDA).
-- Next per §12: SQLite (item 3), then the canvas (item 4). The tracker in §12 is authoritative — update it as features ship.
+- 75 Rust lib + 4 CLI/bin tests pass; q2 generation validated on macOS. `modify`'s mask path, LLM `draft`, and `stack propose` await live validation (Linux/CUDA).
+- Next per §12: the canvas (item 4). The tracker in §12 is authoritative — update it as features ship.
 
 # Validation
 

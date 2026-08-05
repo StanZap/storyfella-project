@@ -414,10 +414,12 @@ Decisions:
 
 ## 10. Persistence: SQLite
 
-Decision: SQLite replaces the TOML `ProjectStore` as the project format, with
-a one-time import path from existing TOML files. Assets (PNGs) stay as files
-on disk; the database stores relative paths (this also fixes the known
-"absolute asset paths" gap). Schema versioning via a `schema_meta` table.
+Decision: SQLite replaces the TOML `ProjectStore` as the project format.
+The CLI's stopgap JSON registry file was the first migration target — `svs
+import <legacy.json>` ships today, and the GUI imports legacy TOML projects
+from the Projects screen. Assets (PNGs) stay as files on disk; the database
+stores relative paths (this also fixes the known "absolute asset paths" gap).
+Schema versioning via a `schema_meta` table.
 
 ```sql
 CREATE TABLE schema_meta (version INTEGER NOT NULL, applied_at TEXT NOT NULL);
@@ -503,9 +505,17 @@ CREATE TABLE operation_log (
 -- story source of truth; SQLite stores the asset side only.
 ```
 
-Implementation notes: prefer `rusqlite` (bundled, synchronous) with a single
-writer connection behind a mutex and WAL mode for a Dioxus desktop app.
-*(Crate choice not yet confirmed.)*
+Implementation notes: **resolved** — `rusqlite` (bundled, synchronous) with a
+single writer connection behind a `parking_lot` mutex and WAL mode, in
+`src/persistence/` (`ProjectDb`). Deliberate deviations from the sketch
+above: timestamps are unix epoch integers (no chrono dependency),
+`operation_log.id` is TEXT (the model uses `Uuid`), `op` holds the serde tag
+name with the full `Operation` JSON in `args`, `artifacts.composition_mode`
+holds the beat-only composition mode, `artifacts.drafts_json` is the
+transitional home for pre-`.sf` story drafts, and `revisions.error` covers
+the model field. Writes replace the registry rows in one transaction with
+`PRAGMA defer_foreign_keys` (the circular `artifacts ↔ revisions`
+reference).
 
 ## 11. Open questions
 
@@ -518,8 +528,9 @@ writer connection behind a mutex and WAL mode for a Dioxus desktop app.
 5. **Layered-mode matte quality** acceptance for final output.
 6. **Krea mask input:** validate whether the native backend accepts a mask
    directly or the adapter composites the inpaint region.
-7. **SQLite crate** (`rusqlite` vs `sqlx`) and TOML coexistence during
-   migration.
+7. **SQLite crate** — **resolved:** `rusqlite` (bundled), one writer
+   connection + WAL (`src/persistence/`). TOML coexistence: `ProjectStore`
+   is now read-only legacy input (GUI import).
 
 ## 12. Suggested implementation order
 
@@ -538,9 +549,15 @@ remain deferred.
    validation of `modify`/`stack propose` on Linux/CUDA pending
 2. **The CLI (`svs`):** ops, `stack run`/`propose`, `--out` golden runs —
    drives and validates the API without the UI. — **✅ implemented**
-3. **SQLite foundation:** schema + storage layer (§10), one-time TOML
-   import; the CLI currently persists a stopgap JSON project file. —
-   **⏳ deferred**
+3. **SQLite foundation:** schema + storage layer (§10) — `src/persistence/`
+   (`ProjectDb`: versioned migrations via `schema_meta` (v1 §10 tables, v2
+   `project_json` for the legacy storyboard), WAL, full-replace snapshot
+   writes, lossless round-trip); the CLI's stopgap JSON project file is
+   replaced by a SQLite database (`.svs-project.db`) with a one-time
+   migration (`svs import <legacy.json>`); the GUI now opens/creates/
+   imports projects from the Projects screen and saves via autosave or
+   Cmd/Ctrl+S (legacy TOML projects import into a new database). —
+   **✅ implemented**
 4. **The canvas:** artboard viewport, artifact cards, prompt bar (slash
    parsing, autocomplete, `c:` chips). — **⏳ planned**
 5. **Studio integration:** scenes group the timeline; re-sync flows per
@@ -554,17 +571,19 @@ remain deferred.
 
 ## 13. Implementation handoff
 
-Design status: design notes with the API slice (§12 items 1–2) implemented;
+Design status: design notes with the API slice (§12 items 1–3) implemented;
 the codebase carries the artifact registry + `svs` CLI
-(`docs/api-slice-1.md`) on top of the original prompt → storyboard beat →
-Krea revision flow. Work follows §12.
+(`docs/api-slice-1.md`) on a SQLite project store (`src/persistence/`),
+layered onto the original prompt → storyboard beat → Krea revision flow.
+Work follows §12.
 
 ### Entry points (existing code)
 
 - `src/models/mod.rs`, `src/models/persistence.rs` — current
-  Project/StoryboardFrame model + TOML store; stays as-is for now (SQLite is
-  deferred). The artifact registry (kinds, variants, scenes) is new domain
-  model work layered onto this.
+  Project/StoryboardFrame model + TOML store; stays as-is until the canvas
+  wires the GUI to SQLite (§12 item 4). The artifact registry (kinds,
+  variants, scenes) is the new domain model, persisted by
+  `src/persistence/mod.rs` (`ProjectDb`, §10 schema).
 - `src/state/mod.rs` — AppState invariants (beat ↔ clip, revisions,
   selection).
 - `src/vision/mod.rs` ↔ `python/models/schemas.py` — Rust/Python HTTP
@@ -583,7 +602,8 @@ Krea revision flow. Work follows §12.
 3. Short-id format for `c:` references.
 4. Native mask support for Krea (open question 6) — decides whether the
    composite fallback is primary.
-5. Deferred with SQLite: crate choice (`rusqlite` vs `sqlx`).
+5. Deferred with SQLite: crate choice (`rusqlite` vs `sqlx`). —
+   **resolved:** `rusqlite` (bundled, WAL, one writer connection).
 
 ### Pitfalls
 
