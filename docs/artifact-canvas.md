@@ -1,9 +1,10 @@
 # Artifact canvas — product design notes
 
-> **Status: design discussion notes.** Captures the ongoing product-design
-> conversation around the artifact registry, the creation canvas, the typed
-> operation set, and SQLite persistence. Nothing in this document is
-> implemented yet; confirmed decisions and open questions are marked as such.
+> **Status: design discussion notes with the API slice implemented.** Captures
+> the ongoing product-design conversation around the artifact registry, the
+> creation canvas, the typed operation set, and SQLite persistence. The API
+> slice (§12 items 1–2) is implemented — see `docs/api-slice-1.md`; confirmed
+> decisions and open questions are marked as such.
 
 ## 1. Vision recap
 
@@ -520,36 +521,41 @@ writer connection behind a mutex and WAL mode for a Dioxus desktop app.
 
 ## 12. Suggested implementation order
 
-Active directive: **the API first — no SQLite and no GUI work for now.**
-The in-memory model + TOML `ProjectStore` stay as-is while the API is built
-and validated through tests and the CLI.
+**This section is the status tracker for planned work** — every feature we
+plan to ship, with its status; update it when work lands. The API-first
+directive is fulfilled: the in-memory model + TOML `ProjectStore` stay as-is
+while items 1–2 are validated through tests and the CLI; SQLite and GUI work
+remain deferred.
 
 1. **The API:** artifact domain model (artifact kinds, variants, scenes,
    beats — the registry), typed operation set + pipeline builder (closed
    vocabulary, typed intermediates, static validation at `build()`, linear
    fail-fast stacks), `mask_path` in the generation contract, and the
    slice-1 op compilers (create, variant, regenerate, compose, draft, plus
-   the mask-edit path).
+   the mask-edit path). — **✅ implemented** (`docs/api-slice-1.md`); live
+   validation of `modify`/`stack propose` on Linux/CUDA pending
 2. **The CLI (`svs`):** ops, `stack run`/`propose`, `--out` golden runs —
-   drives and validates the API without the UI.
-3. **SQLite foundation (deferred):** schema + storage layer (§10), one-time
-   TOML import.
+   drives and validates the API without the UI. — **✅ implemented**
+3. **SQLite foundation:** schema + storage layer (§10), one-time TOML
+   import; the CLI currently persists a stopgap JSON project file. —
+   **⏳ deferred**
 4. **The canvas:** artboard viewport, artifact cards, prompt bar (slash
-   parsing, autocomplete, `c:` chips).
+   parsing, autocomplete, `c:` chips). — **⏳ planned**
 5. **Studio integration:** scenes group the timeline; re-sync flows per
-   mode.
-6. **LoRA registry** UI + auto-injection into generations.
+   mode. — **⏳ planned**
+6. **LoRA registry** UI + auto-injection into generations. — **⏳ planned**
 7. **Storyfella DSL (in-repo):** the language crate (lexer/parser/compiler,
    CLI), the writer with the tokenized editor, asset chips and autocomplete;
-   DSL asset references + validation; round-trip to canvas.
+   DSL asset references + validation; round-trip to canvas. — **⏳ planned**
 8. **LSP-style tooling** as the DSL matures (go-to-definition, refactor,
-   diagnostics).
+   diagnostics). — **⏳ planned**
 
 ## 13. Implementation handoff
 
-Design status: this document is design notes; nothing in it is implemented.
-The current codebase is the pre-design product (prompt → storyboard beat →
-Krea revision flow). Work follows §12.
+Design status: design notes with the API slice (§12 items 1–2) implemented;
+the codebase carries the artifact registry + `svs` CLI
+(`docs/api-slice-1.md`) on top of the original prompt → storyboard beat →
+Krea revision flow. Work follows §12.
 
 ### Entry points (existing code)
 
