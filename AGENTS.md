@@ -1,11 +1,13 @@
 You are working on **Smart Visual Sequencer**, a desktop-only Dioxus 0.7 application for planning, generating, and arranging visual stories. Rust owns the UI, state, models, persistence, process lifecycle, and LM Studio client. Python owns all ML framework code behind a FastAPI HTTP boundary. Image generation runs through a native `stable-diffusion.cpp` (Krea 2) process; it is not ComfyUI.
 
+Current shape: the artifact registry + typed operation layer (`src/registry/`) is implemented and driven by the `svs` CLI (see `# Current status` below); the creation canvas and SQLite are roadmap work. Read `docs/artifact-canvas.md` §12 (the feature/status tracker) before planning changes.
+
 # Project rules
 
 - **Desktop only.** Never add web, mobile, WASM, routing, or fullstack features. The `Cargo.toml` features are limited to `default = ["desktop"]` / `dioxus/desktop`. Ignore any Dioxus docs about routers, server functions, or hydration.
 - **Rust/Python boundary.** Rust talks to Python only over HTTP (`VisionClient` in `src/vision/mod.rs` ↔ contracts in `python/models/schemas.py`). Keep the two sides' request/response types in sync.
 - **No ML frameworks in Rust.** Rust must never depend on or know about PyTorch, Transformers, or SAM. Those details live in `python/` only.
-- **LM Studio is external** and never bundled or started by the app; `src/llm/` is the only touchpoint. The planner business logic is not implemented yet.
+- **LM Studio is external** and never bundled or started by the app; `src/llm/` is the client only. The planner vocabulary (typed operations + pipelines) lives in `src/registry/`; LLM steps are soft dependencies that degrade to manual input, never hard-fail.
 - **UI styling** is Tailwind CSS 4 utility classes in RSX (`assets/tailwind.css` is generated output; regenerate with `npm run css:build`). Prefer the small shared component vocabulary in `src/ui/components.rs` (`SettingRow`, `EmptyVisual`, `StatusDot`, …) and icons from `src/ui/icons.rs`.
 - **State mutations** go through `AppState` methods in `src/state/mod.rs`, which maintain the storyboard/timeline invariants documented in `docs/data-model.md`. Never mutate `Project` fields directly from UI code.
 - **The repository path contains a literal `:`.** Build artifacts are redirected to `/tmp/smart-visual-sequencer-target` by `.cargo/config.toml`; never remove that file.
@@ -13,11 +15,24 @@ You are working on **Smart Visual Sequencer**, a desktop-only Dioxus 0.7 applica
 
 # Documentation
 
+- `docs/artifact-canvas.md` — product design and **the planned-feature status tracker (§12)**: every feature to ship, with its status. Read §12 first to orient; update its statuses when work lands.
+- `docs/api-slice-1.md` — implementation record of the API slice: settled decisions, module map, `svs` CLI reference, session guide (which ops need the generation backend).
 - `docs/architecture.md` — system boundaries, component map, prompt-to-revision data flow.
 - `docs/development.md` — setup, build/run/test commands, `config/app.toml` reference, troubleshooting.
 - `docs/http-api.md` — the Python runtime HTTP contract (endpoints, schemas, job lifecycle).
 - `docs/runtime-lifecycle.md` — process supervision, readiness, model provisioning, residency.
 - `docs/data-model.md` — domain types, state invariants, persistence format, known gaps.
+
+# Current status
+
+The API slice (`docs/artifact-canvas.md` §12 items 1–2) is implemented and CLI-validated:
+
+- `src/registry/` — artifact registry (kinds, variants, scenes/beats + layers, revisions + masks, drafts), typed slice-1 operations (`create`, `variant`, `regenerate`, `compose`, `draft`, `modify`), pipeline builder (closed step vocabulary, typed handles, static validation at `build()`, linear fail-fast stacks, checkpoints), composite mask fallback, live backend (`CreativeBackend`).
+- `c:<name>` references are primary (case-insensitive exact match, ambiguity rejected; UUID/8-hex fallbacks).
+- `svs` CLI — `op`, `stack run`/`propose`, `runtime serve --force`, `log`, `project`; `--out` golden runs; `--approve auto|interactive`.
+- `mask_path` in the Rust ↔ Python `GenerateRequest` contract (best-effort native passthrough; composite fallback is primary).
+- 62 Rust + 17 Python tests pass; q2 generation validated on macOS. `modify`'s mask path, LLM `draft`, and `stack propose` await live validation (Linux/CUDA).
+- Next per §12: SQLite (item 3), then the canvas (item 4). The tracker in §12 is authoritative — update it as features ship.
 
 # Validation
 
