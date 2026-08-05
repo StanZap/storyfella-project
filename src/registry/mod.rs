@@ -5,7 +5,7 @@
 //! domain-model work layered onto the existing `Project` model: the registry
 //! lives alongside `Project` in `AppState`, and the TOML `ProjectStore`
 //! stays untouched (SQLite persistence is deferred — see
-//! `docs/artifact-canvas.md` §10).
+//! `docs/ROADMAP.md` §10).
 //!
 //! Invariants maintained by the registry API (mirroring the planned SQL
 //! schema in §10):
@@ -170,13 +170,13 @@ pub struct Artifact {
     #[serde(default)]
     pub revisions: Vec<ArtifactRevision>,
     /// Approved or proposed story text (the stand-in for the deferred `.sf`
-    /// story document; see `docs/artifact-canvas.md` §8–9).
+    /// story document; see `docs/ROADMAP.md` §8–9).
     #[serde(default)]
     pub drafts: Vec<StoryDraft>,
 }
 
 /// A beat's composition spec — how layers combine into one image
-/// (`docs/artifact-canvas.md` §4). `background` is the environment variant
+/// (`docs/ROADMAP.md` §4). `background` is the environment variant
 /// ref or "generate fresh" (no backdrop layer); layers carry roles and
 /// geometry is direct manipulation (anchor), not an operation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -1,10 +1,12 @@
-# Artifact canvas — product design notes
+# Artifact canvas — product design & roadmap
 
 > **Status: design discussion notes with the API slice implemented.** Captures
 > the ongoing product-design conversation around the artifact registry, the
-> creation canvas, the typed operation set, and SQLite persistence. The API
-> slice (§12 items 1–2) is implemented — see `docs/api-slice-1.md`; confirmed
-> decisions and open questions are marked as such.
+> creation canvas, the typed operation set, and SQLite persistence. **§12 is
+> the feature/status tracker** — every planned feature with its status; update
+> it when work lands. The API slice (§12 items 1–2) is implemented — see
+> `docs/api-slice-1.md`; confirmed decisions and open questions are marked as
+> such.
 
 ## 1. Vision recap
 

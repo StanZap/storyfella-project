@@ -9,7 +9,7 @@ use uuid::Uuid;
 pub struct AppState {
     pub project: Project,
     /// The artifact registry — new domain model layered onto `Project`
-    /// (`docs/artifact-canvas.md` §3). Mutate it through
+    /// (`docs/ROADMAP.md` §3). Mutate it through
     /// `registry::ops::execute`, never by editing `artifacts` directly.
     pub registry: ArtifactRegistry,
     pub has_unsaved_changes: bool,

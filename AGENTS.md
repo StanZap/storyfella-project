@@ -1,6 +1,6 @@
 You are working on **Smart Visual Sequencer**, a desktop-only Dioxus 0.7 application for planning, generating, and arranging visual stories. Rust owns the UI, state, models, persistence, process lifecycle, and LM Studio client. Python owns all ML framework code behind a FastAPI HTTP boundary. Image generation runs through a native `stable-diffusion.cpp` (Krea 2) process; it is not ComfyUI.
 
-Current shape: the artifact registry + typed operation layer (`src/registry/`) is implemented and driven by the `svs` CLI (see `# Current status` below); the creation canvas and SQLite are roadmap work. Read `docs/artifact-canvas.md` §12 (the feature/status tracker) before planning changes.
+Current shape: the artifact registry + typed operation layer (`src/registry/`) is implemented and driven by the `svs` CLI (see `# Current status` below); the creation canvas and SQLite are roadmap work. Read `docs/ROADMAP.md` §12 (the feature/status tracker) before planning changes.
 
 # Project rules
 
@@ -15,7 +15,7 @@ Current shape: the artifact registry + typed operation layer (`src/registry/`) i
 
 # Documentation
 
-- `docs/artifact-canvas.md` — product design and **the planned-feature status tracker (§12)**: every feature to ship, with its status. Read §12 first to orient; update its statuses when work lands.
+- `docs/ROADMAP.md` — product design and **the planned-feature status tracker (§12)**: every feature to ship, with its status. Read §12 first to orient; update its statuses when work lands.
 - `docs/api-slice-1.md` — implementation record of the API slice: settled decisions, module map, `svs` CLI reference, session guide (which ops need the generation backend).
 - `docs/architecture.md` — system boundaries, component map, prompt-to-revision data flow.
 - `docs/development.md` — setup, build/run/test commands, `config/app.toml` reference, troubleshooting.
@@ -25,7 +25,7 @@ Current shape: the artifact registry + typed operation layer (`src/registry/`) i
 
 # Current status
 
-The API slice (`docs/artifact-canvas.md` §12 items 1–2) is implemented and CLI-validated:
+The API slice (`docs/ROADMAP.md` §12 items 1–2) is implemented and CLI-validated:
 
 - `src/registry/` — artifact registry (kinds, variants, scenes/beats + layers, revisions + masks, drafts), typed slice-1 operations (`create`, `variant`, `regenerate`, `compose`, `draft`, `modify`), pipeline builder (closed step vocabulary, typed handles, static validation at `build()`, linear fail-fast stacks, checkpoints), composite mask fallback, live backend (`CreativeBackend`).
 - `c:<name>` references are primary (case-insensitive exact match, ambiguity rejected; UUID/8-hex fallbacks).

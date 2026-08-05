@@ -1,6 +1,6 @@
 # API slice 1 — artifact registry, operations, pipelines, `svs` CLI
 
-Status: implemented. The API-first slice of `docs/artifact-canvas.md` (§7
+Status: implemented. The API-first slice of `docs/ROADMAP.md` (§7
 operations + pipelines, §12 steps 1–2). No SQLite, no GUI work — the
 in-memory model and TOML `ProjectStore` are unchanged.
 

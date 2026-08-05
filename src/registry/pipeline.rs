@@ -1,4 +1,4 @@
-//! The pipeline execution layer (`docs/artifact-canvas.md` §7).
+//! The pipeline execution layer (`docs/ROADMAP.md` §7).
 //!
 //! Two layers, kept distinct: operations (intent — `ops.rs`) and pipelines
 //! (execution — this module). A pipeline is a linear, fail-fast stack of

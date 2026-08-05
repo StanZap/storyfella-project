@@ -1,4 +1,4 @@
-//! The typed operation set (`docs/artifact-canvas.md` §7) and its compiler +
+//! The typed operation set (`docs/ROADMAP.md` §7) and its compiler +
 //! executor.
 //!
 //! Operations are the *intent* layer (semantic, logged, approval-gated,

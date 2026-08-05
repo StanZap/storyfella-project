@@ -166,7 +166,7 @@ The third proof of concept runs SAM 2.1 Tiny behind `/segment` with point or box
 
 ## Roadmap
 
-The ordered backlog with statuses lives in `docs/artifact-canvas.md` §12
+The ordered backlog with statuses lives in `docs/ROADMAP.md` §12
 (this is the tracker). Upcoming work in brief:
 
 1. Connect Canvas submissions to the typed operation layer (`src/registry/`)

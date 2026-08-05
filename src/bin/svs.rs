@@ -5,7 +5,7 @@
 //! run` — the VLLM contract test bed), LLM stack proposals (`svs stack
 //! propose`), and the operation log. `--out <dir>` drops every intermediate
 //! (image, mask, composite) into a folder for the manual golden-run tier
-//! (`docs/artifact-canvas.md` §7).
+//! (`docs/ROADMAP.md` §7).
 //!
 //! The project is a stopgap JSON file (`.svs-project.json` by default)
 //! holding the artifact registry; SQLite persistence is deferred (§10).
