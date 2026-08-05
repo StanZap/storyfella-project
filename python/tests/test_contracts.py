@@ -20,7 +20,11 @@ from runtime.segmenter import (
 
 
 class FakeImageGenerator:
+    def __init__(self) -> None:
+        self.last_options: GenerationOptions | None = None
+
     def generate(self, options: GenerationOptions) -> GenerationResult:
+        self.last_options = options
         return GenerationResult(
             image_path=Path("/tmp/generated.png"),
             model=options.model,
@@ -90,6 +94,32 @@ class GenerateContractTests(unittest.TestCase):
         )
 
         self.assertEqual(request.reference_image_path, "frame.png")
+
+    def test_mask_path_is_optional_and_carried_through(self) -> None:
+        request = GenerateRequest(
+            prompt="bob cut",
+            reference_image_path="frame.png",
+            mask_path="masks/hair.png",
+        )
+
+        self.assertEqual(request.mask_path, "masks/hair.png")
+        self.assertIsNone(GenerateRequest(prompt="plain").mask_path)
+
+    def test_generation_carries_an_optional_mask_path(self) -> None:
+        generator = FakeImageGenerator()
+        response = VisionService(generator).generate(
+            GenerateRequest(
+                prompt="bob cut",
+                reference_image_path="frame.png",
+                mask_path="masks/hair.png",
+                seed=7,
+            )
+        )
+
+        self.assertEqual(response.status, "completed")
+        assert generator.last_options is not None
+        self.assertEqual(generator.last_options.mask_path, Path("masks/hair.png"))
+        self.assertEqual(generator.last_options.reference_image_path, Path("frame.png"))
 
     def test_native_generation_readiness_is_explicit(self) -> None:
         ready = VisionService(native_client=FakeNativeClient()).generation_capabilities()

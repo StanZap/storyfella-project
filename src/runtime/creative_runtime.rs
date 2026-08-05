@@ -9,7 +9,8 @@ use crate::{
 };
 
 use super::{
-    GenerationRuntime, GenerationRuntimeError, KreaQuantization, PythonRuntime, RuntimeError,
+    krea_profile, GenerationRuntime, GenerationRuntimeError, KreaQuantization, PythonRuntime,
+    RuntimeError,
 };
 
 const VISION_BASE_URL: &str = "http://127.0.0.1:8765";
@@ -43,6 +44,11 @@ pub enum CreativeRuntimeError {
     Job(String),
     #[error("generation job returned no image")]
     MissingImage,
+    #[error(
+        "generation server on :7861 has {loaded} loaded; {requested} needs the server restarted. \
+         Stop stale instances first (`svs runtime serve --force` or `pkill -f \"sd-server --diffusion\"`)"
+    )]
+    ProfileMismatch { loaded: String, requested: String },
     #[error("could not create generated asset directory {path}: {source}")]
     CreateAssetDirectory {
         path: PathBuf,
@@ -90,18 +96,41 @@ impl CreativeRuntime {
     }
 
     pub async fn ensure_ready(&self) -> Result<(), CreativeRuntimeError> {
+        self.ensure_profile_ready(self.profile).await
+    }
+
+    /// Ensures the native generation server is resident **with the requested
+    /// Krea profile**, restarting only sd-server when a different model is
+    /// loaded. A mismatched server that this process does not own (started by
+    /// another session) cannot be restarted from here and is reported as
+    /// [`CreativeRuntimeError::ProfileMismatch`].
+    pub async fn ensure_profile_ready(
+        &self,
+        profile: KreaQuantization,
+    ) -> Result<(), CreativeRuntimeError> {
+        let expected = krea_profile(profile).diffusion.filename;
+
         if self.vision.health().await.is_ok() {
             if let Ok(capabilities) = self.vision.generation_capabilities().await {
-                if capabilities.status == "ready" {
+                if capabilities.status == "ready" && capabilities.model.as_deref() == Some(expected)
+                {
                     return Ok(());
+                }
+                if capabilities.status == "ready" && !self.generation.is_running() {
+                    return Err(CreativeRuntimeError::ProfileMismatch {
+                        loaded: capabilities.model.unwrap_or_else(|| "unknown".to_owned()),
+                        requested: expected.to_owned(),
+                    });
                 }
             }
         }
 
-        if !self.generation.is_running() {
-            self.generation.start(self.profile, "127.0.0.1", 7861)?;
-        }
-        if !self.python.is_running() {
+        // Restart only the native generation server with the requested
+        // profile; reuse a resident Python runtime when it is healthy.
+        self.generation
+            .switch_profile(profile, "127.0.0.1", 7861)
+            .await?;
+        if self.vision.health().await.is_err() && !self.python.is_running() {
             self.python.start("127.0.0.1", 8765)?;
         }
 
@@ -109,17 +138,18 @@ impl CreativeRuntime {
         let deadline = tokio::time::Instant::now() + timeout;
         let mut last_error = None;
         while tokio::time::Instant::now() < deadline {
-            match self.vision.health().await {
-                Ok(_) => match self.vision.generation_capabilities().await {
-                    Ok(capabilities) if capabilities.status == "ready" => return Ok(()),
-                    Ok(capabilities) => {
-                        tracing::debug!(
-                            error = capabilities.error,
-                            "native generation runtime is still loading"
-                        );
+            match self.vision.generation_capabilities().await {
+                Ok(capabilities) if capabilities.status == "ready" => {
+                    if capabilities.model.as_deref() == Some(expected) {
+                        return Ok(());
                     }
-                    Err(error) => last_error = Some(error),
-                },
+                    // A foreign server answered — ours could not bind.
+                    return Err(CreativeRuntimeError::ProfileMismatch {
+                        loaded: capabilities.model.unwrap_or_else(|| "unknown".to_owned()),
+                        requested: expected.to_owned(),
+                    });
+                }
+                Ok(_) => {}
                 Err(error) => last_error = Some(error),
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -141,7 +171,9 @@ impl CreativeRuntime {
                     .unwrap_or_else(|| "generation failed".to_owned()),
             ));
         }
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+        // Krea at higher resolutions/step counts is slow (q4 @ 1024×1024,
+        // 8 steps ≈ 9 min on Apple Silicon); the cap must stay generous.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1200);
         while tokio::time::Instant::now() < deadline {
             let job = self.vision.generation_job(&initial.id).await?;
             match job.status.as_str() {
@@ -160,7 +192,7 @@ impl CreativeRuntime {
             }
         }
         Err(CreativeRuntimeError::Job(
-            "generation exceeded three minutes".to_owned(),
+            "generation exceeded twenty minutes".to_owned(),
         ))
     }
 

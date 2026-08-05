@@ -95,6 +95,42 @@ class NativeGenerationTests(unittest.TestCase):
             [base64.b64encode(b"reference-image").decode()],
         )
 
+    @patch("urllib.request.urlopen")
+    def test_submit_encodes_mask_images_best_effort(self, urlopen: object) -> None:
+        urlopen.return_value = JsonResponse({"id": "job_mask", "status": "queued"})
+        with TemporaryDirectory() as directory:
+            mask = Path(directory) / "hair-mask.png"
+            mask.write_bytes(b"mask-image")
+            client = StableDiffusionCppClient()
+
+            client.submit(
+                prompt="bob cut",
+                width=512,
+                height=512,
+                steps=4,
+                seed=9,
+                mask_images=(mask,),
+            )
+
+        request = urlopen.call_args.args[0]
+        body = json.loads(request.data)
+        self.assertEqual(
+            body["mask_images"],
+            [base64.b64encode(b"mask-image").decode()],
+        )
+        self.assertNotIn("ref_images", body)
+
+    @patch("urllib.request.urlopen")
+    def test_submit_omits_masks_when_absent(self, urlopen: object) -> None:
+        urlopen.return_value = JsonResponse({"id": "job_plain", "status": "queued"})
+        client = StableDiffusionCppClient()
+
+        client.submit(prompt="plain", width=512, height=512, steps=4, seed=9)
+
+        request = urlopen.call_args.args[0]
+        body = json.loads(request.data)
+        self.assertNotIn("mask_images", body)
+
 
 if __name__ == "__main__":
     unittest.main()

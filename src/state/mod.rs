@@ -1,5 +1,6 @@
 use crate::{
     models::{ImageRevision, Project, RevisionStatus, StoryboardFrame},
+    registry::ArtifactRegistry,
     timeline::Timeline,
 };
 use uuid::Uuid;
@@ -7,6 +8,10 @@ use uuid::Uuid;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AppState {
     pub project: Project,
+    /// The artifact registry — new domain model layered onto `Project`
+    /// (`docs/artifact-canvas.md` §3). Mutate it through
+    /// `registry::ops::execute`, never by editing `artifacts` directly.
+    pub registry: ArtifactRegistry,
     pub has_unsaved_changes: bool,
     pub selected_frame_id: Option<Uuid>,
 }
@@ -24,6 +29,7 @@ impl AppState {
             timeline: Timeline::default(),
             storyboard: Vec::new(),
         };
+        self.registry = ArtifactRegistry::default();
         self.has_unsaved_changes = true;
         self.selected_frame_id = None;
     }
@@ -221,6 +227,27 @@ mod tests {
             Some("assets/generated/frame.png")
         );
         assert_eq!(frame.revisions.len(), 1);
+    }
+
+    #[test]
+    fn creating_a_project_resets_the_registry() {
+        let mut state = AppState::default();
+        state
+            .registry
+            .create_artifact(
+                crate::registry::ArtifactKind::Character,
+                "mia".into(),
+                "Mia".into(),
+                None,
+                None,
+                None,
+            )
+            .expect("artifact should create");
+
+        state.create_project("A New Story");
+
+        assert!(state.registry.artifacts.is_empty());
+        assert!(state.registry.log.is_empty());
     }
 
     #[test]

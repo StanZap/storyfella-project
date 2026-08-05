@@ -1,6 +1,6 @@
 [lm_studio]
 base_url = "http://localhost:1234/v1"
-model = "local-model"
+model = "google/gemma-4-e4b"
 # api_key = "lm-studio"
 timeout_seconds = 60
 

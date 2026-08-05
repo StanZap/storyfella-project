@@ -83,6 +83,8 @@ class LoraSelection(BaseModel):
 class GenerateRequest(BaseModel):
     prompt: str
     reference_image_path: str | None = None
+    mask_path: str | None = None  # best-effort native mask input; the Rust
+    # pipeline composites as its guaranteed mechanism
     width: int = Field(default=1024, ge=256, le=2048)
     height: int = Field(default=1024, ge=256, le=2048)
     steps: int = Field(default=8, ge=1, le=50)

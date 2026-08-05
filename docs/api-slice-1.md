@@ -1,0 +1,107 @@
+# API slice 1 — artifact registry, operations, pipelines, `svs` CLI
+
+Status: implemented. The API-first slice of `docs/artifact-canvas.md` (§7
+operations + pipelines, §12 steps 1–2). No SQLite, no GUI work — the
+in-memory model and TOML `ProjectStore` are unchanged.
+
+## Decisions settled (with the user, per §13)
+
+1. **Execution model:** user-typed ops apply immediately and are logged;
+   LLM proposals (`svs stack propose`) are gated by approval. Adopted as
+   proposed.
+2. **Approval granularity:** checkpoints. The mask confirm in the `modify`
+   path is a `Checkpoint` step that blocks mid-stack; stack-level
+   pre-approval still gates LLM-proposed stacks before execution.
+3. **Ref format:** memorable names are the primary `c:` ref — `c:mia`
+   (case-insensitive exact match; duplicate names are rejected as
+   ambiguous). Full UUIDs, `c:` + UUID, and the 8-hex short id remain
+   accepted as fallbacks. Artifacts created without `--name` get a slug
+   derived from their description (`"Mia, a lighthouse keeper"` →
+   `mia-a-lighthouse-keeper`); variants are auto-named `{base}-{axis}`
+   (or `{base}-{slug}`) so every system-created key stays unique.
+4. **Native mask support for Krea:** unvalidated (sd.cpp `submit()` sends
+   no mask today), so the **composite fallback is primary** — the inpaint
+   pipeline generates with the reference image, then blends so every pixel
+   *outside* the confirmed mask is bit-identical to the original (feather
+   ramps inside the mask only). `mask_path` is carried in the
+   Rust ↔ Python `GenerateRequest` contract as best-effort native
+   passthrough (`mask_images` in the sd.cpp body) so a validated backend
+   can be flipped on later without a contract change.
+
+## Modules
+
+| Module | Contents |
+| --- | --- |
+| `src/registry/mod.rs` | Artifact model (kinds, variants, scenes, beats, layers, revisions, masks, drafts), one id space, `c:` ref resolution, parent/kind invariants, snapshot/restore undo, stopgap `ProjectFile` |
+| `src/registry/ops.rs` | Typed operation set (slice 1: create, variant, regenerate, compose, draft, modify), closed JSON vocabulary (`op`-tagged), compiler (`compile`), executor (`execute`), operation log |
+| `src/registry/pipeline.rs` | Linear fail-fast pipeline builder: closed `Step` vocabulary, typed handles (`ImageHandle`, `MaskHandle` → `SelectedMaskHandle`, `PromptHandle`, `PlanHandle`, …), static validation at `build()`, `GenerationBackend` trait, checkpoints, approval policies, `RunOptions` |
+| `src/registry/backend.rs` | `CreativeBackend` — the live backend (`CreativeRuntime` + `LmStudioClient`); LLM steps are soft dependencies that degrade to manual input |
+| `src/registry/image_ops.rs` | Pure image primitives: composite (masked blend), invert, feather, union — deterministic, property-tested |
+| `src/bin/svs.rs` | The `svs` CLI (clap, second binary on `src/lib.rs`) |
+| `src/vision/mod.rs` ↔ `python/models/schemas.py` | `mask_path` added to `GenerateRequest` on both sides |
+
+## Pipeline rules (as implemented)
+
+- Steps are a closed Rust enum; the VLLM combines kinds, never invents
+  them. LLM plan/draft steps degrade to manual input on failure — they
+  never hard-fail a stack.
+- `build()` validates: non-empty stacks, handle ordering, native mask ⇒
+  reference image, sizes (multiples of 32, 256..=2048), steps 1..=50,
+  ≤ 8 LoRAs with multipliers in -2..=2, model ∈ {krea-2-turbo-q2,
+  krea-2-turbo-q4} (Krea 2 is the product model).
+- Execution is linear and fail-fast; a rejected checkpoint ends the stack
+  cleanly (revision cancelled, op logged `rejected`); a failed step keeps
+  intermediates and fails the revision.
+- Undo is state restore (`ArtifactRegistry::snapshot`/`restore`), never
+  pipeline re-execution.
+- The `modify` compiler: `LoadImage → Segment(mask prompt) → Checkpoint
+  (confirm mask) → Generate(reference, inpaint prompt) → Composite`; the
+  confirmed mask is stored on the new revision (`masks`), keeping its
+  grounding prompt and score for follow-up edits.
+
+## CLI
+
+```sh
+svs --project p.json project p.json                 # load or create (stopgap JSON registry)
+svs --project p.json op create character "Mia, a lighthouse keeper" --name mia
+svs --project p.json op create scene "The kitchen at dusk" --name kitchen
+svs --project p.json op compose c:<scene> "Mia lights the lantern" --background c:<env> --layer c:<char>
+svs --project p.json op variant c:<char> "in rain gear" --axis outfit
+svs --project p.json op regenerate c:<char> "make it warmer" --seed 42 --steps 4 --size 768x448 --out golden/
+svs --project p.json op draft c:<story> "write the opening"          # LLM + approval checkpoint
+svs --project p.json op draft c:<story> "write the opening" --text "…"   # manual, no checkpoint
+svs --project p.json op modify c:<char> "change her hair" --mask-prompt "her hair" --inpaint-prompt "a bob cut" --approve auto --out golden/
+svs --project p.json stack run stack.json --approve auto             # the VLLM contract test bed
+svs --project p.json stack propose "Add a rainy variant of the kitchen scene"   # LM Studio → JSON
+svs --project p.json log [c:<ref>]
+```
+
+`--approve auto|interactive` (default interactive) resolves checkpoints;
+`--out <dir>` drops every intermediate (image, mask, composite) into a
+folder for human review — the manual golden-run tier. `stack run` persists
+already-applied ops even when a later op fails (fail-fast, intermediates
+kept).
+
+## Divergences from the design doc (deferred, by directive)
+
+- **No SQLite.** The CLI persists to a stopgap JSON `ProjectFile`
+  (`svs project <path>`, not `svs project open <path>` — the CLI is
+  one-shot, no session state). The TOML `ProjectStore` is untouched.
+- **No GUI work.** `AppState` gained a `registry: ArtifactRegistry` field
+  (layering only); `src/ui/` is untouched.
+- `paint_strokes` is vocabulary (a `Step` + builder method) but not
+  executable in slice 1; `describe`/`critique` LLM steps degrade to manual
+  input.
+
+## First CI surface
+
+- Builder validation tests (`src/registry/pipeline.rs`): empty stacks,
+  bounds, ordering, mask-without-reference.
+- Composite property tests (`src/registry/image_ops.rs`): pixels outside
+  the mask are bit-identical with and without feathering.
+- Execution tests with a fake backend: request bodies (prompt, reference,
+  mask, LoRA, size, seed), revision state transitions, checkpoint
+  accept/reject/degrade.
+- Contract tests: `mask_path` round-trips on both sides of the wire
+  (Rust `vision` tests, Python `test_contracts.py`,
+  `test_native_generation.py`).

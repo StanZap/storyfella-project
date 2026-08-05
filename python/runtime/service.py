@@ -155,6 +155,9 @@ class VisionService:
                         if request.reference_image_path
                         else None
                     ),
+                    mask_path=(
+                        Path(request.mask_path) if request.mask_path else None
+                    ),
                 )
             )
         except (ImageGenerationError, RuntimeError, ValueError) as error:
@@ -199,6 +202,7 @@ class VisionService:
                 reference_images=(Path(request.reference_image_path),)
                 if request.reference_image_path
                 else (),
+                mask_images=(Path(request.mask_path),) if request.mask_path else (),
             )
         except StableDiffusionCppError as error:
             return GenerationJobResponse(

@@ -23,14 +23,14 @@ pub struct SegmentRequest {
     pub device: Option<ComputeDevice>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SegmentPoint {
     pub x: f64,
     pub y: f64,
     pub label: u8,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SegmentBox {
     pub x_min: f64,
     pub y_min: f64,
@@ -83,6 +83,11 @@ pub struct GenerateRequest {
     pub prompt: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reference_image_path: Option<String>,
+    /// Mask-guided inpaint/outpaint input (same W×H output). The pipeline
+    /// layer composites as its guaranteed mechanism; this field is the
+    /// best-effort native passthrough when the backend accepts a mask.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mask_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -99,7 +104,7 @@ pub struct GenerateRequest {
     pub loras: Vec<LoraSelection>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct LoraSelection {
     pub path: String,
     pub multiplier: f32,
@@ -119,6 +124,7 @@ impl GenerateRequest {
         Self {
             prompt: prompt.into(),
             reference_image_path: None,
+            mask_path: None,
             width: None,
             height: None,
             steps: None,
@@ -337,6 +343,24 @@ mod tests {
         let value = serde_json::to_value(request).expect("request should serialize");
 
         assert_eq!(value["reference_image_path"], "assets/generated/frame.png");
+    }
+
+    #[test]
+    fn generation_request_omits_the_mask_when_absent() {
+        let request = GenerateRequest::new("a storyboard frame");
+        let value = serde_json::to_value(request).expect("request should serialize");
+
+        assert!(value.get("mask_path").is_none());
+    }
+
+    #[test]
+    fn generation_request_carries_an_explicit_mask_path() {
+        let mut request = GenerateRequest::new("bob cut");
+        request.reference_image_path = Some("assets/generated/frame.png".to_owned());
+        request.mask_path = Some("assets/masks/hair.png".to_owned());
+        let value = serde_json::to_value(request).expect("request should serialize");
+
+        assert_eq!(value["mask_path"], "assets/masks/hair.png");
     }
 
     #[test]
