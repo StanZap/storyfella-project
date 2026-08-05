@@ -1,8 +1,9 @@
 # API slice 1 — artifact registry, operations, pipelines, `svs` CLI
 
 Status: implemented. The API-first slice of `docs/ROADMAP.md` (§7
-operations + pipelines, §12 steps 1–2). No SQLite, no GUI work — the
-in-memory model and TOML `ProjectStore` are unchanged.
+operations + pipelines, §12 steps 1–3). SQLite persistence and the GUI
+save/open flow landed with the foundation (step 3); the artifact registry
+is persisted but not yet surfaced in Studio (step 4, the canvas).
 
 ## Decisions settled (with the user, per §13)
 
@@ -32,7 +33,7 @@ in-memory model and TOML `ProjectStore` are unchanged.
 
 | Module | Contents |
 | --- | --- |
-| `src/registry/mod.rs` | Artifact model (kinds, variants, scenes, beats, layers, revisions, masks, drafts), one id space, `c:` ref resolution, parent/kind invariants, snapshot/restore undo, stopgap `ProjectFile` |
+| `src/registry/mod.rs` | Artifact model (kinds, variants, scenes, beats, layers, revisions, masks, drafts), one id space, `c:` ref resolution, parent/kind invariants, snapshot/restore undo |
 | `src/registry/ops.rs` | Typed operation set (slice 1: create, variant, regenerate, compose, draft, modify), closed JSON vocabulary (`op`-tagged), compiler (`compile`), executor (`execute`), operation log |
 | `src/registry/pipeline.rs` | Linear fail-fast pipeline builder: closed `Step` vocabulary, typed handles (`ImageHandle`, `MaskHandle` → `SelectedMaskHandle`, `PromptHandle`, `PlanHandle`, …), static validation at `build()`, `GenerationBackend` trait, checkpoints, approval policies, `RunOptions` |
 | `src/registry/backend.rs` | `CreativeBackend` — the live backend (`CreativeRuntime` + `LmStudioClient`); LLM steps are soft dependencies that degrade to manual input |
@@ -64,7 +65,6 @@ in-memory model and TOML `ProjectStore` are unchanged.
 
 ```sh
 svs --project p.db project p.db                       # load or create (SQLite registry)
-svs --project p.db import legacy.svs-project.json     # one-time migration from the JSON stopgap
 svs --project p.db op create character "Mia, a lighthouse keeper" --name mia
 svs --project p.db op create scene "The kitchen at dusk" --name kitchen
 svs --project p.db op compose c:<scene> "Mia lights the lantern" --background c:<env> --layer c:<char>
@@ -142,7 +142,7 @@ config points at the gemma model used on the dev machine.
   (schema v2 `project_json` on the `projects` row); the old beat/timeline
   model survives until the canvas (roadmap item 4) replaces it. `svs
   project <path>` stays one-shot, no session state.
-- **No canvas work.** `src/ui/` gained real project open/save/import and
+- **No canvas work.** `src/ui/` gained real project open/save and
   autosave; the artifact registry is persisted but not yet surfaced in
   Studio (item 4).
 - `paint_strokes` is vocabulary (a `Step` + builder method) but not

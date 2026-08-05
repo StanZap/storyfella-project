@@ -414,12 +414,12 @@ Decisions:
 
 ## 10. Persistence: SQLite
 
-Decision: SQLite replaces the TOML `ProjectStore` as the project format.
-The CLI's stopgap JSON registry file was the first migration target — `svs
-import <legacy.json>` ships today, and the GUI imports legacy TOML projects
-from the Projects screen. Assets (PNGs) stay as files on disk; the database
-stores relative paths (this also fixes the known "absolute asset paths" gap).
-Schema versioning via a `schema_meta` table.
+Decision: SQLite is the project format (`.svs-project.db`); the pre-SQLite
+formats (TOML `ProjectStore`, stopgap JSON registry) were removed with their
+one-time imports — the current format evolves via `schema_meta` migrations.
+Assets (PNGs) stay as files on disk; the database stores relative paths
+(this also fixes the known "absolute asset paths" gap). Schema versioning
+via a `schema_meta` table.
 
 ```sql
 CREATE TABLE schema_meta (version INTEGER NOT NULL, applied_at TEXT NOT NULL);
@@ -529,16 +529,14 @@ reference).
 6. **Krea mask input:** validate whether the native backend accepts a mask
    directly or the adapter composites the inpaint region.
 7. **SQLite crate** — **resolved:** `rusqlite` (bundled), one writer
-   connection + WAL (`src/persistence/`). TOML coexistence: `ProjectStore`
-   is now read-only legacy input (GUI import).
+   connection + WAL (`src/persistence/`). The TOML `ProjectStore` and the
+   stopgap JSON registry were removed with their imports; formats evolve
+   via SQLite migrations.
 
 ## 12. Suggested implementation order
 
 **This section is the status tracker for planned work** — every feature we
-plan to ship, with its status; update it when work lands. The API-first
-directive is fulfilled: the in-memory model + TOML `ProjectStore` stay as-is
-while items 1–2 are validated through tests and the CLI; SQLite and GUI work
-remain deferred.
+plan to ship, with its status; update it when work lands.
 
 1. **The API:** artifact domain model (artifact kinds, variants, scenes,
    beats — the registry), typed operation set + pipeline builder (closed
@@ -551,13 +549,10 @@ remain deferred.
    drives and validates the API without the UI. — **✅ implemented**
 3. **SQLite foundation:** schema + storage layer (§10) — `src/persistence/`
    (`ProjectDb`: versioned migrations via `schema_meta` (v1 §10 tables, v2
-   `project_json` for the legacy storyboard), WAL, full-replace snapshot
-   writes, lossless round-trip); the CLI's stopgap JSON project file is
-   replaced by a SQLite database (`.svs-project.db`) with a one-time
-   migration (`svs import <legacy.json>`); the GUI now opens/creates/
-   imports projects from the Projects screen and saves via autosave or
-   Cmd/Ctrl+S (legacy TOML projects import into a new database). —
-   **✅ implemented**
+   `project_json` for the storyboard), WAL, full-replace snapshot writes,
+   lossless round-trip); the CLI persists to `.svs-project.db`; the GUI
+   opens/creates projects from the Projects screen and saves via autosave
+   or Cmd/Ctrl+S. — **✅ implemented**
 4. **The canvas:** artboard viewport, artifact cards, prompt bar (slash
    parsing, autocomplete, `c:` chips). — **⏳ planned**
 5. **Studio integration:** scenes group the timeline; re-sync flows per

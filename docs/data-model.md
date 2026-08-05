@@ -66,70 +66,35 @@ state API is bypassed.
 
 ## Persistence format
 
-`ProjectStore` (`src/models/persistence.rs`) serializes `Project` to pretty
-TOML and reads it back with strict parsing errors. Optional fields are omitted
-when empty. An illustrative project file:
-
-```toml
-id = "550e8400-e29b-41d4-a716-446655440000"
-name = "The Lighthouse"
-
-[[timeline.clips]]
-id = "17e29460-a0f4-47ab-a1d6-c22c60e2f078"
-label = "Beat 1"
-start_seconds = 0.0
-duration_seconds = 5.0
-
-[[storyboard]]
-id = "0e5d0c53-4ce8-42a4-a11f-1d0e5f5ac001"
-prompt = "A quiet lighthouse above a silver sea at dusk"
-asset_path = "/Users/me/Library/Application Support/Smart Visual Sequencer/assets/generated/9f2c…png"
-active_revision_id = "c11…"
-
-[[storyboard.revisions]]
-id = "c11…"
-prompt = "A quiet lighthouse above a silver sea at dusk"
-asset_path = "/Users/me/…/generated/9f2c…png"
-status = "completed"
-
-[[storyboard.revisions]]
-id = "d4e…"
-prompt = "make the light warmer"
-status = "queued"
-```
-
-`PersistenceError` distinguishes read, write, parse, and serialize failures
-with the offending path attached, so the UI can present actionable messages.
-
 ### SQLite (the project format)
 
 `ProjectDb` (`src/persistence/mod.rs`) is SQLite storage for the project:
 one `projects` row, then `artifacts`, `revisions`, `masks`, `layers`,
 `lora_registry` (schema-only until the LoRA feature lands), and
-`operation_log`. The legacy `Project` model (storyboard + timeline) is
-carried as `project_json` on the `projects` row (schema v2) until the
-canvas replaces it. The registry stays the in-memory source of truth; a
-save replaces the snapshot rows in one transaction. Schema versioning lives
-in `schema_meta`; migrations are appended scripts applied on open. The `svs`
-CLI persists to `.svs-project.db`; `svs import <legacy.json>` migrates a
-stopgap JSON project in one step (refusing to clobber a non-empty database).
+`operation_log`. The `Project` model (storyboard + timeline) is carried as
+`project_json` on the `projects` row (schema v2) until the canvas replaces
+it. The registry stays the in-memory source of truth; a save replaces the
+snapshot rows in one transaction. Schema versioning lives in `schema_meta`;
+migrations are appended scripts applied on open — the way the current
+format evolves (no legacy formats are parsed; the TOML `ProjectStore` was
+removed with the pre-SQLite formats). The `svs` CLI persists to
+`.svs-project.db`.
 
 ### The GUI save flow
 
 `AppState.project_path` names the open database file. The Projects screen
 scans `paths.project_dir` (config) for `.svs-project.db` files, creates new
-projects as `slug.svs-project.db`, and imports legacy files: `.toml`
-(`ProjectStore` → new database), `.json` (stopgap registry), or `.db`
-(opened in place). The workspace autosaves per the General settings
-select — after every change, every minute, or off — and `Cmd/Ctrl+S`
-saves manually; saving clears `has_unsaved_changes`.
+projects as `slug.svs-project.db`, and opens any `.db` file in place via
+the Open… picker. The workspace autosaves per the General settings select
+— after every change, every minute, or off — and `Cmd/Ctrl+S` saves
+manually; saving clears `has_unsaved_changes`.
 
 ## Known gaps
 
 These are documented deliberately because persistence is the current boundary
 between "in-memory prototype" and "real product":
 
-1. ~~**Not wired into the UI.**~~ The Projects screen opens/creates/imports
+1. ~~**Not wired into the UI.**~~ The Projects screen opens/creates
    `.svs-project.db` files and the workspace autosaves or saves manually
    (Cmd/Ctrl+S); saving clears the dirty flag.
 2. ~~**`has_unsaved_changes` is never cleared.**~~ Cleared on every successful
@@ -139,8 +104,8 @@ between "in-memory prototype" and "real product":
    machines (or even directories) loses its image references. A stable,
    relative-to-project asset reference is needed before shipping.
 4. ~~**No schema version.**~~ SQLite carries versioned migrations
-   (`schema_meta`, `src/persistence/`); the TOML `Project` format is only
-   read for legacy import now.
+   (`schema_meta`, `src/persistence/`); the current format evolves in
+   place via migrations.
 5. **No generated-asset index.** `src/assets/mod.rs` (`AssetCatalog`) is a stub;
    there is no central registry of imported/generated files, thumbnails, or
    usage counts.

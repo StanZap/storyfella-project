@@ -8,8 +8,7 @@
 //! (`docs/ROADMAP.md` §7).
 //!
 //! The project is a SQLite database (`.svs-project.db` by default, see
-//! `src/persistence/` and `docs/ROADMAP.md` §10); `svs import` migrates a
-//! legacy JSON project file in one step.
+//! `src/persistence/` and `docs/ROADMAP.md` §10).
 
 use std::{
     io::{self, BufRead, Write},
@@ -31,9 +30,7 @@ use smart_visual_sequencer::registry::pipeline::{
     ApprovalPolicy, BlockedOn, Decision, GenerationBackend, GenerationOverrides, InputPurpose,
     OutputKind, PipelineRun, RunOptions,
 };
-use smart_visual_sequencer::registry::{
-    ArtifactKind, ArtifactRegistry, ProjectFile, Ref, VariantAxis,
-};
+use smart_visual_sequencer::registry::{ArtifactKind, ArtifactRegistry, Ref, VariantAxis};
 use smart_visual_sequencer::runtime::KreaQuantization;
 
 #[derive(Parser)]
@@ -55,9 +52,6 @@ struct Cli {
 enum Command {
     /// Open (load or create) the project database.
     Project { path: PathBuf },
-    /// One-time migration: import a legacy JSON project file into the
-    /// SQLite database given by `--project`.
-    Import { path: PathBuf },
     /// Apply a typed operation.
     Op {
         #[command(subcommand)]
@@ -288,18 +282,17 @@ fn main() -> Result<()> {
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Project { path } => {
-            let file = load_project(&path)?;
+            let registry = load_project(&path)?;
             println!(
                 "project {} ready ({} artifacts, {} log entries)",
                 path.display(),
-                file.registry.artifacts.len(),
-                file.registry.log.len()
+                registry.artifacts.len(),
+                registry.log.len()
             );
             Ok(())
         }
-        Command::Import { path } => import_project(&cli.project, &path),
         Command::Op { op } => {
-            let mut file = load_project(&cli.project)?;
+            let mut registry = load_project(&cli.project)?;
             let (operation, cli_options) = build_operation(op)?;
             let needs_backend =
                 operation_needs_backend(&operation, cli_options.manual_text.as_deref());
@@ -310,15 +303,15 @@ async fn run(cli: Cli) -> Result<()> {
                 None
             };
             let outcome = execute_one(
-                &mut file.registry,
+                &mut registry,
                 &operation,
                 backend.as_ref().map(|b| b as &dyn GenerationBackend),
                 &cli_options,
                 OpOrigin::User,
             )
             .await?;
-            print_outcome(&file.registry, &operation, &outcome);
-            save_project(&cli.project, &file)
+            print_outcome(&registry, &operation, &outcome);
+            save_project(&cli.project, &registry)
         }
         Command::Stack { stack } => match stack {
             StackCommand::Run {
@@ -327,12 +320,11 @@ async fn run(cli: Cli) -> Result<()> {
                 out,
                 approve,
             } => {
-                let mut file = load_project(&cli.project)?;
+                let mut registry = load_project(&cli.project)?;
                 // Save even on failure: a stack that fails partway keeps the
                 // ops already applied (fail-fast, intermediates preserved).
-                let result =
-                    run_stack(&mut file.registry, &path, origin.into(), out, approve).await;
-                save_project(&cli.project, &file)?;
+                let result = run_stack(&mut registry, &path, origin.into(), out, approve).await;
+                save_project(&cli.project, &registry)?;
                 result
             }
             StackCommand::Propose { message, out } => {
@@ -340,8 +332,8 @@ async fn run(cli: Cli) -> Result<()> {
             }
         },
         Command::Log { target } => {
-            let file = load_project(&cli.project)?;
-            print_log(&file.registry, target.as_ref());
+            let registry = load_project(&cli.project)?;
+            print_log(&registry, target.as_ref());
             Ok(())
         }
         Command::Runtime { runtime } => match runtime {
@@ -388,40 +380,20 @@ fn kill_resident_generation_servers() -> Result<()> {
 
 /// Loads the registry snapshot from the SQLite database, creating the
 /// database (and schema) on first use.
-fn load_project(path: &Path) -> Result<ProjectFile> {
+fn load_project(path: &Path) -> Result<ArtifactRegistry> {
     let db = ProjectDb::open(path).context("could not open project database")?;
     let stored = db
         .load()
         .context("could not load registry from project database")?;
-    Ok(ProjectFile {
-        version: 1,
-        registry: stored.registry,
-    })
+    Ok(stored.registry)
 }
 
-/// Replaces the stored snapshot with the in-memory registry (same semantics
-/// as the old stopgap JSON write: the database is a snapshot, not an event
-/// log).
-fn save_project(path: &Path, file: &ProjectFile) -> Result<()> {
+/// Replaces the stored snapshot with the in-memory registry (the database is
+/// a snapshot, not an event log).
+fn save_project(path: &Path, registry: &ArtifactRegistry) -> Result<()> {
     let db = ProjectDb::open(path).context("could not open project database")?;
-    db.save_registry(&file.registry)
+    db.save_registry(registry)
         .context("could not save registry to project database")
-}
-
-/// One-time migration from the legacy JSON `ProjectFile` (`.svs-project.json`)
-/// into the SQLite database at `db_path`. Refuses to clobber a database that
-/// already holds artifacts.
-fn import_project(db_path: &Path, legacy_path: &Path) -> Result<()> {
-    let db = ProjectDb::open(db_path).context("could not open project database")?;
-    let (artifacts, log) = db
-        .import_json(legacy_path)
-        .context("could not import legacy project")?;
-    println!(
-        "imported {artifacts} artifacts and {log} log entries from {} into {}",
-        legacy_path.display(),
-        db_path.display()
-    );
-    Ok(())
 }
 
 // ------------------------------------------------------------------ operations
@@ -950,16 +922,16 @@ async fn run_stack(
 /// The VLLM contract test bed: free text → an operation stack the model
 /// emits as JSON against the closed vocabulary Rust defines.
 async fn propose_stack(project_path: &Path, message: &str, out: Option<PathBuf>) -> Result<()> {
-    let file = load_project(project_path)?;
+    let registry = load_project(project_path)?;
     let config = AppConfig::load().context("could not load config/app.toml")?;
     let client = LmStudioClient::new(config.lm_studio.clone())
         .map_err(|error| anyhow!("could not build the LM Studio client: {error}"))?;
 
     let mut registry_listing = String::new();
-    for artifact in file.registry.iter() {
+    for artifact in registry.iter() {
         registry_listing.push_str(&format!(
             "  {} {} {:?}",
-            file.registry.ref_of(artifact.id),
+            registry.ref_of(artifact.id),
             artifact.kind,
             artifact.name
         ));
@@ -1067,51 +1039,6 @@ fn origin_str(origin: OpOrigin) -> &'static str {
 mod tests {
     use super::*;
     use smart_visual_sequencer::registry::pipeline::{OutputKind, PipelineRun, StepOutput};
-
-    #[test]
-    fn import_migrates_a_legacy_json_project_and_refuses_to_clobber() {
-        let dir = std::env::temp_dir().join(format!("svs-import-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let legacy = dir.join("legacy.svs-project.json");
-        let db_path = dir.join("project.db");
-
-        let mut file = ProjectFile::default();
-        file.registry
-            .artifacts
-            .push(smart_visual_sequencer::registry::Artifact {
-                id: Uuid::new_v4(),
-                kind: smart_visual_sequencer::registry::ArtifactKind::Story,
-                name: "The Lighthouse".to_owned(),
-                description: "A quiet lighthouse above a silver sea".to_owned(),
-                variant_of: None,
-                variant_axis: None,
-                parent_id: None,
-                composition: None,
-                active_revision_id: None,
-                revisions: Vec::new(),
-                drafts: Vec::new(),
-            });
-        std::fs::write(
-            &legacy,
-            serde_json::to_string_pretty(&file).expect("legacy file should serialize"),
-        )
-        .unwrap();
-
-        import_project(&db_path, &legacy).expect("import should succeed");
-        let db = ProjectDb::open(&db_path).expect("database should open");
-        let stored = db.load().expect("database should load");
-        assert_eq!(stored.registry.artifacts.len(), 1);
-
-        let error = import_project(&db_path, &legacy).expect_err("import must refuse to clobber");
-        assert!(
-            error
-                .chain()
-                .any(|cause| cause.to_string().contains("refusing to import over")),
-            "unexpected error: {error:?}"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 
     #[test]
     fn golden_outputs_are_copied_with_step_prefixed_names() {

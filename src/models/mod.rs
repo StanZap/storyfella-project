@@ -1,7 +1,3 @@
-mod persistence;
-
-pub use persistence::{PersistenceError, ProjectStore};
-
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -57,8 +53,7 @@ pub enum RevisionStatus {
     Cancelled,
 }
 
-// TODO: This legacy storyboard model is transitional: SQLite
-// (`src/persistence/`) carries versioned migrations and the GUI persists
-// there now; the TOML `ProjectStore` is a one-time import path only. Delete
-// `Project`/`StoryboardFrame`/`ProjectStore` when the canvas (roadmap item
-// 4) replaces this model.
+// TODO: This storyboard model is transitional: SQLite (`src/persistence/`)
+// carries versioned migrations and the GUI persists there now. Delete
+// `Project`/`StoryboardFrame` when the canvas (roadmap item 4) replaces this
+// model.

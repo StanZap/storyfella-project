@@ -1,9 +1,9 @@
-//! SQLite persistence for the artifact registry (`docs/ROADMAP.md` §10).
+//! SQLite persistence for the artifact registry + legacy storyboard
+//! (`docs/ROADMAP.md` §10).
 //!
 //! The registry stays the in-memory source of truth for operations; the
-//! database is a snapshot written after each applied operation — the same
-//! semantics as the stopgap JSON `ProjectFile` it replaces. Each save
-//! replaces the registry rows in one transaction (with
+//! database is a snapshot written after each applied operation. Each save
+//! replaces the snapshot rows in one transaction (with
 //! `PRAGMA defer_foreign_keys` so the circular `artifacts ↔ revisions`
 //! references can be written in any order). `lora_registry` is schema-only
 //! until the LoRA registry feature lands (§12 item 6).
@@ -36,7 +36,7 @@ use crate::{
     registry::{
         ops::{Operation, OperationLogEntry},
         Artifact, ArtifactRegistry, ArtifactRevision, BeatComposition, CompositionMode, Layer,
-        ProjectFile, StoredMask, StoryDraft,
+        StoredMask, StoryDraft,
     },
 };
 
@@ -90,18 +90,6 @@ pub enum StoreError {
         path: PathBuf,
         source: serde_json::Error,
     },
-    #[error("could not read legacy project file {path}: {source}")]
-    Import {
-        path: PathBuf,
-        source: std::io::Error,
-    },
-    #[error("could not parse legacy project file {path}: {source}")]
-    ImportParse {
-        path: PathBuf,
-        source: serde_json::Error,
-    },
-    #[error("refusing to import over {path}: database already contains {count} artifacts")]
-    NotEmpty { path: PathBuf, count: usize },
     #[error("could not load registry from {path}: {source}")]
     Load {
         path: PathBuf,
@@ -330,32 +318,6 @@ impl ProjectDb {
             path: self.path.clone(),
             source,
         })
-    }
-
-    /// One-time migration from a legacy stopgap JSON `ProjectFile` into this
-    /// database (`svs import` and the GUI import flow). Refuses to clobber a
-    /// database that already holds artifacts. Returns the number of imported
-    /// artifacts and log entries.
-    pub fn import_json(&self, legacy_path: &Path) -> Result<(usize, usize), StoreError> {
-        let contents =
-            std::fs::read_to_string(legacy_path).map_err(|source| StoreError::Import {
-                path: legacy_path.to_path_buf(),
-                source,
-            })?;
-        let file: ProjectFile =
-            serde_json::from_str(&contents).map_err(|source| StoreError::ImportParse {
-                path: legacy_path.to_path_buf(),
-                source,
-            })?;
-        let existing = self.load()?;
-        if !existing.registry.artifacts.is_empty() {
-            return Err(StoreError::NotEmpty {
-                path: self.path.clone(),
-                count: existing.registry.artifacts.len(),
-            });
-        }
-        self.save_registry(&file.registry)?;
-        Ok((file.registry.artifacts.len(), file.registry.log.len()))
     }
 
     /// Loads the project row, the legacy `Project` model, and the full
@@ -1345,43 +1307,6 @@ mod tests {
             .expect("save_project should succeed on v2");
         let stored = db.load().expect("load should succeed");
         assert_eq!(stored.project.name, "Migrated");
-        clean_up(&path);
-    }
-
-    #[test]
-    fn import_json_migrates_and_refuses_to_clobber() {
-        let (path, db) = temp_db();
-        let legacy = std::env::temp_dir().join(format!("svs-legacy-{}.json", Uuid::new_v4()));
-        let mut file = ProjectFile::default();
-        file.registry.artifacts.push(Artifact {
-            id: Uuid::new_v4(),
-            kind: ArtifactKind::Story,
-            name: "legacy".to_owned(),
-            description: "A legacy JSON project".to_owned(),
-            variant_of: None,
-            variant_axis: None,
-            parent_id: None,
-            composition: None,
-            active_revision_id: None,
-            revisions: Vec::new(),
-            drafts: Vec::new(),
-        });
-        std::fs::write(&legacy, serde_json::to_string(&file).expect("serialize"))
-            .expect("write legacy file");
-
-        let (artifacts, log) = db.import_json(&legacy).expect("import should succeed");
-        assert_eq!(artifacts, 1);
-        assert_eq!(log, 0);
-        assert_eq!(db.load().expect("load").registry.artifacts.len(), 1);
-
-        let error = db
-            .import_json(&legacy)
-            .expect_err("import must refuse to clobber");
-        match error {
-            StoreError::NotEmpty { count, .. } => assert_eq!(count, 1),
-            other => panic!("expected NotEmpty, got {other}"),
-        }
-        let _ = std::fs::remove_file(&legacy);
         clean_up(&path);
     }
 

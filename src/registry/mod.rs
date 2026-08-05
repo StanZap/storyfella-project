@@ -3,9 +3,8 @@
 //! One unified id space for every artifact (story, scene, beat, character,
 //! environment, object); `c:<ref>` references resolve here. This is new
 //! domain-model work layered onto the existing `Project` model: the registry
-//! lives alongside `Project` in `AppState`, and the TOML `ProjectStore`
-//! stays untouched (SQLite lives in `src/persistence/` — see
-//! `docs/ROADMAP.md` §10).
+//! lives alongside `Project` in `AppState` (SQLite lives in
+//! `src/persistence/` — see `docs/ROADMAP.md` §10).
 //!
 //! Invariants maintained by the registry API (mirroring the planned SQL
 //! schema in §10):
@@ -300,25 +299,6 @@ pub struct ArtifactRegistry {
     /// pipeline re-execution).
     #[serde(default)]
     pub log: Vec<OperationLogEntry>,
-}
-
-/// The stopgap project file format kept for legacy JSON import
-/// (`svs import`); SQLite (`src/persistence/`) is the project format now.
-/// Contains only the registry; the `Project`/storyboard continues to use the
-/// TOML `ProjectStore`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ProjectFile {
-    pub version: u32,
-    pub registry: ArtifactRegistry,
-}
-
-impl Default for ProjectFile {
-    fn default() -> Self {
-        Self {
-            version: 1,
-            registry: ArtifactRegistry::default(),
-        }
-    }
 }
 
 impl ArtifactRegistry {

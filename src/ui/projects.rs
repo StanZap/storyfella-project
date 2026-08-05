@@ -2,10 +2,7 @@ use std::path::{Path, PathBuf};
 
 use dioxus::prelude::*;
 
-use crate::{
-    app::AppConfig, models::ProjectStore, persistence::ProjectDb, registry::ArtifactRegistry,
-    state::AppState,
-};
+use crate::{app::AppConfig, persistence::ProjectDb, state::AppState};
 
 use super::icons::{Icon, IconName};
 
@@ -86,23 +83,26 @@ pub fn Projects(
         }
     };
 
-    let import = {
+    let open_dialog = {
         let project_dir = config.project_dir.clone();
         let mut status = status;
         move |event: MouseEvent| {
             let Some(picked) = rfd::FileDialog::new()
-                .set_title("Import project")
-                .add_filter("Project", &["toml", "json", "db"])
+                .set_title("Open project")
+                .add_filter("Project", &["db"])
                 .pick_file()
             else {
                 return;
             };
-            match import_project_file(&project_dir, &picked, app_state) {
+            match open_project_file(&picked, app_state) {
                 Ok(()) => {
                     status.set(None);
                     on_open.call(event);
                 }
-                Err(error) => status.set(Some(error)),
+                Err(error) => status.set(Some(format!(
+                    "could not open {}: {error}",
+                    project_dir.display()
+                ))),
             }
         }
     };
@@ -118,9 +118,9 @@ pub fn Projects(
                     }
                     button {
                         class: "flex h-9 items-center gap-2 rounded-xl bg-white/[0.05] px-4 text-xs font-medium text-zinc-300 transition hover:bg-white/[0.09] hover:text-white",
-                        onclick: import,
+                        onclick: open_dialog,
                         Icon { name: IconName::Arrow, class: "size-3.5 rotate-180" }
-                        "Import"
+                        "Open…"
                     }
                 }
 
@@ -215,56 +215,14 @@ fn create_project_file(
     Ok(())
 }
 
-/// One-time migration into the projects directory: a legacy TOML project
-/// (`ProjectStore`) becomes a new database carrying the storyboard; a
-/// legacy JSON registry file (`svs import` format) becomes a database with
-/// the registry; a `.db` file is opened in place.
-fn import_project_file(
-    project_dir: &Path,
-    legacy_path: &Path,
-    mut app_state: Signal<AppState>,
-) -> Result<(), String> {
-    match legacy_path.extension().and_then(|ext| ext.to_str()) {
-        Some("toml") => {
-            let project = ProjectStore::load(legacy_path)
-                .map_err(|error| format!("could not read legacy project: {error}"))?;
-            std::fs::create_dir_all(project_dir).map_err(|error| error.to_string())?;
-            let path = unique_project_path(project_dir, &project.name);
-            let db = ProjectDb::open(&path).map_err(|error| error.to_string())?;
-            db.save_project(&project, &ArtifactRegistry::default())
-                .map_err(|error| error.to_string())?;
-            let stored = db.load().map_err(|error| error.to_string())?;
-            app_state.write().open_project(stored, path);
-            Ok(())
-        }
-        Some("json") => {
-            let stem = legacy_path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or("imported");
-            std::fs::create_dir_all(project_dir).map_err(|error| error.to_string())?;
-            let path = unique_project_path(project_dir, stem);
-            let db = ProjectDb::open(&path).map_err(|error| error.to_string())?;
-            db.import_json(legacy_path)
-                .map_err(|error| format!("could not import legacy project: {error}"))?;
-            let stored = db.load().map_err(|error| error.to_string())?;
-            app_state.write().open_project(stored, path);
-            Ok(())
-        }
-        Some("db") => {
-            let stored = ProjectDb::open(legacy_path)
-                .and_then(|db| db.load())
-                .map_err(|error| format!("could not open project: {error}"))?;
-            app_state
-                .write()
-                .open_project(stored, legacy_path.to_path_buf());
-            Ok(())
-        }
-        _ => Err(format!(
-            "{} is not a project file (expected .toml, .json, or .db)",
-            legacy_path.display()
-        )),
-    }
+/// Opens any `.svs-project.db` file in place (the file picker path;
+/// the Recent list is the same flow for the projects directory).
+fn open_project_file(path: &Path, mut app_state: Signal<AppState>) -> Result<(), String> {
+    let stored = ProjectDb::open(path)
+        .and_then(|db| db.load())
+        .map_err(|error| format!("could not open project: {error}"))?;
+    app_state.write().open_project(stored, path.to_path_buf());
+    Ok(())
 }
 
 /// `"My Story"` → `my-story.svs-project.db`; an existing file gets a `-2`,
