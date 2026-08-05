@@ -166,13 +166,22 @@ The third proof of concept runs SAM 2.1 Tiny behind `/segment` with point or box
 
 ## Roadmap
 
-1. Connect Canvas submissions to the typed operation layer (`src/registry/`)
-   and LM Studio proposals (the vocabulary exists; `svs stack propose` is the
-   contract test bed).
-2. Add the interactive-first job scheduler and wire Krea generation results into storyboard frames.
-3. Wire Python/native runtime lifecycle, health, and resident-model state into the shell.
-4. Add versioned project persistence, generated-asset indexing, and autosave.
-5. Wire model-download progress/cancellation, LoRA discovery, and runtime installation into Settings.
-6. Connect grounded segmentation to image editing and benchmark SAM 3.1 on Linux/CUDA.
-7. Complete Q2/Q4 warm-latency and peak-memory gates on 24 GiB Metal and CUDA targets.
-8. Add evaluator metrics, API integration tests, and macOS/Linux platform CI coverage.
+Every feature we plan to ship, with its status — this table is the single
+source of truth for planned work. Design order: `docs/artifact-canvas.md`
+§12; API-slice details: `docs/api-slice-1.md`. Update this table when work
+lands.
+
+| Task | Status |
+| --- | --- |
+| Typed operation/planner layer: artifact registry, operations, pipelines, `svs` CLI, mask-edit path (`modify`), `mask_path` contract | ✅ Done (API slice) — needs live validation of `modify`/`stack propose` on Linux/CUDA |
+| Connect Canvas submissions to the operation layer and LM Studio proposals | 🔜 Next |
+| SQLite persistence (replaces the stopgap JSON project file) + TOML import | ⏳ Planned |
+| Creation canvas: artboard, artifact cards, prompt bar (`/op`, `c:` chips) | ⏳ Planned |
+| Studio integration: scenes group the timeline, mode-dependent re-sync | ⏳ Planned |
+| Interactive-first job scheduler wired into storyboard frames | ⏳ Planned |
+| LoRA registry UI + auto-injection into generations | ⏳ Planned |
+| Grounded segmentation → image editing in the UI; benchmark SAM on Linux/CUDA | ⏳ Planned (CLI mask path exists) |
+| Storyfella DSL (in-repo lexer/parser/compiler, writer surface) | ⏳ Planned |
+| Model-download progress/cancellation, runtime installation in Settings | ⏳ Planned |
+| Q2/Q4 warm-latency and peak-memory gates on 24 GiB Metal and CUDA | ⏳ Planned (CUDA target pending) |
+| Evaluator metrics, API integration tests, macOS/Linux platform CI | ⏳ Planned |
