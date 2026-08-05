@@ -12,11 +12,19 @@ use crate::{
 
 use super::pipeline::{GenerationBackend, PipelineError, PlannedEdit};
 
-/// The real backend the CLI (and later the UI) executes pipelines against.
+/// The real backend the CLI (and the canvas) executes pipelines against.
 #[derive(Clone)]
 pub struct CreativeBackend {
     runtime: CreativeRuntime,
     llm: Option<LmStudioClient>,
+}
+
+impl PartialEq for CreativeBackend {
+    /// The runtime is the identity — the LLM client is a soft dependency
+    /// that does not affect reactivity.
+    fn eq(&self, other: &Self) -> bool {
+        self.runtime == other.runtime
+    }
 }
 
 impl CreativeBackend {
@@ -37,6 +45,12 @@ impl CreativeBackend {
 
     pub fn profile(&self) -> KreaQuantization {
         self.runtime.profile()
+    }
+
+    /// The [`CreativeRuntime`] this backend drives (the Settings screen
+    /// controls the same processes the canvas generates through).
+    pub fn runtime(&self) -> CreativeRuntime {
+        self.runtime.clone()
     }
 
     /// Ensures the native server is resident with the requested profile.

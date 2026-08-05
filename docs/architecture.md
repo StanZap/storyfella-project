@@ -20,10 +20,11 @@ between product code and machine-learning code:
 ```text
 ┌────────────────────────────── Rust (Dioxus desktop) ──────────────────────────────┐
 │                                                                                    │
-│  src/ui/          Workspace shell, Studio (Canvas/Storyboard/Timeline), Settings    │
-│  src/state/       AppState: current project, selection, revision lifecycle          │
-│  src/models/      Project / StoryboardFrame / ImageRevision, TOML persistence       │
-│  src/timeline/    Clip / Timeline domain types                                      │
+│  src/ui/          Workspace shell, Canvas (artifact workspace), Settings             │
+│  src/state/       AppState: registry, selection, undo/redo stacks                   │
+│  src/registry/    Artifact model, typed ops + pipelines, slash parser,               │
+│                   CreativeBackend (live backend)                                    │
+│  src/persistence/ ProjectDb (SQLite, versioned migrations)                          │
 │  src/llm/         LmStudioClient (OpenAI-compatible chat completions)               │
 │  src/vision/      VisionClient (typed HTTP client for the Python runtime)           │
 │  src/runtime/     CreativeRuntime facade + PythonRuntime + GenerationRuntime +      │
@@ -50,44 +51,42 @@ The native generation server is started with `--listen-ip 127.0.0.1
 
 ## The prompt-to-revision flow
 
-The Canvas is the primary workspace. Submitting a prompt creates a story beat;
-generation turns that beat into an image; follow-ups turn the current frame
-into a reference image for the next revision.
+The Canvas is the primary workspace. A slash command in the composer parses
+into a typed operation (`src/registry/slash.rs`); model-only operations
+(`create`, `variant`) apply instantly, while `regenerate`/`modify` run their
+pipeline against `CreativeBackend` in a spawned task.
 
 ```text
-Canvas prompt
-    │  state::AppState::add_storyboard_beat
+Composer: /create character Mia…  /variant c:mia …  /regenerate c:mia …
+    │  slash::parse_slash → Operation (compile validates against the registry)
     ▼
-Storyboard beat (StoryboardFrame) ──▶ Timeline clip (5 s, appended)
-    │  user clicks "Generate image"
-    ▼
-start_generation (src/ui/editor.rs)
-    │  app_state.start_revision → Queued
-    │  CreativeRuntime::ensure_ready (cold start: launch sd-server + python)
-    │  app_state.update_revision → Generating
-    │  VisionClient::submit_generation(POST /generation/jobs, priority=interactive)
-    ▼
-sd.cpp generates into python's SVS_GENERATED_DIR
-    │  CreativeRuntime::wait_for_job polls GET /generation/jobs/{id}
-    ▼
-completed job exposes image_path
-    │  CreativeRuntime::import_asset copies into <asset_dir>/generated/<uuid>.png
-    ▼
-app_state.update_revision → Completed + asset_path
-    │  UI serves the file through the `generated` asset handler (`/generated/<file>`)
-    ▼
-Frame image + revision history in Properties
+ops::execute (src/registry/ops.rs)
+    ├─ Direct (create/variant): registry mutation + operation-log entry
+    └─ Pipeline (regenerate/modify):
+         │  AppState::snapshot_for_undo (registry snapshot — undo basis)
+         ▼
+       CreativeBackend::generate (src/registry/backend.rs)
+         │  CreativeRuntime::ensure_profile_ready (cold start: sd-server + python)
+         │  VisionClient::submit_generation(POST /generation/jobs)
+         ▼
+       sd.cpp generates into python's SVS_GENERATED_DIR
+         │  CreativeRuntime::wait_for_job polls GET /generation/jobs/{id}
+         ▼
+       completed job exposes image_path
+         │  CreativeRuntime::import_asset copies into <asset_dir>/generated/<uuid>.png
+         ▼
+       registry.finish_revision → completed revision + active image
+         │  has_unsaved_changes → autosave writes the SQLite snapshot
+         ▼
+Artifact detail: image + revision history (served via /generated/<file>)
 ```
 
-A follow-up ("Apply change") repeats the same path with
-`GenerateRequest.reference_image_path` set to the current frame's asset path.
-The Python adapter reads that app-owned file and sends it to sd.cpp as
-`ref_images`, invoking Krea's edit mode. Every completed result is stored as a
-selectable `ImageRevision`, and restoring an old revision rewrites the frame's
-active asset.
-
-The interactive draft profile requests 768×448 at four steps to favor iteration
-speed (`src/ui/editor.rs`, `generate_image`).
+A `modify` follows the canonical regional-edit flow (segment → confirm mask →
+inpaint, composite fallback) — see `docs/ROADMAP.md` §5. The canvas resolves
+checkpoints automatically (best mask candidate, accept text); the CLI offers
+interactive approval for careful runs (`svs op modify --approve interactive`).
+The interactive draft profile requests 768×448 at four steps to favor
+iteration speed on slower hardware.
 
 ## Process boundaries
 
@@ -114,9 +113,10 @@ development.
 ## What is deliberately absent
 
 - **The planner lives in `src/registry/`.** The typed operation set, the
-  pipeline layer, and the `svs` CLI (see `docs/api-slice-1.md`) are
-  implemented; `src/llm/` is still a client only. The Canvas → LM Studio
-  connection and the creation canvas UI are roadmap work.
+  pipeline layer, the slash parser, and the `svs` CLI (see
+  `docs/api-slice-1.md`) are implemented; `src/llm/` is still a client
+  only. The Canvas → LM Studio connection (free-form composer messages
+  proposed as operation stacks) is roadmap work.
 - **No ComfyUI.** Image generation is native (`stable-diffusion.cpp`) or a
   Diffusers POC behind `/generate`; ComfyUI is not a dependency.
 - **No web/mobile targets.** The app is desktop-only; `cargo` features are

@@ -25,14 +25,13 @@ pub mod backend;
 pub mod image_ops;
 pub mod ops;
 pub mod pipeline;
+pub mod slash;
 
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
-
-use crate::models::RevisionStatus;
 
 use self::ops::{OpOrigin, OpStatus, Operation, OperationLogEntry};
 
@@ -59,11 +58,44 @@ impl ArtifactKind {
             ArtifactKind::Object => "object",
         }
     }
+
+    /// The default generation size for new visual artifacts of this kind
+    /// (multiples of 32 within the contract bounds — see
+    /// [`crate::registry::pipeline::is_valid_size`]). An artifact created
+    /// without an explicit `--size` gets this; `None` for text-only kinds.
+    pub fn default_size(&self) -> Option<(u32, u32)> {
+        match self {
+            ArtifactKind::Character => Some((512, 768)),
+            ArtifactKind::Environment => Some((1024, 576)),
+            ArtifactKind::Object => Some((768, 768)),
+            ArtifactKind::Scene => Some((1024, 576)),
+            ArtifactKind::Beat => Some((1024, 576)),
+            ArtifactKind::Story => None,
+        }
+    }
 }
 
 impl fmt::Display for ArtifactKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for ArtifactKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "story" => Ok(Self::Story),
+            "scene" => Ok(Self::Scene),
+            "beat" => Ok(Self::Beat),
+            "character" => Ok(Self::Character),
+            "environment" => Ok(Self::Environment),
+            "object" => Ok(Self::Object),
+            other => Err(format!(
+                "unknown artifact kind {other:?}; expected story|scene|beat|character|environment|object"
+            )),
+        }
     }
 }
 
@@ -102,6 +134,27 @@ impl VariantAxis {
 impl fmt::Display for VariantAxis {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for VariantAxis {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "outfit" => Ok(Self::Outfit),
+            "age" => Ok(Self::Age),
+            "body" => Ok(Self::Body),
+            "hair" => Ok(Self::Hair),
+            "expression" => Ok(Self::Expression),
+            "time-of-day" => Ok(Self::TimeOfDay),
+            "weather" => Ok(Self::Weather),
+            "season" => Ok(Self::Season),
+            "mood" => Ok(Self::Mood),
+            other => Err(format!(
+                "unknown variant axis {other:?}; expected outfit|age|body|hair|expression|time-of-day|weather|season|mood"
+            )),
+        }
     }
 }
 
@@ -159,6 +212,11 @@ pub struct Artifact {
     pub variant_of: Option<Uuid>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant_axis: Option<VariantAxis>,
+    /// The generation size this artifact's images default to. `None` means
+    /// the kind default ([`ArtifactKind::default_size`]) applies — set
+    /// explicitly with `/create … --size WxH`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_size: Option<(u32, u32)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<Uuid>,
     /// Beat-only: how this beat's image is composed from layers.
@@ -172,6 +230,20 @@ pub struct Artifact {
     /// story document; see `docs/ROADMAP.md` §8–9).
     #[serde(default)]
     pub drafts: Vec<StoryDraft>,
+}
+
+/// Creation options for [`ArtifactRegistry::create_artifact`] — the named
+/// form keeps the call sites readable as the option set grows.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CreateArtifact {
+    pub name: String,
+    pub description: String,
+    pub parent: Option<Uuid>,
+    pub variant_of: Option<Uuid>,
+    pub axis: Option<VariantAxis>,
+    /// The generation size this artifact's images default to (`None` = the
+    /// kind default applies).
+    pub default_size: Option<(u32, u32)>,
 }
 
 /// A beat's composition spec — how layers combine into one image
@@ -261,6 +333,18 @@ pub struct StoryDraft {
     pub approved: bool,
 }
 
+/// The lifecycle of one generation history entry.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevisionStatus {
+    #[default]
+    Queued,
+    Generating,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
 #[derive(Debug, Error)]
 pub enum RegistryError {
     #[error("artifact {0} does not exist")]
@@ -287,6 +371,8 @@ pub enum RegistryError {
     NotInScene(Uuid),
     #[error("revision {0} does not exist on artifact {1}")]
     NoRevision(Uuid, Uuid),
+    #[error("invalid size {width}x{height}: dimensions must be multiples of 32 within 256..=2048")]
+    InvalidSize { width: u32, height: u32 },
 }
 
 /// The in-memory artifact registry for one project.
@@ -428,12 +514,16 @@ impl ArtifactRegistry {
     pub fn create_artifact(
         &mut self,
         kind: ArtifactKind,
-        name: String,
-        description: String,
-        parent: Option<Uuid>,
-        variant_of: Option<Uuid>,
-        axis: Option<VariantAxis>,
+        options: CreateArtifact,
     ) -> Result<Uuid, RegistryError> {
+        let CreateArtifact {
+            name,
+            description,
+            parent,
+            variant_of,
+            axis,
+            default_size,
+        } = options;
         if let Some(base_id) = variant_of {
             if !matches!(
                 kind,
@@ -482,6 +572,12 @@ impl ArtifactRegistry {
             }
         }
 
+        if let Some((width, height)) = default_size {
+            if !crate::registry::pipeline::is_valid_size(width, height) {
+                return Err(RegistryError::InvalidSize { width, height });
+            }
+        }
+
         let id = Uuid::new_v4();
         self.artifacts.push(Artifact {
             id,
@@ -490,6 +586,7 @@ impl ArtifactRegistry {
             description,
             variant_of,
             variant_axis: axis,
+            default_size,
             parent_id: parent,
             composition: None,
             active_revision_id: None,
@@ -677,11 +774,14 @@ mod tests {
             registry
                 .create_artifact(
                     *kind,
-                    String::new(),
-                    (*description).to_owned(),
-                    None,
-                    None,
-                    None,
+                    CreateArtifact {
+                        name: String::new(),
+                        description: (*description).to_owned(),
+                        parent: None,
+                        variant_of: None,
+                        axis: None,
+                        default_size: None,
+                    },
                 )
                 .expect("test artifact should create");
         }
@@ -694,31 +794,40 @@ mod tests {
         let story = registry
             .create_artifact(
                 ArtifactKind::Story,
-                "The Lighthouse".into(),
-                "A story".into(),
-                None,
-                None,
-                None,
+                CreateArtifact {
+                    name: "The Lighthouse".into(),
+                    description: "A story".into(),
+                    parent: None,
+                    variant_of: None,
+                    axis: None,
+                    default_size: None,
+                },
             )
             .unwrap();
         let scene = registry
             .create_artifact(
                 ArtifactKind::Scene,
-                "Kitchen".into(),
-                "The kitchen".into(),
-                Some(story),
-                None,
-                None,
+                CreateArtifact {
+                    name: "Kitchen".into(),
+                    description: "The kitchen".into(),
+                    parent: Some(story),
+                    variant_of: None,
+                    axis: None,
+                    default_size: None,
+                },
             )
             .unwrap();
         let beat = registry
             .create_artifact(
                 ArtifactKind::Beat,
-                "Beat 1".into(),
-                "Mia at the stove".into(),
-                Some(scene),
-                None,
-                None,
+                CreateArtifact {
+                    name: "Beat 1".into(),
+                    description: "Mia at the stove".into(),
+                    parent: Some(scene),
+                    variant_of: None,
+                    axis: None,
+                    default_size: None,
+                },
             )
             .unwrap();
 
@@ -727,43 +836,55 @@ mod tests {
         assert!(registry
             .create_artifact(
                 ArtifactKind::Beat,
-                "X".into(),
-                "X".into(),
-                Some(story),
-                None,
-                None
+                CreateArtifact {
+                    name: "X".into(),
+                    description: "X".into(),
+                    parent: Some(story),
+                    variant_of: None,
+                    axis: None,
+                    default_size: None,
+                }
             )
             .is_err());
         // A story cannot have a parent at all.
         assert!(registry
             .create_artifact(
                 ArtifactKind::Story,
-                "Y".into(),
-                "Y".into(),
-                Some(scene),
-                None,
-                None
+                CreateArtifact {
+                    name: "Y".into(),
+                    description: "Y".into(),
+                    parent: Some(scene),
+                    variant_of: None,
+                    axis: None,
+                    default_size: None,
+                }
             )
             .is_err());
         // A room (environment) can live inside an environment.
         let house = registry
             .create_artifact(
                 ArtifactKind::Environment,
-                "House".into(),
-                "A house".into(),
-                None,
-                None,
-                None,
+                CreateArtifact {
+                    name: "House".into(),
+                    description: "A house".into(),
+                    parent: None,
+                    variant_of: None,
+                    axis: None,
+                    default_size: None,
+                },
             )
             .unwrap();
         let room = registry
             .create_artifact(
                 ArtifactKind::Environment,
-                "Kitchen".into(),
-                "A kitchen".into(),
-                Some(house),
-                None,
-                None,
+                CreateArtifact {
+                    name: "Kitchen".into(),
+                    description: "A kitchen".into(),
+                    parent: Some(house),
+                    variant_of: None,
+                    axis: None,
+                    default_size: None,
+                },
             )
             .unwrap();
         assert!(registry.artifact(room).is_some());
@@ -775,22 +896,28 @@ mod tests {
         let mia = registry
             .create_artifact(
                 ArtifactKind::Character,
-                "mia".into(),
-                "Mia, the keeper".into(),
-                None,
-                None,
-                None,
+                CreateArtifact {
+                    name: "mia".into(),
+                    description: "Mia, the keeper".into(),
+                    parent: None,
+                    variant_of: None,
+                    axis: None,
+                    default_size: None,
+                },
             )
             .unwrap();
 
         let variant = registry
             .create_artifact(
                 ArtifactKind::Character,
-                "mia".into(),
-                "Mia in rain gear".into(),
-                None,
-                Some(mia),
-                Some(VariantAxis::Outfit),
+                CreateArtifact {
+                    name: "mia".into(),
+                    description: "Mia in rain gear".into(),
+                    parent: None,
+                    variant_of: Some(mia),
+                    axis: Some(VariantAxis::Outfit),
+                    default_size: None,
+                },
             )
             .unwrap();
         assert!(registry.artifact(variant).is_some());
@@ -799,45 +926,121 @@ mod tests {
         assert!(registry
             .create_artifact(
                 ArtifactKind::Character,
-                "mia".into(),
-                "double variant".into(),
-                None,
-                Some(variant),
-                None,
+                CreateArtifact {
+                    name: "mia".into(),
+                    description: "double variant".into(),
+                    parent: None,
+                    variant_of: Some(variant),
+                    axis: None,
+                    default_size: None,
+                }
             )
             .is_err());
         // Stories cannot have variants.
         let story = registry
             .create_artifact(
                 ArtifactKind::Story,
-                "S".into(),
-                "S".into(),
-                None,
-                None,
-                None,
+                CreateArtifact {
+                    name: "S".into(),
+                    description: "S".into(),
+                    parent: None,
+                    variant_of: None,
+                    axis: None,
+                    default_size: None,
+                },
             )
             .unwrap();
         assert!(registry
             .create_artifact(
                 ArtifactKind::Story,
-                "V".into(),
-                "V".into(),
-                None,
-                Some(story),
-                None
+                CreateArtifact {
+                    name: "V".into(),
+                    description: "V".into(),
+                    parent: None,
+                    variant_of: Some(story),
+                    axis: None,
+                    default_size: None,
+                }
             )
             .is_err());
         // Kind mismatch is rejected.
         assert!(registry
             .create_artifact(
                 ArtifactKind::Object,
-                "hat".into(),
-                "a hat".into(),
-                None,
-                Some(mia),
-                None,
+                CreateArtifact {
+                    name: "hat".into(),
+                    description: "a hat".into(),
+                    parent: None,
+                    variant_of: Some(mia),
+                    axis: None,
+                    default_size: None,
+                }
             )
             .is_err());
+    }
+
+    #[test]
+    fn kinds_have_default_sizes() {
+        assert_eq!(ArtifactKind::Character.default_size(), Some((512, 768)));
+        assert_eq!(ArtifactKind::Environment.default_size(), Some((1024, 576)));
+        assert_eq!(ArtifactKind::Object.default_size(), Some((768, 768)));
+        assert_eq!(ArtifactKind::Scene.default_size(), Some((1024, 576)));
+        assert_eq!(ArtifactKind::Beat.default_size(), Some((1024, 576)));
+        assert_eq!(
+            ArtifactKind::Story.default_size(),
+            None,
+            "stories are text-only"
+        );
+        for kind in [
+            ArtifactKind::Character,
+            ArtifactKind::Environment,
+            ArtifactKind::Object,
+            ArtifactKind::Scene,
+            ArtifactKind::Beat,
+        ] {
+            let (width, height) = kind.default_size().expect("visual kinds have sizes");
+            assert!(super::pipeline::is_valid_size(width, height));
+        }
+    }
+
+    #[test]
+    fn an_explicit_default_size_is_stored_and_validated() {
+        let mut registry = ArtifactRegistry::new();
+        let mia = registry
+            .create_artifact(
+                ArtifactKind::Character,
+                CreateArtifact {
+                    name: "mia".into(),
+                    description: "Mia".into(),
+                    parent: None,
+                    variant_of: None,
+                    axis: None,
+                    default_size: Some((512, 768)),
+                },
+            )
+            .expect("a valid size should be accepted");
+        assert_eq!(
+            registry.artifact(mia).unwrap().default_size,
+            Some((512, 768))
+        );
+
+        assert!(matches!(
+            registry.create_artifact(
+                ArtifactKind::Character,
+                CreateArtifact {
+                    name: "bad".into(),
+                    description: "bad".into(),
+                    parent: None,
+                    variant_of: None,
+                    axis: None,
+                    default_size: Some((100, 100)),
+                }
+            ),
+            Err(RegistryError::InvalidSize {
+                width: 100,
+                height: 100
+            })
+        ));
     }
 
     #[test]
@@ -846,11 +1049,14 @@ mod tests {
         let id = registry
             .create_artifact(
                 ArtifactKind::Character,
-                "mia".into(),
-                "Mia".into(),
-                None,
-                None,
-                None,
+                CreateArtifact {
+                    name: "mia".into(),
+                    description: "Mia".into(),
+                    parent: None,
+                    variant_of: None,
+                    axis: None,
+                    default_size: None,
+                },
             )
             .unwrap();
         let short = registry.short_id(id);
@@ -882,21 +1088,27 @@ mod tests {
         let mia = registry
             .create_artifact(
                 ArtifactKind::Character,
-                "mia".into(),
-                "Mia, the keeper".into(),
-                None,
-                None,
-                None,
+                CreateArtifact {
+                    name: "mia".into(),
+                    description: "Mia, the keeper".into(),
+                    parent: None,
+                    variant_of: None,
+                    axis: None,
+                    default_size: None,
+                },
             )
             .unwrap();
         registry
             .create_artifact(
                 ArtifactKind::Character,
-                "Elias".into(),
-                "Elias, the fisherman".into(),
-                None,
-                None,
-                None,
+                CreateArtifact {
+                    name: "Elias".into(),
+                    description: "Elias, the fisherman".into(),
+                    parent: None,
+                    variant_of: None,
+                    axis: None,
+                    default_size: None,
+                },
             )
             .unwrap();
 
@@ -928,21 +1140,27 @@ mod tests {
         registry
             .create_artifact(
                 ArtifactKind::Character,
-                "mia".into(),
-                "one".into(),
-                None,
-                None,
-                None,
+                CreateArtifact {
+                    name: "mia".into(),
+                    description: "one".into(),
+                    parent: None,
+                    variant_of: None,
+                    axis: None,
+                    default_size: None,
+                },
             )
             .unwrap();
         registry
             .create_artifact(
                 ArtifactKind::Object,
-                "Mia".into(),
-                "two".into(),
-                None,
-                None,
-                None,
+                CreateArtifact {
+                    name: "Mia".into(),
+                    description: "two".into(),
+                    parent: None,
+                    variant_of: None,
+                    axis: None,
+                    default_size: None,
+                },
             )
             .unwrap();
 
@@ -963,6 +1181,7 @@ mod tests {
             description: "one".into(),
             variant_of: None,
             variant_axis: None,
+            default_size: None,
             parent_id: None,
             composition: None,
             active_revision_id: None,
@@ -976,6 +1195,7 @@ mod tests {
             description: "two".into(),
             variant_of: None,
             variant_axis: None,
+            default_size: None,
             parent_id: None,
             composition: None,
             active_revision_id: None,
@@ -1023,11 +1243,14 @@ mod tests {
         registry
             .create_artifact(
                 ArtifactKind::Character,
-                "mia".into(),
-                "Mia".into(),
-                None,
-                None,
-                None,
+                CreateArtifact {
+                    name: "mia".into(),
+                    description: "Mia".into(),
+                    parent: None,
+                    variant_of: None,
+                    axis: None,
+                    default_size: None,
+                },
             )
             .unwrap();
         assert_eq!(registry.artifacts.len(), 2);

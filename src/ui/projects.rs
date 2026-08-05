@@ -12,7 +12,6 @@ use super::icons::{Icon, IconName};
 struct RecentProject {
     path: PathBuf,
     name: String,
-    beats: usize,
     artifacts: usize,
 }
 
@@ -52,7 +51,7 @@ pub fn Projects(
                 }
                 div { class: "min-w-0 flex-1",
                     h3 { class: "truncate text-sm font-medium text-zinc-200 group-hover:text-white", "{item.name}" }
-                    p { class: "mt-1 text-[11px] text-zinc-600", "{item.beats} beats · {item.artifacts} artifacts" }
+                    p { class: "mt-1 text-[11px] text-zinc-600", "{item.artifacts} artifacts" }
                     p { class: "mt-0.5 truncate text-[10px] text-zinc-700", "{item.path.display()}" }
                 }
                 Icon { name: IconName::Arrow, class: "size-4 text-zinc-700 transition group-hover:translate-x-1 group-hover:text-zinc-300" }
@@ -181,8 +180,7 @@ fn scan_projects(project_dir: &Path) -> Vec<RecentProject> {
                 let stored = ProjectDb::open(&path).ok()?.load().ok()?;
                 Some(RecentProject {
                     path,
-                    name: stored.project.name,
-                    beats: stored.project.storyboard.len(),
+                    name: stored.name,
                     artifacts: stored.registry.artifacts.len(),
                 })
             })
@@ -194,7 +192,7 @@ fn scan_projects(project_dir: &Path) -> Vec<RecentProject> {
 }
 
 /// Creates the database file for a new story (unique slug path) and saves
-/// the fresh project into it before the screen switches to Studio.
+/// the fresh registry into it before the screen switches to the canvas.
 fn create_project_file(
     project_dir: &Path,
     story_name: &str,
@@ -204,11 +202,10 @@ fn create_project_file(
     let path = unique_project_path(project_dir, story_name);
     let db = ProjectDb::open(&path).map_err(|error| error.to_string())?;
     app_state.write().create_project(story_name);
-    let (project, registry) = {
-        let state = app_state.read();
-        (state.project.clone(), state.registry.clone())
-    };
-    db.save_project(&project, &registry)
+    let registry = app_state.read().registry.clone();
+    db.rename_project(story_name)
+        .map_err(|error| error.to_string())?;
+    db.save_registry(&registry)
         .map_err(|error| error.to_string())?;
     app_state.write().project_path = Some(path);
     app_state.write().has_unsaved_changes = false;

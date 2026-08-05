@@ -2,8 +2,8 @@
 
 Status: implemented. The API-first slice of `docs/ROADMAP.md` (§7
 operations + pipelines, §12 steps 1–3). SQLite persistence and the GUI
-save/open flow landed with the foundation (step 3); the artifact registry
-is persisted but not yet surfaced in Studio (step 4, the canvas).
+save/open flow landed with the foundation (step 3); the canvas (step 4)
+surfaces the artifact registry in the GUI.
 
 ## Decisions settled (with the user, per §13)
 
@@ -67,6 +67,7 @@ is persisted but not yet surfaced in Studio (step 4, the canvas).
 svs --project p.db project p.db                       # load or create (SQLite registry)
 svs --project p.db op create character "Mia, a lighthouse keeper" --name mia
 svs --project p.db op create scene "The kitchen at dusk" --name kitchen
+svs --project p.db op create object "an antique brass lantern" --name lantern --size 768x768
 svs --project p.db op compose c:<scene> "Mia lights the lantern" --background c:<env> --layer c:<char>
 svs --project p.db op variant c:<char> "in rain gear" --axis outfit
 svs --project p.db op regenerate c:<char> "make it warmer" --seed 42 --steps 4 --size 768x448 --out golden/
@@ -78,6 +79,11 @@ svs --project p.db stack propose "Add a rainy variant of the kitchen scene"   # 
 svs --project p.db runtime serve --force --model krea-2-turbo-q4   # resident generation profile
 svs --project p.db log [c:<ref>]
 ```
+
+`create --size WxH` sets the artifact's default generation size (kind
+defaults otherwise: character 512×768, object 768×768, environment/scene/beat
+1024×576); `regenerate`/`modify` honor it, and `--size`/`--steps` on those
+commands override it per run. Variants inherit the base artifact's size.
 
 `--approve auto|interactive` (default interactive) resolves checkpoints;
 `--out <dir>` drops every intermediate (image, mask, composite) into a
@@ -138,13 +144,17 @@ config points at the gemma model used on the dev machine.
 
 ## Divergences from the design doc (deferred, by directive)
 
-- **Storyboard still on the legacy model.** The GUI persists via SQLite
-  (schema v2 `project_json` on the `projects` row); the old beat/timeline
-  model survives until the canvas (roadmap item 4) replaces it. `svs
-  project <path>` stays one-shot, no session state.
-- **No canvas work.** `src/ui/` gained real project open/save and
-  autosave; the artifact registry is persisted but not yet surfaced in
-  Studio (item 4).
+- **The legacy storyboard model is gone.** The canvas (roadmap item 4)
+  replaced `Project`/`StoryboardFrame`/`Timeline`; the GUI is the artifact
+  registry (`AppState` in `src/state/`). Schema v3 drops `project_json`
+  from the `projects` row — the sanctioned one-time loss, no legacy
+  formats are parsed.
+- **Canvas slice 1** (`src/ui/canvas.rs`): sidebar grouped by kind, detail
+  pane (image, description, variants, revisions, children, operation log),
+  slash-command composer (`/create`, `/variant`, `/regenerate`,
+  `/modify`), undo/redo via registry snapshots. Deferred per §6: artboard
+  pan/zoom, `c:` autocomplete, syntax highlighting, and the compose/draft
+  op surface (beats are item 5, Studio integration).
 - `paint_strokes` is vocabulary (a `Step` + builder method) but not
   executable in slice 1; `describe`/`critique` LLM steps degrade to manual
   input.

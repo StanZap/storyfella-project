@@ -7,6 +7,7 @@ Current shape: the artifact registry + typed operation layer (`src/registry/`) i
 - **Desktop only.** Never add web, mobile, WASM, routing, or fullstack features. The `Cargo.toml` features are limited to `default = ["desktop"]` / `dioxus/desktop`. Ignore any Dioxus docs about routers, server functions, or hydration.
 - **No stale/dead code; no backward-compatibility shims.** We are pre-1.0 and not in production — formats, models, and APIs change freely. When a change replaces an older shape, remove the old one **in the same change**: no deprecated aliases, no "keep for old files" parse/import paths, no unused fields, no `#[allow(dead_code)]` for hypothetical future use, no leaving a superseded implementation around "for reference". A one-time import of a legacy format is sanctioned only while real files exist that need it (and must be removed once they're migrated or abandoned — SQLite schema migrations are the way to evolve the current format in place). Deferred vocabulary is allowed only when a roadmap item explicitly names it (e.g. slice-1 pipeline steps marked "vocabulary, not executable"); mark it with a doc comment naming the deferred item, never with `allow(dead_code)`. Concrete implication: when the canvas (roadmap item 4) replaces the storyboard model, delete `StoryboardFrame`/`project_json` rather than keeping them alongside.
 - **Reusable components before repetition.** Isolate repeated patterns into small shared components/modules and reuse them everywhere. The UI vocabulary in `src/ui/components.rs` (`SettingRow`, `EmptyVisual`, `StatusDot`, …) and `src/ui/icons.rs` is the model; apply the same instinct outside the UI (registry ops, pipeline steps, persistence helpers, config). When a new use case needs a variant, extend the shared component instead of copy-pasting a near-identical one, and keep similar use cases looking and behaving the same. A new control for a case an existing control already covers is a code smell.
+- **No perl for code edits.** Never use `perl -i` (or similar opaque one-liner rewrites) to modify source files — they are hard to review and have corrupted code before. Make edits with the file editing tools (`edit_file`/`write_file`), which produce reviewable diffs; `cargo fmt` is the only bulk formatter allowed.
 - **Rust/Python boundary.** Rust talks to Python only over HTTP (`VisionClient` in `src/vision/mod.rs` ↔ contracts in `python/models/schemas.py`). Keep the two sides' request/response types in sync.
 - **No ML frameworks in Rust.** Rust must never depend on or know about PyTorch, Transformers, or SAM. Those details live in `python/` only.
 - **LM Studio is external** and never bundled or started by the app; `src/llm/` is the client only. The planner vocabulary (typed operations + pipelines) lives in `src/registry/`; LLM steps are soft dependencies that degrade to manual input, never hard-fail.
@@ -27,16 +28,17 @@ Current shape: the artifact registry + typed operation layer (`src/registry/`) i
 
 # Current status
 
-The API slice (`docs/ROADMAP.md` §12 items 1–3) is implemented and CLI-validated:
+The API slice (`docs/ROADMAP.md` §12 items 1–3) and the canvas (item 4) are
+implemented and validated:
 
-- `src/registry/` — artifact registry (kinds, variants, scenes/beats + layers, revisions + masks, drafts), typed slice-1 operations (`create`, `variant`, `regenerate`, `compose`, `draft`, `modify`), pipeline builder (closed step vocabulary, typed handles, static validation at `build()`, linear fail-fast stacks, checkpoints), composite mask fallback, live backend (`CreativeBackend`).
+- `src/registry/` — artifact registry (kinds, variants, scenes/beats + layers, revisions + masks, drafts), typed slice-1 operations (`create`, `variant`, `regenerate`, `compose`, `draft`, `modify`), pipeline builder (closed step vocabulary, typed handles, static validation at `build()`, linear fail-fast stacks, checkpoints), composite mask fallback, live backend (`CreativeBackend`), slash-command parser (`slash.rs`) for the canvas composer.
 - `c:<name>` references are primary (case-insensitive exact match, ambiguity rejected; UUID/8-hex fallbacks).
-- `src/persistence/` — SQLite project store (`ProjectDb`): §10 schema (v2 adds `project_json` for the storyboard), versioned migrations (`schema_meta`), WAL, lossless round-trip; the CLI persists to `.svs-project.db`. No legacy formats are parsed — the current format evolves via migrations.
-- `src/ui/` — the Projects screen lists, creates, and opens `.svs-project.db` files; the workspace saves via autosave (after every change / every minute / off) or Cmd/Ctrl+S; `AppState.project_path` tracks the open database.
+- `src/persistence/` — SQLite project store (`ProjectDb`): §10 schema (v3 drops the legacy `project_json` column), versioned migrations (`schema_meta`), WAL, lossless round-trip; the CLI persists to `.svs-project.db`. No legacy formats are parsed — the current format evolves via migrations.
+- `src/ui/` — the Projects screen lists, creates, and opens `.svs-project.db` files; the **Canvas** is the artifact workspace (sidebar grouped by kind, detail pane with image/variants/revisions/children/operation log, slash composer, undo/redo via registry snapshots); the workspace saves via autosave (after every change / every minute / off) or Cmd/Ctrl+S; `AppState.project_path` tracks the open database. The legacy storyboard model (`Project`/`StoryboardFrame`/`Timeline`) was deleted with the canvas.
 - `svs` CLI — `op`, `stack run`/`propose`, `runtime serve --force`, `log`, `project`; `--out` golden runs; `--approve auto|interactive`.
 - `mask_path` in the Rust ↔ Python `GenerateRequest` contract (best-effort native passthrough; composite fallback is primary).
-- 75 Rust lib + 4 CLI/bin tests pass; q2 generation validated on macOS. `modify`'s mask path, LLM `draft`, and `stack propose` await live validation (Linux/CUDA).
-- Next per §12: the canvas (item 4). The tracker in §12 is authoritative — update it as features ship.
+- 85 Rust lib + bin tests pass; q2 generation validated on macOS. `modify`'s mask path, LLM `draft`, and `stack propose` await live validation (Linux/CUDA); the canvas generation loop is the next GUI validation target on the RTX box.
+- Next per §12: Studio integration (item 5). The tracker in §12 is authoritative — update it as features ship.
 
 # Validation
 

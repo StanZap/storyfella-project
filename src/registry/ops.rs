@@ -26,8 +26,8 @@ use super::{
         GenerationBackend, GenerationOverrides, Pipeline, PipelineBuildError, PipelineError,
         PromptSource, RunOptions,
     },
-    ArtifactKind, ArtifactRegistry, Layer, LayerRole, Ref, RefError, RegistryError, StoredMask,
-    VariantAxis,
+    ArtifactKind, ArtifactRegistry, CreateArtifact, Layer, LayerRole, Ref, RefError, RegistryError,
+    StoredMask, VariantAxis,
 };
 
 /// The kinds an operation can have. Slice 1 only ships primitives; compound
@@ -52,6 +52,10 @@ pub enum Operation {
         description: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        /// The generation size this artifact's images default to (`None` =
+        /// the kind default applies).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size: Option<(u32, u32)>,
     },
     /// New visual variant of an artifact.
     Variant {
@@ -146,6 +150,7 @@ impl Operation {
                 kind,
                 description,
                 name,
+                size,
             } => {
                 let label = name.clone().unwrap_or_default();
                 let label = if label.is_empty() {
@@ -153,7 +158,11 @@ impl Operation {
                 } else {
                     format!(" ({label})")
                 };
-                format!("create {kind} {description:?}{label}")
+                format!(
+                    "create {kind} {description:?}{label}{}",
+                    size.map(|(width, height)| format!(" [{width}x{height}]"))
+                        .unwrap_or_default()
+                )
             }
             Operation::Variant {
                 target,
@@ -251,6 +260,8 @@ pub enum CompileError {
     BackendRequired,
     #[error("create requires a non-empty description")]
     EmptyDescription,
+    #[error("invalid size {width}x{height}: dimensions must be multiples of 32 within 256..=2048")]
+    InvalidSize { width: u32, height: u32 },
     #[error("variant requires a character, environment, or object; got {0}")]
     NotVariantable(ArtifactKind),
     #[error("compose requires a scene; {target} is a {kind}")]
@@ -289,9 +300,19 @@ pub enum OpError {
 /// to a pipeline. No IO; this is the static-validation surface.
 pub fn compile(registry: &ArtifactRegistry, op: &Operation) -> Result<CompiledOp, CompileError> {
     match op {
-        Operation::Create { description, .. } => {
+        Operation::Create {
+            description, size, ..
+        } => {
             if description.trim().is_empty() {
                 return Err(CompileError::EmptyDescription);
+            }
+            if let Some((width, height)) = size {
+                if !super::pipeline::is_valid_size(*width, *height) {
+                    return Err(CompileError::InvalidSize {
+                        width: *width,
+                        height: *height,
+                    });
+                }
             }
             Ok(CompiledOp::Direct)
         }
@@ -384,6 +405,14 @@ pub fn compile(registry: &ArtifactRegistry, op: &Operation) -> Result<CompiledOp
             };
 
             let mut builder = super::pipeline::PipelineBuilder::new();
+            // The artifact's default size (explicit `--size` at creation, or
+            // the kind default) drives its images; per-run overrides still win.
+            if let Some((width, height)) = artifact
+                .default_size
+                .or_else(|| artifact.kind.default_size())
+            {
+                builder.size(width, height);
+            }
             let reference = active
                 .and_then(|revision| revision.asset_path.clone())
                 .map(|path| builder.reference_image(path));
@@ -410,6 +439,14 @@ pub fn compile(registry: &ArtifactRegistry, op: &Operation) -> Result<CompiledOp
             }
 
             let mut builder = super::pipeline::PipelineBuilder::new();
+            // Same default-size rule as regenerate: the artifact's own size
+            // wins over the pipeline default, per-run overrides still win.
+            if let Some((width, height)) = artifact
+                .default_size
+                .or_else(|| artifact.kind.default_size())
+            {
+                builder.size(width, height);
+            }
             let image = builder.reference_image(asset);
             let (mask_source, inpaint_source) = match (mask_prompt, inpaint_prompt) {
                 (Some(mask), Some(inpaint)) => (
@@ -460,17 +497,19 @@ pub async fn execute(
             kind,
             description,
             name,
+            size,
         } => {
             let id = registry.create_artifact(
                 *kind,
-                unique_name(
-                    registry,
-                    &name.clone().unwrap_or_else(|| derive_name(description)),
-                ),
-                description.clone(),
-                None,
-                None,
-                None,
+                CreateArtifact {
+                    name: unique_name(
+                        registry,
+                        &name.clone().unwrap_or_else(|| derive_name(description)),
+                    ),
+                    description: description.clone(),
+                    default_size: *size,
+                    ..Default::default()
+                },
             )?;
             let log_id = registry.push_log(op.clone(), options.origin, OpStatus::Applied, Some(id));
             Ok(OpOutcome {
@@ -501,11 +540,17 @@ pub async fn execute(
             };
             let id = registry.create_artifact(
                 base_artifact.kind,
-                unique_name(registry, &name),
-                description.clone(),
-                None,
-                Some(base),
-                *axis,
+                CreateArtifact {
+                    name: unique_name(registry, &name),
+                    description: description.clone(),
+                    variant_of: Some(base),
+                    axis: *axis,
+                    // Variants inherit the base's size so regenerating a
+                    // variant keeps the same canvas (a base with no explicit
+                    // size follows the kind default).
+                    default_size: base_artifact.default_size,
+                    ..Default::default()
+                },
             )?;
             let log_id = registry.push_log(op.clone(), options.origin, OpStatus::Applied, Some(id));
             Ok(OpOutcome {
@@ -525,11 +570,12 @@ pub async fn execute(
             let scene_id = registry.resolve(scene)?;
             let beat_id = registry.create_artifact(
                 ArtifactKind::Beat,
-                unique_name(registry, &derive_name(description)),
-                description.clone(),
-                Some(scene_id),
-                None,
-                None,
+                CreateArtifact {
+                    name: unique_name(registry, &derive_name(description)),
+                    description: description.clone(),
+                    parent: Some(scene_id),
+                    ..Default::default()
+                },
             )?;
             let mut composition_layers: Vec<Layer> = Vec::new();
             let mut position = 0u32;
@@ -785,7 +831,10 @@ fn segment_prompt_from_run(run: &super::pipeline::PipelineRun) -> Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::pipeline::{BlockedOn, Decision, MaskCandidate, PipelineRun, StepOutput};
+    use crate::registry::{
+        pipeline::{BlockedOn, Decision, MaskCandidate, PipelineRun, StepOutput},
+        CreateArtifact,
+    };
 
     fn registry_with(artifacts: &[(ArtifactKind, &str)]) -> ArtifactRegistry {
         let mut registry = ArtifactRegistry::new();
@@ -793,11 +842,11 @@ mod tests {
             registry
                 .create_artifact(
                     *kind,
-                    String::new(),
-                    (*description).to_owned(),
-                    None,
-                    None,
-                    None,
+                    CreateArtifact {
+                        name: String::new(),
+                        description: (*description).to_owned(),
+                        ..Default::default()
+                    },
                 )
                 .expect("test artifact should create");
         }
@@ -927,12 +976,92 @@ mod tests {
     }
 
     #[test]
+    fn regenerate_uses_the_artifact_default_size() {
+        let mut registry = registry_with(&[(ArtifactKind::Character, "Mia")]);
+        let id = registry.artifacts[0].id;
+        registry.artifact_mut(id).unwrap().default_size = Some((512, 768));
+        let revision = registry
+            .start_revision(id, "Mia on the cliff".into(), Some(1), None)
+            .unwrap();
+        registry
+            .finish_revision(id, revision, "assets/mia.png".into(), Vec::new())
+            .unwrap();
+
+        let op = Operation::Regenerate {
+            target: Ref::new(registry.short_id(id)),
+            prompt: None,
+        };
+        let CompiledOp::Pipeline(pipeline) = compile(&registry, &op).unwrap() else {
+            panic!("regenerate must compile to a pipeline");
+        };
+        assert_eq!(pipeline.params().width, 512);
+        assert_eq!(pipeline.params().height, 768);
+
+        // An artifact without an explicit size follows its kind default.
+        let registry = registry_with(&[(ArtifactKind::Object, "Lantern")]);
+        let lantern = registry.artifacts[0].id;
+        let op = Operation::Regenerate {
+            target: Ref::new(registry.short_id(lantern)),
+            prompt: Some("the brass lantern".into()),
+        };
+        let CompiledOp::Pipeline(pipeline) = compile(&registry, &op).unwrap() else {
+            panic!("regenerate must compile to a pipeline");
+        };
+        assert_eq!(pipeline.params().width, 768);
+        assert_eq!(pipeline.params().height, 768);
+    }
+
+    #[test]
+    fn create_stores_the_size_and_variant_inherits_it() {
+        let mut registry = ArtifactRegistry::new();
+        let create = Operation::Create {
+            kind: ArtifactKind::Character,
+            description: "Mia, a lighthouse keeper".into(),
+            name: Some("mia".into()),
+            size: Some((512, 768)),
+        };
+        let options = ExecuteOptions {
+            backend: None,
+            run: RunOptions::new(std::env::temp_dir()),
+            generation: Default::default(),
+            manual_text: None,
+            origin: OpOrigin::User,
+        };
+        let outcome = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(execute(&mut registry, &create, &options))
+            .unwrap();
+        let mia = outcome.artifact_id.unwrap();
+        assert_eq!(
+            registry.artifact(mia).unwrap().default_size,
+            Some((512, 768))
+        );
+
+        let variant = Operation::Variant {
+            target: Ref::new(registry.short_id(mia)),
+            description: "in rain gear".into(),
+            axis: Some(VariantAxis::Outfit),
+        };
+        let outcome = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(execute(&mut registry, &variant, &options))
+            .unwrap();
+        let variant_id = outcome.artifact_id.unwrap();
+        assert_eq!(
+            registry.artifact(variant_id).unwrap().default_size,
+            Some((512, 768)),
+            "variants inherit the base's size"
+        );
+    }
+
+    #[test]
     fn create_and_variant_apply_directly_and_log() {
         let mut registry = ArtifactRegistry::new();
         let create = Operation::Create {
             kind: ArtifactKind::Character,
             description: "Mia, a lighthouse keeper".into(),
             name: Some("mia".into()),
+            size: None,
         };
         let options = ExecuteOptions {
             backend: None,
@@ -978,11 +1107,11 @@ mod tests {
         let mia = registry
             .create_artifact(
                 ArtifactKind::Character,
-                "mia".into(),
-                "Mia".into(),
-                None,
-                None,
-                None,
+                CreateArtifact {
+                    name: "mia".into(),
+                    description: "Mia".into(),
+                    ..Default::default()
+                },
             )
             .unwrap();
         let options = ExecuteOptions {
@@ -1027,41 +1156,42 @@ mod tests {
         let story = registry
             .create_artifact(
                 ArtifactKind::Story,
-                "S".into(),
-                "S".into(),
-                None,
-                None,
-                None,
+                CreateArtifact {
+                    name: "S".into(),
+                    description: "S".into(),
+                    ..Default::default()
+                },
             )
             .unwrap();
         let scene = registry
             .create_artifact(
                 ArtifactKind::Scene,
-                "Kitchen".into(),
-                "The kitchen".into(),
-                Some(story),
-                None,
-                None,
+                CreateArtifact {
+                    name: "Kitchen".into(),
+                    description: "The kitchen".into(),
+                    parent: Some(story),
+                    ..Default::default()
+                },
             )
             .unwrap();
         let mia = registry
             .create_artifact(
                 ArtifactKind::Character,
-                "mia".into(),
-                "Mia".into(),
-                None,
-                None,
-                None,
+                CreateArtifact {
+                    name: "mia".into(),
+                    description: "Mia".into(),
+                    ..Default::default()
+                },
             )
             .unwrap();
         let house = registry
             .create_artifact(
                 ArtifactKind::Environment,
-                "House".into(),
-                "A house".into(),
-                None,
-                None,
-                None,
+                CreateArtifact {
+                    name: "House".into(),
+                    description: "A house".into(),
+                    ..Default::default()
+                },
             )
             .unwrap();
 

@@ -1279,15 +1279,21 @@ impl Default for PipelineBuilder {
     }
 }
 
+/// Whether a generation size is within contract bounds: multiples of 32
+/// within 256..=2048 (the same rule `build()` enforces). Shared by the
+/// registry (artifact default sizes) and the pipeline builder.
+pub fn is_valid_size(width: u32, height: u32) -> bool {
+    width.is_multiple_of(32)
+        && height.is_multiple_of(32)
+        && (256..=2048).contains(&width)
+        && (256..=2048).contains(&height)
+}
+
 fn validate(steps: &[Step], params: &GenerationParams) -> Result<(), PipelineBuildError> {
     if steps.is_empty() {
         return Err(PipelineBuildError::Empty);
     }
-    if !params.width.is_multiple_of(32)
-        || !params.height.is_multiple_of(32)
-        || !(256..=2048).contains(&params.width)
-        || !(256..=2048).contains(&params.height)
-    {
+    if !is_valid_size(params.width, params.height) {
         return Err(PipelineBuildError::BadSize {
             width: params.width,
             height: params.height,

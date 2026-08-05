@@ -35,7 +35,7 @@ LoRAs build on top of it.
 
 | Term | Meaning |
 | --- | --- |
-| Beat | One slide/panel of the visual story. A beat is a composition of layers referencing other artifacts. Today's `StoryboardFrame`. |
+| Beat | One slide/panel of the visual story. A beat is a composition of layers referencing other artifacts. |
 | Scene | A group of beats set in one place with a cast. New level above beats. |
 | Artifact | Any first-class project entity: story, scene, beat, character, object, environment. One unified id space (`c:<ref>`). |
 | Character | Reusable person artifact with named visual variants. |
@@ -553,10 +553,19 @@ plan to ship, with its status; update it when work lands.
    lossless round-trip); the CLI persists to `.svs-project.db`; the GUI
    opens/creates projects from the Projects screen and saves via autosave
    or Cmd/Ctrl+S. — **✅ implemented**
-4. **The canvas:** artboard viewport, artifact cards, prompt bar (slash
-   parsing, autocomplete, `c:` chips). — **⏳ planned**
+4. **The canvas:** the artifact workspace — sidebar grouped by kind,
+   detail pane (image, description, variants, revisions, children, operation
+   log), slash-command composer (`/create`, `/variant`, `/regenerate`,
+   `/modify` — the same typed vocabulary as the `svs` CLI), undo/redo via
+   registry snapshots. Artifacts carry an optional default generation size
+   (`/create … --size WxH`; per-kind defaults otherwise: character 512×768,
+   object 768×768, environment/scene/beat 1024×576) that `regenerate`/
+   `modify` honor. The legacy storyboard model was removed with it
+   (`src/models/`, `src/timeline/`, schema v3 drops `project_json`). —
+   **✅ implemented**; artboard pan/zoom, `c:` autocomplete, and syntax
+   highlighting remain deferred (§6).
 5. **Studio integration:** scenes group the timeline; re-sync flows per
-   mode. — **⏳ planned**
+   mode (compose beats in the canvas, story sequencing). — **⏳ planned**
 6. **LoRA registry** UI + auto-injection into generations. — **⏳ planned**
 7. **Storyfella DSL (in-repo):** the language crate (lexer/parser/compiler,
    CLI), the writer with the tokenized editor, asset chips and autocomplete;
@@ -566,27 +575,26 @@ plan to ship, with its status; update it when work lands.
 
 ## 13. Implementation handoff
 
-Design status: design notes with the API slice (§12 items 1–3) implemented;
-the codebase carries the artifact registry + `svs` CLI
-(`docs/api-slice-1.md`) on a SQLite project store (`src/persistence/`),
-layered onto the original prompt → storyboard beat → Krea revision flow.
-Work follows §12.
+Design status: the canvas (roadmap item 4) replaced the legacy storyboard
+model — the GUI is the artifact registry; the `svs` CLI shares the same
+`ArtifactRegistry`/`ProjectDb` core (`docs/api-slice-1.md`). Work follows
+§12 (item 5, Studio integration, is next).
 
 ### Entry points (existing code)
 
-- `src/models/mod.rs`, `src/models/persistence.rs` — current
-  Project/StoryboardFrame model + TOML store; stays as-is until the canvas
-  wires the GUI to SQLite (§12 item 4). The artifact registry (kinds,
-  variants, scenes) is the new domain model, persisted by
-  `src/persistence/mod.rs` (`ProjectDb`, §10 schema).
-- `src/state/mod.rs` — AppState invariants (beat ↔ clip, revisions,
-  selection).
+- `src/registry/` — artifact kinds, variants, scenes/beats, revisions +
+  masks, drafts; the typed operation set + pipeline builder; the slash
+  parser (`slash.rs`) the canvas composer uses; `CreativeBackend` (live
+  backend shared by the CLI, the canvas, and Settings).
+- `src/state/mod.rs` — AppState: registry, selection, undo/redo stacks.
+- `src/persistence/mod.rs` — `ProjectDb` (§10 schema, v3 drops the legacy
+  `project_json` column).
 - `src/vision/mod.rs` ↔ `python/models/schemas.py` — Rust/Python HTTP
-  contracts; `mask_path` must be added to `GenerateRequest`.
+  contracts; `mask_path` is in `GenerateRequest`.
 - `src/runtime/creative_runtime.rs`, `src/runtime/generation_runtime.rs` —
   process lifecycle + job orchestration the pipeline builder wraps.
-- `src/llm/` — LM Studio client; the operation registry (this design) is the
-  planner business logic it will serve.
+- `src/llm/` — LM Studio client; the operation registry is the planner
+  business logic it will serve.
 
 ### Open decisions to settle first (with the user)
 

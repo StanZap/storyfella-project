@@ -82,6 +82,10 @@ enum OpCommand {
         description: String,
         #[arg(long)]
         name: Option<String>,
+        /// Default generation size for this artifact's images (kind
+        /// defaults apply when omitted).
+        #[arg(long, value_parser = parse_size)]
+        size: Option<(u32, u32)>,
     },
     /// /variant <ref> <description> [axis] — new visual variant.
     Variant {
@@ -450,11 +454,13 @@ fn build_operation(op: OpCommand) -> Result<(Operation, CliRunOptions)> {
             kind,
             description,
             name,
+            size,
         } => (
             Operation::Create {
                 kind: parse_kind(&kind).map_err(anyhow::Error::msg)?,
                 description,
                 name,
+                size,
             },
             CliRunOptions {
                 work_dir: std::env::temp_dir(),

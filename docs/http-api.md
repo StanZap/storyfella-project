@@ -86,8 +86,8 @@ unavailable device is an in-band failure.
 relative to the configured LoRA directory — absolute paths and `..` traversal
 are rejected at validation time. `multiplier` is clamped to −2.0…2.0.
 
-The interactive draft profile used by the desktop app is 768×448 at four steps
-(`src/ui/editor.rs`).
+The default generation profile used by the canvas and the CLI is 768×448 at
+four steps (the `GenerationParams` defaults in `src/registry/pipeline.rs`).
 
 ## `POST /segment`
 

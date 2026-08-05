@@ -1,5 +1,4 @@
-//! SQLite persistence for the artifact registry + legacy storyboard
-//! (`docs/ROADMAP.md` §10).
+//! SQLite persistence for the artifact registry (`docs/ROADMAP.md` §10).
 //!
 //! The registry stays the in-memory source of truth for operations; the
 //! database is a snapshot written after each applied operation. Each save
@@ -19,6 +18,10 @@
 //!   (the transitional home for pre-`.sf` story drafts) are not in the
 //!   sketch; `revisions.error` and `revisions.seed`/`model` round out the
 //!   model fields.
+//!
+//! Schema history: v1 (§10 tables), v2 carried the legacy storyboard as
+//! `projects.project_json`, v3 dropped it — the canvas (roadmap §12 item 4)
+//! replaced the storyboard model, so the column went with it.
 
 use std::{
     path::{Path, PathBuf},
@@ -31,25 +34,21 @@ use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{
-    models::Project,
-    registry::{
-        ops::{Operation, OperationLogEntry},
-        Artifact, ArtifactRegistry, ArtifactRevision, BeatComposition, CompositionMode, Layer,
-        StoredMask, StoryDraft,
-    },
+use crate::registry::{
+    ops::{Operation, OperationLogEntry},
+    Artifact, ArtifactRegistry, ArtifactRevision, BeatComposition, CompositionMode, Layer,
+    StoredMask, StoryDraft,
 };
 
-/// The `projects` row for a database, plus the full snapshot.
+/// The `projects` row for a database, plus the full registry snapshot.
 ///
 /// `id`/`name` mirror the `projects` row (stable per database file); the
-/// legacy `Project` model (storyboard + timeline) is carried in
-/// `project_json` for the GUI until the canvas replaces it.
+/// registry is the whole project — the storyboard model it replaced was
+/// removed with schema v3.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StoredProject {
     pub id: Uuid,
     pub name: String,
-    pub project: Project,
     pub registry: ArtifactRegistry,
 }
 
@@ -124,27 +123,27 @@ impl ProjectDb {
     }
 
     /// Replaces the stored snapshot with `registry` in one transaction,
-    /// leaving the `projects` row (and the legacy `project_json`) untouched.
+    /// leaving the `projects` row untouched.
     pub fn save_registry(&self, registry: &ArtifactRegistry) -> Result<(), StoreError> {
-        self.write_snapshot(None, registry)
+        self.write_snapshot(registry)
     }
 
-    /// Replaces the stored snapshot with `project` + `registry` in one
-    /// transaction (the GUI save path; also mirrors the project name on the
-    /// `projects` row).
-    pub fn save_project(
-        &self,
-        project: &Project,
-        registry: &ArtifactRegistry,
-    ) -> Result<(), StoreError> {
-        self.write_snapshot(Some(project), registry)
+    /// Renames the `projects` row (used at creation, and by any future
+    /// rename UI).
+    pub fn rename_project(&self, name: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE projects SET name = ?1, updated_at = ?2",
+            params![name, unix_now()],
+        )
+        .map_err(|source| StoreError::Save {
+            path: self.path.clone(),
+            source,
+        })?;
+        Ok(())
     }
 
-    fn write_snapshot(
-        &self,
-        project: Option<&Project>,
-        registry: &ArtifactRegistry,
-    ) -> Result<(), StoreError> {
+    fn write_snapshot(&self, registry: &ArtifactRegistry) -> Result<(), StoreError> {
         let mut conn = self.conn.lock();
         let project_id = single_project_id(&conn)?;
         let tx = conn.transaction().map_err(|source| StoreError::Save {
@@ -166,30 +165,11 @@ impl ProjectDb {
                 })?;
         }
         let now = unix_now();
-        match project {
-            Some(project) => {
-                let project_json =
-                    serde_json::to_string(project).map_err(|source| StoreError::Serialize {
-                        path: self.path.clone(),
-                        source,
-                    })?;
-                tx.execute(
-                    "UPDATE projects SET name = ?1, project_json = ?2, updated_at = ?3",
-                    params![project.name, project_json, now],
-                )
-                .map_err(|source| StoreError::Save {
-                    path: self.path.clone(),
-                    source,
-                })?;
-            }
-            None => {
-                tx.execute("UPDATE projects SET updated_at = ?1", [now])
-                    .map_err(|source| StoreError::Save {
-                        path: self.path.clone(),
-                        source,
-                    })?;
-            }
-        }
+        tx.execute("UPDATE projects SET updated_at = ?1", [now])
+            .map_err(|source| StoreError::Save {
+                path: self.path.clone(),
+                source,
+            })?;
 
         for artifact in &registry.artifacts {
             let drafts_json = serde_json::to_string(&artifact.drafts).map_err(|source| {
@@ -200,9 +180,9 @@ impl ProjectDb {
             })?;
             tx.execute(
                 "INSERT INTO artifacts (id, project_id, kind, name, description, \
-                 variant_of_id, variant_axis, parent_id, composition_mode, \
-                 active_revision_id, drafts_json, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                 variant_of_id, variant_axis, default_width, default_height, parent_id, \
+                 composition_mode, active_revision_id, drafts_json, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 params![
                     artifact.id.to_string(),
                     project_id,
@@ -211,6 +191,8 @@ impl ProjectDb {
                     artifact.description,
                     artifact.variant_of.map(|id| id.to_string()),
                     artifact.variant_axis.map(enum_to_db),
+                    artifact.default_size.map(|(width, _)| width as i64),
+                    artifact.default_size.map(|(_, height)| height as i64),
                     artifact.parent_id.map(|id| id.to_string()),
                     artifact.composition.as_ref().map(|c| enum_to_db(c.mode)),
                     artifact.active_revision_id.map(|id| id.to_string()),
@@ -320,21 +302,14 @@ impl ProjectDb {
         })
     }
 
-    /// Loads the project row, the legacy `Project` model, and the full
-    /// registry snapshot.
+    /// Loads the project row and the full registry snapshot.
     pub fn load(&self) -> Result<StoredProject, StoreError> {
         let conn = self.conn.lock();
-        let (row_id, row_name, project_json) = conn
+        let (row_id, row_name) = conn
             .query_row(
-                "SELECT id, name, project_json FROM projects ORDER BY rowid LIMIT 1",
+                "SELECT id, name FROM projects ORDER BY rowid LIMIT 1",
                 [],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                },
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()
             .map_err(|source| StoreError::Load {
@@ -347,22 +322,6 @@ impl ProjectDb {
                 value: "<no project row>".to_owned(),
             })?;
         let project_id = uuid_from_db(&self.path, "projects.id", &row_id)?;
-        // CLI-created databases carry no legacy project; synthesize a fresh
-        // one from the row so the GUI always has a valid `Project`.
-        let project = if project_json.trim().is_empty() {
-            Project {
-                id: project_id,
-                name: row_name.clone(),
-                timeline: crate::timeline::Timeline::default(),
-                storyboard: Vec::new(),
-            }
-        } else {
-            serde_json::from_str(&project_json).map_err(|_| StoreError::Corrupt {
-                path: self.path.clone(),
-                column: "projects.project_json".to_owned(),
-                value: project_json.clone(),
-            })?
-        };
 
         let mut registry = ArtifactRegistry::default();
 
@@ -372,7 +331,8 @@ impl ProjectDb {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, kind, name, description, variant_of_id, variant_axis, \
-                     parent_id, composition_mode, active_revision_id, drafts_json \
+                     default_width, default_height, parent_id, composition_mode, \
+                     active_revision_id, drafts_json \
                      FROM artifacts ORDER BY rowid",
                 )
                 .map_err(|source| StoreError::Load {
@@ -388,10 +348,12 @@ impl ProjectDb {
                         description: row.get(3)?,
                         variant_of_id: row.get(4)?,
                         variant_axis: row.get(5)?,
-                        parent_id: row.get(6)?,
-                        composition_mode: row.get(7)?,
-                        active_revision_id: row.get(8)?,
-                        drafts_json: row.get(9)?,
+                        default_width: row.get(6)?,
+                        default_height: row.get(7)?,
+                        parent_id: row.get(8)?,
+                        composition_mode: row.get(9)?,
+                        active_revision_id: row.get(10)?,
+                        drafts_json: row.get(11)?,
                     })
                 })
                 .map_err(|source| StoreError::Load {
@@ -427,6 +389,10 @@ impl ProjectDb {
                         .as_deref()
                         .map(|axis| enum_from_db(&self.path, "artifacts.variant_axis", axis))
                         .transpose()?,
+                    default_size: match (row.default_width, row.default_height) {
+                        (Some(width), Some(height)) => Some((width as u32, height as u32)),
+                        _ => None,
+                    },
                     parent_id: row
                         .parent_id
                         .as_deref()
@@ -696,7 +662,6 @@ impl ProjectDb {
         Ok(StoredProject {
             id: project_id,
             name: row_name,
-            project,
             registry,
         })
     }
@@ -811,12 +776,24 @@ impl ProjectDb {
 /// Schema version 1 — the §10 tables. Appending to `MIGRATIONS` with a new
 /// `CREATE TABLE IF NOT EXISTS`/`ALTER TABLE` script migrates existing
 /// databases; `schema_meta` records what has been applied.
-const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2];
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4];
 
-/// Schema version 2 — the GUI carries the legacy `Project` model
+/// Schema version 2 — the GUI carried the legacy `Project` model
 /// (storyboard + timeline) as JSON on the `projects` row until the canvas
-/// replaces it (roadmap §12 item 4).
+/// replaced it.
 const SCHEMA_V2: &str = "ALTER TABLE projects ADD COLUMN project_json TEXT NOT NULL DEFAULT '';";
+
+/// Schema version 3 — the canvas (roadmap §12 item 4) replaced the legacy
+/// storyboard model; the column that carried it is dropped. This is the
+/// sanctioned one-time loss: the format evolves in place, and no legacy
+/// formats are parsed.
+const SCHEMA_V3: &str = "ALTER TABLE projects DROP COLUMN project_json;";
+
+/// Schema version 4 — artifacts carry an optional default generation size
+/// (explicit `/create … --size WxH`, or `NULL` = the kind default).
+const SCHEMA_V4: &str = "\
+ALTER TABLE artifacts ADD COLUMN default_width INTEGER;\n\
+ALTER TABLE artifacts ADD COLUMN default_height INTEGER;";
 
 const SCHEMA_V1: &str = "
 CREATE TABLE projects (
@@ -912,6 +889,8 @@ struct ArtifactRow {
     description: String,
     variant_of_id: Option<String>,
     variant_axis: Option<String>,
+    default_width: Option<i64>,
+    default_height: Option<i64>,
     parent_id: Option<String>,
     composition_mode: Option<String>,
     active_revision_id: Option<String>,
@@ -1031,13 +1010,11 @@ fn unix_now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        models::RevisionStatus,
-        registry::{
-            ops::{self, ExecuteOptions, OpOrigin},
-            pipeline::RunOptions,
-            ArtifactKind, ArtifactRevision, MaskSource, StoredMask, StoryDraft, VariantAxis,
-        },
+    use crate::registry::{
+        ops::{self, ExecuteOptions, OpOrigin},
+        pipeline::RunOptions,
+        ArtifactKind, ArtifactRevision, MaskSource, RevisionStatus, StoredMask, StoryDraft,
+        VariantAxis,
     };
 
     fn temp_db() -> (PathBuf, ProjectDb) {
@@ -1077,6 +1054,7 @@ mod tests {
                 kind: ArtifactKind::Story,
                 description: "The Lighthouse".to_owned(),
                 name: Some("story".to_owned()),
+                size: None,
             },
         );
         apply(
@@ -1085,6 +1063,7 @@ mod tests {
                 kind: ArtifactKind::Character,
                 description: "Mia, a lighthouse keeper".to_owned(),
                 name: Some("mia".to_owned()),
+                size: Some((512, 768)),
             },
         );
         apply(
@@ -1093,6 +1072,7 @@ mod tests {
                 kind: ArtifactKind::Environment,
                 description: "The kitchen at dusk".to_owned(),
                 name: Some("kitchen".to_owned()),
+                size: None,
             },
         );
         apply(
@@ -1101,6 +1081,7 @@ mod tests {
                 kind: ArtifactKind::Scene,
                 description: "Act one".to_owned(),
                 name: Some("act1".to_owned()),
+                size: None,
             },
         );
         apply(
@@ -1229,43 +1210,19 @@ mod tests {
     }
 
     #[test]
-    fn legacy_project_round_trips_through_save_project() {
+    fn rename_project_updates_the_row_name() {
         let (path, db) = temp_db();
-        let mut project = Project {
-            id: Uuid::new_v4(),
-            name: "The Lighthouse".to_owned(),
-            timeline: crate::timeline::Timeline::default(),
-            storyboard: vec![crate::models::StoryboardFrame {
-                id: Uuid::new_v4(),
-                prompt: "A quiet lighthouse above a silver sea at dusk".to_owned(),
-                asset_path: Some("assets/generated/frame.png".to_owned()),
-                revisions: Vec::new(),
-                active_revision_id: None,
-            }],
-        };
-        let registry = sample_registry();
-        db.save_project(&project, &registry)
-            .expect("save should succeed");
+        let original = db.load().expect("load should succeed");
+        db.rename_project("The Lighthouse")
+            .expect("rename should succeed");
         let stored = db.load().expect("load should succeed");
-        assert_eq!(stored.project, project);
-        assert_eq!(stored.registry, registry);
-        assert_eq!(stored.name, project.name, "row name mirrors the project");
-
-        project.name = "Renamed".to_owned();
-        db.save_project(&project, &registry)
-            .expect("save should succeed");
-        let stored = db.load().expect("load should succeed");
-        assert_eq!(stored.project.name, "Renamed");
-        assert_eq!(
-            stored.id,
-            db.load().expect("load").id,
-            "row id stays stable"
-        );
+        assert_eq!(stored.name, "The Lighthouse");
+        assert_eq!(stored.id, original.id, "row id stays stable");
         clean_up(&path);
     }
 
     #[test]
-    fn v1_databases_migrate_to_v2_with_a_synthesized_project() {
+    fn v1_databases_migrate_to_v3_and_drop_the_legacy_column() {
         let path = std::env::temp_dir().join(format!("svs-db-v1-{}.db", Uuid::new_v4()));
         {
             let conn = Connection::open(&path).expect("open should succeed");
@@ -1288,25 +1245,61 @@ mod tests {
             )
             .expect("project row should insert");
         }
-        let db = ProjectDb::open(&path).expect("open should migrate to v2");
+        let db = ProjectDb::open(&path).expect("open should migrate to v3");
         let stored = db.load().expect("load should succeed");
-        assert_eq!(
-            stored.project.name, "legacy v1",
-            "project synthesized from the row"
-        );
-        assert!(stored.project.storyboard.is_empty());
+        assert_eq!(stored.name, "legacy v1");
+        assert!(stored.registry.artifacts.is_empty());
+        {
+            let conn = db.conn.lock();
+            let columns: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'project_json'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("pragma should read");
+            assert_eq!(columns, 0, "project_json is dropped by v3");
+        }
+        clean_up(&path);
+    }
 
-        // project_json now exists and save_project works on the migrated DB.
-        let project = Project {
-            id: Uuid::new_v4(),
-            name: "Migrated".to_owned(),
-            timeline: crate::timeline::Timeline::default(),
-            storyboard: Vec::new(),
-        };
-        db.save_project(&project, &ArtifactRegistry::default())
-            .expect("save_project should succeed on v2");
+    #[test]
+    fn v2_databases_drop_the_legacy_storyboard_json_on_migration() {
+        // A v2 database written by the pre-canvas GUI carries the storyboard
+        // as JSON; opening it migrates to v3 and discards that column (the
+        // canvas replaced the storyboard model — sanctioned one-time loss).
+        let path = std::env::temp_dir().join(format!("svs-db-v2-{}.db", Uuid::new_v4()));
+        {
+            let conn = Connection::open(&path).expect("open should succeed");
+            conn.execute_batch(SCHEMA_V1)
+                .expect("v1 schema should apply");
+            conn.execute_batch(SCHEMA_V2)
+                .expect("v2 schema should apply");
+            conn.execute_batch(
+                "CREATE TABLE schema_meta (version INTEGER NOT NULL, applied_at INTEGER NOT NULL);",
+            )
+            .expect("schema_meta should be created");
+            conn.execute(
+                "INSERT INTO schema_meta (version, applied_at) VALUES (2, 1)",
+                [],
+            )
+            .expect("schema_meta row should insert");
+            conn.execute(
+                "INSERT INTO projects (id, name, project_json, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    Uuid::new_v4().to_string(),
+                    "legacy v2",
+                    r#"{"id":"00000000-0000-0000-0000-000000000000","name":"legacy v2"}"#,
+                    1,
+                    1,
+                ],
+            )
+            .expect("project row should insert");
+        }
+        let db = ProjectDb::open(&path).expect("open should migrate to v3");
         let stored = db.load().expect("load should succeed");
-        assert_eq!(stored.project.name, "Migrated");
+        assert_eq!(stored.name, "legacy v2");
         clean_up(&path);
     }
 
