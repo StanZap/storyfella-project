@@ -1,6 +1,6 @@
 # Smart Visual Sequencer
 
-Smart Visual Sequencer is a cross-platform Dioxus desktop application for planning, generating, and arranging visual stories. The first product workflow includes project creation, a prompt-first editor, resident local Krea generation, reference-image follow-ups with revision history, storyboard and timeline views, a properties surface, and sectioned runtime settings. The Visual LLM planner and presentation/export orchestration are not connected yet.
+Smart Visual Sequencer is a cross-platform Dioxus desktop application for planning, generating, and arranging visual stories. The first product workflow includes project creation, a prompt-first editor, resident local Krea generation, reference-image follow-ups with revision history, storyboard and timeline views, a properties surface, and sectioned runtime settings. The typed operation/planner layer exists behind the `svs` CLI; the Canvas connection and presentation/export orchestration are not wired yet.
 
 The supported targets are macOS on Apple Silicon (MPS) and Linux with NVIDIA CUDA. LM Studio is an external prerequisite and is never installed or bundled by this project.
 
@@ -11,7 +11,7 @@ This is intentionally a desktop-only application. Web, mobile, and WASM targets 
 - **Rust** owns the Dioxus UI, application state, storyboard/timeline models, project persistence boundary, model-download boundary, directory resolution, process lifecycle, LM Studio integration, and Python runtime client.
 - **Python** owns all future model framework and vision implementation details. Rust must not depend on or know about PyTorch. Krea 2 generation uses a separate native `stable-diffusion.cpp` process owned by Rust; it is not ComfyUI.
 - **HTTP** is the explicit boundary between them. The local FastAPI runtime exposes `GET /health`, `GET /capabilities`, `POST /segment`, `/generate`, and `/caption`, plus asynchronous generation-job endpoints. Generation and geometric-prompt segmentation have working POC backends; captioning remains a placeholder.
-- **LM Studio** is accessed directly from Rust through its OpenAI-compatible `/v1/chat/completions` endpoint. The bootstrap contains the client but no planner business logic.
+- **LM Studio** is accessed directly from Rust through its OpenAI-compatible `/v1/chat/completions` endpoint. The typed planner vocabulary (operations + pipelines) lives in `src/registry/`; `src/llm/` is the client only.
 
 ## Product surface
 
@@ -45,9 +45,11 @@ src/
   timeline/     Sequencer and clip domain types
   llm/          LM Studio OpenAI-compatible client
   vision/       Typed Python runtime HTTP client
+  registry/     Artifact registry, typed operations, pipelines, image ops
   runtime/      Python process lifecycle and model storage/download boundary
   models/       Project/storyboard data and persistence boundary
   assets/       Asset catalog boundary
+  bin/svs.rs    Operation CLI (see docs/api-slice-1.md)
 python/
   api/           FastAPI construction and routes
   models/        Pydantic request/response contracts
@@ -164,7 +166,9 @@ The third proof of concept runs SAM 2.1 Tiny behind `/segment` with point or box
 
 ## Roadmap
 
-1. Define the typed planner output and connect Canvas submissions to LM Studio.
+1. Connect Canvas submissions to the typed operation layer (`src/registry/`)
+   and LM Studio proposals (the vocabulary exists; `svs stack propose` is the
+   contract test bed).
 2. Add the interactive-first job scheduler and wire Krea generation results into storyboard frames.
 3. Wire Python/native runtime lifecycle, health, and resident-model state into the shell.
 4. Add versioned project persistence, generated-asset indexing, and autosave.

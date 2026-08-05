@@ -113,8 +113,10 @@ development.
 
 ## What is deliberately absent
 
-- **No planner business logic.** `src/llm/` is a client only; the typed planner
-  output and the Canvas → LM Studio connection are roadmap work.
+- **The planner lives in `src/registry/`.** The typed operation set, the
+  pipeline layer, and the `svs` CLI (see `docs/api-slice-1.md`) are
+  implemented; `src/llm/` is still a client only. The Canvas → LM Studio
+  connection and the creation canvas UI are roadmap work.
 - **No ComfyUI.** Image generation is native (`stable-diffusion.cpp`) or a
   Diffusers POC behind `/generate`; ComfyUI is not a dependency.
 - **No web/mobile targets.** The app is desktop-only; `cargo` features are

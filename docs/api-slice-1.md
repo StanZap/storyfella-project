@@ -73,6 +73,7 @@ svs --project p.json op draft c:<story> "write the opening" --text "…"   # man
 svs --project p.json op modify c:<char> "change her hair" --mask-prompt "her hair" --inpaint-prompt "a bob cut" --approve auto --out golden/
 svs --project p.json stack run stack.json --approve auto             # the VLLM contract test bed
 svs --project p.json stack propose "Add a rainy variant of the kitchen scene"   # LM Studio → JSON
+svs --project p.json runtime serve --force --model krea-2-turbo-q4   # resident generation profile
 svs --project p.json log [c:<ref>]
 ```
 
@@ -81,6 +82,57 @@ svs --project p.json log [c:<ref>]
 folder for human review — the manual golden-run tier. `stack run` persists
 already-applied ops even when a later op fails (fail-fast, intermediates
 kept).
+
+## Session guide — what runs where
+
+The slice splits into three tiers by what they need running, so a session
+can stay light (or run on another machine) without the generation backend:
+
+| Tier | Needs running | Ops |
+| --- | --- | --- |
+| Model-only | nothing — any machine, even a fresh checkout | `create`, `variant`, `compose`, `draft --text`, `log`, `project`, `stack run` of model-only stacks |
+| LLM-assisted | LM Studio (see below) | `draft` (propose + approve), `modify` without explicit prompts (the LLM plans the mask/inpaint split), `stack propose` |
+| Generation | provisioned Krea profile + resident sd-server | `regenerate`, `modify` |
+
+LLM steps are soft dependencies: with LM Studio off, `draft`/`modify`
+degrade to manual input at a checkpoint instead of failing the stack.
+
+### Keeping a generation profile resident
+
+An op starts its own sd-server when none is running, and that server dies
+when the CLI exits (cold start per command). For a longer generation
+session, keep a profile resident in one terminal:
+
+```sh
+svs --project p.json runtime serve --force --model krea-2-turbo-q4   # Ctrl-C to stop
+```
+
+- `--force` kills stale sd-server processes from interrupted sessions —
+  they hold port 7861 and cannot be restarted by the runtime.
+- Ops auto-restart **their own** server when the requested model differs
+  from the resident one: `--model krea-2-turbo-q4` while q2 is loaded just
+  works.
+- A mismatched server that another session owns errors with a
+  `ProfileMismatch` message naming the fix (`svs runtime serve --force` or
+  `pkill -f "sd-server --diffusion"`).
+
+### LM Studio
+
+`lm_studio.model` in `config/app.toml` must match a model id LM Studio
+serves (`curl http://localhost:1234/v1/models` lists them). The checked-in
+config points at the gemma model used on the dev machine.
+
+### Platform notes (measured)
+
+- **macOS Apple Silicon:** q2 @ 768×448 @ 4 steps ≈ 1–2 min per image —
+  the light loop (everything in the table, including `modify`).
+  q4 @ 1024×1024 @ 8 steps is ≈ 9 min per image — not worth it; keep heavy
+  work on CUDA.
+- **Linux + NVIDIA CUDA:** q2 and q4 are both fast. The 20-minute job cap
+  in `CreativeRuntime::wait_for_job` only matters on slow hardware.
+- `model_setup` runs once per machine/profile
+  (`--profile q2|q4 --accept-krea-license`); artifacts land in
+  `paths.model_dir` (`models/` in this checkout).
 
 ## Divergences from the design doc (deferred, by directive)
 

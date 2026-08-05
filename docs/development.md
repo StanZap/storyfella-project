@@ -129,9 +129,12 @@ run that reports `OK (skipped=N)` is expected on a base environment.
 | `cargo run --bin vlm_probe -- --list-models` | List models visible through LM Studio |
 | `cargo run --bin vlm_probe -- --model <id>` | Run the visual-LLM probe against one model |
 | `cargo run --example generate_vlm_fixtures` | Regenerate the deterministic probe fixtures |
+| `cargo run --bin svs -- --help` | Operation CLI (typed ops, stacks, runtime serve, log) — see [`api-slice-1.md`](api-slice-1.md) for the command reference and the light/LLM/generation session split |
 
 `model_setup` refuses to run without `--accept-krea-license`; review the Krea 2
-licensing terms before distributing weights.
+licensing terms before distributing weights. The `svs` CLI needs no
+provisioned models for the model-only and LLM-assisted tiers; only
+`regenerate`/`modify` touch the Krea backend.
 
 ## Configuration reference
 
@@ -154,7 +157,9 @@ Configuration lives in [`config/app.toml`](../config/app.toml) and is loaded by
 | `paths.asset_dir` | platform data dir + `assets` | Imported/generated assets |
 
 An invalid `generation.profile` value is a hard configuration error and the app
-shows the error screen on launch.
+shows the error screen on launch. The checked-in `config/app.toml` sets
+`lm_studio.model` to the gemma model id used on the dev machine — point it at
+the model id your LM Studio serves (`curl http://localhost:1234/v1/models`).
 
 ## Common issues
 
@@ -166,6 +171,11 @@ shows the error screen on launch.
   binary or model artifacts are missing. Run `cargo run --bin model_setup`
   after reviewing the license, and confirm `generation.executable` in
   `config/app.toml`.
+- **`generation job failed: resident backend has … loaded; … requires …`** —
+  the resident sd-server runs a different Krea profile than the request.
+  Ops restart their own server automatically; a stale server from another
+  session needs `svs runtime serve --force --model krea-2-turbo-q4` (or
+  `pkill -f "sd-server --diffusion"`), then rerun.
 - **`/segment` fails with a torch import error** — the segmentation extra is
   not installed; run `uv sync --project python --extra segmentation`.
 - **LM Studio calls fail** — confirm LM Studio is running, the configured model
