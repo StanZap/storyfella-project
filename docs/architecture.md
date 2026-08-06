@@ -85,11 +85,13 @@ Artifact detail: image + revision history (served via /generated/<file>)
 ```
 
 A `modify` follows the canonical regional-edit flow (segment → confirm mask →
-inpaint, composite fallback) — see `docs/ROADMAP.md` §5. The canvas resolves
-checkpoints automatically (best mask candidate, accept text); the CLI offers
-interactive approval for careful runs (`svs op modify --approve interactive`).
-The interactive draft profile requests 768×448 at four steps to favor
-iteration speed on slower hardware.
+inpaint, composite fallback) — see `docs/ROADMAP.md` §5. The canvas surfaces
+the mask checkpoint interactively: the op runs on a worker thread and the
+segmentation candidates are shown overlaid on the image in a modal — the one
+interactive step in the flow. The CLI offers the same choice
+(`svs op modify --approve interactive`); non-interactive runs auto-pick the
+best candidate. The interactive draft profile requests 768×448 at four steps
+to favor iteration speed on slower hardware.
 
 ## Process boundaries
 
@@ -117,9 +119,10 @@ development.
 
 - **The planner lives in `src/registry/`.** The typed operation set, the
   pipeline layer, the slash parser, and the `svs` CLI (see
-  `docs/api-slice-1.md`) are implemented; `src/llm/` is still a client
-  only. The Canvas → LM Studio connection (free-form composer messages
-  proposed as operation stacks) is roadmap work.
+  `docs/api-slice-1.md`) are implemented; `src/llm/` is the client only,
+  driven through `CreativeBackend`. The Canvas free-form composer messages
+  are proposed as operation stacks (LLM → closed-vocabulary JSON → approval
+  modal → executed through the same worker machinery as slash commands).
 - **No ComfyUI.** Image generation is native (`stable-diffusion.cpp`) or a
   Diffusers POC behind `/generate`; ComfyUI is not a dependency.
 - **No web/mobile targets.** The app is desktop-only; `cargo` features are

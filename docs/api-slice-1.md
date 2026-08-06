@@ -111,7 +111,7 @@ can stay light (or run on another machine) without the generation backend:
 | Tier | Needs running | Ops |
 | --- | --- | --- |
 | Model-only | nothing — any machine, even a fresh checkout | `create` of text-only kinds (story/scene/beat), `compose`, `draft --text`, `log`, `project`, `stack run` of model-only stacks |
-| LLM-assisted | LM Studio (see below) | `draft` (propose + approve), `modify` without explicit prompts (the LLM plans the mask/inpaint split), `stack propose` |
+| LLM-assisted | LM Studio (see below) | `draft` (propose + approve), `modify` without explicit prompts (the LLM plans the mask/inpaint split), `stack propose`, free-form canvas messages (proposed stacks shown for approval) |
 | Generation | provisioned Krea profile + resident sd-server | `create`/`variant` of visual kinds (first image), `regenerate`, `modify` |
 
 LLM steps are soft dependencies: with LM Studio off, `draft`/`modify`
@@ -164,9 +164,21 @@ config points at the gemma model used on the dev machine.
 - **Canvas slice 1** (`src/ui/canvas.rs`): sidebar grouped by kind, detail
   pane (image, description, variants, revisions, children, operation log),
   slash-command composer (`/create`, `/variant`, `/regenerate`,
-  `/modify`), undo/redo via registry snapshots. Deferred per §6: artboard
-  pan/zoom, `c:` autocomplete, syntax highlighting, and the compose/draft
-  op surface (beats are item 5, Studio integration).
+  `/modify`), undo/redo via registry snapshots. The mask checkpoint of
+  `modify` is interactive: the op runs on a worker thread (its own tokio
+  runtime) and the segmentation candidates are shown overlaid on the image
+  in a modal; the choice is sent back over a channel. A `modify` whose LLM
+  edit plan degrades (no LM Studio) asks for the mask/inpaint split in a
+  second modal instead of rejecting. Stored masks appear
+  under the active revision (served via the `mask` asset handler; the
+  runtime points `SVS_MASK_DIR` at `<asset_dir>/masks`). Free-form composer
+  messages (no leading `/`) are proposed as operation stacks by LM Studio
+  (`CreativeBackend::propose_stack`, shared with `svs stack propose`) and
+  shown in an approval modal with per-op toggles; approved stacks run in
+  order through the same worker-thread machinery, so intra-op checkpoints
+  stay interactive. Deferred per §6:
+  artboard pan/zoom, `c:` autocomplete, syntax highlighting, and the
+  compose/draft op surface (beats are item 5, Studio integration).
 - `paint_strokes` is vocabulary (a `Step` + builder method) but not
   executable in slice 1; `describe`/`critique` LLM steps degrade to manual
   input.

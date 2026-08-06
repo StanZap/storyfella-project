@@ -20,7 +20,6 @@ use clap::{Parser, Subcommand, ValueEnum};
 use uuid::Uuid;
 
 use smart_visual_sequencer::app::AppConfig;
-use smart_visual_sequencer::llm::{ChatMessage, ChatOptions, LmStudioClient};
 use smart_visual_sequencer::persistence::ProjectDb;
 use smart_visual_sequencer::registry::backend::CreativeBackend;
 use smart_visual_sequencer::registry::ops::{
@@ -942,58 +941,12 @@ async fn run_stack(
 async fn propose_stack(project_path: &Path, message: &str, out: Option<PathBuf>) -> Result<()> {
     let registry = load_project(project_path)?;
     let config = AppConfig::load().context("could not load config/app.toml")?;
-    let client = LmStudioClient::new(config.lm_studio.clone())
-        .map_err(|error| anyhow!("could not build the LM Studio client: {error}"))?;
+    let backend = CreativeBackend::new(&config);
 
-    let mut registry_listing = String::new();
-    for artifact in registry.iter() {
-        registry_listing.push_str(&format!(
-            "  {} {} {:?}",
-            registry.ref_of(artifact.id),
-            artifact.kind,
-            artifact.name
-        ));
-        if !artifact.description.is_empty() {
-            registry_listing.push_str(&format!(" — {}", artifact.description));
-        }
-        registry_listing.push('\n');
-    }
-
-    let system = format!(
-        "You plan operations for a visual story tool. Respond with JSON only, exactly \
-         this shape: {{\"operations\": [ ... ]}} where every operation is one of:\n\
-         {{\"op\": \"create\", \"kind\": \"story|scene|beat|character|environment|object\", \"description\": \"...\", \"name\": \"...\"}}\n\
-         {{\"op\": \"variant\", \"target\": \"c:<name>\", \"description\": \"...\", \"axis\": \"outfit|age|body|hair|expression|time-of-day|weather|season|mood\"}}\n\
-         {{\"op\": \"regenerate\", \"target\": \"c:<name>\", \"prompt\": \"...\"}}\n\
-         {{\"op\": \"compose\", \"scene\": \"c:<name>\", \"description\": \"...\", \"background\": \"c:<name>\", \"layers\": [{{\"artifact\": \"c:<name>\", \"variant\": \"c:<name>\"}}]}}\n\
-         {{\"op\": \"draft\", \"target\": \"c:<name>\", \"request\": \"...\"}}\n\
-         {{\"op\": \"modify\", \"target\": \"c:<name>\", \"description\": \"...\", \"mask_prompt\": \"...\", \"inpaint_prompt\": \"...\"}}\n\
-         This vocabulary is closed — never invent an op name. References are the \
-         c:<name> keys listed below (case-insensitive); use only those.\n\n\
-         Registry:\n{registry_listing}"
-    );
-    let options = ChatOptions {
-        response_format: Some(serde_json::json!({"type": "json_object"})),
-        ..ChatOptions::default()
-    };
-    let completion = client
-        .chat_with_options(
-            &[
-                ChatMessage::text("system", system),
-                ChatMessage::text("user", message),
-            ],
-            &options,
-        )
+    let stack = backend
+        .propose_stack(&registry, message)
         .await
-        .map_err(|error| anyhow!("LM Studio request failed: {error}"))?;
-    let content = completion
-        .choices
-        .first()
-        .and_then(|choice| choice.message.content.clone())
-        .ok_or_else(|| anyhow!("LM Studio returned no content"))?;
-
-    let stack: OperationStack = serde_json::from_str(&content)
-        .with_context(|| format!("LLM output was not a valid operation stack:\n{content}"))?;
+        .map_err(|error| anyhow!(error))?;
     let pretty = serde_json::to_string_pretty(&stack).context("could not serialize stack")?;
     println!("{pretty}");
 

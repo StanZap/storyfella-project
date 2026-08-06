@@ -5,12 +5,16 @@ use futures_util::future::BoxFuture;
 
 use crate::{
     app::AppConfig,
-    llm::{ChatMessage, ChatOptions, LmStudioClient},
+    llm::{strip_json_fence, ChatMessage, ChatOptions, LmStudioClient},
     runtime::{CreativeRuntime, CreativeRuntimeError, KreaQuantization},
     vision::{GenerateRequest, GenerateResponse, SegmentRequest, SegmentResponse},
 };
 
-use super::pipeline::{GenerationBackend, PipelineError, PlannedEdit};
+use super::{
+    ops::OperationStack,
+    pipeline::{GenerationBackend, PipelineError, PlannedEdit},
+    ArtifactRegistry,
+};
 
 /// The real backend the CLI (and the canvas) executes pipelines against.
 #[derive(Clone)]
@@ -71,6 +75,21 @@ impl CreativeBackend {
         self.llm.is_some()
     }
 
+    /// The model identifier the planner currently requests (the Settings
+    /// picker shows this; `None` when no LLM client was built).
+    pub fn llm_model(&self) -> Option<String> {
+        self.llm.as_ref().map(LmStudioClient::model).map(str::to_owned)
+    }
+
+    /// Swaps the planner model at runtime. The backend lives in app state
+    /// (a signal), so the canvas's next proposal/plan/draft uses the new
+    /// model immediately; `config/app.toml` persists the choice across runs.
+    pub fn set_llm_model(&mut self, model: String) {
+        if let Some(client) = &mut self.llm {
+            client.set_model(model);
+        }
+    }
+
     fn draft_system_prompt() -> &'static str {
         "You are the story writer for a visual storybook project. Write the \
          requested story text (premise, plot, scene, or beat narration) as \
@@ -84,6 +103,101 @@ impl CreativeBackend {
          \"inpaint_prompt\": \"...\"}. The mask_prompt names the region to \
          select (e.g. \"her hair\"). The inpaint_prompt describes the new \
          look (e.g. \"a short bob cut\")."
+    }
+
+    /// The closed-vocabulary planner prompt: free text → an operation stack.
+    /// The registry listing constrains the model to real `c:` references.
+    fn propose_system_prompt(registry: &ArtifactRegistry) -> String {
+        let mut listing = String::new();
+        for artifact in registry.iter() {
+            listing.push_str(&format!(
+                "  {} {} {:?}",
+                registry.ref_of(artifact.id),
+                artifact.kind,
+                artifact.name
+            ));
+            if !artifact.description.is_empty() {
+                listing.push_str(&format!(" — {}", artifact.description));
+            }
+            listing.push('\n');
+        }
+        format!(
+            "You plan operations for a visual story tool. Respond with JSON only, exactly \
+             this shape: {{\"operations\": [ ... ]}} where every operation is one of:\n\
+             {{\"op\": \"create\", \"kind\": \"story|scene|beat|character|environment|object\", \"description\": \"...\", \"name\": \"...\"}}\n\
+             {{\"op\": \"variant\", \"target\": \"c:<name>\", \"description\": \"...\", \"axis\": \"outfit|age|body|hair|expression|time-of-day|weather|season|mood\"}}\n\
+             {{\"op\": \"regenerate\", \"target\": \"c:<name>\", \"prompt\": \"...\"}}\n\
+             {{\"op\": \"compose\", \"scene\": \"c:<name>\", \"description\": \"...\", \"background\": \"c:<name>\", \"layers\": [{{\"artifact\": \"c:<name>\", \"variant\": \"c:<name>\"}}]}}\n\
+             {{\"op\": \"draft\", \"target\": \"c:<name>\", \"request\": \"...\"}}\n\
+             {{\"op\": \"modify\", \"target\": \"c:<name>\", \"description\": \"...\", \"mask_prompt\": \"...\", \"inpaint_prompt\": \"...\"}}\n\
+             Choose the op by intent, not by wording:\n\
+             - create: a new artifact that does not exist yet.\n\
+             - variant: a whole new version of an existing visual artifact — a \
+             different look, age, outfit, or mood of the same subject. Never use \
+             it for a small localized change.\n\
+             - regenerate: redo an existing artifact's image in full, keeping the \
+             same subject — quality, style, or composition fixes of the whole image.\n\
+             - modify: a localized change to one region of an existing image (add \
+             glasses, change the hair, change the sky). It plans a mask region and \
+             the new look.\n\
+             - compose: assemble a scene from existing artifacts (background plus \
+             layered characters).\n\
+             - draft: ONLY a text note or idea attached to an artifact. It never \
+             changes or generates an image — never use draft for any request that \
+             changes what an image shows.\n\
+             Examples: \"add glasses to mia\" → modify; \"make mia 10 years \
+             older\" → variant with axis age; \"the sky looks flat, redo it\" → \
+             regenerate; \"note that mia's ring was her grandmother's\" → draft.\n\
+             This vocabulary is closed — never invent an op name. References are the \
+             c:<name> keys listed below (case-insensitive); use only those.\n\n\
+             Registry:\n{listing}"
+        )
+    }
+}
+
+impl CreativeBackend {
+    /// Drives the LLM to plan a free-form request as an operation stack
+    /// against the closed vocabulary (the VLLM contract test bed, shared by
+    /// the `svs stack propose` CLI and the canvas composer). `Err` when the
+    /// LLM is unavailable or its output is not a valid stack.
+    pub async fn propose_stack(
+        &self,
+        registry: &ArtifactRegistry,
+        message: &str,
+    ) -> Result<OperationStack, String> {
+        let Some(client) = &self.llm else {
+            return Err(
+                "LM Studio is not configured or unreachable — use slash commands instead"
+                    .to_owned(),
+            );
+        };
+        let options = ChatOptions {
+            response_format: Some(Self::stack_response_format()),
+            ..ChatOptions::default()
+        };
+        let completion = client
+            .chat_with_options(
+                &[
+                    ChatMessage::text("system", Self::propose_system_prompt(registry)),
+                    ChatMessage::text("user", message),
+                ],
+                &options,
+            )
+            .await
+            .map_err(|error| format!("LM Studio request failed: {error}"))?;
+        let content = completion
+            .choices
+            .first()
+            .and_then(|choice| choice.message.content.clone())
+            .ok_or_else(|| "LM Studio returned no content".to_owned())?;
+        let stack: OperationStack =
+            serde_json::from_str(strip_json_fence(&content)).map_err(|error| {
+                format!("the LLM output was not a valid operation stack: {error}\n\n{content}")
+            })?;
+        if stack.operations.is_empty() {
+            return Err("the LLM returned no operations".to_owned());
+        }
+        Ok(stack)
     }
 }
 
@@ -194,7 +308,7 @@ impl GenerationBackend for CreativeBackend {
                 ChatMessage::text("user", request),
             ];
             let options = ChatOptions {
-                response_format: Some(serde_json::json!({"type": "json_object"})),
+                response_format: Some(Self::edit_plan_response_format()),
                 ..ChatOptions::default()
             };
             match client.chat_with_options(&messages, &options).await {
@@ -206,7 +320,7 @@ impl GenerationBackend for CreativeBackend {
                     else {
                         return Ok(None);
                     };
-                    match serde_json::from_str::<PlannedEdit>(&content) {
+                    match serde_json::from_str::<PlannedEdit>(strip_json_fence(&content)) {
                         Ok(plan) => Ok(Some(plan)),
                         Err(error) => {
                             tracing::warn!(%error, "LLM plan did not parse as JSON");
@@ -220,5 +334,187 @@ impl GenerationBackend for CreativeBackend {
                 }
             }
         })
+    }
+}
+
+impl CreativeBackend {
+    /// The OpenAI-style structured-output format LM Studio accepts (newer
+    /// builds reject the legacy `{"type": "json_object"}`). `strict` makes
+    /// the server constrain the output to the schema (validated live
+    /// against LM Studio); the lenient serde parse still tolerates the
+    /// optional fields the model omits.
+    fn json_schema_response_format(name: &str, schema: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "type": "json_schema",
+            "json_schema": { "name": name, "strict": true, "schema": schema }
+        })
+    }
+
+    /// The closed-vocabulary op shape: `{"operations": [...]}` with a
+    /// oneOf union per op so strict mode enforces each op's own required
+    /// fields (validated live against LM Studio).
+    fn stack_response_format() -> serde_json::Value {
+        Self::json_schema_response_format(
+            "operation_stack",
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "operations": {
+                        "type": "array",
+                        "items": {
+                            "oneOf": [
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "op": { "const": "create" },
+                                        "kind": { "enum": ["story", "scene", "beat", "character", "environment", "object"] },
+                                        "description": { "type": "string" },
+                                        "name": { "type": "string" }
+                                    },
+                                    "required": ["op", "kind", "description"]
+                                },
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "op": { "const": "variant" },
+                                        "target": { "type": "string" },
+                                        "description": { "type": "string" },
+                                        "axis": { "enum": ["outfit", "age", "body", "hair", "expression", "time-of-day", "weather", "season", "mood"] }
+                                    },
+                                    "required": ["op", "target", "description"]
+                                },
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "op": { "const": "regenerate" },
+                                        "target": { "type": "string" },
+                                        "prompt": { "type": "string" }
+                                    },
+                                    "required": ["op", "target"]
+                                },
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "op": { "const": "compose" },
+                                        "scene": { "type": "string" },
+                                        "description": { "type": "string" },
+                                        "background": { "type": "string" },
+                                        "layers": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "additionalProperties": false,
+                                                "properties": {
+                                                    "artifact": { "type": "string" },
+                                                    "variant": { "type": "string" }
+                                                },
+                                                "required": ["artifact"]
+                                            }
+                                        }
+                                    },
+                                    "required": ["op", "scene", "description"]
+                                },
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "op": { "const": "draft" },
+                                        "target": { "type": "string" },
+                                        "request": { "type": "string" }
+                                    },
+                                    "required": ["op", "target", "request"]
+                                },
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "op": { "const": "modify" },
+                                        "target": { "type": "string" },
+                                        "description": { "type": "string" },
+                                        "mask_prompt": { "type": "string" },
+                                        "inpaint_prompt": { "type": "string" }
+                                    },
+                                    "required": ["op", "target", "description"]
+                                }
+                            ]
+                        }
+                    }
+                },
+                "required": ["operations"]
+            }),
+        )
+    }
+
+    /// The edit-plan shape: `{"mask_prompt", "inpaint_prompt"}`.
+    fn edit_plan_response_format() -> serde_json::Value {
+        Self::json_schema_response_format(
+            "planned_edit",
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "mask_prompt": { "type": "string" },
+                    "inpaint_prompt": { "type": "string" }
+                },
+                "required": ["mask_prompt", "inpaint_prompt"]
+            }),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stack_schema_is_strict_with_per_op_requirements() {
+        let schema = CreativeBackend::stack_response_format();
+        assert_eq!(
+            schema["type"], "json_schema",
+            "newer LM Studio builds reject the legacy json_object format"
+        );
+        assert_eq!(schema["json_schema"]["strict"], true);
+        let items = &schema["json_schema"]["schema"]["properties"]["operations"]["items"]["oneOf"];
+        let variants = items.as_array().expect("oneOf union per op");
+        assert_eq!(variants.len(), 6);
+        for variant in variants {
+            assert_eq!(variant["additionalProperties"], false);
+            assert!(
+                variant["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::json!("op")),
+                "every op variant requires the discriminator"
+            );
+        }
+        // The edit plan keeps its two-field contract.
+        let plan = CreativeBackend::edit_plan_response_format();
+        assert_eq!(plan["json_schema"]["strict"], true);
+        assert_eq!(
+            plan["json_schema"]["schema"]["required"],
+            serde_json::json!(["mask_prompt", "inpaint_prompt"])
+        );
+    }
+
+    #[test]
+    fn planner_prompt_defines_when_each_op_applies() {
+        let registry = ArtifactRegistry::new();
+        let prompt = CreativeBackend::propose_system_prompt(&registry);
+        for expectation in [
+            "modify: a localized change to one region of an existing image",
+            "variant: a whole new version of an existing visual artifact",
+            "regenerate: redo an existing artifact's image in full",
+            "draft: ONLY a text note or idea attached to an artifact. It never",
+            "never use draft for any request that changes what an image shows",
+            "add glasses to mia\" → modify",
+            "make mia 10 years older\" → variant",
+        ] {
+            assert!(prompt.contains(expectation), "missing: {expectation}");
+        }
     }
 }

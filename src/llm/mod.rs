@@ -140,6 +140,20 @@ impl ChatMessage {
     }
 }
 
+/// Strips a markdown fence around JSON (some models wrap their output in
+/// ```json … ``` even under a structured response format).
+pub fn strip_json_fence(value: &str) -> &str {
+    let trimmed = value.trim();
+    let without_start = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .unwrap_or(trimmed);
+    without_start
+        .strip_suffix("```")
+        .unwrap_or(without_start)
+        .trim()
+}
+
 impl LmStudioClient {
     pub fn new(config: LmStudioConfig) -> Result<Self, LmStudioError> {
         let http = Client::builder()
@@ -147,6 +161,17 @@ impl LmStudioClient {
             .build()
             .map_err(LmStudioError::Build)?;
         Ok(Self { http, config })
+    }
+
+    /// The model identifier every request carries (what LM Studio routes to).
+    pub fn model(&self) -> &str {
+        &self.config.model
+    }
+
+    /// Swaps the requested model at runtime (the Settings picker; the config
+    /// file persists the choice across runs).
+    pub fn set_model(&mut self, model: String) {
+        self.config.model = model;
     }
 
     pub async fn list_models(&self) -> Result<ModelList, LmStudioError> {

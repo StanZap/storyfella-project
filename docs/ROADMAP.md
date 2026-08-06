@@ -568,7 +568,17 @@ plan to ship, with its status; update it when work lands.
    `modify` honor. Visual `create`/`variant` generate the artifact's first
    image as part of the operation (variants reference the base's active
    image); a failed generation keeps the artifact with a failed revision,
-   and `/regenerate` is the retry. The legacy storyboard model was removed
+   and `/regenerate` is the retry. `modify` surfaces its checkpoints
+   interactively: the op runs on a worker thread and the segmentation
+   candidates appear overlaid on the image in a modal (the one interactive
+   step of the regional-edit flow, §5); when the LLM edit plan degrades
+   (LM Studio off), a second modal asks for the mask/inpaint split manually.
+   The confirmed mask is listed under the active revision. Free-form
+   composer messages (no leading `/`) go to the LLM, which proposes an
+   operation stack against the closed vocabulary; the proposal is shown in
+   an approval modal with per-op toggles before any op runs (LLM proposals
+   are gated, per the execution model). The legacy storyboard model was
+   removed
    with it (`src/models/`, `src/timeline/`, schema v3 drops `project_json`).
    — **✅ implemented**; artboard pan/zoom, `c:` autocomplete, and syntax
    highlighting remain deferred (§6).

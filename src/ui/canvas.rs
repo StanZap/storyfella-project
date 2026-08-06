@@ -6,25 +6,39 @@
 //! `/regenerate`, `/modify` — the same typed vocabulary as the `svs` CLI).
 //! Context actions (New variant, Regenerate, Modify) prefill the composer so
 //! there is exactly one input path.
+//!
+//! `modify` runs its pipeline on a worker thread (own tokio runtime) so the
+//! mask checkpoint can block on the user without freezing the UI: the worker
+//! forwards the segmentation candidates through a channel, the supervisor
+//! task (UI thread) shows them in a modal, and the user's choice is sent back
+//! to the worker. Stored masks are listed under the active revision.
+
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::{mpsc, Arc, Mutex},
+    time::Duration,
+};
 
 use dioxus::prelude::*;
 use uuid::Uuid;
 
-use crate::{
-    registry::{
-        backend::CreativeBackend,
-        ops::{self, ExecuteOptions, OpOrigin, Operation},
-        pipeline::{ApprovalPolicy, RunOptions},
-        slash::{self, is_slash_command},
-        Artifact, ArtifactKind, ArtifactRevision, RevisionStatus,
+use crate::registry::{
+    backend::CreativeBackend,
+    ops::{self, ExecuteOptions, OpOrigin, Operation},
+    pipeline::{
+        auto_decision, ApprovalPolicy, BlockedOn, Decision, InputPurpose, PlannedEdit, RunOptions,
     },
-    state::AppState,
+    slash::{self, is_slash_command},
+    Artifact, ArtifactKind, ArtifactRegistry, ArtifactRevision, RevisionStatus, StoredMask,
 };
+use crate::state::AppState;
 
 use super::{
     components::EmptyVisual,
     generated_asset_url,
     icons::{Icon, IconName},
+    mask_asset_url,
 };
 
 /// The sidebar group order (visual kinds first — the creation loop).
@@ -53,32 +67,170 @@ impl CanvasActivity {
     }
 }
 
+/// One segmentation candidate shown in the mask-confirmation modal.
+#[derive(Clone, Debug, PartialEq)]
+struct MaskCandidateUi {
+    path: String,
+    score: f64,
+    area_pixels: u64,
+}
+
+impl From<crate::registry::pipeline::MaskCandidate> for MaskCandidateUi {
+    fn from(candidate: crate::registry::pipeline::MaskCandidate) -> Self {
+        Self {
+            path: candidate.path.display().to_string(),
+            score: candidate.score,
+            area_pixels: candidate.area_pixels,
+        }
+    }
+}
+
+/// The mask checkpoint waiting on the user: which image to judge the
+/// candidates against, plus the candidates themselves.
+#[derive(Clone, Debug, PartialEq)]
+struct PendingMaskApproval {
+    image: Option<String>,
+    description: String,
+    candidates: Vec<MaskCandidateUi>,
+}
+
+/// The checkpoint waiting on the user, and which kind of answer it needs.
+#[derive(Clone, Debug, PartialEq)]
+enum PendingApproval {
+    /// Segment candidates to choose from (the mask checkpoint).
+    Mask(PendingMaskApproval),
+    /// The LLM could not plan the edit; the user supplies the split.
+    PlannedEdit { description: String },
+}
+
+/// Messages the op worker thread sends to the supervisor (UI thread).
+enum OpEvent {
+    PendingMask(PendingMaskApproval),
+    /// The LLM edit plan degraded; the worker only sends this for
+    /// `InputPurpose::PlannedEdit` (the canvas cannot answer other kinds).
+    PendingInput {
+        description: String,
+    },
+    Done {
+        registry: ArtifactRegistry,
+        result: Result<ops::OpOutcome, String>,
+    },
+}
+
 #[component]
-pub fn Canvas(app_state: Signal<AppState>, backend: CreativeBackend) -> Element {
+pub fn Canvas(app_state: Signal<AppState>, backend: Signal<CreativeBackend>) -> Element {
     let mut composer = use_signal(String::new);
     let filter = use_signal(String::new);
     let mut activity = use_signal(CanvasActivity::default);
     let selected = app_state.read().selected_artifact().cloned();
     let busy = activity.read().is_busy();
 
-    let backend_for_run = backend.clone();
+    // The mask checkpoint handshake. `reply_slot` is the UI-side end of the
+    // channel the op worker blocks on; the modal's buttons send the choice.
+    // Both stay on the UI thread (signals are not cross-thread safe).
+    let mut pending_approval = use_signal(|| None::<PendingApproval>);
+    let reply_slot = use_hook(|| Rc::new(RefCell::new(None::<mpsc::Sender<Decision>>)));
+    // A free-form message proposed as an operation stack, awaiting approval.
+    let mut proposal = use_signal(|| None::<StackProposal>);
+    let reviewing = proposal.read().is_some();
+    let disabled = busy || reviewing;
+
+    let reply_slot_for_run = reply_slot.clone();
     let submit = move |_| {
-        if busy {
+        if disabled {
             return;
         }
         let input = composer().trim().to_owned();
         if input.is_empty() {
             return;
         }
-        let operation = match parse_composer(&input, &app_state.read().registry) {
-            Ok(operation) => operation,
-            Err(message) => {
-                activity.set(CanvasActivity::Failed(message));
-                return;
-            }
-        };
         composer.set(String::new());
-        run_operation(app_state, backend_for_run.clone(), operation, activity);
+        if is_slash_command(&input) {
+            let operation = match parse_composer(&input, &app_state.read().registry) {
+                Ok(operation) => operation,
+                Err(message) => {
+                    activity.set(CanvasActivity::Failed(message));
+                    return;
+                }
+            };
+            run_operations(
+                app_state,
+                backend(),
+                vec![operation],
+                activity,
+                pending_approval,
+                reply_slot_for_run.clone(),
+            );
+        } else {
+            // Free text: the LLM proposes the operations; the user approves.
+            propose_operations(app_state, backend(), input, activity, proposal);
+        }
+    };
+
+    // The active modal, built before the rsx (a `let` inside a rsx block is
+    // not allowed). The checkpoint modals and the proposal modal are
+    // mutually exclusive (the composer is disabled while busy).
+    let modal = {
+        let pending = pending_approval.read().clone();
+        match pending {
+            Some(PendingApproval::Mask(approval)) => {
+                let reply = reply_slot.clone();
+                let on_decide = move |decision: Decision| {
+                    if let Some(sender) = reply.borrow_mut().take() {
+                        let _ = sender.send(decision);
+                    }
+                    pending_approval.set(None);
+                };
+                Some(rsx! {
+                    MaskApprovalModal {
+                        approval,
+                        on_decide,
+                    }
+                })
+            }
+            Some(PendingApproval::PlannedEdit { description }) => {
+                let reply = reply_slot.clone();
+                let on_decide = move |decision: Decision| {
+                    if let Some(sender) = reply.borrow_mut().take() {
+                        let _ = sender.send(decision);
+                    }
+                    pending_approval.set(None);
+                };
+                Some(rsx! {
+                    PlanEditModal {
+                        description,
+                        on_decide,
+                    }
+                })
+            }
+            None => None,
+        }
+    };
+    let proposal_modal = {
+        let pending = proposal.read().clone();
+        match pending {
+            Some(pending) => {
+                let operations = pending.operations.clone();
+                Some(rsx! {
+                    StackProposalModal {
+                        operations,
+                        on_approve: move |selected: Vec<Operation>| {
+                            proposal.set(None);
+                            run_operations(
+                                app_state,
+                                backend(),
+                                selected,
+                                activity,
+                                pending_approval,
+                                reply_slot.clone(),
+                            );
+                        },
+                        on_cancel: move |_| proposal.set(None),
+                    }
+                })
+            }
+            None => None,
+        }
     };
 
     rsx! {
@@ -87,22 +239,24 @@ pub fn Canvas(app_state: Signal<AppState>, backend: CreativeBackend) -> Element 
                 app_state,
                 filter,
                 composer,
-                disabled: busy,
+                disabled,
             }
             Detail {
                 app_state,
                 artifact: selected,
                 composer,
                 activity,
-                disabled: busy,
+                disabled,
             }
             Composer {
                 value: composer,
                 activity,
-                disabled: busy,
+                disabled,
                 onsubmit: submit,
             }
         }
+        {modal}
+        {proposal_modal}
     }
 }
 
@@ -125,63 +279,280 @@ fn parse_composer(
     Ok(operation)
 }
 
-/// Applies one operation: snapshot for undo, then execute (model-only ops
-/// apply instantly; visual ops run their pipeline against the backend in a
-/// spawned task). The registry is written back on success **and** on failure
-/// (a failed revision is recorded; intermediates are kept).
-fn run_operation(
+/// Applies one or more operations: snapshot for undo, then execute each in
+/// order against the backend on a worker thread (its own tokio runtime) so
+/// checkpoints can block on the user without freezing the UI. The registry
+/// is written back on success **and** on failure (a failed revision is
+/// recorded; intermediates are kept); the stack stops at the first
+/// failure or checkpoint rejection (fail-fast, ops already applied stay).
+///
+/// Handshake: the worker sends [`OpEvent`]s over a std channel; the supervisor
+/// task on the UI thread forwards checkpoints to the modal and applies the
+/// finished registry. The user's decision travels back on a second channel
+/// whose UI end lives in `reply_slot` (UI thread only — signals are not
+/// cross-thread safe, so the worker never touches them).
+fn run_operations(
     mut app_state: Signal<AppState>,
     backend: CreativeBackend,
-    operation: Operation,
+    operations: Vec<Operation>,
     mut activity: Signal<CanvasActivity>,
+    mut pending_approval: Signal<Option<PendingApproval>>,
+    reply_slot: Rc<RefCell<Option<mpsc::Sender<Decision>>>>,
 ) {
-    let summary = operation.summary();
+    let summary = stack_summary(&operations);
     app_state.write().snapshot_for_undo();
-    activity.set(CanvasActivity::Running {
-        summary: summary.clone(),
-    });
+    activity.set(CanvasActivity::Running { summary });
+
+    let mut registry = app_state.read().registry.clone();
+    let (event_tx, event_rx) = mpsc::channel::<OpEvent>();
+    let (reply_tx, reply_rx) = mpsc::channel::<Decision>();
+    *reply_slot.borrow_mut() = Some(reply_tx);
+    // Shared across the per-op policies (the receiver is not Clone); the
+    // worker is single-threaded, so the lock never contends.
+    let reply_rx = Arc::new(Mutex::new(reply_rx));
 
     spawn(async move {
-        let mut registry = app_state.read().registry.clone();
-        let options = ExecuteOptions {
-            backend: Some(&backend),
-            run: RunOptions {
-                work_dir: std::env::temp_dir().join(format!("svs-canvas-{}", Uuid::new_v4())),
-                approvals: ApprovalPolicy::auto(),
-                // A fresh seed per visual op so regenerate is never an
-                // exact replay; pass --seed on the CLI for golden runs.
-                seed: Some(random_seed()),
-            },
-            generation: Default::default(),
-            manual_text: None,
-            origin: OpOrigin::User,
-        };
-        let result = ops::execute(&mut registry, &operation, &options).await;
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().expect("op worker runtime");
+            let mut result: Result<ops::OpOutcome, String> = Err("stack was empty".to_owned());
+            for operation in &operations {
+                // The image a mask checkpoint on this op is judged against,
+                // resolved from the worker's registry — which earlier ops in
+                // the stack may have changed.
+                let approval_image = operation
+                    .target_ref()
+                    .and_then(|reference| registry.resolve(reference).ok())
+                    .and_then(|id| registry.latest_image(id))
+                    .and_then(|revision| revision.asset_path.clone());
+                let event_tx_for_policy = event_tx.clone();
+                let reply_rx_for_policy = reply_rx.clone();
+                let approvals =
+                    ApprovalPolicy::Interactive(Box::new(move |blocked| match blocked {
+                        BlockedOn::SelectMask {
+                            description,
+                            candidates,
+                        } => {
+                            let event = OpEvent::PendingMask(PendingMaskApproval {
+                                image: approval_image.clone(),
+                                description,
+                                candidates: candidates
+                                    .into_iter()
+                                    .map(MaskCandidateUi::from)
+                                    .collect(),
+                            });
+                            if event_tx_for_policy.send(event).is_err() {
+                                return Decision::Reject;
+                            }
+                            // Block until the modal answers (or the app closes).
+                            reply_rx_for_policy
+                                .lock()
+                                .expect("reply lock should not contend")
+                                .recv()
+                                .unwrap_or(Decision::Reject)
+                        }
+                        BlockedOn::ProvideInput {
+                            description,
+                            purpose,
+                        } => {
+                            // Only the edit-plan split is surfaceable here;
+                            // other degraded steps keep the auto behavior.
+                            if purpose != InputPurpose::PlannedEdit {
+                                return Decision::Reject;
+                            }
+                            let event = OpEvent::PendingInput { description };
+                            if event_tx_for_policy.send(event).is_err() {
+                                return Decision::Reject;
+                            }
+                            reply_rx_for_policy
+                                .lock()
+                                .expect("reply lock should not contend")
+                                .recv()
+                                .unwrap_or(Decision::Reject)
+                        }
+                        other => auto_decision(other),
+                    }));
+                let options = ExecuteOptions {
+                    backend: Some(&backend),
+                    run: RunOptions {
+                        work_dir: std::env::temp_dir()
+                            .join(format!("svs-canvas-{}", Uuid::new_v4())),
+                        approvals,
+                        // A fresh seed per visual op so regenerate is never an
+                        // exact replay; pass --seed on the CLI for golden runs.
+                        seed: Some(random_seed()),
+                    },
+                    generation: Default::default(),
+                    manual_text: None,
+                    origin: OpOrigin::User,
+                };
+                match runtime.block_on(ops::execute(&mut registry, operation, &options)) {
+                    Ok(outcome) => {
+                        if outcome.status == crate::registry::ops::OpStatus::Rejected {
+                            result = Err("operation rejected at a checkpoint".to_owned());
+                            break;
+                        }
+                        result = Ok(outcome);
+                    }
+                    Err(error) => {
+                        result = Err(error.to_string());
+                        break;
+                    }
+                }
+            }
+            let _ = event_tx.send(OpEvent::Done { registry, result });
+        });
+
+        // Supervisor: forward checkpoints to the modal, then apply the
+        // finished registry. The poll loop keeps the dioxus executor free
+        // (std channels have no async recv without tokio's sync feature).
+        let mut result: Result<ops::OpOutcome, String> =
+            Err("op worker exited without a result".to_owned());
+        // The worker moved the pre-op registry; `None` until it reports back
+        // (a worker that dies without reporting leaves the current state).
+        let mut finished_registry: Option<ArtifactRegistry> = None;
+        loop {
+            match event_rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(OpEvent::PendingMask(approval)) => {
+                    pending_approval.set(Some(PendingApproval::Mask(approval)));
+                }
+                Ok(OpEvent::PendingInput { description }) => {
+                    pending_approval.set(Some(PendingApproval::PlannedEdit { description }));
+                }
+                Ok(OpEvent::Done {
+                    registry: finished,
+                    result: outcome,
+                }) => {
+                    finished_registry = Some(finished);
+                    result = outcome;
+                    break;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        pending_approval.set(None);
 
         let mut state = app_state.write();
-        state.registry = registry;
+        state.registry = finished_registry.unwrap_or_else(|| state.registry.clone());
         state.has_unsaved_changes = true;
         match result {
             Ok(outcome) => {
                 if let Some(id) = outcome.artifact_id {
                     state.selected_artifact_id = Some(id);
                 }
-                let rejected = outcome.status == crate::registry::ops::OpStatus::Rejected;
                 drop(state);
-                if rejected {
-                    activity.set(CanvasActivity::Failed(
-                        "operation rejected at a checkpoint".to_owned(),
-                    ));
-                } else {
-                    activity.set(CanvasActivity::Idle);
-                }
+                activity.set(CanvasActivity::Idle);
             }
             Err(error) => {
                 drop(state);
-                activity.set(CanvasActivity::Failed(error.to_string()));
+                activity.set(CanvasActivity::Failed(error));
             }
         }
     });
+}
+
+/// The running-state label for an operation or stack.
+fn stack_summary(operations: &[Operation]) -> String {
+    match operations {
+        [single] => single.summary(),
+        [first, rest @ ..] => format!("{} (+{} more)", first.summary(), rest.len()),
+        [] => "no operations".to_owned(),
+    }
+}
+
+/// One LLM-proposed operation, validated against the registry before the
+/// approval modal is shown.
+#[derive(Clone, Debug, PartialEq)]
+struct ProposedOp {
+    operation: Operation,
+    /// Why the op would fail at compile time (shown, but not runnable).
+    invalid_reason: Option<String>,
+    /// A semantic warning for ops that run but do not do what the request
+    /// sounds like (e.g. a `draft` on a visual artifact never changes the
+    /// image — weak models misplan these).
+    note: Option<String>,
+}
+
+/// A free-form message parsed into a proposed operation stack.
+#[derive(Clone, Debug, PartialEq)]
+struct StackProposal {
+    operations: Vec<ProposedOp>,
+}
+
+/// Free-form composer text → the LLM proposes an operation stack against
+/// the closed vocabulary; the proposal is validated and shown for approval
+/// (LLM proposals are gated, per the execution model). A soft dependency:
+/// without LM Studio this degrades to a hint, never a hard failure.
+fn propose_operations(
+    app_state: Signal<AppState>,
+    backend: CreativeBackend,
+    message: String,
+    mut activity: Signal<CanvasActivity>,
+    mut proposal: Signal<Option<StackProposal>>,
+) {
+    if !backend.has_llm() {
+        activity.set(CanvasActivity::Failed(
+            "LM Studio is not configured or reachable — use slash commands instead \
+             (/create, /variant, /regenerate, /modify)"
+                .to_owned(),
+        ));
+        return;
+    }
+    activity.set(CanvasActivity::Running {
+        summary: "proposing operations to the LLM…".to_owned(),
+    });
+    spawn(async move {
+        let registry = app_state.read().registry.clone();
+        match backend.propose_stack(&registry, &message).await {
+            Ok(stack) => {
+                let operations = validate_proposal(&registry, stack.operations);
+                activity.set(CanvasActivity::Idle);
+                proposal.set(Some(StackProposal { operations }));
+            }
+            Err(error) => {
+                activity.set(CanvasActivity::Failed(error));
+            }
+        }
+    });
+}
+
+/// Static validation of a proposed stack against the registry: ops that
+/// would fail to compile are marked so the approval modal shows (but does
+/// not run) them; ops that compile but are semantically suspect for the
+/// request get a warning note.
+fn validate_proposal(registry: &ArtifactRegistry, operations: Vec<Operation>) -> Vec<ProposedOp> {
+    operations
+        .into_iter()
+        .map(|operation| {
+            let invalid_reason = ops::compile(registry, &operation)
+                .err()
+                .map(|error| error.to_string());
+            let note = draft_on_visual_artifact(registry, &operation);
+            ProposedOp {
+                invalid_reason,
+                note,
+                operation,
+            }
+        })
+        .collect()
+}
+
+/// A `draft` resolves to a visual artifact: the op compiles and runs, but
+/// it only appends text — it never changes the image. The modal warns about
+/// it so a misplanned stack is visible before approval.
+fn draft_on_visual_artifact(registry: &ArtifactRegistry, operation: &Operation) -> Option<String> {
+    let Operation::Draft { target, .. } = operation else {
+        return None;
+    };
+    let id = registry.resolve(target).ok()?;
+    let artifact = registry.artifact(id)?;
+    artifact.kind.is_visual().then(|| {
+        "a draft is a text note — it never changes the image. \
+         Use /modify (localized change), /variant (new look), or /regenerate (redo)."
+            .to_owned()
+    })
 }
 
 fn random_seed() -> u64 {
@@ -189,8 +560,226 @@ fn random_seed() -> u64 {
     u64::from_be_bytes(id.as_bytes()[..8].try_into().expect("eight bytes"))
 }
 
+/// The mask checkpoint modal: the segmentation candidates overlaid on the
+/// artifact's image; picking one resumes the `modify` pipeline, Cancel
+/// rejects the checkpoint (revision cancelled, op logged rejected).
+#[component]
+fn MaskApprovalModal(approval: PendingMaskApproval, on_decide: EventHandler<Decision>) -> Element {
+    let image_url = approval.image.as_deref().and_then(generated_asset_url);
+    let description = approval.description.clone();
+    let candidate_count = approval.candidates.len();
+    // Score labels computed here: RSX text nodes cannot nest format calls.
+    let candidates: Vec<(MaskCandidateUi, String)> = approval
+        .candidates
+        .iter()
+        .map(|candidate| (candidate.clone(), format!("score {:.3}", candidate.score)))
+        .collect();
+    rsx! {
+        div { class: "fixed inset-0 z-50 grid place-items-center bg-black/60 p-6 backdrop-blur-sm",
+            div { class: "w-full max-w-3xl rounded-2xl bg-zinc-950 p-6 shadow-[0_30px_90px_rgba(0,0,0,.5)] ring-1 ring-white/[0.09]",
+                div { class: "mb-1 flex items-center gap-2",
+                    span { class: "size-2 animate-pulse rounded-full bg-amber-400" }
+                    p { class: "text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500", "Checkpoint" }
+                }
+                h2 { class: "mb-1 text-base font-semibold text-zinc-100", "{description}" }
+                p { class: "mb-5 text-[10px] leading-4 text-zinc-600",
+                    "{candidate_count} candidate masks — pick the one that covers the right region, or cancel."
+                }
+                if candidate_count == 0 {
+                    p { class: "mb-5 rounded-lg bg-rose-400/10 px-3 py-2 text-[11px] text-rose-300 ring-1 ring-inset ring-rose-400/20",
+                        "Segmentation produced no masks for this prompt."
+                    }
+                }
+                div { class: "grid grid-cols-[repeat(auto-fill,minmax(170px,1fr))] gap-3",
+                    for (index, (candidate, score_label)) in candidates.iter().enumerate() {
+                        button {
+                            class: "group min-w-0 rounded-xl text-left transition hover:ring-2 hover:ring-violet-400/50",
+                            title: "Use this mask",
+                            onclick: move |_| on_decide.call(Decision::SelectMask(index)),
+                            div { class: "relative aspect-square overflow-hidden rounded-xl bg-zinc-900 ring-1 ring-inset ring-white/[0.08]",
+                                if let Some(url) = &image_url {
+                                    img { class: "absolute inset-0 h-full w-full object-cover", src: "{url}", alt: "artifact" }
+                                }
+                                if let Some(mask_url) = mask_asset_url(&candidate.path) {
+                                    img { class: "absolute inset-0 h-full w-full object-cover opacity-80 mix-blend-screen", src: "{mask_url}", alt: "candidate mask" }
+                                }
+                                span { class: "absolute left-1.5 top-1.5 rounded bg-black/60 px-1.5 py-0.5 font-mono text-[9px] text-violet-200 backdrop-blur",
+                                    "{index + 1}"
+                                }
+                            }
+                            p { class: "mt-1.5 truncate font-mono text-[10px] text-zinc-400", "{score_label}" }
+                            p { class: "truncate text-[9px] text-zinc-700", "{candidate.area_pixels} px" }
+                        }
+                    }
+                }
+                div { class: "mt-5 flex justify-end gap-2",
+                    button {
+                        class: "flex h-8 items-center rounded-lg bg-white/[0.05] px-3.5 text-[10px] font-medium text-zinc-300 ring-1 ring-inset ring-white/[0.07] transition hover:bg-white/[0.09] hover:text-white",
+                        onclick: move |_| on_decide.call(Decision::Reject),
+                        "Cancel"
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The degraded-LLM fallback for `modify` without explicit prompts: the
+/// edit plan (mask region + inpaint look) could not be produced by the LLM,
+/// so the user supplies the split manually — the same degradation the CLI
+/// offers (`--approve interactive`).
+#[component]
+fn PlanEditModal(description: String, on_decide: EventHandler<Decision>) -> Element {
+    let mut mask_prompt = use_signal(String::new);
+    let mut inpaint_prompt = use_signal(String::new);
+    let ready = !mask_prompt.read().trim().is_empty() && !inpaint_prompt.read().trim().is_empty();
+    rsx! {
+        div { class: "fixed inset-0 z-50 grid place-items-center bg-black/60 p-6 backdrop-blur-sm",
+            div { class: "w-full max-w-lg rounded-2xl bg-zinc-950 p-6 shadow-[0_30px_90px_rgba(0,0,0,.5)] ring-1 ring-white/[0.09]",
+                div { class: "mb-1 flex items-center gap-2",
+                    span { class: "size-2 animate-pulse rounded-full bg-amber-400" }
+                    p { class: "text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500", "Manual plan" }
+                }
+                h2 { class: "mb-1 text-base font-semibold text-zinc-100", "The edit needs a plan" }
+                p { class: "mb-5 text-[10px] leading-4 text-zinc-600",
+                    "The LLM is unavailable, so describe the edit yourself: what region of the image to change, and what it should look like. \"{description}\""
+                }
+                div { class: "space-y-3",
+                    div {
+                        p { class: "mb-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-zinc-600", "Mask region" }
+                        input {
+                            class: "h-9 w-full rounded-lg bg-white/[0.045] px-3 text-[11px] text-zinc-200 outline-none ring-1 ring-inset ring-white/[0.06] transition placeholder:text-zinc-700 focus:ring-violet-400/40",
+                            placeholder: "e.g. her hair",
+                            value: "{mask_prompt}",
+                            oninput: move |event| mask_prompt.set(event.value()),
+                        }
+                    }
+                    div {
+                        p { class: "mb-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-zinc-600", "Inpaint look" }
+                        input {
+                            class: "h-9 w-full rounded-lg bg-white/[0.045] px-3 text-[11px] text-zinc-200 outline-none ring-1 ring-inset ring-white/[0.06] transition placeholder:text-zinc-700 focus:ring-violet-400/40",
+                            placeholder: "e.g. a bob cut",
+                            value: "{inpaint_prompt}",
+                            oninput: move |event| inpaint_prompt.set(event.value()),
+                        }
+                    }
+                }
+                div { class: "mt-6 flex justify-end gap-2",
+                    button {
+                        class: "flex h-8 items-center rounded-lg bg-white/[0.05] px-3.5 text-[10px] font-medium text-zinc-300 ring-1 ring-inset ring-white/[0.07] transition hover:bg-white/[0.09] hover:text-white",
+                        onclick: move |_| on_decide.call(Decision::Reject),
+                        "Cancel"
+                    }
+                    button {
+                        class: "flex h-8 items-center rounded-lg bg-zinc-100 px-3.5 text-[10px] font-semibold text-zinc-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-35",
+                        disabled: !ready,
+                        title: "Segment the mask region, then inpaint",
+                        onclick: move |_| {
+                            let plan = PlannedEdit {
+                                mask_prompt: mask_prompt().trim().to_owned(),
+                                inpaint_prompt: inpaint_prompt().trim().to_owned(),
+                            };
+                            on_decide.call(Decision::ProvidePlan(plan));
+                        },
+                        "Plan the edit"
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn is_visual(artifact: &Artifact) -> bool {
     artifact.kind.is_visual()
+}
+
+/// The LLM proposal review: a free-form message parsed into an operation
+/// stack, each op toggleable. Approving runs the selected ops in order
+/// through the same worker-thread machinery as slash commands; ops that
+/// would fail static validation are shown but not runnable.
+#[component]
+fn StackProposalModal(
+    operations: Vec<ProposedOp>,
+    on_approve: EventHandler<Vec<Operation>>,
+    on_cancel: EventHandler<()>,
+) -> Element {
+    let mut selected = use_signal(|| {
+        operations
+            .iter()
+            .map(|op| op.invalid_reason.is_none())
+            .collect::<Vec<bool>>()
+    });
+    let selected_count = selected.read().iter().filter(|&&picked| picked).count();
+    let run_label = format!(
+        "Run {selected_count} operation{}",
+        if selected_count == 1 { "" } else { "s" }
+    );
+    rsx! {
+        div { class: "fixed inset-0 z-50 grid place-items-center bg-black/60 p-6 backdrop-blur-sm",
+            div { class: "w-full max-w-2xl rounded-2xl bg-zinc-950 p-6 shadow-[0_30px_90px_rgba(0,0,0,.5)] ring-1 ring-white/[0.09]",
+                div { class: "mb-1 flex items-center gap-2",
+                    span { class: "size-2 animate-pulse rounded-full bg-violet-400" }
+                    p { class: "text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500", "LLM proposal" }
+                }
+                h2 { class: "mb-1 text-base font-semibold text-zinc-100", "I interpreted your request as these operations" }
+                p { class: "mb-5 text-[10px] leading-4 text-zinc-600",
+                    "Uncheck anything you don't want, then run the rest in order. Amber notes warn about ops that run but may not do what you asked; checkpoints inside an op still ask you."
+                }
+                div { class: "max-h-72 space-y-1 overflow-y-auto pr-1",
+                    for (index, op) in operations.iter().enumerate() {
+                        div {
+                            class: if op.invalid_reason.is_some() {
+                                "flex items-start gap-3 rounded-lg bg-rose-400/[0.05] px-3 py-2.5 ring-1 ring-inset ring-rose-400/15"
+                            } else {
+                                "flex items-start gap-3 rounded-lg bg-white/[0.03] px-3 py-2.5 ring-1 ring-inset ring-white/[0.05]"
+                            },
+                            input {
+                                r#type: "checkbox",
+                                class: "mt-0.5 size-3.5 accent-violet-500",
+                                checked: selected.read().get(index).copied().unwrap_or(false),
+                                disabled: op.invalid_reason.is_some(),
+                                onchange: move |_| {
+                                    let mut selection = selected.write();
+                                    if let Some(state) = selection.get_mut(index) {
+                                        *state = !*state;
+                                    }
+                                },
+                            }
+                            div { class: "min-w-0 flex-1",
+                                p { class: "truncate font-mono text-[10px] text-zinc-300", "{op.operation.summary()}" }
+                                if let Some(reason) = &op.invalid_reason {
+                                    p { class: "mt-0.5 text-[9px] leading-4 text-rose-300/80", "will fail: {reason}" }
+                                } else if let Some(note) = &op.note {
+                                    p { class: "mt-0.5 text-[9px] leading-4 text-amber-300/80", "{note}" }
+                                }
+                            }
+                        }
+                    }
+                }
+                div { class: "mt-6 flex justify-end gap-2",
+                    button {
+                        class: "flex h-8 items-center rounded-lg bg-white/[0.05] px-3.5 text-[10px] font-medium text-zinc-300 ring-1 ring-inset ring-white/[0.07] transition hover:bg-white/[0.09] hover:text-white",
+                        onclick: move |_| on_cancel.call(()),
+                        "Discard"
+                    }
+                    button {
+                        class: "flex h-8 items-center rounded-lg bg-zinc-100 px-3.5 text-[10px] font-semibold text-zinc-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-35",
+                        disabled: selected_count == 0,
+                        onclick: move |_| {
+                            let chosen: Vec<Operation> = operations
+                                .iter()
+                                .enumerate()
+                                .filter(|(index, _)| selected.read().get(*index).copied().unwrap_or(false))
+                                .map(|(_, op)| op.operation.clone())
+                                .collect();
+                            on_approve.call(chosen);
+                        },
+                        "{run_label}"
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn revision_status_label(status: RevisionStatus) -> &'static str {
@@ -478,6 +1067,12 @@ fn ArtifactDetail(
             meta: revision_meta_label(index, revision),
         })
         .collect();
+    // The masks of the revision currently on screen (the active one).
+    let active_masks: Vec<StoredMask> = artifact
+        .active_revision_id
+        .and_then(|id| artifact.revisions.iter().find(|revision| revision.id == id))
+        .map(|revision| revision.masks.clone())
+        .unwrap_or_default();
 
     rsx! {
         div { class: "mx-auto max-w-4xl px-10 py-8",
@@ -549,6 +1144,37 @@ fn ArtifactDetail(
                             }
                         }
                     },
+                }
+            }
+
+            if !active_masks.is_empty() {
+                Section { title: format!("Masks ({})", active_masks.len()),
+                    p { class: "mb-3 -mt-2 text-[9px] leading-4 text-zinc-700",
+                        "The mask that confined the edit on the active revision — follow-up modifications can reuse it."
+                    }
+                    div { class: "grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-3",
+                        for mask in &active_masks {
+                            div { class: "min-w-0",
+                                div { class: "relative aspect-square overflow-hidden rounded-xl bg-white/[0.04] ring-1 ring-inset ring-white/[0.07]",
+                                    if let Some(url) = mask_asset_url(&mask.asset_path) {
+                                        img { class: "h-full w-full object-cover", src: "{url}", alt: "mask" }
+                                    } else {
+                                        div { class: "absolute inset-0 grid place-items-center text-zinc-700", Icon { name: IconName::Generate, class: "size-4" } }
+                                    }
+                                }
+                                p { class: "mt-1.5 truncate text-[10px] text-zinc-400",
+                                    if let Some(prompt) = &mask.prompt { "{prompt}" } else { "mask" }
+                                }
+                                p { class: "truncate text-[9px] text-zinc-700",
+                                    if let Some(score) = mask.score {
+                                        "auto · score {score:.3}"
+                                    } else {
+                                        "auto"
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -751,7 +1377,7 @@ fn Composer(
                     }
                     textarea {
                         class: "block min-h-9 w-full resize-none bg-transparent py-1.5 text-[12px] leading-5 text-zinc-100 outline-none placeholder:text-zinc-700 disabled:opacity-40",
-                        placeholder: "/create character <description> [--name <name>] [--size WxH]   ·   /variant c:<ref> <description> [--axis <axis>]   ·   /regenerate c:<ref> [<change>]   ·   /modify c:<ref> <change> --mask <region> --inpaint <look>",
+                        placeholder: "/create character <description> [--name <name>] [--size WxH]   ·   /variant c:<ref> <description> [--axis <axis>]   ·   /regenerate c:<ref> [<change>]   ·   /modify c:<ref> <change> --mask <region> --inpaint <look>   ·   or describe what you want in plain language (LM Studio)",
                         value: "{value}",
                         disabled,
                         // WebKit rewrites `--` to an em dash and straight to
@@ -778,5 +1404,113 @@ fn Composer(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::registry::{CreateArtifact, Ref, VariantAxis};
+
+    fn registry_with(name: &str, kind: ArtifactKind) -> ArtifactRegistry {
+        let mut registry = ArtifactRegistry::new();
+        registry
+            .create_artifact(
+                kind,
+                CreateArtifact {
+                    name: name.into(),
+                    description: "a test artifact".into(),
+                    ..Default::default()
+                },
+            )
+            .expect("artifact should create");
+        registry
+    }
+
+    #[test]
+    fn stack_summary_handles_single_ops_and_stacks() {
+        let create = Operation::Create {
+            kind: ArtifactKind::Character,
+            description: "Mia".into(),
+            name: Some("mia".into()),
+            size: None,
+        };
+        let variant = Operation::Variant {
+            target: Ref::new("c:mia"),
+            description: "older".into(),
+            axis: Some(VariantAxis::Age),
+        };
+        assert_eq!(stack_summary(&[]), "no operations");
+        assert!(stack_summary(std::slice::from_ref(&create)).starts_with("create"));
+        let combined = stack_summary(&[create, variant]);
+        assert!(combined.contains("(+1 more)"), "{combined}");
+    }
+
+    #[test]
+    fn validate_proposal_marks_unresolvable_ops() {
+        let mut registry = registry_with("mia", ArtifactKind::Character);
+        registry
+            .create_artifact(
+                ArtifactKind::Story,
+                CreateArtifact {
+                    name: "story".into(),
+                    description: "a test story".into(),
+                    ..Default::default()
+                },
+            )
+            .expect("story should create");
+        let valid = Operation::Create {
+            kind: ArtifactKind::Object,
+            description: "a lantern".into(),
+            name: None,
+            size: None,
+        };
+        let unknown_ref = Operation::Variant {
+            target: Ref::new("c:ghost"),
+            description: "a variant of nobody".into(),
+            axis: None,
+        };
+        let modify_without_image = Operation::Modify {
+            target: Ref::new("c:mia"),
+            description: "change her hair".into(),
+            mask_prompt: Some("her hair".into()),
+            inpaint_prompt: Some("a bob cut".into()),
+        };
+        let draft_on_visual = Operation::Draft {
+            target: Ref::new("c:mia"),
+            request: "add glasses".into(),
+        };
+        let draft_on_story = Operation::Draft {
+            target: Ref::new("c:story"),
+            request: "note the theme".into(),
+        };
+        let ops = validate_proposal(
+            &registry,
+            vec![valid, unknown_ref, modify_without_image, draft_on_visual, draft_on_story],
+        );
+        assert!(ops[0].invalid_reason.is_none());
+        assert!(
+            ops[1]
+                .invalid_reason
+                .as_deref()
+                .unwrap()
+                .contains("c:ghost"),
+            "unknown refs surface as invalid: {:?}",
+            ops[1].invalid_reason
+        );
+        assert!(
+            ops[2].invalid_reason.is_some(),
+            "modify without a completed image cannot compile"
+        );
+        assert!(
+            ops[3].note.as_deref().unwrap().contains("text note"),
+            "a draft on a visual artifact warns it never changes the image: {:?}",
+            ops[3].note
+        );
+        assert!(ops[3].invalid_reason.is_none(), "the draft still runs");
+        assert!(
+            ops[4].note.is_none(),
+            "a draft on a text artifact is a legitimate request"
+        );
     }
 }

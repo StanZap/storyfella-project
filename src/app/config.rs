@@ -47,6 +47,11 @@ pub enum ConfigError {
         path: PathBuf,
         source: toml::de::Error,
     },
+    #[error("failed to write {path}: {source}")]
+    Write {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error(
         "unsupported Krea generation profile {0}; expected krea-2-turbo-q2 or krea-2-turbo-q4"
     )]
@@ -192,6 +197,77 @@ impl AppConfig {
             generation,
         })
     }
+
+    /// Persists the planner model to `config/app.toml` (the Settings
+    /// picker writes here so the choice survives restarts). Every other key
+    /// in the file is left untouched.
+    pub fn persist_lm_model(&self, model: &str) -> Result<(), ConfigError> {
+        Self::persist_lm_model_to(DEFAULT_CONFIG_PATH, model)
+    }
+
+    /// Testable variant of [`AppConfig::persist_lm_model`] that targets an
+    /// arbitrary path; creates the file when it does not exist yet. The
+    /// write is line-preserving: only the `model` key under `[lm_studio]`
+    /// changes, so comments and key order elsewhere survive.
+    pub fn persist_lm_model_to(path: impl AsRef<Path>, model: &str) -> Result<(), ConfigError> {
+        let path = path.as_ref();
+        let contents = if path.exists() {
+            fs::read_to_string(path).map_err(|source| ConfigError::Read {
+                path: path.to_path_buf(),
+                source,
+            })?
+        } else {
+            String::new()
+        };
+        let mut lines: Vec<String> = contents.lines().map(str::to_owned).collect();
+
+        // Find the `model = "..."` line inside the `[lm_studio]` section.
+        let mut in_lm_studio = false;
+        let mut section_index = None;
+        let mut model_line_index = None;
+        for (index, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('[') {
+                in_lm_studio = trimmed == "[lm_studio]";
+                if in_lm_studio {
+                    section_index = Some(index);
+                }
+                continue;
+            }
+            if in_lm_studio {
+                if let Some(rest) = trimmed.strip_prefix("model") {
+                    if rest.trim_start().starts_with('=') {
+                        model_line_index = Some(index);
+                    }
+                }
+            }
+        }
+
+        let replacement = format!("model = {model:?}");
+        match model_line_index {
+            Some(index) => {
+                let indent: String = lines[index]
+                    .chars()
+                    .take_while(|character| character.is_whitespace())
+                    .collect();
+                lines[index] = format!("{indent}{replacement}");
+            }
+            None => match section_index {
+                Some(index) => lines.insert(index + 1, replacement),
+                None => {
+                    lines.push("[lm_studio]".to_owned());
+                    lines.push(replacement);
+                }
+            },
+        }
+
+        let mut output = lines.join("\n");
+        output.push('\n');
+        fs::write(path, output).map_err(|source| ConfigError::Write {
+            path: path.to_path_buf(),
+            source,
+        })
+    }
 }
 
 fn default_lm_url() -> String {
@@ -212,4 +288,78 @@ fn default_generation_url() -> String {
 
 fn default_generation_profile() -> String {
     "krea-2-turbo-q4".to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persist_lm_model_updates_only_the_model_key() {
+        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir should create");
+        let path = dir.join("app.toml");
+        let config = AppConfig::load_from(&path).expect("defaults load from a missing file");
+        assert_eq!(config.lm_studio.model, "local-model");
+
+        AppConfig::persist_lm_model_to(&path, "google/gemma-3-27b-it")
+            .expect("persist should write");
+        let reloaded = AppConfig::load_from(&path).expect("persisted file should load");
+        assert_eq!(reloaded.lm_studio.model, "google/gemma-3-27b-it");
+        // The other sections survive the round trip.
+        assert_eq!(reloaded.generation.profile, KreaQuantization::Q4);
+        assert_eq!(
+            reloaded.lm_studio.base_url,
+            "http://localhost:1234/v1",
+            "base_url must not be clobbered by the model write"
+        );
+    }
+
+    #[test]
+    fn persist_lm_model_preserves_unrelated_keys_in_an_existing_file() {
+        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir should create");
+        let path = dir.join("app.toml");
+        std::fs::write(
+            &path,
+            "# api_key = \"lm-studio\"\n[lm_studio]\nbase_url = \"http://localhost:1234/v1\"\nmodel = \"old-model\"\n\n\
+             [generation]\nprofile = \"krea-2-turbo-q2\"\n",
+        )
+        .expect("fixture should write");
+
+        AppConfig::persist_lm_model_to(&path, "new-model").expect("persist should write");
+        let contents = std::fs::read_to_string(&path).expect("file should read");
+        assert!(contents.contains("old-model") == false, "{contents}");
+        assert!(contents.contains("new-model"), "{contents}");
+        assert!(
+            contents.contains("krea-2-turbo-q2"),
+            "generation profile must survive: {contents}"
+        );
+        assert!(
+            contents.contains("http://localhost:1234/v1"),
+            "base_url must survive: {contents}"
+        );
+        assert!(
+            contents.contains("# api_key = \"lm-studio\""),
+            "comments must survive the targeted write: {contents}"
+        );
+        assert!(
+            contents.find("[lm_studio]") < contents.find("[generation]"),
+            "section order must survive the targeted write: {contents}"
+        );
+    }
+
+    #[test]
+    fn persist_lm_model_adds_the_section_when_missing() {
+        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir should create");
+        let path = dir.join("app.toml");
+        std::fs::write(&path, "[generation]\nprofile = \"krea-2-turbo-q2\"\n")
+            .expect("fixture should write");
+
+        AppConfig::persist_lm_model_to(&path, "new-model").expect("persist should write");
+        let reloaded = AppConfig::load_from(&path).expect("persisted file should load");
+        assert_eq!(reloaded.lm_studio.model, "new-model");
+        assert_eq!(reloaded.generation.profile, KreaQuantization::Q2);
+    }
 }

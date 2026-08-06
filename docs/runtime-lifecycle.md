@@ -226,7 +226,7 @@ The Python runtime reads these (set by the Rust parent or for manual runs):
 | --- | --- | --- |
 | `SVS_SD_CPP_URL` | sd.cpp base URL | `http://127.0.0.1:7861` |
 | `SVS_GENERATED_DIR` | Where completed jobs write PNGs | `<repo>/cache/generated` |
-| `SVS_MASK_DIR` | Where `/segment` writes masks | `<repo>/cache/masks` |
+| `SVS_MASK_DIR` | Where `/segment` writes masks (the app sets it to `<asset_dir>/masks`, served by the `mask` asset handler) | `<repo>/cache/masks` |
 
 ## Known gaps
 

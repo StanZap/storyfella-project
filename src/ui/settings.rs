@@ -5,6 +5,7 @@ use dioxus::prelude::*;
 use crate::{
     app::AppConfig,
     llm::LmStudioClient,
+    registry::backend::CreativeBackend,
     runtime::{
         check_all as check_services, CreativeRuntime, HealthStatus, KreaQuantization,
         ServiceHealth, ServiceId,
@@ -106,13 +107,19 @@ mod tests {
 }
 
 #[component]
-pub fn Settings(config: AppConfig, runtime: CreativeRuntime) -> Element {
+pub fn Settings(config: AppConfig, backend: Signal<CreativeBackend>) -> Element {
+    let runtime = backend.read().runtime();
     let mut section = use_signal(|| SettingsSection::Status);
     let profile = use_signal(|| config.generation.profile);
     let health = use_signal(Vec::<ServiceHealth>::new);
     let checking = use_signal(|| false);
     let checked_at = use_signal(|| None::<String>);
-    let lm_model = use_signal(|| config.lm_studio.model.clone());
+    let lm_model = use_signal(|| {
+        backend
+            .read()
+            .llm_model()
+            .unwrap_or_else(|| config.lm_studio.model.clone())
+    });
     let models_state = use_signal(|| ModelListState::Empty);
     let busy = use_signal(|| None::<ServiceId>);
     let operation_error = use_signal(|| None::<String>);
@@ -183,7 +190,7 @@ pub fn Settings(config: AppConfig, runtime: CreativeRuntime) -> Element {
                     match section() {
                         SettingsSection::Status => rsx! { StatusSettings { health, checking, checked_at, busy, operation_error, on_check: on_check.clone(), on_operate: on_operate.clone() } },
                         SettingsSection::General => rsx! { GeneralSettings {} },
-                        SettingsSection::Intelligence => rsx! { IntelligenceSettings { config: config.clone(), health, lm_model, models_state, on_check: on_check.clone() } },
+                        SettingsSection::Intelligence => rsx! { IntelligenceSettings { config: config.clone(), backend, health, lm_model, models_state, on_check: on_check.clone() } },
                         SettingsSection::Generation => rsx! { GenerationSettings { config: config.clone(), profile } },
                         SettingsSection::Storage => rsx! { StorageSettings { config: config.clone() } },
                     }
@@ -420,6 +427,7 @@ fn GeneralSettings() -> Element {
 #[component]
 fn IntelligenceSettings(
     config: AppConfig,
+    backend: Signal<CreativeBackend>,
     health: Signal<Vec<ServiceHealth>>,
     lm_model: Signal<String>,
     models_state: Signal<ModelListState>,
@@ -433,6 +441,19 @@ fn IntelligenceSettings(
     let (status, detail) = match lm_studio {
         Some(service) => (service.status, service.detail),
         None => (HealthStatus::Idle, "Not checked yet".to_owned()),
+    };
+    // Applying a pick: swap the live client, persist to config/app.toml,
+    // and re-check so the Status screen reflects the new model.
+    let persist_config = config.clone();
+    let on_select = move |model: String| {
+        if backend.read().llm_model().as_deref() == Some(model.as_str()) {
+            return;
+        }
+        lm_model.set(model.clone());
+        backend.write().set_llm_model(model.clone());
+        if let Err(error) = persist_config.persist_lm_model(&model) {
+            tracing::error!("could not persist planner model to config: {error}");
+        }
     };
     rsx! {
         SectionHeading {
@@ -451,22 +472,23 @@ fn IntelligenceSettings(
             SettingRow { title: "Base URL", description: "OpenAI-compatible API endpoint.",
                 input { class: "setting-control", value: "{config.lm_studio.base_url}", readonly: true }
             }
-            SettingRow { title: "Planner model", description: "Model identifier loaded in LM Studio. The selection applies for this session; config/app.toml holds the default.",
-                ModelPicker { config: config.clone(), lm_model, models_state }
+            SettingRow { title: "Planner model", description: "Model identifier loaded in LM Studio. Picking one applies it immediately and saves it to config/app.toml.",
+                ModelPicker { config: config.clone(), lm_model, models_state, on_select }
             }
             SettingRow { title: "Request timeout", description: "Maximum wait for planning and visual analysis.", last: true,
                 div { class: "flex items-center gap-3", input { class: "setting-control", value: "{config.lm_studio.timeout.as_secs()}", readonly: true } span { class: "text-[10px] text-zinc-700", "seconds" } }
             }
         }
-        p { class: "mt-4 text-[10px] leading-5 text-zinc-700", "Model discovery connects to the configured Base URL. To make a selection permanent, set model in config/app.toml." }
+        p { class: "mt-4 text-[10px] leading-5 text-zinc-700", "Model discovery connects to the configured Base URL. The selection is saved to config/app.toml and applies immediately — no restart needed." }
     }
 }
 
 #[component]
 fn ModelPicker(
     config: AppConfig,
-    mut lm_model: Signal<String>,
+    lm_model: Signal<String>,
     models_state: Signal<ModelListState>,
+    on_select: EventHandler<String>,
 ) -> Element {
     let refresh_config = config.clone();
     rsx! {
@@ -487,7 +509,7 @@ fn ModelPicker(
                         select {
                             class: "setting-control",
                             value: "{lm_model}",
-                            oninput: move |event| lm_model.set(event.value()),
+                            oninput: move |event| on_select.call(event.value()),
                             if !has_current {
                                 option { value: "{current}", "{current} (not loaded)" }
                             }
@@ -508,7 +530,7 @@ fn ModelPicker(
                     select {
                         class: "setting-control",
                         value: "{lm_model}",
-                        oninput: move |event| lm_model.set(event.value()),
+                        oninput: move |event| on_select.call(event.value()),
                         option { value: "{lm_model}", "{lm_model}" }
                     }
                     button {

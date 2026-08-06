@@ -71,12 +71,20 @@ enum AppScreen {
 
 #[component]
 pub fn Workspace(config: AppConfig, app_state: Signal<AppState>) -> Element {
-    let mut screen = use_signal(|| AppScreen::Canvas);
+    // Land on Projects so a story is opened before any canvas work — the
+    // canvas cannot save until a project file is bound.
+    let mut screen = use_signal(|| AppScreen::Projects);
     let backend_config = config.clone();
-    let backend = use_hook(move || CreativeBackend::new(&backend_config));
+    // The backend lives in a signal so the Settings model picker can swap
+    // the planner model and the canvas picks it up on the next op.
+    let backend = use_signal(|| CreativeBackend::new(&backend_config));
     let generated_asset_directory = config.asset_dir.join("generated");
     dioxus::desktop::use_asset_handler("generated", move |request, responder| {
         serve_generated_asset(&generated_asset_directory, request, responder);
+    });
+    let mask_asset_directory = config.asset_dir.join("masks");
+    dioxus::desktop::use_asset_handler("mask", move |request, responder| {
+        serve_generated_asset(&mask_asset_directory, request, responder);
     });
 
     // Autosave: the mode lives here and is shared with Settings via context.
@@ -163,8 +171,8 @@ pub fn Workspace(config: AppConfig, app_state: Signal<AppState>) -> Element {
             div { class: "min-h-0 min-w-0",
                 match screen() {
                     AppScreen::Projects => rsx! { Projects { config: config.clone(), app_state, on_open: move |_| screen.set(AppScreen::Canvas) } },
-                    AppScreen::Canvas => rsx! { Canvas { app_state, backend: backend.clone() } },
-                    AppScreen::Settings => rsx! { Settings { config: config.clone(), runtime: backend.runtime() } },
+                    AppScreen::Canvas => rsx! { Canvas { app_state, backend } },
+                    AppScreen::Settings => rsx! { Settings { config: config.clone(), backend } },
                 }
             }
         }
@@ -174,10 +182,21 @@ pub fn Workspace(config: AppConfig, app_state: Signal<AppState>) -> Element {
 /// Maps a stored asset path to the URL the `generated` asset handler
 /// serves (the handler serves `asset_dir/generated/<filename>`).
 pub fn generated_asset_url(path: &str) -> Option<String> {
+    asset_url("generated", path)
+}
+
+/// Maps a stored mask path to the URL the `mask` asset handler serves (the
+/// handler serves `asset_dir/masks/<filename>` — where `SVS_MASK_DIR`
+/// points the vision service).
+pub fn mask_asset_url(path: &str) -> Option<String> {
+    asset_url("mask", path)
+}
+
+fn asset_url(protocol: &str, path: &str) -> Option<String> {
     Path::new(path)
         .file_name()
         .and_then(|filename| filename.to_str())
-        .map(|filename| format!("/generated/{filename}"))
+        .map(|filename| format!("/{protocol}/{filename}"))
 }
 
 fn serve_generated_asset(

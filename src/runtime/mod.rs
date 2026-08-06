@@ -23,6 +23,7 @@ use tokio::process::{Child, Command};
 pub struct PythonRuntime {
     runtime_dir: PathBuf,
     generation_url: Option<String>,
+    mask_dir: Option<PathBuf>,
     child: Mutex<Option<Child>>,
 }
 
@@ -51,12 +52,19 @@ impl PythonRuntime {
         Self {
             runtime_dir: runtime_dir.into(),
             generation_url: None,
+            mask_dir: None,
             child: Mutex::new(None),
         }
     }
 
     pub fn with_generation_url(mut self, url: impl Into<String>) -> Self {
         self.generation_url = Some(url.into());
+        self
+    }
+
+    /// Where the vision service writes segment masks (`SVS_MASK_DIR`).
+    pub fn with_mask_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.mask_dir = Some(dir.into());
         self
     }
 
@@ -94,6 +102,9 @@ impl PythonRuntime {
             .kill_on_drop(true);
         if let Some(url) = &self.generation_url {
             command.env("SVS_SD_CPP_URL", url);
+        }
+        if let Some(dir) = &self.mask_dir {
+            command.env("SVS_MASK_DIR", dir);
         }
         let child = command.spawn().map_err(RuntimeError::Start)?;
 

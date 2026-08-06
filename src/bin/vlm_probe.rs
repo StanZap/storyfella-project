@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use smart_visual_sequencer::{
     app::AppConfig,
-    llm::{ChatMessage, ChatOptions, LmStudioClient, LmStudioConfig},
+    llm::{strip_json_fence, ChatMessage, ChatOptions, LmStudioClient, LmStudioConfig},
 };
 
 const ANALYSIS_PROMPT: &str = "Analyze this synthetic storyboard frame. Identify only what is visibly present. Use simple color and spatial language. Do not invent text or hidden details.";
@@ -582,18 +582,6 @@ fn object_count(analysis: &SceneAnalysis, labels: &[&str]) -> u32 {
         })
         .map(|object| object.count)
         .sum()
-}
-
-fn strip_json_fence(value: &str) -> &str {
-    let trimmed = value.trim();
-    let without_start = trimmed
-        .strip_prefix("```json")
-        .or_else(|| trimmed.strip_prefix("```"))
-        .unwrap_or(trimmed);
-    without_start
-        .strip_suffix("```")
-        .unwrap_or(without_start)
-        .trim()
 }
 
 fn percent(found: usize, total: usize) -> f32 {

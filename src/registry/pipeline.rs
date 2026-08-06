@@ -924,6 +924,17 @@ impl ApprovalPolicy {
     }
 }
 
+/// The non-interactive checkpoint resolution used as the fallback for
+/// block types a caller does not surface (draft-text approval and degraded
+/// LLM input): accept text, reject degraded steps — the `auto()` defaults.
+pub fn auto_decision(blocked: BlockedOn) -> Decision {
+    match blocked {
+        BlockedOn::SelectMask { .. } => Decision::SelectMask(0),
+        BlockedOn::ApproveText { .. } => Decision::AcceptText,
+        BlockedOn::ProvideInput { .. } => Decision::Reject,
+    }
+}
+
 /// Execution options for [`Pipeline::run`].
 pub struct RunOptions {
     /// Where pure image steps (composite, feather, …) write their outputs.
@@ -1794,6 +1805,31 @@ mod tests {
             .unwrap()
             .block_on(pipeline.run(&backend, &options));
         assert!(matches!(result, Err(PipelineError::Rejected)));
+    }
+
+    #[test]
+    fn auto_decision_matches_the_auto_policy_defaults() {
+        assert_eq!(
+            auto_decision(BlockedOn::SelectMask {
+                description: String::new(),
+                candidates: Vec::new()
+            }),
+            Decision::SelectMask(0)
+        );
+        assert_eq!(
+            auto_decision(BlockedOn::ApproveText {
+                description: String::new(),
+                text: String::new()
+            }),
+            Decision::AcceptText
+        );
+        assert_eq!(
+            auto_decision(BlockedOn::ProvideInput {
+                description: String::new(),
+                purpose: InputPurpose::PlannedEdit
+            }),
+            Decision::Reject
+        );
     }
 
     #[test]

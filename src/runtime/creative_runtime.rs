@@ -67,7 +67,8 @@ impl CreativeRuntime {
             vision: VisionClient::new(VISION_BASE_URL),
             python: Arc::new(
                 PythonRuntime::new(&config.python_runtime)
-                    .with_generation_url(&config.generation.base_url),
+                    .with_generation_url(&config.generation.base_url)
+                    .with_mask_dir(config.asset_dir.join("masks")),
             ),
             generation: Arc::new(GenerationRuntime::new(
                 &config.generation.executable,

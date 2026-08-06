@@ -162,7 +162,7 @@ Configuration lives in [`config/app.toml`](../config/app.toml) and is loaded by
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `lm_studio.base_url` | `http://localhost:1234/v1` | LM Studio OpenAI-compatible endpoint |
-| `lm_studio.model` | `local-model` | Model identifier loaded in LM Studio |
+| `lm_studio.model` | `local-model` | Model identifier loaded in LM Studio (editable in Settings → Intelligence; the picker applies it immediately and saves it back to this file) |
 | `lm_studio.api_key` | none | Optional bearer token |
 | `lm_studio.timeout_seconds` | `60` | Request timeout for planning/vision calls |
 | `generation.base_url` | `http://127.0.0.1:7861` | sd.cpp endpoint the Python adapter calls |
