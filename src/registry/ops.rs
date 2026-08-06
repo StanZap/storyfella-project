@@ -23,13 +23,15 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::vision::LoraSelection;
+
 use super::{
     pipeline::{
         GenerationBackend, GenerationOverrides, Pipeline, PipelineBuildError, PipelineError,
         PromptSource, RunOptions,
     },
-    ArtifactKind, ArtifactRegistry, CreateArtifact, Layer, LayerRole, Ref, RefError, RegistryError,
-    StoredMask, VariantAxis,
+    Artifact, ArtifactKind, ArtifactRegistry, CreateArtifact, GenerationDefaults, Layer, LayerRole,
+    Ref, RefError, RegistryError, StoredMask, VariantAxis,
 };
 
 /// The kinds an operation can have. Slice 1 only ships primitives; compound
@@ -58,13 +60,30 @@ pub enum Operation {
         /// the kind default applies).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         size: Option<(u32, u32)>,
+        /// Per-run step count for the first image (user-requested only).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        steps: Option<u32>,
+        /// Per-run adapters for the first image (user-requested only).
+        #[serde(default)]
+        loras: Vec<LoraSelection>,
     },
     /// New visual variant of an artifact.
     Variant {
         target: Ref,
         description: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         axis: Option<VariantAxis>,
+        /// The size the variant's first image is generated at (`None` =
+        /// inherited from the base). The artifact's stored default size is
+        /// *not* changed by this.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size: Option<(u32, u32)>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        steps: Option<u32>,
+        #[serde(default)]
+        loras: Vec<LoraSelection>,
     },
     /// New revision of the active image (fresh seed, or edited prompt with
     /// the current image as reference).
@@ -72,6 +91,22 @@ pub enum Operation {
         target: Ref,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         prompt: Option<String>,
+        /// Per-run canvas override (user-requested only; `None` keeps the
+        /// artifact's size). Does not change the stored default size.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size: Option<(u32, u32)>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        steps: Option<u32>,
+        #[serde(default)]
+        loras: Vec<LoraSelection>,
+    },
+    /// Change the artifact's canvas: store the new default size **and**
+    /// regenerate the active image at it (the subject is kept via the
+    /// reference image).
+    Resize {
+        target: Ref,
+        width: u32,
+        height: u32,
     },
     /// New beat in a scene, with a composition of layer references.
     Compose {
@@ -93,7 +128,31 @@ pub enum Operation {
         mask_prompt: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         inpaint_prompt: Option<String>,
+        /// Per-run canvas override (user-requested only).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size: Option<(u32, u32)>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        steps: Option<u32>,
+        #[serde(default)]
+        loras: Vec<LoraSelection>,
     },
+    /// Bind a registry LoRA to an artifact; it is auto-injected into every
+    /// generation referencing the artifact (and its variants).
+    #[serde(rename = "attach-lora")]
+    AttachLora {
+        target: Ref,
+        /// The adapter to bind: a file name in the configured `lora_dir`,
+        /// or the name of an existing registry entry.
+        lora: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        multiplier: Option<f32>,
+    },
+    /// Adjust a bound adapter's weight.
+    #[serde(rename = "lora-scale")]
+    LoraScale { lora: String, multiplier: f32 },
+    /// Unbind an adapter from the registry.
+    #[serde(rename = "lora-remove")]
+    LoraRemove { lora: String },
 }
 
 /// One layer reference for `compose`.
@@ -153,6 +212,7 @@ impl Operation {
                 description,
                 name,
                 size,
+                ..
             } => {
                 let label = name.clone().unwrap_or_default();
                 let label = if label.is_empty() {
@@ -169,18 +229,28 @@ impl Operation {
             Operation::Variant {
                 target,
                 description,
+                name,
                 axis,
+                ..
             } => format!(
-                "variant {target} {description:?}{}",
+                "variant {target} {description:?}{}{}",
+                name.as_deref()
+                    .map(|name| format!(" ({name})"))
+                    .unwrap_or_default(),
                 axis.map(|axis| format!(" [{axis}]")).unwrap_or_default()
             ),
-            Operation::Regenerate { target, prompt } => format!(
+            Operation::Regenerate { target, prompt, .. } => format!(
                 "regenerate {target}{}",
                 prompt
                     .as_deref()
                     .map(|prompt| format!(" {prompt:?}"))
                     .unwrap_or_default()
             ),
+            Operation::Resize {
+                target,
+                width,
+                height,
+            } => format!("resize {target} {width}x{height}"),
             Operation::Compose {
                 scene,
                 description,
@@ -202,6 +272,20 @@ impl Operation {
             } => {
                 format!("modify {target} {description:?}")
             }
+            Operation::AttachLora {
+                target,
+                lora,
+                multiplier,
+            } => format!(
+                "attach-lora {target} {lora}{}",
+                multiplier
+                    .map(|multiplier| format!(" [{multiplier}]"))
+                    .unwrap_or_default()
+            ),
+            Operation::LoraScale { lora, multiplier } => {
+                format!("lora-scale {lora} [{multiplier}]")
+            }
+            Operation::LoraRemove { lora } => format!("lora-remove {lora}"),
         }
     }
 
@@ -210,10 +294,14 @@ impl Operation {
         match self {
             Operation::Variant { target, .. }
             | Operation::Regenerate { target, .. }
+            | Operation::Resize { target, .. }
             | Operation::Draft { target, .. }
-            | Operation::Modify { target, .. } => Some(target),
+            | Operation::Modify { target, .. }
+            | Operation::AttachLora { target, .. } => Some(target),
             Operation::Compose { scene, .. } => Some(scene),
-            Operation::Create { .. } => None,
+            Operation::Create { .. }
+            | Operation::LoraScale { .. }
+            | Operation::LoraRemove { .. } => None,
         }
     }
 }
@@ -246,6 +334,9 @@ pub struct ExecuteOptions<'a> {
     /// Per-run generation overrides (CLI flags); applied to the compiled
     /// pipeline and re-validated before execution.
     pub generation: GenerationOverrides,
+    /// The configurable sizes and LoRA bindings the compilation resolves
+    /// against.
+    pub defaults: &'a GenerationDefaults,
     /// Manual text for a draft, bypassing the LLM proposal (soft-dependency
     /// degradation and the `--text` CLI path).
     pub manual_text: Option<&'a str>,
@@ -280,6 +371,12 @@ pub enum CompileError {
     NoPrompt(Uuid),
     #[error("modify requires both --mask-prompt and --inpaint-prompt (or an LLM to plan them)")]
     IncompleteModify,
+    #[error("lora multiplier {0} must be within -2..=2")]
+    BadLoraMultiplier(f32),
+    #[error("steps {0} must be within 1..=50")]
+    BadSteps(u32),
+    #[error("lora file {file:?} does not exist in the configured lora dir {dir:?}")]
+    LoraFileMissing { file: String, dir: String },
     #[error("pipeline build failed: {0}")]
     Build(#[from] PipelineBuildError),
 }
@@ -299,13 +396,22 @@ pub enum OpError {
 }
 
 /// Statically validates the operation against the registry and compiles it
-/// to a pipeline. No IO; this is the static-validation surface.
-pub fn compile(registry: &ArtifactRegistry, op: &Operation) -> Result<CompiledOp, CompileError> {
+/// to a pipeline. No IO; this is the static-validation surface. `defaults`
+/// carries the configurable sizes and LoRA bindings that shape the
+/// generation (the canvas passes its live signal; the CLI passes the
+/// loaded config).
+pub fn compile(
+    registry: &ArtifactRegistry,
+    op: &Operation,
+    defaults: &GenerationDefaults,
+) -> Result<CompiledOp, CompileError> {
     match op {
         Operation::Create {
             kind,
             description,
             size,
+            steps,
+            loras,
             ..
         } => {
             if description.trim().is_empty() {
@@ -319,15 +425,29 @@ pub fn compile(registry: &ArtifactRegistry, op: &Operation) -> Result<CompiledOp
                     });
                 }
             }
+            if let Some(steps) = steps {
+                validate_steps(*steps)?;
+            }
             if !kind.is_visual() {
                 return Ok(CompiledOp::Direct);
             }
             // Visual kinds generate their first image as part of create: the
             // description is the prompt, at the artifact's size (explicit
-            // `--size`, or the kind default).
+            // `--size`, the config override, or the kind default).
             let mut builder = super::pipeline::PipelineBuilder::new();
-            if let Some((width, height)) = size.or_else(|| kind.default_size()) {
+            if let Some((width, height)) = size.or_else(|| defaults.size_for(*kind)) {
                 builder.size(width, height);
+            }
+            if let Some(steps) = steps {
+                builder.steps(*steps);
+            }
+            // The fresh artifact has no bindings yet; the kind-default
+            // adapter (config) applies, then the per-run adapters.
+            for lora in auto_loras(registry, None, *kind, defaults, false) {
+                builder.lora(lora.path, lora.multiplier);
+            }
+            for lora in loras {
+                builder.lora(lora.path.clone(), lora.multiplier);
             }
             builder.generate(PromptSource::Text(description.clone()), None, None);
             Ok(CompiledOp::Pipeline(builder.build()?))
@@ -335,6 +455,9 @@ pub fn compile(registry: &ArtifactRegistry, op: &Operation) -> Result<CompiledOp
         Operation::Variant {
             target,
             description,
+            size,
+            steps,
+            loras,
             ..
         } => {
             let base = registry.resolve(target)?;
@@ -350,15 +473,47 @@ pub fn compile(registry: &ArtifactRegistry, op: &Operation) -> Result<CompiledOp
             if description.trim().is_empty() {
                 return Err(CompileError::EmptyDescription);
             }
+            if let Some((width, height)) = size {
+                if !super::pipeline::is_valid_size(*width, *height) {
+                    return Err(CompileError::InvalidSize {
+                        width: *width,
+                        height: *height,
+                    });
+                }
+            }
+            if let Some(steps) = steps {
+                validate_steps(*steps)?;
+            }
             // The variant's first image is an edit of the base: the
             // description as prompt with the base's active image as the
-            // reference, at the size the variant inherits.
+            // reference, at the size the variant inherits (or the explicit
+            // per-op size, which does not change the stored default).
             let mut builder = super::pipeline::PipelineBuilder::new();
-            if let Some((width, height)) = base_artifact
-                .default_size
-                .or_else(|| base_artifact.kind.default_size())
-            {
+            if let Some((width, height)) = size.or_else(|| {
+                base_artifact
+                    .default_size
+                    .or_else(|| defaults.size_for(base_artifact.kind))
+            }) {
                 builder.size(width, height);
+            }
+            if let Some(steps) = steps {
+                builder.steps(*steps);
+            }
+            // The variant inherits the base's bound adapters and the kind
+            // default (the base artifact stands in for the not-yet-created
+            // variant — same bindings by construction), then the per-run
+            // adapters.
+            for lora in auto_loras(
+                registry,
+                Some(base_artifact),
+                base_artifact.kind,
+                defaults,
+                false,
+            ) {
+                builder.lora(lora.path, lora.multiplier);
+            }
+            for lora in loras {
+                builder.lora(lora.path.clone(), lora.multiplier);
             }
             let reference = registry
                 .latest_image(base)
@@ -418,7 +573,13 @@ pub fn compile(registry: &ArtifactRegistry, op: &Operation) -> Result<CompiledOp
             }
             Ok(CompiledOp::Direct)
         }
-        Operation::Regenerate { target, prompt } => {
+        Operation::Regenerate {
+            target,
+            prompt,
+            size,
+            steps,
+            loras,
+        } => {
             let id = registry.resolve(target)?;
             let artifact = registry.artifact(id).ok_or(RegistryError::NoArtifact(id))?;
             let active = registry.latest_image(id);
@@ -434,15 +595,38 @@ pub fn compile(registry: &ArtifactRegistry, op: &Operation) -> Result<CompiledOp
             let Some(resolved_prompt) = resolved_prompt else {
                 return Err(CompileError::NoPrompt(id));
             };
+            if let Some((width, height)) = size {
+                if !super::pipeline::is_valid_size(*width, *height) {
+                    return Err(CompileError::InvalidSize {
+                        width: *width,
+                        height: *height,
+                    });
+                }
+            }
+            if let Some(steps) = steps {
+                validate_steps(*steps)?;
+            }
 
             let mut builder = super::pipeline::PipelineBuilder::new();
-            // The artifact's default size (explicit `--size` at creation, or
-            // the kind default) drives its images; per-run overrides still win.
-            if let Some((width, height)) = artifact
-                .default_size
-                .or_else(|| artifact.kind.default_size())
+            // The artifact's default size (explicit `--size` at creation,
+            // else the configurable kind default) drives its images; an
+            // explicit per-op size (user-requested resize of the canvas)
+            // wins without changing the stored default; per-run CLI
+            // overrides still win last.
+            if let Some((width, height)) = size
+                .or(artifact.default_size)
+                .or_else(|| defaults.size_for(artifact.kind))
             {
                 builder.size(width, height);
+            }
+            if let Some(steps) = steps {
+                builder.steps(*steps);
+            }
+            for lora in auto_loras(registry, Some(artifact), artifact.kind, defaults, false) {
+                builder.lora(lora.path, lora.multiplier);
+            }
+            for lora in loras {
+                builder.lora(lora.path.clone(), lora.multiplier);
             }
             let reference = active
                 .and_then(|revision| revision.asset_path.clone())
@@ -450,11 +634,49 @@ pub fn compile(registry: &ArtifactRegistry, op: &Operation) -> Result<CompiledOp
             builder.generate(PromptSource::Text(resolved_prompt), reference, None);
             Ok(CompiledOp::Pipeline(builder.build()?))
         }
+        Operation::Resize {
+            target,
+            width,
+            height,
+        } => {
+            let id = registry.resolve(target)?;
+            let artifact = registry.artifact(id).ok_or(RegistryError::NoArtifact(id))?;
+            if !artifact.kind.is_visual() {
+                return Err(CompileError::NotVariantable(artifact.kind));
+            }
+            if !super::pipeline::is_valid_size(*width, *height) {
+                return Err(CompileError::InvalidSize {
+                    width: *width,
+                    height: *height,
+                });
+            }
+            let active = registry
+                .latest_image(id)
+                .ok_or(CompileError::NoActiveImage(id))?;
+            let asset = active
+                .asset_path
+                .clone()
+                .ok_or(CompileError::NoActiveImage(id))?;
+
+            // The subject is kept via the reference image; the prompt is the
+            // last one used (the new canvas is the only intent).
+            let mut builder = super::pipeline::PipelineBuilder::new();
+            builder.size(*width, *height);
+            for lora in auto_loras(registry, Some(artifact), artifact.kind, defaults, false) {
+                builder.lora(lora.path, lora.multiplier);
+            }
+            let image = builder.reference_image(asset);
+            builder.generate(PromptSource::Text(active.prompt.clone()), Some(image), None);
+            Ok(CompiledOp::Pipeline(builder.build()?))
+        }
         Operation::Modify {
             target,
             description,
             mask_prompt,
             inpaint_prompt,
+            size,
+            steps,
+            loras,
         } => {
             let id = registry.resolve(target)?;
             let artifact = registry.artifact(id).ok_or(RegistryError::NoArtifact(id))?;
@@ -468,15 +690,39 @@ pub fn compile(registry: &ArtifactRegistry, op: &Operation) -> Result<CompiledOp
             if description.trim().is_empty() {
                 return Err(CompileError::EmptyDescription);
             }
+            if let Some((width, height)) = size {
+                if !super::pipeline::is_valid_size(*width, *height) {
+                    return Err(CompileError::InvalidSize {
+                        width: *width,
+                        height: *height,
+                    });
+                }
+            }
+            if let Some(steps) = steps {
+                validate_steps(*steps)?;
+            }
 
             let mut builder = super::pipeline::PipelineBuilder::new();
             // Same default-size rule as regenerate: the artifact's own size
-            // wins over the pipeline default, per-run overrides still win.
-            if let Some((width, height)) = artifact
-                .default_size
-                .or_else(|| artifact.kind.default_size())
+            // wins over the configurable kind default, an explicit per-op
+            // size wins over both, per-run overrides still win last.
+            if let Some((width, height)) = size
+                .or(artifact.default_size)
+                .or_else(|| defaults.size_for(artifact.kind))
             {
                 builder.size(width, height);
+            }
+            if let Some(steps) = steps {
+                builder.steps(*steps);
+            }
+            // Mask-guided edits additionally carry the configured inpaint
+            // adapter (e.g. INPAINTKREA), after the artifact's bindings,
+            // then the per-run adapters.
+            for lora in auto_loras(registry, Some(artifact), artifact.kind, defaults, true) {
+                builder.lora(lora.path, lora.multiplier);
+            }
+            for lora in loras {
+                builder.lora(lora.path.clone(), lora.multiplier);
             }
             let image = builder.reference_image(asset);
             let (mask_source, inpaint_source) = match (mask_prompt, inpaint_prompt) {
@@ -511,7 +757,111 @@ pub fn compile(registry: &ArtifactRegistry, op: &Operation) -> Result<CompiledOp
             builder.confirm_text(text);
             Ok(CompiledOp::Pipeline(builder.build()?))
         }
+        Operation::AttachLora {
+            target, multiplier, ..
+        } => {
+            let id = registry.resolve(target)?;
+            let artifact = registry.artifact(id).ok_or(RegistryError::NoArtifact(id))?;
+            if !matches!(
+                artifact.kind,
+                ArtifactKind::Character | ArtifactKind::Environment | ArtifactKind::Object
+            ) {
+                return Err(CompileError::NotVariantable(artifact.kind));
+            }
+            if let Some(multiplier) = multiplier {
+                validate_lora_multiplier(*multiplier)?;
+            }
+            Ok(CompiledOp::Direct)
+        }
+        Operation::LoraScale { lora, multiplier } => {
+            registry.resolve_lora(lora)?;
+            validate_lora_multiplier(*multiplier)?;
+            Ok(CompiledOp::Direct)
+        }
+        Operation::LoraRemove { lora } => {
+            registry.resolve_lora(lora)?;
+            Ok(CompiledOp::Direct)
+        }
     }
+}
+
+fn validate_lora_multiplier(multiplier: f32) -> Result<(), CompileError> {
+    if (-2.0..=2.0).contains(&multiplier) {
+        Ok(())
+    } else {
+        Err(CompileError::BadLoraMultiplier(multiplier))
+    }
+}
+
+/// Step counts share the pipeline bounds (1..=50).
+fn validate_steps(steps: u32) -> Result<(), CompileError> {
+    if (1..=50).contains(&steps) {
+        Ok(())
+    } else {
+        Err(CompileError::BadSteps(steps))
+    }
+}
+
+/// The LoRAs an auto-injected generation must carry, first-wins by
+/// resolved path: project entries bound to the artifact (or its variant
+/// base chain), then the config kind binding, then the inpaint use-case
+/// adapter for mask-guided edits. A configured adapter that is missing on
+/// disk is skipped with a warning rather than failing the generation.
+fn auto_loras(
+    registry: &ArtifactRegistry,
+    artifact: Option<&Artifact>,
+    kind: ArtifactKind,
+    defaults: &GenerationDefaults,
+    inpaint: bool,
+) -> Vec<crate::vision::LoraSelection> {
+    let mut selections: Vec<crate::vision::LoraSelection> = Vec::new();
+    let mut push = |path: std::path::PathBuf, multiplier: f32| {
+        let path_string = path.display().to_string();
+        if !selections
+            .iter()
+            .any(|selection| selection.path == path_string)
+        {
+            selections.push(crate::vision::LoraSelection {
+                path: path_string,
+                multiplier,
+            });
+        }
+    };
+    if let Some(artifact) = artifact {
+        for entry in registry.loras_bound_to(artifact.id) {
+            match defaults.loras.resolve(&entry.path) {
+                Some(path) => push(path, entry.multiplier),
+                None => tracing::warn!(
+                    file = %entry.path,
+                    dir = %defaults.loras.dir.display(),
+                    "bound lora missing on disk; skipping",
+                ),
+            }
+        }
+    }
+    if let Some(binding) = defaults.loras.kinds.binding_for(kind) {
+        match defaults.loras.resolve(&binding.file) {
+            Some(path) => push(path, defaults.loras.multiplier),
+            None => tracing::warn!(
+                file = %binding.file,
+                dir = %defaults.loras.dir.display(),
+                "kind lora missing on disk; skipping",
+            ),
+        }
+    }
+    if inpaint {
+        if let Some(binding) = &defaults.loras.inpaint {
+            match defaults.loras.resolve(&binding.file) {
+                Some(path) => push(path, defaults.loras.multiplier),
+                None => tracing::warn!(
+                    file = %binding.file,
+                    dir = %defaults.loras.dir.display(),
+                    "inpaint lora missing on disk; skipping",
+                ),
+            }
+        }
+    }
+    selections
 }
 
 /// Executes an operation: compile → (run pipeline) → apply results →
@@ -529,7 +879,10 @@ pub async fn execute(
             description,
             name,
             size,
+            ..
         } => {
+            // Sizes are honored as given (the planner prompt tells the LLM
+            // to include one only when the user asks for a specific size).
             let id = registry.create_artifact(
                 *kind,
                 CreateArtifact {
@@ -545,7 +898,8 @@ pub async fn execute(
             if kind.is_visual() {
                 // The first image is part of create: compile the pipeline
                 // against the fresh artifact and run it like regenerate.
-                let CompiledOp::Pipeline(pipeline) = compile(registry, op)? else {
+                let CompiledOp::Pipeline(pipeline) = compile(registry, op, options.defaults)?
+                else {
                     unreachable!("visual create compiles to a pipeline");
                 };
                 return run_generation(
@@ -571,20 +925,27 @@ pub async fn execute(
         Operation::Variant {
             target,
             description,
+            name,
             axis,
+            ..
         } => {
             let base = registry.resolve(target)?;
             let base_artifact = registry
                 .artifact(base)
                 .ok_or(RegistryError::NoArtifact(base))?;
-            // Variants are auto-named from the base so every system-created
-            // key stays unique: `mia-outfit`, `mia-rain-gear`.
-            let name = if base_artifact.name.trim().is_empty() {
-                derive_name(description)
-            } else if let Some(axis) = axis {
-                format!("{}-{}", base_artifact.name, axis.as_str())
-            } else {
-                format!("{}-{}", base_artifact.name, derive_name(description))
+            // An explicit `--name` wins; otherwise variants are auto-named
+            // from the base so every system-created key stays unique:
+            // `mia-outfit`, `mia-rain-gear`.
+            let name = match name {
+                Some(explicit) => explicit.clone(),
+                None if base_artifact.name.trim().is_empty() => derive_name(description),
+                None => {
+                    if let Some(axis) = axis {
+                        format!("{}-{}", base_artifact.name, axis.as_str())
+                    } else {
+                        format!("{}-{}", base_artifact.name, derive_name(description))
+                    }
+                }
             };
             let id = registry.create_artifact(
                 base_artifact.kind,
@@ -602,7 +963,7 @@ pub async fn execute(
             )?;
             // The first image is part of variant: an edit of the base (its
             // active image as reference), run like regenerate.
-            let CompiledOp::Pipeline(pipeline) = compile(registry, op)? else {
+            let CompiledOp::Pipeline(pipeline) = compile(registry, op, options.defaults)? else {
                 unreachable!("variant compiles to a pipeline");
             };
             return run_generation(
@@ -615,6 +976,42 @@ pub async fn execute(
                 options,
             )
             .await;
+        }
+        Operation::Resize {
+            target,
+            width,
+            height,
+        } => {
+            let id = registry.resolve(target)?;
+            let description = registry
+                .artifact(id)
+                .ok_or(RegistryError::NoArtifact(id))?
+                .description
+                .clone();
+            // The new canvas becomes the artifact's default (future
+            // generations inherit it)…
+            registry
+                .artifact_mut(id)
+                .ok_or(RegistryError::NoArtifact(id))?
+                .default_size = Some((*width, *height));
+            let CompiledOp::Pipeline(pipeline) = compile(registry, op, options.defaults)? else {
+                unreachable!("resize compiles to a pipeline");
+            };
+            // …and the active image is regenerated at it right away.
+            let revision_prompt = registry
+                .latest_image(id)
+                .map(|revision| revision.prompt.clone())
+                .unwrap_or(description);
+            run_generation(
+                registry,
+                op,
+                id,
+                pipeline,
+                revision_prompt,
+                |_| Ok(Vec::new()),
+                options,
+            )
+            .await
         }
         Operation::Compose {
             scene,
@@ -695,7 +1092,7 @@ pub async fn execute(
                 });
             }
             let id = registry.resolve(target)?;
-            let CompiledOp::Pipeline(pipeline) = compile(registry, op)? else {
+            let CompiledOp::Pipeline(pipeline) = compile(registry, op, options.defaults)? else {
                 unreachable!("draft always compiles to a pipeline");
             };
             let backend = options.backend.ok_or(CompileError::BackendRequired)?;
@@ -732,7 +1129,7 @@ pub async fn execute(
         }
         Operation::Regenerate { .. } | Operation::Modify { .. } => {
             let id = registry.resolve(op.target_ref().expect("visual ops have a target"))?;
-            let CompiledOp::Pipeline(pipeline) = compile(registry, op)? else {
+            let CompiledOp::Pipeline(pipeline) = compile(registry, op, options.defaults)? else {
                 unreachable!("visual ops always compile to pipelines");
             };
             let revision_prompt = match op {
@@ -762,6 +1159,100 @@ pub async fn execute(
                 }])
             };
             run_generation(registry, op, id, pipeline, revision_prompt, masks, options).await
+        }
+        Operation::AttachLora {
+            target,
+            lora,
+            multiplier,
+        } => {
+            let id = registry.resolve(target)?;
+            let artifact = registry.artifact(id).ok_or(RegistryError::NoArtifact(id))?;
+            if !matches!(
+                artifact.kind,
+                ArtifactKind::Character | ArtifactKind::Environment | ArtifactKind::Object
+            ) {
+                return Err(CompileError::NotVariantable(artifact.kind).into());
+            }
+            // The arg is a file name in the lora dir, or the name/path of an
+            // existing registry entry (re-attaching reuses its file).
+            let file = registry
+                .resolve_lora(lora)
+                .ok()
+                .and_then(|entry_id| {
+                    registry
+                        .loras
+                        .iter()
+                        .find(|entry| entry.id == entry_id)
+                        .map(|entry| entry.path.clone())
+                })
+                .unwrap_or_else(|| lora.clone());
+            let Some(resolved) = options.defaults.loras.resolve(&file) else {
+                return Err(CompileError::LoraFileMissing {
+                    file,
+                    dir: options.defaults.loras.dir.display().to_string(),
+                }
+                .into());
+            };
+            // The display name carries the relative path without the
+            // extension (`external-models/char-model`) so two same-stem
+            // adapters in different subfolders stay distinct.
+            let name = resolved
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(|stem| {
+                    resolved
+                        .parent()
+                        .and_then(|parent| parent.strip_prefix(&options.defaults.loras.dir).ok())
+                        .map(|parent| parent.join(stem).to_string_lossy().into_owned())
+                        .unwrap_or_else(|| stem.to_owned())
+                })
+                .unwrap_or_else(|| file.clone());
+            let multiplier = multiplier.unwrap_or(1.0);
+            registry.attach_lora(id, name, file, None, multiplier)?;
+            let log_id = registry.push_log(op.clone(), options.origin, OpStatus::Applied, Some(id));
+            Ok(OpOutcome {
+                artifact_id: Some(id),
+                revision_id: None,
+                log_id: Some(log_id),
+                run: None,
+                status: OpStatus::Applied,
+            })
+        }
+        Operation::LoraScale { lora, multiplier } => {
+            let entry_id = registry.resolve_lora(lora)?;
+            let artifact_id = registry
+                .loras
+                .iter()
+                .find(|entry| entry.id == entry_id)
+                .and_then(|entry| entry.artifact_id);
+            registry.scale_lora(entry_id, *multiplier)?;
+            let log_id =
+                registry.push_log(op.clone(), options.origin, OpStatus::Applied, artifact_id);
+            Ok(OpOutcome {
+                artifact_id,
+                revision_id: None,
+                log_id: Some(log_id),
+                run: None,
+                status: OpStatus::Applied,
+            })
+        }
+        Operation::LoraRemove { lora } => {
+            let entry_id = registry.resolve_lora(lora)?;
+            let artifact_id = registry
+                .loras
+                .iter()
+                .find(|entry| entry.id == entry_id)
+                .and_then(|entry| entry.artifact_id);
+            registry.remove_lora(entry_id)?;
+            let log_id =
+                registry.push_log(op.clone(), options.origin, OpStatus::Applied, artifact_id);
+            Ok(OpOutcome {
+                artifact_id,
+                revision_id: None,
+                log_id: Some(log_id),
+                run: None,
+                status: OpStatus::Applied,
+            })
         }
     }
 }
@@ -920,6 +1411,15 @@ mod tests {
         dir
     }
 
+    /// Empty generation defaults (built-in sizes, no bindings).
+    fn test_defaults() -> GenerationDefaults {
+        GenerationDefaults {
+            sizes: Default::default(),
+            steps: 4,
+            loras: Default::default(),
+        }
+    }
+
     fn registry_with(artifacts: &[(ArtifactKind, &str)]) -> ArtifactRegistry {
         let mut registry = ArtifactRegistry::new();
         for (kind, description) in artifacts {
@@ -999,7 +1499,7 @@ mod tests {
             layers: Vec::new(),
         };
         assert!(matches!(
-            compile(&registry, &op),
+            compile(&registry, &op, &test_defaults()),
             Err(CompileError::NotAScene { .. })
         ));
 
@@ -1007,10 +1507,14 @@ mod tests {
         let op = Operation::Variant {
             target: Ref::new(story.to_string()),
             description: "a variant".into(),
+            name: None,
             axis: None,
+            size: None,
+            steps: None,
+            loras: Vec::new(),
         };
         assert!(matches!(
-            compile(&registry, &op),
+            compile(&registry, &op, &test_defaults()),
             Err(CompileError::NotVariantable(ArtifactKind::Story))
         ));
 
@@ -1020,9 +1524,12 @@ mod tests {
             description: "change it".into(),
             mask_prompt: Some("everything".into()),
             inpaint_prompt: Some("different".into()),
+            size: None,
+            steps: None,
+            loras: Vec::new(),
         };
         assert!(matches!(
-            compile(&registry, &op),
+            compile(&registry, &op, &test_defaults()),
             Err(CompileError::NoActiveImage(_))
         ));
 
@@ -1031,7 +1538,10 @@ mod tests {
             target: Ref::new("c:00000000"),
             request: "write something".into(),
         };
-        assert!(matches!(compile(&registry, &op), Err(CompileError::Ref(_))));
+        assert!(matches!(
+            compile(&registry, &op, &test_defaults()),
+            Err(CompileError::Ref(_))
+        ));
     }
 
     #[test]
@@ -1048,8 +1558,12 @@ mod tests {
         let op = Operation::Regenerate {
             target: Ref::new(registry.short_id(id)),
             prompt: None,
+            size: None,
+            steps: None,
+            loras: Vec::new(),
         };
-        let CompiledOp::Pipeline(pipeline) = compile(&registry, &op).unwrap() else {
+        let CompiledOp::Pipeline(pipeline) = compile(&registry, &op, &test_defaults()).unwrap()
+        else {
             panic!("regenerate must compile to a pipeline");
         };
         assert!(matches!(
@@ -1074,8 +1588,12 @@ mod tests {
         let op = Operation::Regenerate {
             target: Ref::new(registry.short_id(id)),
             prompt: None,
+            size: None,
+            steps: None,
+            loras: Vec::new(),
         };
-        let CompiledOp::Pipeline(pipeline) = compile(&registry, &op).unwrap() else {
+        let CompiledOp::Pipeline(pipeline) = compile(&registry, &op, &test_defaults()).unwrap()
+        else {
             panic!("regenerate must compile to a pipeline");
         };
         assert_eq!(pipeline.params().width, 512);
@@ -1087,8 +1605,12 @@ mod tests {
         let op = Operation::Regenerate {
             target: Ref::new(registry.short_id(lantern)),
             prompt: Some("the brass lantern".into()),
+            size: None,
+            steps: None,
+            loras: Vec::new(),
         };
-        let CompiledOp::Pipeline(pipeline) = compile(&registry, &op).unwrap() else {
+        let CompiledOp::Pipeline(pipeline) = compile(&registry, &op, &test_defaults()).unwrap()
+        else {
             panic!("regenerate must compile to a pipeline");
         };
         assert_eq!(pipeline.params().width, 768);
@@ -1105,11 +1627,15 @@ mod tests {
             description: "Mia, a lighthouse keeper".into(),
             name: Some("mia".into()),
             size: Some((512, 768)),
+            steps: None,
+            loras: Vec::new(),
         };
+        let test_defaults = test_defaults();
         let options = ExecuteOptions {
             backend: Some(&backend),
             run: RunOptions::new(std::env::temp_dir()),
             generation: Default::default(),
+            defaults: &test_defaults,
             manual_text: None,
             origin: OpOrigin::User,
         };
@@ -1126,7 +1652,11 @@ mod tests {
         let variant = Operation::Variant {
             target: Ref::new(registry.short_id(mia)),
             description: "in rain gear".into(),
+            name: None,
             axis: Some(VariantAxis::Outfit),
+            size: None,
+            steps: None,
+            loras: Vec::new(),
         };
         let outcome = tokio::runtime::Runtime::new()
             .unwrap()
@@ -1150,11 +1680,15 @@ mod tests {
             description: "Mia, a lighthouse keeper".into(),
             name: Some("mia".into()),
             size: None,
+            steps: None,
+            loras: Vec::new(),
         };
+        let test_defaults = test_defaults();
         let options = ExecuteOptions {
             backend: Some(&backend),
             run: RunOptions::new(std::env::temp_dir()),
             generation: Default::default(),
+            defaults: &test_defaults,
             manual_text: None,
             origin: OpOrigin::User,
         };
@@ -1175,7 +1709,11 @@ mod tests {
         let variant = Operation::Variant {
             target: Ref::new(registry.short_id(mia)),
             description: "in rain gear".into(),
+            name: None,
             axis: Some(VariantAxis::Outfit),
+            size: None,
+            steps: None,
+            loras: Vec::new(),
         };
         let outcome = tokio::runtime::Runtime::new()
             .unwrap()
@@ -1194,6 +1732,501 @@ mod tests {
     }
 
     #[test]
+    fn variant_honors_an_explicit_name() {
+        let mut registry = ArtifactRegistry::new();
+        let assets = test_assets_dir();
+        let mia_asset = assets.join("mia.png");
+        std::fs::write(&mia_asset, b"png").expect("dummy image should write");
+        let base = registry
+            .create_artifact(
+                ArtifactKind::Character,
+                CreateArtifact {
+                    name: "mia".into(),
+                    description: "Mia, a lighthouse keeper".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let base_revision = registry
+            .start_revision(base, "Mia on the cliff".into(), Some(1), None)
+            .unwrap();
+        registry
+            .finish_revision(
+                base,
+                base_revision,
+                mia_asset.display().to_string(),
+                Vec::new(),
+            )
+            .unwrap();
+
+        let backend = VisualBackend::new(assets.join("mia-rain.png"));
+        let variant = Operation::Variant {
+            target: Ref::new(registry.short_id(base)),
+            description: "in yellow rain gear".into(),
+            name: Some("mia-rain-gear".into()),
+            axis: Some(VariantAxis::Outfit),
+            size: None,
+            steps: None,
+            loras: Vec::new(),
+        };
+        let test_defaults = test_defaults();
+        let options = ExecuteOptions {
+            backend: Some(&backend),
+            run: RunOptions::new(std::env::temp_dir()),
+            generation: Default::default(),
+            defaults: &test_defaults,
+            manual_text: None,
+            origin: OpOrigin::User,
+        };
+        let outcome = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(execute(&mut registry, &variant, &options))
+            .unwrap();
+        let variant_id = outcome.artifact_id.unwrap();
+        let artifact = registry.artifact(variant_id).unwrap();
+        assert_eq!(artifact.name, "mia-rain-gear");
+        assert_eq!(registry.ref_of(variant_id), "c:mia-rain-gear");
+    }
+
+    #[test]
+    fn llm_proposed_ops_carry_the_requested_size_steps_and_loras() {
+        let mut registry = ArtifactRegistry::new();
+        let backend = VisualBackend::new(test_assets_dir().join("mia.png"));
+        let create = Operation::Create {
+            kind: ArtifactKind::Character,
+            description: "Mia, a lighthouse keeper".into(),
+            name: Some("mia".into()),
+            size: Some((1024, 1024)),
+            steps: Some(8),
+            loras: vec![LoraSelection {
+                path: "krea/char.safetensors".into(),
+                multiplier: 0.8,
+            }],
+        };
+        let test_defaults = test_defaults();
+        let options = ExecuteOptions {
+            backend: Some(&backend),
+            run: RunOptions::new(std::env::temp_dir()),
+            generation: Default::default(),
+            defaults: &test_defaults,
+            manual_text: None,
+            origin: OpOrigin::Llm,
+        };
+        let outcome = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(execute(&mut registry, &create, &options))
+            .unwrap();
+        let mia = outcome.artifact_id.unwrap();
+        // A user-requested size on an LLM op is honored (stored + generated).
+        assert_eq!(
+            registry.artifact(mia).unwrap().default_size,
+            Some((1024, 1024))
+        );
+        let request = &backend.requests()[0];
+        assert_eq!((request.width, request.height), (Some(1024), Some(1024)));
+        assert_eq!(request.steps, Some(8));
+        assert_eq!(request.loras.len(), 1);
+        assert_eq!(request.loras[0].path, "krea/char.safetensors");
+        assert_eq!(request.loras[0].multiplier, 0.8);
+    }
+
+    #[test]
+    fn regenerate_honors_per_run_size_steps_and_loras() {
+        let assets = test_assets_dir();
+        let mia_asset = assets.join("mia.png");
+        std::fs::write(&mia_asset, b"png").expect("dummy image should write");
+        let mut registry = ArtifactRegistry::new();
+        let mia = registry
+            .create_artifact(
+                ArtifactKind::Character,
+                CreateArtifact {
+                    name: "mia".into(),
+                    description: "Mia".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let revision = registry
+            .start_revision(mia, "Mia on the cliff".into(), Some(1), None)
+            .unwrap();
+        registry
+            .finish_revision(mia, revision, mia_asset.display().to_string(), Vec::new())
+            .unwrap();
+
+        let backend = VisualBackend::new(assets.join("mia-regen.png"));
+        let op = Operation::Regenerate {
+            target: Ref::new(registry.short_id(mia)),
+            prompt: Some("warmer".into()),
+            size: Some((768, 768)),
+            steps: Some(12),
+            loras: vec![LoraSelection {
+                path: "krea/style.safetensors".into(),
+                multiplier: 1.0,
+            }],
+        };
+        let test_defaults = test_defaults();
+        let options = ExecuteOptions {
+            backend: Some(&backend),
+            run: RunOptions::new(std::env::temp_dir()),
+            generation: Default::default(),
+            defaults: &test_defaults,
+            manual_text: None,
+            origin: OpOrigin::User,
+        };
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(execute(&mut registry, &op, &options))
+            .unwrap();
+        let request = &backend.requests()[0];
+        assert_eq!((request.width, request.height), (Some(768), Some(768)));
+        assert_eq!(request.steps, Some(12));
+        assert!(request
+            .loras
+            .iter()
+            .any(|lora| lora.path == "krea/style.safetensors"));
+        // The artifact's stored default size is untouched (per-run only).
+        assert_eq!(registry.artifact(mia).unwrap().default_size, None);
+    }
+
+    #[test]
+    fn resize_sets_the_default_size_and_regenerates_at_it() {
+        let assets = test_assets_dir();
+        let mia_asset = assets.join("mia.png");
+        std::fs::write(&mia_asset, b"png").expect("dummy image should write");
+        let mut registry = ArtifactRegistry::new();
+        let mia = registry
+            .create_artifact(
+                ArtifactKind::Character,
+                CreateArtifact {
+                    name: "mia".into(),
+                    description: "Mia, the keeper".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let revision = registry
+            .start_revision(mia, "Mia on the cliff".into(), Some(1), None)
+            .unwrap();
+        registry
+            .finish_revision(mia, revision, mia_asset.display().to_string(), Vec::new())
+            .unwrap();
+
+        let backend = VisualBackend::new(assets.join("mia-1024.png"));
+        let op = Operation::Resize {
+            target: Ref::new(registry.short_id(mia)),
+            width: 1024,
+            height: 1024,
+        };
+        let test_defaults = test_defaults();
+        let options = ExecuteOptions {
+            backend: Some(&backend),
+            run: RunOptions::new(std::env::temp_dir()),
+            generation: Default::default(),
+            defaults: &test_defaults,
+            manual_text: None,
+            origin: OpOrigin::User,
+        };
+        let outcome = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(execute(&mut registry, &op, &options))
+            .unwrap();
+        assert_eq!(outcome.status, OpStatus::Applied);
+        assert_eq!(
+            registry.artifact(mia).unwrap().default_size,
+            Some((1024, 1024)),
+            "resize stores the new default size"
+        );
+        // The image regenerates at the new canvas, subject kept via the
+        // reference image and the last prompt.
+        let request = &backend.requests()[0];
+        assert_eq!((request.width, request.height), (Some(1024), Some(1024)));
+        assert_eq!(request.prompt, "Mia on the cliff");
+        assert!(request.reference_image_path.is_some());
+
+        // A resize on a text artifact is rejected.
+        let story = registry
+            .create_artifact(
+                ArtifactKind::Story,
+                CreateArtifact {
+                    name: "tale".into(),
+                    description: "a story".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let bad = Operation::Resize {
+            target: Ref::new(registry.short_id(story)),
+            width: 512,
+            height: 512,
+        };
+        assert!(matches!(
+            compile(&registry, &bad, &test_defaults),
+            Err(CompileError::NotVariantable(ArtifactKind::Story))
+        ));
+    }
+
+    #[test]
+    fn attach_lora_binds_and_is_auto_injected_into_generations() {
+        let assets = test_assets_dir();
+        let lora_dir = assets.join("loras");
+        std::fs::create_dir_all(&lora_dir).expect("lora dir should create");
+        let mia_lora = lora_dir.join("mia-v2.safetensors");
+        std::fs::write(&mia_lora, b"lora").expect("dummy lora should write");
+        let inpaint_lora = lora_dir.join("inpaintkrea.safetensors");
+        std::fs::write(&inpaint_lora, b"lora").expect("dummy inpaint lora should write");
+
+        let defaults = GenerationDefaults {
+            sizes: Default::default(),
+            steps: 4,
+            loras: crate::registry::LoraBindings {
+                dir: lora_dir.clone(),
+                inpaint: Some(crate::registry::LoraBinding {
+                    file: "inpaintkrea.safetensors".into(),
+                }),
+                kinds: Default::default(),
+                multiplier: 1.0,
+            },
+        };
+
+        let mut registry = ArtifactRegistry::new();
+        let mia = registry
+            .create_artifact(
+                ArtifactKind::Character,
+                CreateArtifact {
+                    name: "mia".into(),
+                    description: "Mia, the keeper".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mia_asset = assets.join("mia.png");
+        std::fs::write(&mia_asset, b"png").expect("dummy image should write");
+        let revision = registry
+            .start_revision(mia, "Mia on the cliff".into(), Some(1), None)
+            .unwrap();
+        registry
+            .finish_revision(mia, revision, mia_asset.display().to_string(), Vec::new())
+            .unwrap();
+
+        let attach = Operation::AttachLora {
+            target: Ref::new(registry.short_id(mia)),
+            lora: "mia-v2.safetensors".into(),
+            multiplier: Some(0.8),
+        };
+        let options = ExecuteOptions {
+            backend: None,
+            run: RunOptions::new(std::env::temp_dir()),
+            generation: Default::default(),
+            defaults: &defaults,
+            manual_text: None,
+            origin: OpOrigin::User,
+        };
+        let outcome = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(execute(&mut registry, &attach, &options))
+            .unwrap();
+        assert_eq!(outcome.status, OpStatus::Applied);
+        let entry = &registry.loras[0];
+        assert_eq!(entry.path, "mia-v2.safetensors");
+        assert_eq!(entry.multiplier, 0.8);
+        assert_eq!(entry.artifact_id, Some(mia));
+
+        // A nested adapter (e.g. through a symlinked folder) attaches too,
+        // and its name carries the relative path so same-stem files in
+        // different folders stay distinct.
+        std::fs::create_dir_all(lora_dir.join("external-models")).unwrap();
+        std::fs::write(
+            lora_dir.join("external-models/char-style.safetensors"),
+            b"lora",
+        )
+        .unwrap();
+        let nested = Operation::AttachLora {
+            target: Ref::new(registry.short_id(mia)),
+            lora: "external-models/char-style.safetensors".into(),
+            multiplier: None,
+        };
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(execute(&mut registry, &nested, &options))
+            .unwrap();
+        let nested_entry = registry.loras.last().unwrap();
+        assert_eq!(nested_entry.path, "external-models/char-style.safetensors");
+        assert_eq!(nested_entry.name, "external-models/char-style");
+        assert_eq!(nested_entry.multiplier, 1.0);
+
+        // A plain regenerate carries the bound adapter.
+        let backend = VisualBackend::new(assets.join("mia-regen.png"));
+        let regenerate = Operation::Regenerate {
+            target: Ref::new(registry.short_id(mia)),
+            prompt: Some("warmer".into()),
+            size: None,
+            steps: None,
+            loras: Vec::new(),
+        };
+        let options = ExecuteOptions {
+            backend: Some(&backend),
+            run: RunOptions::new(std::env::temp_dir()),
+            generation: Default::default(),
+            defaults: &defaults,
+            manual_text: None,
+            origin: OpOrigin::User,
+        };
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(execute(&mut registry, &regenerate, &options))
+            .unwrap();
+        let request = &backend.requests()[0];
+        assert_eq!(request.loras.len(), 2, "both bound adapters");
+        assert_eq!(
+            request.loras[0].path,
+            lora_dir.join("mia-v2.safetensors").display().to_string()
+        );
+        assert_eq!(request.loras[0].multiplier, 0.8);
+        assert!(request
+            .loras
+            .iter()
+            .any(|lora| lora.path.ends_with("char-style.safetensors")));
+
+        // A mask-guided edit additionally carries the inpaint adapter
+        // (checked at compile: the modify pipeline's generation params).
+        let modify = Operation::Modify {
+            target: Ref::new(registry.short_id(mia)),
+            description: "change her hair".into(),
+            mask_prompt: Some("her hair".into()),
+            inpaint_prompt: Some("a bob cut".into()),
+            size: None,
+            steps: None,
+            loras: Vec::new(),
+        };
+        let CompiledOp::Pipeline(modify_pipeline) = compile(&registry, &modify, &defaults).unwrap()
+        else {
+            panic!("modify must compile to a pipeline");
+        };
+        assert_eq!(
+            modify_pipeline.params().loras.len(),
+            3,
+            "both bound adapters + the inpaint binding"
+        );
+        assert!(
+            modify_pipeline
+                .params()
+                .loras
+                .iter()
+                .any(|lora| lora.path.ends_with("inpaintkrea.safetensors")),
+            "the inpaint binding rides mask-guided edits"
+        );
+    }
+
+    #[test]
+    fn attach_lora_requires_the_file_to_exist_and_a_visual_target() {
+        let assets = test_assets_dir();
+        let lora_dir = assets.join("loras");
+        std::fs::create_dir_all(&lora_dir).expect("lora dir should create");
+        let defaults = GenerationDefaults {
+            sizes: Default::default(),
+            steps: 4,
+            loras: crate::registry::LoraBindings {
+                dir: lora_dir,
+                ..Default::default()
+            },
+        };
+        let mut registry = ArtifactRegistry::new();
+        let story = registry
+            .create_artifact(
+                ArtifactKind::Story,
+                CreateArtifact {
+                    name: "tale".into(),
+                    description: "a story".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let character = registry
+            .create_artifact(
+                ArtifactKind::Character,
+                CreateArtifact {
+                    name: "mia".into(),
+                    description: "Mia".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let options = ExecuteOptions {
+            backend: None,
+            run: RunOptions::new(std::env::temp_dir()),
+            generation: Default::default(),
+            defaults: &defaults,
+            manual_text: None,
+            origin: OpOrigin::User,
+        };
+        // Missing file.
+        let missing = Operation::AttachLora {
+            target: Ref::new(registry.short_id(character)),
+            lora: "nobody.safetensors".into(),
+            multiplier: None,
+        };
+        assert!(matches!(
+            tokio::runtime::Runtime::new().unwrap().block_on(execute(
+                &mut registry,
+                &missing,
+                &options
+            )),
+            Err(OpError::Compile(CompileError::LoraFileMissing { .. }))
+        ));
+        // Non-visual target is a compile error before the file check.
+        let story_attach = Operation::AttachLora {
+            target: Ref::new(registry.short_id(story)),
+            lora: "nobody.safetensors".into(),
+            multiplier: None,
+        };
+        assert!(matches!(
+            tokio::runtime::Runtime::new().unwrap().block_on(execute(
+                &mut registry,
+                &story_attach,
+                &options
+            )),
+            Err(OpError::Compile(CompileError::NotVariantable(
+                ArtifactKind::Story
+            )))
+        ));
+        // Non-visual target.
+        let entry_id = registry
+            .attach_lora(
+                story,
+                "nobody".into(),
+                "nobody.safetensors".into(),
+                None,
+                1.0,
+            )
+            .expect("registry attach is not gated on the file");
+        let scale = Operation::LoraScale {
+            lora: "nobody".into(),
+            multiplier: 0.5,
+        };
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(execute(&mut registry, &scale, &options))
+            .unwrap();
+        assert_eq!(
+            registry
+                .loras
+                .iter()
+                .find(|entry| entry.id == entry_id)
+                .unwrap()
+                .multiplier,
+            0.5
+        );
+        let remove = Operation::LoraRemove {
+            lora: "nobody".into(),
+        };
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(execute(&mut registry, &remove, &options))
+            .unwrap();
+        assert!(registry.loras.is_empty());
+    }
+
+    #[test]
     fn text_only_create_needs_no_backend() {
         let mut registry = ArtifactRegistry::new();
         let create = Operation::Create {
@@ -1201,11 +2234,15 @@ mod tests {
             description: "a lighthouse story".into(),
             name: Some("tale".into()),
             size: None,
+            steps: None,
+            loras: Vec::new(),
         };
+        let test_defaults = test_defaults();
         let options = ExecuteOptions {
             backend: None,
             run: RunOptions::new(std::env::temp_dir()),
             generation: Default::default(),
+            defaults: &test_defaults,
             manual_text: None,
             origin: OpOrigin::User,
         };
@@ -1228,11 +2265,15 @@ mod tests {
             description: "Mia, a lighthouse keeper".into(),
             name: Some("mia".into()),
             size: None,
+            steps: None,
+            loras: Vec::new(),
         };
+        let test_defaults = test_defaults();
         let options = ExecuteOptions {
             backend: Some(&backend),
             run: RunOptions::new(std::env::temp_dir()),
             generation: Default::default(),
+            defaults: &test_defaults,
             manual_text: None,
             origin: OpOrigin::User,
         };
@@ -1288,12 +2329,18 @@ mod tests {
         let variant = Operation::Variant {
             target: Ref::new(registry.short_id(base)),
             description: "in yellow rain gear".into(),
+            name: None,
             axis: Some(VariantAxis::Outfit),
+            size: None,
+            steps: None,
+            loras: Vec::new(),
         };
+        let test_defaults = test_defaults();
         let options = ExecuteOptions {
             backend: Some(&backend),
             run: RunOptions::new(std::env::temp_dir()),
             generation: Default::default(),
+            defaults: &test_defaults,
             manual_text: None,
             origin: OpOrigin::User,
         };
@@ -1333,13 +2380,18 @@ mod tests {
             backend: Some(&backend),
             run: RunOptions::new(std::env::temp_dir()),
             generation: Default::default(),
+            defaults: &test_defaults,
             manual_text: None,
             origin: OpOrigin::User,
         };
         let variant = Operation::Variant {
             target: Ref::new(registry.short_id(base)),
             description: "rusted".into(),
+            name: None,
             axis: Some(VariantAxis::Weather),
+            size: None,
+            steps: None,
+            loras: Vec::new(),
         };
         let outcome = tokio::runtime::Runtime::new()
             .unwrap()
@@ -1358,11 +2410,15 @@ mod tests {
             description: "Mia".into(),
             name: None,
             size: None,
+            steps: None,
+            loras: Vec::new(),
         };
+        let test_defaults = test_defaults();
         let options = ExecuteOptions {
             backend: None,
             run: RunOptions::new(std::env::temp_dir()),
             generation: Default::default(),
+            defaults: &test_defaults,
             manual_text: None,
             origin: OpOrigin::User,
         };
@@ -1392,17 +2448,23 @@ mod tests {
             )
             .unwrap();
         let backend = VisualBackend::new(test_assets_dir().join("mia-outfit.png"));
+        let test_defaults = test_defaults();
         let options = ExecuteOptions {
             backend: Some(&backend),
             run: RunOptions::new(std::env::temp_dir()),
             generation: Default::default(),
+            defaults: &test_defaults,
             manual_text: None,
             origin: OpOrigin::User,
         };
         let variant = Operation::Variant {
             target: Ref::new("c:mia"),
             description: "in rain gear".into(),
+            name: None,
             axis: Some(VariantAxis::Outfit),
+            size: None,
+            steps: None,
+            loras: Vec::new(),
         };
         let first = tokio::runtime::Runtime::new()
             .unwrap()
@@ -1482,10 +2544,12 @@ mod tests {
                 variant: None,
             }],
         };
+        let test_defaults = test_defaults();
         let options = ExecuteOptions {
             backend: None,
             run: RunOptions::new(std::env::temp_dir()),
             generation: Default::default(),
+            defaults: &test_defaults,
             manual_text: None,
             origin: OpOrigin::User,
         };
@@ -1631,6 +2695,7 @@ mod tests {
             target: Ref::new(registry.short_id(id)),
             request: "write the opening".into(),
         };
+        let test_defaults = test_defaults();
         let options = ExecuteOptions {
             backend: Some(&DraftBackend),
             run: RunOptions {
@@ -1639,6 +2704,7 @@ mod tests {
                 seed: None,
             },
             generation: Default::default(),
+            defaults: &test_defaults,
             manual_text: None,
             origin: OpOrigin::User,
         };
@@ -1662,10 +2728,12 @@ mod tests {
             target: Ref::new(registry.short_id(id)),
             request: "write the opening".into(),
         };
+        let test_defaults = test_defaults();
         let options = ExecuteOptions {
             backend: None, // no backend needed
             run: RunOptions::new(std::env::temp_dir()),
             generation: Default::default(),
+            defaults: &test_defaults,
             manual_text: Some("Hand-written opening."),
             origin: OpOrigin::User,
         };
@@ -1688,6 +2756,7 @@ mod tests {
             target: Ref::new(registry.short_id(id)),
             request: "write the opening".into(),
         };
+        let test_defaults = test_defaults();
         let options = ExecuteOptions {
             backend: Some(&DraftBackend),
             run: RunOptions {
@@ -1698,6 +2767,7 @@ mod tests {
                 seed: None,
             },
             generation: Default::default(),
+            defaults: &test_defaults,
             manual_text: None,
             origin: OpOrigin::Llm,
         };

@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use crate::{
     app::AppConfig,
     llm::LmStudioClient,
-    registry::backend::CreativeBackend,
+    registry::{backend::CreativeBackend, discover_loras, GenerationDefaults, LoraBinding},
     runtime::{
         check_all as check_services, CreativeRuntime, HealthStatus, KreaQuantization,
         ServiceHealth, ServiceId,
@@ -107,7 +107,11 @@ mod tests {
 }
 
 #[component]
-pub fn Settings(config: AppConfig, backend: Signal<CreativeBackend>) -> Element {
+pub fn Settings(
+    config: AppConfig,
+    backend: Signal<CreativeBackend>,
+    defaults: Signal<crate::registry::GenerationDefaults>,
+) -> Element {
     let runtime = backend.read().runtime();
     let mut section = use_signal(|| SettingsSection::Status);
     let profile = use_signal(|| config.generation.profile);
@@ -191,7 +195,7 @@ pub fn Settings(config: AppConfig, backend: Signal<CreativeBackend>) -> Element 
                         SettingsSection::Status => rsx! { StatusSettings { health, checking, checked_at, busy, operation_error, on_check: on_check.clone(), on_operate: on_operate.clone() } },
                         SettingsSection::General => rsx! { GeneralSettings {} },
                         SettingsSection::Intelligence => rsx! { IntelligenceSettings { config: config.clone(), backend, health, lm_model, models_state, on_check: on_check.clone() } },
-                        SettingsSection::Generation => rsx! { GenerationSettings { config: config.clone(), profile } },
+                        SettingsSection::Generation => rsx! { GenerationSettings { config: config.clone(), profile, defaults } },
                         SettingsSection::Storage => rsx! { StorageSettings { config: config.clone() } },
                     }
                 }
@@ -413,11 +417,12 @@ fn GeneralSettings() -> Element {
             SettingRow { title: "Autosave", description: "Save project changes locally as you work.", last: true,
                 select {
                     class: "setting-control",
-                    value: autosave().as_str(),
-                    onchange: move |event| autosave.set(AutosaveMode::from_value(&event.value())),
-                    option { value: "on_change", "After every change" }
-                    option { value: "every_minute", "Every minute" }
-                    option { value: "off", "Off" }
+                    // oninput + option-level selected — the pattern that
+                    // actually commits on <select> in Dioxus.
+                    oninput: move |event| autosave.set(AutosaveMode::from_value(&event.value())),
+                    option { selected: autosave() == AutosaveMode::OnChange, value: "on_change", "After every change" }
+                    option { selected: autosave() == AutosaveMode::EveryMinute, value: "every_minute", "Every minute" }
+                    option { selected: autosave() == AutosaveMode::Off, value: "off", "Off" }
                 }
             }
         }
@@ -547,7 +552,22 @@ fn ModelPicker(
 }
 
 #[component]
-fn GenerationSettings(config: AppConfig, mut profile: Signal<KreaQuantization>) -> Element {
+fn GenerationSettings(
+    config: AppConfig,
+    mut profile: Signal<KreaQuantization>,
+    mut defaults: Signal<GenerationDefaults>,
+) -> Element {
+    let sizes = defaults.read().sizes;
+    let steps = defaults.read().steps;
+    let size_error = use_signal(|| None::<String>);
+    let mut steps_error = use_signal(|| None::<String>);
+    // The lora dir shown here and the bindings share the same defaults.
+    let lora_dir = config.generation.lora_dir.clone();
+    // Discovered adapters, reloadable: symlinked or newly dropped files
+    // appear after pressing the refresh icon next to the directory.
+    let mut discovered = use_signal(|| discover_loras(&lora_dir));
+    let scan_dir = lora_dir.clone();
+    let on_rescan = move |_event: MouseEvent| discovered.set(discover_loras(&scan_dir));
     rsx! {
         SectionHeading {
             eyebrow: "Local image engine",
@@ -572,19 +592,305 @@ fn GenerationSettings(config: AppConfig, mut profile: Signal<KreaQuantization>) 
             SettingRow { title: "Runtime endpoint", description: "Resident stable-diffusion.cpp service.",
                 input { class: "setting-control", value: "{config.generation.base_url}", readonly: true }
             }
-            SettingRow { title: "Text encoder", description: "Shared quantized encoder kept resident with Krea.",
-                div { class: "flex items-center justify-between", span { class: "text-xs text-zinc-300", "Qwen3-VL 4B" } span { class: "rounded-md bg-violet-500/10 px-2 py-1 text-[9px] text-violet-300", "Q4 GGUF" } }
+            SettingRow { title: "Steps per image", description: "Quality vs. speed of every generation. The default is 4 (Krea 2 Turbo); raise it when the image needs detail.",
+                div { class: "flex items-center gap-3",
+                    if let Some(error) = steps_error() {
+                        p { class: "truncate text-[9px] text-rose-300/80", "{error}" }
+                    }
+                    input {
+                        class: "setting-control w-20",
+                        r#type: "number",
+                        min: 1,
+                        max: 50,
+                        value: "{steps}",
+                        onchange: {
+                            let mut defaults = defaults;
+                            move |event| {
+                                let parsed = event.value().parse::<u32>().ok().filter(|steps| (1..=50).contains(steps));
+                                match parsed {
+                                    Some(steps) => {
+                                        steps_error.set(None);
+                                        defaults.write().steps = steps;
+                                        persist_defaults(defaults);
+                                    }
+                                    None => steps_error.set(Some("1–50".to_owned())),
+                                }
+                            }
+                        },
+                    }
+                }
             }
-            SettingRow { title: "LoRA support", description: "Apply up to eight adapters per generation request.",
-                div { class: "flex items-center justify-between", span { class: "truncate text-[11px] text-zinc-500", "{config.generation.lora_dir.display()}" } Toggle { enabled: true } }
+            SettingRow { title: "Character size", description: "Default canvas for character images (WxH, multiples of 32).",
+                SizeField { label: "512×768", value: sizes.character, error: size_error, defaults, kind: "character" }
+            }
+            SettingRow { title: "Environment size", description: "Default canvas for environment images.",
+                SizeField { label: "1024×576", value: sizes.environment, error: size_error, defaults, kind: "environment" }
+            }
+            SettingRow { title: "Object size", description: "Default canvas for object images.",
+                SizeField { label: "768×768", value: sizes.object, error: size_error, defaults, kind: "object" }
+            }
+            SettingRow { title: "Scene / beat size", description: "Default canvas for scene and beat images.",
+                SizeField { label: "1024×576", value: sizes.scene, error: size_error, defaults, kind: "scene" }
+            }
+            SettingRow { title: "LoRA directory", description: "Adapters are discovered here (subfolders and symlinks included).",
+                div { class: "flex items-center justify-between gap-3",
+                    span { class: "truncate text-[11px] text-zinc-500", "{lora_dir.display()}" }
+                    div { class: "flex shrink-0 items-center gap-2",
+                        span { class: "rounded-md bg-violet-500/10 px-2 py-1 text-[9px] text-violet-300", "lora_dir" }
+                        button {
+                            class: "grid size-7 shrink-0 place-items-center rounded-lg bg-white/[0.05] text-zinc-500 transition hover:bg-white/[0.09] hover:text-white",
+                            aria_label: "Rescan the LoRA directory",
+                            title: "Rescan the LoRA directory",
+                            onclick: on_rescan,
+                            Icon { name: IconName::Refresh, class: "size-3" }
+                        }
+                    }
+                }
             }
             SettingRow { title: "Residency policy", description: "Avoid unloading between interactive requests.", last: true,
                 select { class: "setting-control", option { "Keep active model loaded" } option { "Release when idle" } }
             }
         }
+        LoRASettings { defaults, discovered }
         div { class: "mt-5 flex items-start gap-3 rounded-xl bg-amber-400/[0.035] px-4 py-3 ring-1 ring-inset ring-amber-300/[0.08]",
             Icon { name: IconName::Sparkles, class: "mt-0.5 size-3.5 shrink-0 text-amber-200/50" }
-            p { class: "text-[10px] leading-5 text-zinc-600", "Changing quantization requires switching the resident generation process. Queued work will finish before the switch in the production scheduler." }
+            p { class: "text-[10px] leading-5 text-zinc-600", "Changing quantization requires switching the resident generation process. Queued work will finish before the switch in the production scheduler. Size and steps changes apply to the next generation immediately." }
+        }
+    }
+}
+
+/// Writes the live defaults back to `config/app.toml` (line-preserving).
+fn persist_defaults(defaults: Signal<GenerationDefaults>) {
+    let snapshot = defaults.read().clone();
+    if let Err(error) =
+        AppConfig::persist_generation_defaults_to(crate::app::DEFAULT_CONFIG_PATH, &snapshot)
+    {
+        tracing::error!("could not persist generation defaults: {error}");
+    }
+}
+
+/// The `WxH` size input for one artifact kind. Commits on Enter/blur; an
+/// invalid value shows a hint and keeps the last good default.
+#[component]
+fn SizeField(
+    label: String,
+    value: Option<(u32, u32)>,
+    error: Signal<Option<String>>,
+    mut defaults: Signal<GenerationDefaults>,
+    kind: &'static str,
+) -> Element {
+    let current = value
+        .map(|(width, height)| format!("{width}x{height}"))
+        .unwrap_or_default();
+    let kind_label = kind.to_owned();
+    rsx! {
+        div { class: "flex items-center gap-3",
+            if let Some(message) = error() {
+                p { class: "truncate text-[9px] text-rose-300/80", "{message}" }
+            }
+            input {
+                class: "setting-control w-24",
+                placeholder: "{label}",
+                value: "{current}",
+                onchange: {
+                    let mut defaults = defaults;
+                    move |event| {
+                        let value = event.value();
+                        let parsed = value.trim().replace('×', "x");
+                        let size = parsed
+                            .split_once('x')
+                            .and_then(|(width, height)| {
+                                let width = width.trim().parse::<u32>().ok()?;
+                                let height = height.trim().parse::<u32>().ok()?;
+                                crate::registry::pipeline::is_valid_size(width, height)
+                                    .then_some((width, height))
+                            });
+                        match size {
+                            Some((width, height)) => {
+                                error.set(None);
+                                let mut settings = defaults.write();
+                                match kind_label.as_str() {
+                                    "character" => settings.sizes.character = Some((width, height)),
+                                    "environment" => settings.sizes.environment = Some((width, height)),
+                                    "object" => settings.sizes.object = Some((width, height)),
+                                    "scene" => settings.sizes.scene = Some((width, height)),
+                                    "beat" => settings.sizes.beat = Some((width, height)),
+                                    _ => {}
+                                }
+                                drop(settings);
+                                persist_defaults(defaults);
+                            }
+                            None => error.set(Some("WxH, multiples of 32".to_owned())),
+                        }
+                    }
+                },
+            }
+        }
+    }
+}
+
+/// Config-level adapter bindings: discovered files from `lora_dir` bound
+/// to use-cases (mask-guided edits, per-kind defaults) at one multiplier.
+/// The `discovered` signal is owned by [`GenerationSettings`] — the
+/// refresh action lives next to the directory row.
+#[component]
+fn LoRASettings(
+    mut defaults: Signal<GenerationDefaults>,
+    discovered: Signal<Vec<String>>,
+) -> Element {
+    let bindings = defaults.read().loras.clone();
+    let multiplier = bindings.multiplier;
+    let files = discovered();
+    let mut binding_error = use_signal(|| None::<String>);
+    rsx! {
+        SectionHeading {
+            eyebrow: "Adapters",
+            title: "LoRAs",
+            description: "Bind adapters from the lora directory to kinds of work. Project bindings (/attach-lora on an artifact) always win over these defaults."
+        }
+        div { class: "mb-4 rounded-lg bg-white/[0.025] px-3 py-2.5 text-[10px] leading-4 text-zinc-600 ring-1 ring-inset ring-white/[0.05]",
+            {
+                let bound = bindings.inpaint.is_some()
+                    || bindings.kinds.character.is_some()
+                    || bindings.kinds.environment.is_some()
+                    || bindings.kinds.object.is_some();
+                let summary = if files.is_empty() {
+                    "No .safetensors adapters found in the LoRA directory. Drop adapter files there (or configure lora_dir in config/app.toml) and they will appear here."
+                        .to_owned()
+                } else {
+                    format!(
+                        "Found {} adapter{}{}",
+                        files.len(),
+                        if files.len() == 1 { "" } else { "s" },
+                        if bound { " — bound below" } else { " — none bound yet" }
+                    )
+                };
+                rsx! { p { "{summary}" } }
+            }
+        }
+        div { class: "border-y border-white/[0.06]",
+            LoraBindingRow { slot: LoraSlot::Inpaint, current: bindings.inpaint.clone(), files: files.clone(), defaults }
+            LoraBindingRow { slot: LoraSlot::Character, current: bindings.kinds.character.clone(), files: files.clone(), defaults }
+            LoraBindingRow { slot: LoraSlot::Environment, current: bindings.kinds.environment.clone(), files: files.clone(), defaults }
+            LoraBindingRow { slot: LoraSlot::Object, current: bindings.kinds.object.clone(), files: files.clone(), defaults }
+            SettingRow { title: "Binding weight", description: "Multiplier for the adapters above (per-artifact bindings carry their own).", last: true,
+                div { class: "flex items-center gap-3",
+                    if let Some(error) = binding_error() {
+                        p { class: "truncate text-[9px] text-rose-300/80", "{error}" }
+                    }
+                    input {
+                        class: "setting-control w-20",
+                        r#type: "number",
+                        step: "0.1",
+                        min: -2,
+                        max: 2,
+                        value: "{multiplier}",
+                        onchange: {
+                            let mut defaults = defaults;
+                            move |event| {
+                                let parsed = event.value().parse::<f32>().ok().filter(|m| (-2.0..=2.0).contains(m));
+                                match parsed {
+                                    Some(multiplier) => {
+                                        binding_error.set(None);
+                                        defaults.write().loras.multiplier = multiplier;
+                                        persist_defaults(defaults);
+                                    }
+                                    None => binding_error.set(Some("between -2 and 2".to_owned())),
+                                }
+                            }
+                        },
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Which use-case a LoRA binding row edits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LoraSlot {
+    Inpaint,
+    Character,
+    Environment,
+    Object,
+}
+
+impl LoraSlot {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Inpaint => "Mask edits (inpaint)",
+            Self::Character => "Characters",
+            Self::Environment => "Environments",
+            Self::Object => "Objects",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Inpaint => "Applied to /modify generations — e.g. INPAINTKREA keeps the rest of the image untouched.",
+            Self::Character => "Applied to every character generation without a project binding.",
+            Self::Environment => "Applied to every environment generation without a project binding.",
+            Self::Object => "Applied to every object generation without a project binding.",
+        }
+    }
+}
+
+/// One use-case row: a select of the discovered adapters plus "none".
+#[component]
+fn LoraBindingRow(
+    slot: LoraSlot,
+    current: Option<LoraBinding>,
+    files: Vec<String>,
+    mut defaults: Signal<GenerationDefaults>,
+) -> Element {
+    let current_file = current.map(|binding| binding.file).unwrap_or_default();
+    let title = slot.title().to_owned();
+    let description = slot.description().to_owned();
+    rsx! {
+        SettingRow { title, description,
+            select {
+                class: "setting-control",
+                // `oninput` — `onchange` never fires on <select> in Dioxus,
+                // and without a committed value the bound option reverts on
+                // the next render (the same pattern the model picker uses).
+                // The current binding is marked `selected` on the option
+                // itself — the select `value` property is unreliable on
+                // remount, so the option-level attribute is the source of
+                // truth for what is shown.
+                oninput: {
+                    let mut defaults = defaults;
+                    let slot = slot;
+                    move |event| {
+                        let value = event.value();
+                        let binding = if value.is_empty() {
+                            None
+                        } else {
+                            Some(LoraBinding { file: value })
+                        };
+                        let mut settings = defaults.write();
+                        match slot {
+                            LoraSlot::Inpaint => settings.loras.inpaint = binding,
+                            LoraSlot::Character => settings.loras.kinds.character = binding,
+                            LoraSlot::Environment => settings.loras.kinds.environment = binding,
+                            LoraSlot::Object => settings.loras.kinds.object = binding,
+                        }
+                        drop(settings);
+                        persist_defaults(defaults);
+                    }
+                },
+                option {
+                    selected: current_file.is_empty(),
+                    value: "",
+                    "— none —"
+                }
+                for file in files.iter() {
+                    option {
+                        selected: current_file == *file,
+                        value: "{file}",
+                        "{file}"
+                    }
+                }
+            }
         }
     }
 }

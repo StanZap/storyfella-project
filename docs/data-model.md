@@ -77,8 +77,8 @@ failed | cancelled`.
 
 `ProjectDb` (`src/persistence/mod.rs`) is SQLite storage for the project: one
 `projects` row, then `artifacts`, `revisions`, `masks`, `layers`,
-`lora_registry` (schema-only until the LoRA feature lands), and
-`operation_log`. The registry stays the in-memory source of truth; a save
+`lora_registry` (project LoRA entries — round-tripped since the
+LoRA registry landed, §12 item 6), and `operation_log`. The registry stays the in-memory source of truth; a save
 replaces the snapshot rows in one transaction. Schema versioning lives in
 `schema_meta`; migrations are appended scripts applied on open — the way the
 current format evolves (no legacy formats are parsed; the TOML `ProjectStore`
@@ -106,6 +106,8 @@ clears `has_unsaved_changes`.
 3. **No delete/rename ops.** The operation vocabulary has no `delete`
    (artifacts can only be undone) and no description-edit op; both are
    roadmap work.
-4. **No per-run size control in the GUI.** `--size`/`--steps` overrides
-   exist on the CLI (`svs op regenerate`); the canvas uses the artifact's
-   default size for every run.
+4. **No per-run size/step overrides in the GUI.** `--size`/`--steps`
+   overrides exist on the CLI (`svs op regenerate`); the canvas uses the
+   configured defaults (config per-kind sizes + steps) and per-artifact
+   `--size` for every run. Per-run overrides in the composer remain
+   deferred.

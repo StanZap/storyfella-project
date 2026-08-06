@@ -168,7 +168,18 @@ Configuration lives in [`config/app.toml`](../config/app.toml) and is loaded by
 | `generation.base_url` | `http://127.0.0.1:7861` | sd.cpp endpoint the Python adapter calls |
 | `generation.profile` | `krea-2-turbo-q4` | `krea-2-turbo-q2` or `krea-2-turbo-q4` |
 | `generation.executable` | `<model_dir>/runtime/stable-diffusion.cpp/bin/sd-server` | Path to `sd-server` |
-| `generation.lora_dir` | `<model_dir>/loras` | LoRA root; request paths are relative to it |
+| `generation.lora_dir` | `<model_dir>/loras` | LoRA root; adapter files are discovered here (subfolders and symlinked folders included) |
+| `generation.steps` | `4` | Default steps per generation (Settings → Image generation) |
+| `generation.sizes.character` | `512x768` | Default canvas for character images (`WxH`, multiples of 32) |
+| `generation.sizes.environment` | `1024x576` | Default canvas for environment images |
+| `generation.sizes.object` | `768x768` | Default canvas for object images |
+| `generation.sizes.scene` | `1024x576` | Default canvas for scene images |
+| `generation.sizes.beat` | `1024x576` | Default canvas for beat images |
+| `lora.inpaint` | none | Adapter file applied to mask-guided edits (`modify`), e.g. `inpaintkrea.safetensors` |
+| `lora.character` | none | Adapter file applied to character generations without a project binding |
+| `lora.environment` | none | Adapter file applied to environment generations without a project binding |
+| `lora.object` | none | Adapter file applied to object generations without a project binding |
+| `lora.multiplier` | `1.0` | Weight for the bindings above (per-artifact bindings carry their own) |
 | `paths.python_runtime` | `python` | Directory containing `.venv` and `main.py` |
 | `paths.model_dir` | platform data dir + `models` | Model artifacts root |
 | `paths.cache_dir` | platform cache dir | Disposable cache data |

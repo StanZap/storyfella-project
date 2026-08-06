@@ -75,14 +75,16 @@ impl Default for GenerationParams {
     }
 }
 
-/// Per-run generation overrides (CLI flags like `--steps`/`--size`/`--model`;
-/// the operation itself carries only intent). Applied to the compiled
-/// pipeline and re-validated before execution.
+/// Per-run generation overrides (CLI flags like `--steps`/`--size`/`--model`
+/// /`--lora`; the operation itself carries only intent). Applied to the
+/// compiled pipeline and re-validated before execution. `loras` are
+/// appended after the auto-injected adapters.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GenerationOverrides {
     pub steps: Option<u32>,
     pub size: Option<(u32, u32)>,
     pub model: Option<String>,
+    pub loras: Vec<LoraSelection>,
 }
 
 /// A typed handle to a step's output. The step index is resolved at run
@@ -279,6 +281,18 @@ impl Pipeline {
         }
         if let Some(model) = &overrides.model {
             self.params.model = model.clone();
+        }
+        // Per-run adapters are appended after the auto-injected ones;
+        // duplicates of an already-carried path are dropped (first wins).
+        for lora in &overrides.loras {
+            if !self
+                .params
+                .loras
+                .iter()
+                .any(|carried| carried.path == lora.path)
+            {
+                self.params.loras.push(lora.clone());
+            }
         }
         validate(&self.steps, &self.params)
     }

@@ -28,22 +28,28 @@ Current shape: the artifact registry + typed operation layer (`src/registry/`), 
 
 # Current status
 
-The API slice (`docs/ROADMAP.md` §12 items 1–3) and the canvas (item 4) are
+The API slice (`docs/ROADMAP.md` §12 items 1–3), the canvas (item 4), the
+generation quality controls (item 5), and the LoRA registry (item 6) are
 implemented and validated:
 
-- `src/registry/` — artifact registry (kinds, variants, scenes/beats + layers, revisions + masks, drafts), typed slice-1 operations (`create`, `variant`, `regenerate`, `compose`, `draft`, `modify`), pipeline builder (closed step vocabulary, typed handles, static validation at `build()`, linear fail-fast stacks, checkpoints), composite mask fallback, live backend (`CreativeBackend`), slash-command parser (`slash.rs`) for the canvas composer.
+- `src/registry/` — artifact registry (kinds, variants, scenes/beats + layers, revisions + masks, drafts, LoRA entries), typed slice-1 operations (`create`, `variant`, `regenerate`, `compose`, `draft`, `modify`) + LoRA ops (`attach-lora`, `lora-scale`, `lora-remove`), pipeline builder (closed step vocabulary, typed handles, static validation at `build()`, linear fail-fast stacks, checkpoints), composite mask fallback, live backend (`CreativeBackend`), slash-command parser (`slash.rs`) for the canvas composer.
 - `c:<name>` references are primary (case-insensitive exact match, ambiguity rejected; UUID/8-hex fallbacks).
-- `src/persistence/` — SQLite project store (`ProjectDb`): §10 schema (v3 drops the legacy `project_json` column), versioned migrations (`schema_meta`), WAL, lossless round-trip; the CLI persists to `.svs-project.db`. No legacy formats are parsed — the current format evolves via migrations.
-- `src/ui/` — the Projects screen lists, creates, and opens `.svs-project.db` files; the **Canvas** is the artifact workspace (sidebar grouped by kind, detail pane with image/variants/revisions/children/operation log, slash composer, undo/redo via registry snapshots); the workspace saves via autosave (after every change / every minute / off) or Cmd/Ctrl+S; `AppState.project_path` tracks the open database. The legacy storyboard model (`Project`/`StoryboardFrame`/`Timeline`) was deleted with the canvas.
-- `svs` CLI — `op`, `stack run`/`propose`, `runtime serve --force`, `log`, `project`; `--out` golden runs; `--approve auto|interactive`.
+- `src/persistence/` — SQLite project store (`ProjectDb`): §10 schema (v3 drops the legacy `project_json` column), versioned migrations (`schema_meta`), WAL, lossless round-trip (including the `lora_registry` table); the CLI persists to `.svs-project.db`. No legacy formats are parsed — the current format evolves via migrations.
+- `src/ui/` — the Projects screen lists, creates, and opens `.svs-project.db` files; the **Canvas** is the artifact workspace (sidebar grouped by kind, detail pane with image/variants/revisions/children/LoRAs/operation log, slash composer, undo/redo via registry snapshots); the workspace saves via autosave (after every change / every minute / off) or Cmd/Ctrl+S; `AppState.project_path` tracks the open database. The legacy storyboard model (`Project`/`StoryboardFrame`/`Timeline`) was deleted with the canvas.
+- `svs` CLI — `op` (incl. `--lora <file>@<mult>`, `attach-lora`/`lora-scale`/`lora-remove`), `stack run`/`propose`, `runtime serve --force`, `log`, `project`; `--out` golden runs; `--approve auto|interactive`.
+- **Generation quality controls** (`docs/ROADMAP.md` §12 item 5): per-kind default sizes + steps are configurable (`config/app.toml` `[generation.sizes]`/`steps`) and editable in Settings → Image generation (persisted line-preserving); a live `Signal<GenerationDefaults>` (Workspace context) drives the canvas ops. The LLM sets size/steps/adapters only when the user explicitly asks (visual ops carry `size`/`steps`/`loras`; the `resize` op persists a new default size and regenerates at it). Free-form planning runs a tool-calling loop (`list_artifacts`/`list_loras`) with a strict schema on the final stack, falling back to the static planner when `tools` are unsupported. `variant --name` supports explicit naming.
+- **LoRA registry** (§12 item 6): project-level entries (SQLite `lora_registry`, round-tripped) with per-artifact bindings (`/attach-lora`, `/lora-scale`, `/lora-remove` — slash, CLI, LLM vocabulary), config use-case bindings (`[lora]`: inpaint adapter for mask edits, per-kind defaults, shared multiplier), discovery from `lora_dir`, and auto-injection into every generation (artifact-bound → kind default → inpaint adapter on `modify`; missing-on-disk adapters warn and skip).
 - `mask_path` in the Rust ↔ Python `GenerateRequest` contract (best-effort native passthrough; composite fallback is primary).
-- 91 Rust lib + bin tests pass. The default generation profile is
+- 113 Rust lib + bin tests pass. The default generation profile is
   `krea-2-turbo-q4`; q4 generation was validated end-to-end through the
   canvas on Linux/RTX 3090 (CUDA sd-server build; the q4 diffusion GGUF is
   placed on disk — `model_setup` is not run for locally-provided files).
   q2 generation was validated on macOS. `modify`'s mask path, LLM `draft`,
-  and `stack propose` still await live validation.
-- Next per §12: Studio integration (item 5). The tracker in §12 is authoritative — update it as features ship.
+  `stack propose`, LoRA injection, and the new size/step controls still
+  await live validation.
+- Next per §12: Studio integration (item 7) — **deferred** by user
+  reprioritization (generation quality + LoRA registry landed first; the
+  tracker is authoritative).
 
 # Validation
 

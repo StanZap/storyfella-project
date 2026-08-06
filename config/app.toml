@@ -1,3 +1,8 @@
+[generation.sizes]
+character = "1024x1536"
+[lora]
+inpaint = "krea/INPAINTKREA-V1.safetensors"
+multiplier = 1.0
 [lm_studio]
 base_url = "http://localhost:1234/v1"
 model = "google/gemma-4-e4b"
@@ -5,11 +10,26 @@ model = "google/gemma-4-e4b"
 timeout_seconds = 60
 
 [generation]
+steps = 8
 base_url = "http://127.0.0.1:7861"
 profile = "krea-2-turbo-q4"
 # executable and lora_dir default beneath model_dir.
 # executable = "models/runtime/stable-diffusion.cpp/bin/sd-server"
 # lora_dir = "models/loras"
+# steps = 4                                  # default steps per generation
+# [generation.sizes]                         # per-kind default canvases (WxH)
+# character = "512x768"
+# environment = "1024x576"
+# object = "768x768"
+# scene = "1024x576"
+# beat = "1024x576"
+
+# [lora]                                     # adapters by use-case (file names in lora_dir)
+# inpaint = "inpaintkrea.safetensors"        # applied to /modify (mask-guided edits)
+# character = "mia-v2.safetensors"
+# environment = "sea-shore.safetensors"
+# object = "brass-lantern.safetensors"
+# multiplier = 1.0                           # weight for the bindings above
 
 [paths]
 python_runtime = "python"

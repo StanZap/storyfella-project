@@ -238,6 +238,8 @@ Semantics notes:
   the base — its active image as reference, the size it inherits). A failed
   generation keeps the artifact with a failed revision; `/regenerate` is
   the retry. Text-only kinds (story, scene, beat) still apply instantly.
+- `create`/`variant` accept `--name`; without it, names derive from the
+  description (create) or the base (variant: `{base}-{axis}`/`{base}-{slug}`).
 - `/modify` changes the artifact's defining description (character sheet,
   scene summary) on text artifacts; on visual artifacts it routes to the
   mask-guided regional edit pipeline (see §5): segment → confirm mask →
@@ -582,15 +584,36 @@ plan to ship, with its status; update it when work lands.
    with it (`src/models/`, `src/timeline/`, schema v3 drops `project_json`).
    — **✅ implemented**; artboard pan/zoom, `c:` autocomplete, and syntax
    highlighting remain deferred (§6).
-5. **Studio integration:** scenes group the timeline; re-sync flows per
-   mode (compose beats in the canvas, story sequencing). — **⏳ planned**
-6. **LoRA registry** UI + auto-injection into generations. — **⏳ planned**
-7. **Storyfella DSL (in-repo):** the language crate (lexer/parser/compiler,
+5. **Generation quality controls:** configurable per-kind default sizes
+   (`[generation.sizes]`), default step count (`[generation] steps`), and
+   the Settings screen to edit them live (persisted to `config/app.toml`,
+   applied to the next generation — canvas and CLI). The LLM expresses
+   size/steps/adapters only when the user asks (the visual ops carry
+   `size`/`steps`/`loras`; the `resize` op sets the default size and
+   regenerates at it) — never invented. The planner discovers the registry
+   and adapters via tool calling (`list_artifacts`/`list_loras`) with a
+   strict schema on the final stack. `--name` on `variant` (explicit
+   naming for variants). — **✅ implemented**
+6. **LoRA registry:** project-level adapter registry (SQLite
+   `lora_registry` table, round-tripped) with per-artifact bindings
+   (`/attach-lora`, `/lora-scale`, `/lora-remove` — slash, CLI, and LLM
+   vocabulary), config-level use-case bindings (`[lora]`: inpaint adapter
+   for mask-guided edits, per-kind defaults, one multiplier), discovery
+   from `lora_dir` (recursive — subfolders and symlinked model trees included; a
+   refresh icon in Settings rescans), and auto-injection into
+   every generation (artifact-bound first, then kind default, then the
+   inpaint adapter on `modify`; per-run `--lora <file>@<mult>` flags on
+   the CLI). — **✅ implemented**
+7. **Studio integration:** scenes group the timeline; re-sync flows per
+   mode (compose beats in the canvas, story sequencing). — **⏳ deferred**
+   behind the quality/control work above (user reprioritized; the canvas
+   still surfaces beats, compose, and drafts per the session guide)
+8. **Storyfella DSL (in-repo):** the language crate (lexer/parser/compiler,
    CLI), the writer with the tokenized editor, asset chips and autocomplete;
    DSL asset references + validation; round-trip to canvas. — **⏳ planned**
-8. **LSP-style tooling** as the DSL matures (go-to-definition, refactor,
+9. **LSP-style tooling** as the DSL matures (go-to-definition, refactor,
    diagnostics). — **⏳ planned**
-9. **Self-contained distribution (no user-side dependencies):** one
+10. **Self-contained distribution (no user-side dependencies):** one
    downloadable artifact per platform (AppImage/`.deb` on Linux, `.app`
    bundle on macOS, installer/portable zip on Windows) containing the app
    binary, a release-built `sd-server` (CUDA or CPU flavor), and the Python
@@ -613,7 +636,10 @@ plan to ship, with its status; update it when work lands.
 Design status: the canvas (roadmap item 4) replaced the legacy storyboard
 model — the GUI is the artifact registry; the `svs` CLI shares the same
 `ArtifactRegistry`/`ProjectDb` core (`docs/api-slice-1.md`). Work follows
-§12 (item 5, Studio integration, is next).
+§12 — items 5 (generation quality controls) and 6 (LoRA registry) are
+implemented; Studio integration (item 7) was deferred by user
+reprioritization in favor of generation quality, the LoRA registry, and
+UX fixes.
 
 ### Entry points (existing code)
 

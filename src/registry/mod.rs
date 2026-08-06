@@ -343,6 +343,180 @@ pub struct StoryDraft {
     pub approved: bool,
 }
 
+/// One LoRA adapter known to the project (the `lora_registry` table).
+/// `path` is the adapter's file name within the configured `lora_dir`, so
+/// stored entries stay portable when the directory moves; an entry with
+/// `artifact_id` is bound to that artifact and auto-injected into every
+/// generation referencing it (see [`ArtifactRegistry::loras_bound_to`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LoraEntry {
+    pub id: Uuid,
+    /// Display name (defaults to the file stem at attach time).
+    pub name: String,
+    /// File name within the configured `lora_dir`.
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_model: Option<String>,
+    pub multiplier: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_id: Option<Uuid>,
+}
+
+/// Configurable per-kind default generation sizes (`config/app.toml`
+/// `[generation.sizes]`). The built-in [`ArtifactKind::default_size`]
+/// values remain the fallback for kinds without an override, so an
+/// absent key and a default-size key behave identically.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SizeDefaults {
+    pub character: Option<(u32, u32)>,
+    pub environment: Option<(u32, u32)>,
+    pub object: Option<(u32, u32)>,
+    pub scene: Option<(u32, u32)>,
+    pub beat: Option<(u32, u32)>,
+}
+
+impl SizeDefaults {
+    pub fn size_for(&self, kind: ArtifactKind) -> Option<(u32, u32)> {
+        match kind {
+            ArtifactKind::Character => self.character,
+            ArtifactKind::Environment => self.environment,
+            ArtifactKind::Object => self.object,
+            ArtifactKind::Scene => self.scene,
+            ArtifactKind::Beat => self.beat,
+            ArtifactKind::Story => None,
+        }
+    }
+}
+
+/// One config-level LoRA binding: an adapter file applied to a use-case.
+/// The weight is shared at [`LoraBindings::multiplier`] (per-adapter
+/// weights are a project-registry concern via `attach-lora`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoraBinding {
+    /// File name within [`LoraBindings::dir`].
+    pub file: String,
+}
+
+/// Config-level LoRA bindings — "use this adapter for that kind of work".
+/// The project-level [`LoraEntry`] bindings always win over these; they are
+/// the defaults for artifacts without an explicit binding.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoraBindings {
+    /// Where adapter files live; resolved at use time.
+    pub dir: std::path::PathBuf,
+    /// Adapter applied to mask-guided edits (`modify`) — e.g. INPAINTKREA.
+    pub inpaint: Option<LoraBinding>,
+    /// Per-kind defaults: applied to every generation of that kind.
+    pub kinds: KindLoraBindings,
+    /// The weight for every config binding.
+    pub multiplier: f32,
+}
+
+impl Default for LoraBindings {
+    fn default() -> Self {
+        Self {
+            dir: std::path::PathBuf::new(),
+            inpaint: None,
+            kinds: KindLoraBindings::default(),
+            multiplier: 1.0,
+        }
+    }
+}
+
+impl LoraBindings {
+    /// The resolved full path of an adapter, if it exists on disk.
+    pub fn resolve(&self, file: &str) -> Option<std::path::PathBuf> {
+        let path = self.dir.join(file);
+        path.is_file().then_some(path)
+    }
+}
+
+/// Lists the adapter files (`.safetensors`) reachable from `dir` — the
+/// discovery surface for the Settings screen and the LLM planner prompt.
+/// Subdirectories are scanned recursively (symlinked folders included, so
+/// adapters can live in separate model trees), and paths come back
+/// relative to `dir` so stored bindings stay portable. Symlink cycles are
+/// cut by the canonicalized visited set.
+pub fn discover_loras(dir: &std::path::Path) -> Vec<String> {
+    let mut files: Vec<String> = Vec::new();
+    let mut visited: Vec<std::path::PathBuf> = Vec::new();
+    walk_lora_dir(dir, dir, &mut files, &mut visited);
+    files.sort();
+    files
+}
+
+/// Recursive walk; `root` stays the discovery root so relative paths come
+/// back against it (bindings survive a moved lora root), `dir` is the
+/// directory currently being scanned.
+fn walk_lora_dir(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    files: &mut Vec<String>,
+    visited: &mut Vec<std::path::PathBuf>,
+) {
+    let Ok(canonical) = std::fs::canonicalize(dir) else {
+        return; // a broken symlink or missing dir contributes nothing
+    };
+    if visited.contains(&canonical) {
+        return; // symlink cycle — already scanned
+    }
+    visited.push(canonical);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk_lora_dir(root, &path, files, visited);
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "safetensors")
+        {
+            if let Some(relative) = path.strip_prefix(root).ok() {
+                files.push(relative.to_string_lossy().into_owned());
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct KindLoraBindings {
+    pub character: Option<LoraBinding>,
+    pub environment: Option<LoraBinding>,
+    pub object: Option<LoraBinding>,
+}
+
+impl KindLoraBindings {
+    pub fn binding_for(&self, kind: ArtifactKind) -> Option<&LoraBinding> {
+        match kind {
+            ArtifactKind::Character => self.character.as_ref(),
+            ArtifactKind::Environment => self.environment.as_ref(),
+            ArtifactKind::Object => self.object.as_ref(),
+            ArtifactKind::Scene | ArtifactKind::Beat | ArtifactKind::Story => None,
+        }
+    }
+}
+
+/// Configurable generation behavior, built once from `config/app.toml` and
+/// shared by the canvas ops and the CLI: the per-kind default sizes, the
+/// default step count, and the use-case LoRA bindings. The Settings screen
+/// edits and persists it; the canvas holds it in a context signal.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GenerationDefaults {
+    pub sizes: SizeDefaults,
+    pub steps: u32,
+    pub loras: LoraBindings,
+}
+
+impl GenerationDefaults {
+    /// The size an artifact of `kind` generates at: the kind's explicit
+    /// per-artifact `--size` is decided at the call sites; this resolves
+    /// the config override against the built-in default.
+    pub fn size_for(&self, kind: ArtifactKind) -> Option<(u32, u32)> {
+        self.sizes.size_for(kind).or_else(|| kind.default_size())
+    }
+}
+
 /// The lifecycle of one generation history entry.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -383,6 +557,14 @@ pub enum RegistryError {
     NoRevision(Uuid, Uuid),
     #[error("invalid size {width}x{height}: dimensions must be multiples of 32 within 256..=2048")]
     InvalidSize { width: u32, height: u32 },
+    #[error("lora entry {0} does not exist")]
+    NoLoraEntry(Uuid),
+    #[error("lora `{0}` does not match any registry entry (name or file)")]
+    LoraNotFound(String),
+    #[error("lora `{value}` is ambiguous; it matches {matches} entries")]
+    LoraAmbiguous { value: String, matches: usize },
+    #[error("lora multiplier {0} must be within -2..=2")]
+    BadLoraMultiplier(f32),
 }
 
 /// The in-memory artifact registry for one project.
@@ -390,6 +572,10 @@ pub enum RegistryError {
 pub struct ArtifactRegistry {
     /// One id space; creation order is preserved for display.
     pub artifacts: Vec<Artifact>,
+    /// LoRA adapters known to this project (`lora_registry`); entries with
+    /// an `artifact_id` are bound and auto-injected into generations.
+    #[serde(default)]
+    pub loras: Vec<LoraEntry>,
     /// Every applied/rejected operation — provenance and the basis for undo
     /// (undo is state restore via [`ArtifactRegistry::snapshot`], never
     /// pipeline re-execution).
@@ -763,6 +949,102 @@ impl ArtifactRegistry {
             .filter(move |entry| entry.artifact_id == Some(artifact_id))
     }
 
+    /// The adapters bound to an artifact, including those bound to its
+    /// base (a variant inherits the base's adapter chain).
+    pub fn loras_bound_to(&self, artifact_id: Uuid) -> Vec<&LoraEntry> {
+        let mut chain: Vec<Uuid> = vec![artifact_id];
+        let mut cursor = self
+            .artifact(artifact_id)
+            .and_then(|artifact| artifact.variant_of);
+        while let Some(id) = cursor {
+            chain.push(id);
+            cursor = self.artifact(id).and_then(|artifact| artifact.variant_of);
+        }
+        self.loras
+            .iter()
+            .filter(|entry| entry.artifact_id.is_some_and(|id| chain.contains(&id)))
+            .collect()
+    }
+
+    /// Resolves a lora entry by its display name or file (case-insensitive
+    /// exact match; ambiguous names rejected, mirroring artifact refs).
+    pub fn resolve_lora(&self, name_or_path: &str) -> Result<Uuid, RegistryError> {
+        let matches: Vec<Uuid> = self
+            .loras
+            .iter()
+            .filter(|entry| {
+                entry.name.eq_ignore_ascii_case(name_or_path)
+                    || entry.path.eq_ignore_ascii_case(name_or_path)
+            })
+            .map(|entry| entry.id)
+            .collect();
+        match matches.as_slice() {
+            [] => Err(RegistryError::LoraNotFound(name_or_path.to_owned())),
+            [only] => Ok(*only),
+            _ => Err(RegistryError::LoraAmbiguous {
+                value: name_or_path.to_owned(),
+                matches: matches.len(),
+            }),
+        }
+    }
+
+    /// Creates a LoRA entry, or updates an existing entry that already
+    /// binds the same file to the same artifact (idempotent attach). The
+    /// adapter file must exist in the configured `lora_dir`.
+    pub fn attach_lora(
+        &mut self,
+        artifact_id: Uuid,
+        name: String,
+        file: String,
+        base_model: Option<String>,
+        multiplier: f32,
+    ) -> Result<Uuid, RegistryError> {
+        if !(-2.0..=2.0).contains(&multiplier) {
+            return Err(RegistryError::BadLoraMultiplier(multiplier));
+        }
+        if let Some(existing) = self.loras.iter_mut().find(|entry| {
+            entry.artifact_id == Some(artifact_id) && entry.path.eq_ignore_ascii_case(&file)
+        }) {
+            existing.multiplier = multiplier;
+            return Ok(existing.id);
+        }
+        let id = Uuid::new_v4();
+        self.loras.push(LoraEntry {
+            id,
+            name,
+            path: file,
+            base_model,
+            multiplier,
+            artifact_id: Some(artifact_id),
+        });
+        Ok(id)
+    }
+
+    /// Adjusts a bound adapter's weight.
+    pub fn scale_lora(&mut self, entry_id: Uuid, multiplier: f32) -> Result<(), RegistryError> {
+        if !(-2.0..=2.0).contains(&multiplier) {
+            return Err(RegistryError::BadLoraMultiplier(multiplier));
+        }
+        let entry = self
+            .loras
+            .iter_mut()
+            .find(|entry| entry.id == entry_id)
+            .ok_or(RegistryError::NoLoraEntry(entry_id))?;
+        entry.multiplier = multiplier;
+        Ok(())
+    }
+
+    /// Unbinds an adapter from the registry entirely.
+    pub fn remove_lora(&mut self, entry_id: Uuid) -> Result<(), RegistryError> {
+        let index = self
+            .loras
+            .iter()
+            .position(|entry| entry.id == entry_id)
+            .ok_or(RegistryError::NoLoraEntry(entry_id))?;
+        self.loras.remove(index);
+        Ok(())
+    }
+
     /// Full state snapshot — the basis for undo (restore, never re-run).
     pub fn snapshot(&self) -> ArtifactRegistry {
         self.clone()
@@ -777,6 +1059,81 @@ impl ArtifactRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scratch lora tree for discovery tests.
+    fn scratch_lora_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("svs-loras-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("lora dir should create");
+        dir
+    }
+
+    #[test]
+    fn discover_loras_finds_top_level_and_nested_adapters() {
+        let dir = scratch_lora_dir();
+        std::fs::write(dir.join("mia-v2.safetensors"), b"lora").unwrap();
+        std::fs::create_dir_all(dir.join("krea-inpaint")).unwrap();
+        std::fs::write(dir.join("krea-inpaint/inpaintkrea.safetensors"), b"lora").unwrap();
+        std::fs::create_dir_all(dir.join("nested/deep")).unwrap();
+        std::fs::write(dir.join("nested/deep/style.safetensors"), b"lora").unwrap();
+        // Non-adapter files are ignored.
+        std::fs::write(dir.join("notes.txt"), b"x").unwrap();
+        std::fs::write(dir.join("readme.md"), b"x").unwrap();
+
+        let files = discover_loras(&dir);
+        assert_eq!(
+            files,
+            vec![
+                "krea-inpaint/inpaintkrea.safetensors".to_owned(),
+                "mia-v2.safetensors".to_owned(),
+                "nested/deep/style.safetensors".to_owned(),
+            ],
+            "nested adapters come back relative to the root, sorted"
+        );
+        // Every discovered path resolves to a real file on disk.
+        for file in &files {
+            assert!(dir.join(file).is_file(), "{file} resolves");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_loras_follows_symlinked_folders() {
+        let dir = scratch_lora_dir();
+        let external = scratch_lora_dir();
+        std::fs::write(external.join("char-model.safetensors"), b"lora").unwrap();
+        std::os::unix::fs::symlink(&external, dir.join("external-models")).unwrap();
+        std::fs::write(dir.join("local.safetensors"), b"lora").unwrap();
+
+        let files = discover_loras(&dir);
+        assert!(files.contains(&"local.safetensors".to_owned()));
+        assert!(
+            files.contains(&"external-models/char-model.safetensors".to_owned()),
+            "adapters inside a symlinked folder are discovered: {files:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_loras_cuts_symlink_cycles() {
+        let dir = scratch_lora_dir();
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::os::unix::fs::symlink(&dir, dir.join("a/loop")).unwrap();
+        std::fs::write(dir.join("a/one.safetensors"), b"lora").unwrap();
+
+        // Would recurse forever without the canonical-visited guard.
+        let files = discover_loras(&dir);
+        assert_eq!(
+            files,
+            vec!["a/one.safetensors".to_owned()],
+            "a symlink back to the root is scanned once: {files:?}"
+        );
+    }
+
+    #[test]
+    fn discover_loras_of_a_missing_or_broken_dir_is_empty() {
+        let missing = std::env::temp_dir().join(format!("svs-missing-{}", Uuid::new_v4()));
+        assert!(discover_loras(&missing).is_empty());
+    }
 
     fn registry_with(artifacts: &[(ArtifactKind, &str)]) -> ArtifactRegistry {
         let mut registry = ArtifactRegistry::new();

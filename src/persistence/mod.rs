@@ -4,8 +4,8 @@
 //! database is a snapshot written after each applied operation. Each save
 //! replaces the snapshot rows in one transaction (with
 //! `PRAGMA defer_foreign_keys` so the circular `artifacts ↔ revisions`
-//! references can be written in any order). `lora_registry` is schema-only
-//! until the LoRA registry feature lands (§12 item 6).
+//! references can be written in any order). `lora_registry` carries the
+//! project's LoRA adapters (roadmap §12 item 6).
 //!
 //! Deviations from the §10 sketch, all deliberate:
 //! - Timestamps are unix epoch integers (`strftime('%s','now')`), not
@@ -37,7 +37,7 @@ use uuid::Uuid;
 use crate::registry::{
     ops::{Operation, OperationLogEntry},
     Artifact, ArtifactRegistry, ArtifactRevision, BeatComposition, CompositionMode, Layer,
-    StoredMask, StoryDraft,
+    LoraEntry, StoredMask, StoryDraft,
 };
 
 /// The `projects` row for a database, plus the full registry snapshot.
@@ -157,7 +157,14 @@ impl ProjectDb {
                 path: self.path.clone(),
                 source,
             })?;
-        for table in ["masks", "layers", "revisions", "artifacts", "operation_log"] {
+        for table in [
+            "masks",
+            "layers",
+            "revisions",
+            "artifacts",
+            "lora_registry",
+            "operation_log",
+        ] {
             tx.execute(&format!("DELETE FROM {table}"), [])
                 .map_err(|source| StoreError::Save {
                     path: self.path.clone(),
@@ -288,6 +295,26 @@ impl ProjectDb {
                     enum_to_db(entry.origin),
                     enum_to_db(entry.status),
                     now,
+                ],
+            )
+            .map_err(|source| StoreError::Save {
+                path: self.path.clone(),
+                source,
+            })?;
+        }
+
+        for lora in &registry.loras {
+            tx.execute(
+                "INSERT INTO lora_registry (id, project_id, name, path, base_model, \
+                 multiplier, artifact_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    lora.id.to_string(),
+                    project_id,
+                    lora.name,
+                    lora.path,
+                    lora.base_model,
+                    lora.multiplier as f64,
+                    lora.artifact_id.map(|id| id.to_string()),
                 ],
             )
             .map_err(|source| StoreError::Save {
@@ -658,6 +685,52 @@ impl ProjectDb {
             }
         }
 
+        // LoRA adapters (`lora_registry`), in attach order.
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, name, path, base_model, multiplier, artifact_id \
+                     FROM lora_registry ORDER BY rowid",
+                )
+                .map_err(|source| StoreError::Load {
+                    path: self.path.clone(),
+                    source,
+                })?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(LoraRow {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        path: row.get(2)?,
+                        base_model: row.get(3)?,
+                        multiplier: row.get(4)?,
+                        artifact_id: row.get(5)?,
+                    })
+                })
+                .map_err(|source| StoreError::Load {
+                    path: self.path.clone(),
+                    source,
+                })?;
+            for row in rows {
+                let row = row.map_err(|source| StoreError::Load {
+                    path: self.path.clone(),
+                    source,
+                })?;
+                registry.loras.push(LoraEntry {
+                    id: uuid_from_db(&self.path, "lora_registry.id", &row.id)?,
+                    name: row.name,
+                    path: row.path,
+                    base_model: row.base_model,
+                    multiplier: row.multiplier as f32,
+                    artifact_id: row
+                        .artifact_id
+                        .as_deref()
+                        .map(|id| uuid_from_db(&self.path, "lora_registry.artifact_id", id))
+                        .transpose()?,
+                });
+            }
+        }
+
         registry.artifacts = artifacts;
         Ok(StoredProject {
             id: project_id,
@@ -917,6 +990,15 @@ struct MaskRow {
     score: Option<f64>,
 }
 
+struct LoraRow {
+    id: String,
+    name: String,
+    path: String,
+    base_model: Option<String>,
+    multiplier: f64,
+    artifact_id: Option<String>,
+}
+
 struct LayerRow {
     id: String,
     beat_id: String,
@@ -963,9 +1045,13 @@ fn op_name(operation: &Operation) -> &'static str {
         Operation::Create { .. } => "create",
         Operation::Variant { .. } => "variant",
         Operation::Regenerate { .. } => "regenerate",
+        Operation::Resize { .. } => "resize",
         Operation::Compose { .. } => "compose",
         Operation::Draft { .. } => "draft",
         Operation::Modify { .. } => "modify",
+        Operation::AttachLora { .. } => "attach-lora",
+        Operation::LoraScale { .. } => "lora-scale",
+        Operation::LoraRemove { .. } => "lora-remove",
     }
 }
 
@@ -1013,8 +1099,8 @@ mod tests {
     use crate::registry::{
         ops::{self, ExecuteOptions, OpOrigin},
         pipeline::RunOptions,
-        ArtifactKind, ArtifactRevision, MaskSource, RevisionStatus, StoredMask, StoryDraft,
-        VariantAxis,
+        ArtifactKind, ArtifactRevision, GenerationDefaults, MaskSource, RevisionStatus, StoredMask,
+        StoryDraft, VariantAxis,
     };
 
     fn temp_db() -> (PathBuf, ProjectDb) {
@@ -1095,10 +1181,25 @@ mod tests {
 
     fn apply(registry: &mut ArtifactRegistry, operation: ops::Operation) {
         let backend = VisualBackend;
+        // Each apply gets its own lora dir with a dummy adapter so the
+        // LoRA ops resolve their file check.
+        let lora_dir = std::env::temp_dir().join(format!("svs-db-test-loras-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&lora_dir).expect("lora dir should create");
+        std::fs::write(lora_dir.join("mia-v2.safetensors"), b"lora")
+            .expect("dummy lora should write");
+        let defaults = GenerationDefaults {
+            sizes: Default::default(),
+            steps: 4,
+            loras: crate::registry::LoraBindings {
+                dir: lora_dir,
+                ..Default::default()
+            },
+        };
         let options = ExecuteOptions {
             backend: Some(&backend),
             run: RunOptions::new(std::env::temp_dir()),
             generation: Default::default(),
+            defaults: &defaults,
             manual_text: None,
             origin: OpOrigin::User,
         };
@@ -1119,6 +1220,8 @@ mod tests {
                 description: "The Lighthouse".to_owned(),
                 name: Some("story".to_owned()),
                 size: None,
+                steps: None,
+                loras: Vec::new(),
             },
         );
         apply(
@@ -1128,6 +1231,8 @@ mod tests {
                 description: "Mia, a lighthouse keeper".to_owned(),
                 name: Some("mia".to_owned()),
                 size: Some((512, 768)),
+                steps: None,
+                loras: Vec::new(),
             },
         );
         apply(
@@ -1137,6 +1242,8 @@ mod tests {
                 description: "The kitchen at dusk".to_owned(),
                 name: Some("kitchen".to_owned()),
                 size: None,
+                steps: None,
+                loras: Vec::new(),
             },
         );
         apply(
@@ -1146,6 +1253,8 @@ mod tests {
                 description: "Act one".to_owned(),
                 name: Some("act1".to_owned()),
                 size: None,
+                steps: None,
+                loras: Vec::new(),
             },
         );
         apply(
@@ -1153,7 +1262,11 @@ mod tests {
             ops::Operation::Variant {
                 target: crate::registry::Ref::new("mia".to_owned()),
                 description: "in rain gear".to_owned(),
+                name: None,
                 axis: Some(VariantAxis::Outfit),
+                size: None,
+                steps: None,
+                loras: Vec::new(),
             },
         );
         apply(
@@ -1166,6 +1279,14 @@ mod tests {
                     artifact: crate::registry::Ref::new("mia".to_owned()),
                     variant: Some(crate::registry::Ref::new("mia-outfit".to_owned())),
                 }],
+            },
+        );
+        apply(
+            &mut registry,
+            ops::Operation::AttachLora {
+                target: crate::registry::Ref::new("mia".to_owned()),
+                lora: "mia-v2.safetensors".to_owned(),
+                multiplier: Some(0.8),
             },
         );
         registry

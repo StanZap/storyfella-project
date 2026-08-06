@@ -8,6 +8,9 @@
 //! /variant c:mia "in yellow rain gear" --axis outfit
 //! /regenerate c:mia "make it warmer"
 //! /modify c:mia "change her hair" --mask "her hair" --inpaint "a bob cut"
+//! /attach-lora c:mia character-main --multiplier 0.8
+//! /lora-scale character-main 0.9
+//! /lora-remove character-main
 //! ```
 //!
 //! Double quotes group words into one argument; every flag takes exactly one
@@ -60,9 +63,14 @@ pub fn parse_slash(input: &str) -> Result<Operation, SlashError> {
         "create" => parse_create(&tokens),
         "variant" => parse_variant(&tokens),
         "regenerate" => parse_regenerate(&tokens),
+        "resize" => parse_resize(&tokens),
         "modify" => parse_modify(&tokens),
+        "attach-lora" => parse_attach_lora(&tokens),
+        "lora-scale" => parse_lora_scale(&tokens),
+        "lora-remove" => parse_lora_remove(&tokens),
         other => Err(SlashError(format!(
-            "unknown command /{other}; expected /create, /variant, /regenerate, or /modify"
+            "unknown command /{other}; expected /create, /variant, /regenerate, /resize, \
+             /modify, /attach-lora, /lora-scale, or /lora-remove"
         ))),
     }
 }
@@ -72,11 +80,19 @@ fn parse_create(tokens: &[Token]) -> Result<Operation, SlashError> {
         SlashError("create needs a kind: /create character <description>".to_owned())
     })?;
     let kind = ArtifactKind::from_str(&kind.text).map_err(SlashError)?;
-    let (description, flags) = split_flags(tokens, 2, &["--name", "--size"])?;
+    let (description, flags) = split_flags(tokens, 2, &["--name", "--size", "--steps", "--lora"])?;
     let name = flags.get("--name").cloned();
     let size = match flags.get("--size") {
         Some(value) => Some(parse_size(value).map_err(SlashError)?),
         None => None,
+    };
+    let steps = match flags.get("--steps") {
+        Some(value) => Some(parse_steps(value).map_err(SlashError)?),
+        None => None,
+    };
+    let loras = match flags.get("--lora") {
+        Some(value) => vec![parse_lora_flag(value).map_err(SlashError)?],
+        None => Vec::new(),
     };
     if description.trim().is_empty() {
         return Err(SlashError("create needs a description".to_owned()));
@@ -86,15 +102,34 @@ fn parse_create(tokens: &[Token]) -> Result<Operation, SlashError> {
         description,
         name,
         size,
+        steps,
+        loras,
     })
 }
 
 fn parse_variant(tokens: &[Token]) -> Result<Operation, SlashError> {
     let target = parse_ref(tokens, "variant")?;
-    let (description, axis) = split_flags(tokens, 2, &["--axis"])?;
-    let axis = match axis.get("--axis") {
+    let (description, flags) = split_flags(
+        tokens,
+        2,
+        &["--name", "--axis", "--size", "--steps", "--lora"],
+    )?;
+    let name = flags.get("--name").cloned();
+    let axis = match flags.get("--axis") {
         Some(value) => Some(VariantAxis::from_str(value).map_err(SlashError)?),
         None => None,
+    };
+    let size = match flags.get("--size") {
+        Some(value) => Some(parse_size(value).map_err(SlashError)?),
+        None => None,
+    };
+    let steps = match flags.get("--steps") {
+        Some(value) => Some(parse_steps(value).map_err(SlashError)?),
+        None => None,
+    };
+    let loras = match flags.get("--lora") {
+        Some(value) => vec![parse_lora_flag(value).map_err(SlashError)?],
+        None => Vec::new(),
     };
     if description.trim().is_empty() {
         return Err(SlashError("variant needs a description".to_owned()));
@@ -102,24 +137,70 @@ fn parse_variant(tokens: &[Token]) -> Result<Operation, SlashError> {
     Ok(Operation::Variant {
         target,
         description,
+        name,
         axis,
+        size,
+        steps,
+        loras,
     })
 }
 
 fn parse_regenerate(tokens: &[Token]) -> Result<Operation, SlashError> {
     let target = parse_ref(tokens, "regenerate")?;
-    let (description, _) = split_flags(tokens, 2, &[])?;
+    let (description, flags) = split_flags(tokens, 2, &["--size", "--steps", "--lora"])?;
     let prompt = if description.trim().is_empty() {
         None
     } else {
         Some(description)
     };
-    Ok(Operation::Regenerate { target, prompt })
+    let size = match flags.get("--size") {
+        Some(value) => Some(parse_size(value).map_err(SlashError)?),
+        None => None,
+    };
+    let steps = match flags.get("--steps") {
+        Some(value) => Some(parse_steps(value).map_err(SlashError)?),
+        None => None,
+    };
+    let loras = match flags.get("--lora") {
+        Some(value) => vec![parse_lora_flag(value).map_err(SlashError)?],
+        None => Vec::new(),
+    };
+    Ok(Operation::Regenerate {
+        target,
+        prompt,
+        size,
+        steps,
+        loras,
+    })
+}
+
+fn parse_resize(tokens: &[Token]) -> Result<Operation, SlashError> {
+    let target = parse_ref(tokens, "resize")?;
+    let size = tokens
+        .get(2)
+        .filter(|token| token.quoted || !is_flag_like(&token.text))
+        .ok_or_else(|| SlashError("resize needs a size: /resize c:<ref> WxH".to_owned()))?;
+    let (width, height) = parse_size(&size.text).map_err(SlashError)?;
+    if tokens.len() > 3 {
+        let extra = &tokens[3].text;
+        return Err(SlashError(format!(
+            "unexpected argument {extra:?}; resize takes one size: /resize c:<ref> WxH"
+        )));
+    }
+    Ok(Operation::Resize {
+        target,
+        width,
+        height,
+    })
 }
 
 fn parse_modify(tokens: &[Token]) -> Result<Operation, SlashError> {
     let target = parse_ref(tokens, "modify")?;
-    let (description, flags) = split_flags(tokens, 2, &["--mask", "--inpaint"])?;
+    let (description, flags) = split_flags(
+        tokens,
+        2,
+        &["--mask", "--inpaint", "--size", "--steps", "--lora"],
+    )?;
     if description.trim().is_empty() {
         return Err(SlashError("modify needs a description".to_owned()));
     }
@@ -131,12 +212,119 @@ fn parse_modify(tokens: &[Token]) -> Result<Operation, SlashError> {
                 .to_owned(),
         ));
     }
+    let size = match flags.get("--size") {
+        Some(value) => Some(parse_size(value).map_err(SlashError)?),
+        None => None,
+    };
+    let steps = match flags.get("--steps") {
+        Some(value) => Some(parse_steps(value).map_err(SlashError)?),
+        None => None,
+    };
+    let loras = match flags.get("--lora") {
+        Some(value) => vec![parse_lora_flag(value).map_err(SlashError)?],
+        None => Vec::new(),
+    };
     Ok(Operation::Modify {
         target,
         description,
         mask_prompt,
         inpaint_prompt,
+        size,
+        steps,
+        loras,
     })
+}
+
+fn parse_attach_lora(tokens: &[Token]) -> Result<Operation, SlashError> {
+    let target = parse_ref(tokens, "attach-lora")?;
+    let lora_token = tokens
+        .get(2)
+        .filter(|token| token.quoted || !is_flag_like(&token.text))
+        .ok_or_else(|| {
+            SlashError(
+                "attach-lora needs an adapter: /attach-lora c:<ref> <lora-file> [--multiplier]"
+                    .to_owned(),
+            )
+        })?;
+    let (_, flags) = split_flags(tokens, 3, &["--multiplier"])?;
+    let multiplier = match flags.get("--multiplier") {
+        Some(value) => Some(parse_multiplier(value).map_err(SlashError)?),
+        None => None,
+    };
+    Ok(Operation::AttachLora {
+        target,
+        lora: lora_token.text.clone(),
+        multiplier,
+    })
+}
+
+fn parse_lora_scale(tokens: &[Token]) -> Result<Operation, SlashError> {
+    let lora = tokens
+        .get(1)
+        .map(|token| token.text.clone())
+        .ok_or_else(|| {
+            SlashError("lora-scale needs an adapter: /lora-scale <lora> <multiplier>".to_owned())
+        })?;
+    let raw = tokens.get(2).ok_or_else(|| {
+        SlashError("lora-scale needs a multiplier: /lora-scale <lora> <multiplier>".to_owned())
+    })?;
+    let multiplier = parse_multiplier(&raw.text).map_err(SlashError)?;
+    Ok(Operation::LoraScale { lora, multiplier })
+}
+
+fn parse_lora_remove(tokens: &[Token]) -> Result<Operation, SlashError> {
+    let lora = tokens
+        .get(1)
+        .map(|token| token.text.clone())
+        .ok_or_else(|| {
+            SlashError("lora-remove needs an adapter: /lora-remove <lora>".to_owned())
+        })?;
+    Ok(Operation::LoraRemove { lora })
+}
+
+fn parse_multiplier(value: &str) -> Result<f32, String> {
+    let multiplier = value
+        .parse::<f32>()
+        .map_err(|_| format!("invalid multiplier {value:?}"))?;
+    if (-2.0..=2.0).contains(&multiplier) {
+        Ok(multiplier)
+    } else {
+        Err(format!("multiplier {multiplier} must be within -2..=2"))
+    }
+}
+
+fn parse_steps(value: &str) -> Result<u32, String> {
+    let steps = value
+        .parse::<u32>()
+        .map_err(|_| format!("invalid steps {value:?}"))?;
+    if (1..=50).contains(&steps) {
+        Ok(steps)
+    } else {
+        Err(format!("steps {steps} must be within 1..=50"))
+    }
+}
+
+/// `--lora <file>@<multiplier>` for the slash surface (one adapter per
+/// flag; the CLI repeats the flag for more).
+fn parse_lora_flag(value: &str) -> Result<crate::vision::LoraSelection, String> {
+    let (path, multiplier) = match value.rsplit_once('@') {
+        Some((path, multiplier)) => (
+            path.to_owned(),
+            multiplier
+                .parse::<f32>()
+                .map_err(|_| format!("invalid lora multiplier {multiplier:?}"))?,
+        ),
+        None => (value.to_owned(), 1.0),
+    };
+    if !(-2.0..=2.0).contains(&multiplier) {
+        return Err(format!(
+            "lora multiplier {multiplier} must be within -2..=2"
+        ));
+    }
+    if path.is_empty() {
+        return Err("--lora needs an adapter file: --lora <file>@<multiplier>".to_owned());
+    }
+    Ok(crate::vision::LoraSelection { path, multiplier })
 }
 
 /// The token at index 1 is the `c:` ref (bare names and UUIDs resolve too).
@@ -294,6 +482,8 @@ mod tests {
                 description: "Mia, a lighthouse keeper".to_owned(),
                 name: Some("mia".to_owned()),
                 size: None,
+                steps: None,
+                loras: Vec::new(),
             }
         );
         assert_eq!(
@@ -303,6 +493,8 @@ mod tests {
                 description: "storm harbor at night".to_owned(),
                 name: None,
                 size: None,
+                steps: None,
+                loras: Vec::new(),
             }
         );
     }
@@ -316,6 +508,8 @@ mod tests {
                 description: "Mia".to_owned(),
                 name: Some("mia".to_owned()),
                 size: Some((512, 768)),
+                steps: None,
+                loras: Vec::new(),
             }
         );
         // The `×` sign (smart-punctuation autocorrect) is accepted too.
@@ -326,6 +520,8 @@ mod tests {
                 description: "lantern".to_owned(),
                 name: None,
                 size: Some((768, 768)),
+                steps: None,
+                loras: Vec::new(),
             }
         );
     }
@@ -351,6 +547,8 @@ mod tests {
                 description: "a woman wearing a hat".to_owned(),
                 name: Some("mia".to_owned()),
                 size: None,
+                steps: None,
+                loras: Vec::new(),
             }
         );
         assert_eq!(
@@ -358,7 +556,27 @@ mod tests {
             Operation::Variant {
                 target: Ref::new("c:mia"),
                 description: "older".to_owned(),
+                name: None,
                 axis: Some(VariantAxis::Age),
+                size: None,
+                steps: None,
+                loras: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn variant_parses_an_explicit_name() {
+        assert_eq!(
+            parse_slash("/variant c:mia \"in yellow rain gear\" --name mia-rain").unwrap(),
+            Operation::Variant {
+                target: Ref::new("c:mia"),
+                description: "in yellow rain gear".to_owned(),
+                name: Some("mia-rain".to_owned()),
+                axis: None,
+                size: None,
+                steps: None,
+                loras: Vec::new(),
             }
         );
     }
@@ -370,7 +588,11 @@ mod tests {
             Operation::Variant {
                 target: Ref::new("c:mia"),
                 description: "in yellow rain gear".to_owned(),
+                name: None,
                 axis: Some(VariantAxis::Outfit),
+                size: None,
+                steps: None,
+                loras: Vec::new(),
             }
         );
         assert_eq!(
@@ -378,7 +600,11 @@ mod tests {
             Operation::Variant {
                 target: Ref::new("c:lantern"),
                 description: "rusted".to_owned(),
+                name: None,
                 axis: Some(VariantAxis::Weather),
+                size: None,
+                steps: None,
+                loras: Vec::new(),
             }
         );
     }
@@ -390,6 +616,9 @@ mod tests {
             Operation::Regenerate {
                 target: Ref::new("c:mia"),
                 prompt: Some("make it warmer".to_owned()),
+                size: None,
+                steps: None,
+                loras: Vec::new(),
             }
         );
         assert_eq!(
@@ -402,6 +631,9 @@ mod tests {
                 description: "change her hair".to_owned(),
                 mask_prompt: Some("her hair".to_owned()),
                 inpaint_prompt: Some("a bob cut".to_owned()),
+                size: None,
+                steps: None,
+                loras: Vec::new(),
             }
         );
     }
@@ -414,7 +646,11 @@ mod tests {
             Operation::Variant {
                 target: Ref::new("mia"),
                 description: "older".to_owned(),
+                name: None,
                 axis: None,
+                size: None,
+                steps: None,
+                loras: Vec::new(),
             }
         );
     }
@@ -460,9 +696,10 @@ mod tests {
         let error = parse_slash("/variant c:mia older –axis outfit").unwrap_err();
         assert!(error.0.contains("unknown option"), "{error}");
         assert!(error.0.contains("--axis"), "{error}");
-        // Commands without options reject flag-like tokens too.
+        // Regenerate accepts its own option set; anything else is rejected.
         let error = parse_slash("/regenerate c:mia --seed 7").unwrap_err();
-        assert!(error.0.contains("takes no options"), "{error}");
+        assert!(error.0.contains("unknown option"), "{error}");
+        assert!(error.0.contains("--steps"), "{error}");
     }
 
     #[test]
@@ -475,6 +712,8 @@ mod tests {
                 description: "storm harbor -- at night".to_owned(),
                 name: None,
                 size: None,
+                steps: None,
+                loras: Vec::new(),
             }
         );
         // Quoted dash-prefixed words are content, not options.
@@ -485,8 +724,114 @@ mod tests {
                 description: "--shadow".to_owned(),
                 name: Some("umbra".to_owned()),
                 size: None,
+                steps: None,
+                loras: Vec::new(),
             }
         );
+    }
+
+    #[test]
+    fn lora_commands_parse() {
+        assert_eq!(
+            parse_slash("/attach-lora c:mia character-main --multiplier 0.8").unwrap(),
+            Operation::AttachLora {
+                target: Ref::new("c:mia"),
+                lora: "character-main".to_owned(),
+                multiplier: Some(0.8),
+            }
+        );
+        assert_eq!(
+            parse_slash("/attach-lora c:mia character-main").unwrap(),
+            Operation::AttachLora {
+                target: Ref::new("c:mia"),
+                lora: "character-main".to_owned(),
+                multiplier: None,
+            }
+        );
+        assert_eq!(
+            parse_slash("/lora-scale character-main 0.9").unwrap(),
+            Operation::LoraScale {
+                lora: "character-main".to_owned(),
+                multiplier: 0.9,
+            }
+        );
+        assert_eq!(
+            parse_slash("/lora-remove character-main").unwrap(),
+            Operation::LoraRemove {
+                lora: "character-main".to_owned(),
+            }
+        );
+        // Bounds and structure are enforced.
+        assert!(parse_slash("/attach-lora c:mia --multiplier 0.8")
+            .unwrap_err()
+            .0
+            .contains("adapter"));
+        assert!(parse_slash("/lora-scale character-main 5")
+            .unwrap_err()
+            .0
+            .contains("within -2..=2"));
+        assert!(parse_slash("/lora-remove")
+            .unwrap_err()
+            .0
+            .contains("adapter"));
+    }
+
+    #[test]
+    fn resize_parses_a_size_and_rejects_extra_arguments() {
+        assert_eq!(
+            parse_slash("/resize c:mia 1024x1024").unwrap(),
+            Operation::Resize {
+                target: Ref::new("c:mia"),
+                width: 1024,
+                height: 1024,
+            }
+        );
+        assert!(parse_slash("/resize c:mia").unwrap_err().0.contains("WxH"));
+        assert!(parse_slash("/resize c:mia 100x100")
+            .unwrap_err()
+            .0
+            .contains("multiples of 32"));
+        assert!(parse_slash("/resize c:mia 512x512 extra")
+            .unwrap_err()
+            .0
+            .contains("unexpected argument"));
+    }
+
+    #[test]
+    fn visual_ops_parse_size_steps_and_lora_flags() {
+        assert_eq!(
+            parse_slash(
+                "/regenerate c:mia warmer --size 1024x1024 --steps 8 --lora krea/style@0.8"
+            )
+            .unwrap(),
+            Operation::Regenerate {
+                target: Ref::new("c:mia"),
+                prompt: Some("warmer".to_owned()),
+                size: Some((1024, 1024)),
+                steps: Some(8),
+                loras: vec![crate::vision::LoraSelection {
+                    path: "krea/style".to_owned(),
+                    multiplier: 0.8,
+                }],
+            }
+        );
+        assert_eq!(
+            parse_slash("/variant c:mia older --size 768x768").unwrap(),
+            Operation::Variant {
+                target: Ref::new("c:mia"),
+                description: "older".to_owned(),
+                name: None,
+                axis: None,
+                size: Some((768, 768)),
+                steps: None,
+                loras: Vec::new(),
+            }
+        );
+        // Bounds are enforced at parse time.
+        assert!(parse_slash("/regenerate c:mia warmer --steps 99")
+            .unwrap_err()
+            .0
+            .contains("1..=50"));
     }
 
     #[test]

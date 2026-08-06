@@ -27,7 +27,8 @@ use crate::registry::{
     backend::CreativeBackend,
     ops::{self, ExecuteOptions, OpOrigin, Operation},
     pipeline::{
-        auto_decision, ApprovalPolicy, BlockedOn, Decision, InputPurpose, PlannedEdit, RunOptions,
+        auto_decision, ApprovalPolicy, BlockedOn, Decision, GenerationOverrides, InputPurpose,
+        PlannedEdit, RunOptions,
     },
     slash::{self, is_slash_command},
     Artifact, ArtifactKind, ArtifactRegistry, ArtifactRevision, RevisionStatus, StoredMask,
@@ -118,18 +119,31 @@ enum OpEvent {
 }
 
 #[component]
-pub fn Canvas(app_state: Signal<AppState>, backend: Signal<CreativeBackend>) -> Element {
+pub fn Canvas(
+    app_state: Signal<AppState>,
+    backend: Signal<CreativeBackend>,
+    defaults: Signal<crate::registry::GenerationDefaults>,
+) -> Element {
     let mut composer = use_signal(String::new);
     let filter = use_signal(String::new);
     let mut activity = use_signal(CanvasActivity::default);
     let selected = app_state.read().selected_artifact().cloned();
     let busy = activity.read().is_busy();
+    // The chip the composer shows: free-form changes apply to the viewed
+    // artifact (computed before the rsx — `selected` is moved into Detail).
+    let target_hint = selected
+        .as_ref()
+        .filter(|artifact| artifact.kind.is_visual())
+        .map(|artifact| app_state.read().registry.ref_of(artifact.id));
 
     // The mask checkpoint handshake. `reply_slot` is the UI-side end of the
     // channel the op worker blocks on; the modal's buttons send the choice.
     // Both stay on the UI thread (signals are not cross-thread safe).
     let mut pending_approval = use_signal(|| None::<PendingApproval>);
     let reply_slot = use_hook(|| Rc::new(RefCell::new(None::<mpsc::Sender<Decision>>)));
+    // The rerun action re-executes an operation from the log; it needs its
+    // own reply-slot clone (the closure below moves the original).
+    let reply_slot_for_rerun = reply_slot.clone();
     // A free-form message proposed as an operation stack, awaiting approval.
     let mut proposal = use_signal(|| None::<StackProposal>);
     let reviewing = proposal.read().is_some();
@@ -145,8 +159,9 @@ pub fn Canvas(app_state: Signal<AppState>, backend: Signal<CreativeBackend>) -> 
             return;
         }
         composer.set(String::new());
+        let defaults = defaults.read().clone();
         if is_slash_command(&input) {
-            let operation = match parse_composer(&input, &app_state.read().registry) {
+            let operation = match parse_composer(&input, &app_state.read().registry, &defaults) {
                 Ok(operation) => operation,
                 Err(message) => {
                     activity.set(CanvasActivity::Failed(message));
@@ -157,13 +172,14 @@ pub fn Canvas(app_state: Signal<AppState>, backend: Signal<CreativeBackend>) -> 
                 app_state,
                 backend(),
                 vec![operation],
+                defaults,
                 activity,
                 pending_approval,
                 reply_slot_for_run.clone(),
             );
         } else {
             // Free text: the LLM proposes the operations; the user approves.
-            propose_operations(app_state, backend(), input, activity, proposal);
+            propose_operations(app_state, backend(), input, defaults, activity, proposal);
         }
     };
 
@@ -220,6 +236,7 @@ pub fn Canvas(app_state: Signal<AppState>, backend: Signal<CreativeBackend>) -> 
                                 app_state,
                                 backend(),
                                 selected,
+                                defaults.read().clone(),
                                 activity,
                                 pending_approval,
                                 reply_slot.clone(),
@@ -247,11 +264,26 @@ pub fn Canvas(app_state: Signal<AppState>, backend: Signal<CreativeBackend>) -> 
                 composer,
                 activity,
                 disabled,
+                on_rerun: move |op: Operation| {
+                    if disabled {
+                        return;
+                    }
+                    run_operations(
+                        app_state,
+                        backend(),
+                        vec![op],
+                        defaults.read().clone(),
+                        activity,
+                        pending_approval,
+                        reply_slot_for_rerun.clone(),
+                    );
+                },
             }
             Composer {
                 value: composer,
                 activity,
                 disabled,
+                target_hint,
                 onsubmit: submit,
             }
         }
@@ -265,6 +297,7 @@ pub fn Canvas(app_state: Signal<AppState>, backend: Signal<CreativeBackend>) -> 
 fn parse_composer(
     input: &str,
     registry: &crate::registry::ArtifactRegistry,
+    defaults: &crate::registry::GenerationDefaults,
 ) -> Result<Operation, String> {
     if !is_slash_command(input) {
         return Err(
@@ -275,7 +308,7 @@ fn parse_composer(
     let operation = slash::parse_slash(input).map_err(|error| error.to_string())?;
     // Static validation against the registry (ref resolution, kinds, active
     // images) so errors surface before any backend work starts.
-    ops::compile(registry, &operation).map_err(|error| error.to_string())?;
+    ops::compile(registry, &operation, defaults).map_err(|error| error.to_string())?;
     Ok(operation)
 }
 
@@ -295,6 +328,7 @@ fn run_operations(
     mut app_state: Signal<AppState>,
     backend: CreativeBackend,
     operations: Vec<Operation>,
+    defaults: crate::registry::GenerationDefaults,
     mut activity: Signal<CanvasActivity>,
     mut pending_approval: Signal<Option<PendingApproval>>,
     reply_slot: Rc<RefCell<Option<mpsc::Sender<Decision>>>>,
@@ -381,7 +415,13 @@ fn run_operations(
                         // exact replay; pass --seed on the CLI for golden runs.
                         seed: Some(random_seed()),
                     },
-                    generation: Default::default(),
+                    generation: GenerationOverrides {
+                        // The configured default step count (Settings →
+                        // Image generation) shapes every canvas op.
+                        steps: Some(defaults.steps),
+                        ..Default::default()
+                    },
+                    defaults: &defaults,
                     manual_text: None,
                     origin: OpOrigin::User,
                 };
@@ -489,13 +529,14 @@ fn propose_operations(
     app_state: Signal<AppState>,
     backend: CreativeBackend,
     message: String,
+    defaults: crate::registry::GenerationDefaults,
     mut activity: Signal<CanvasActivity>,
     mut proposal: Signal<Option<StackProposal>>,
 ) {
     if !backend.has_llm() {
         activity.set(CanvasActivity::Failed(
             "LM Studio is not configured or reachable — use slash commands instead \
-             (/create, /variant, /regenerate, /modify)"
+             (/create, /variant, /regenerate, /modify, /attach-lora)"
                 .to_owned(),
         ));
         return;
@@ -505,9 +546,13 @@ fn propose_operations(
     });
     spawn(async move {
         let registry = app_state.read().registry.clone();
-        match backend.propose_stack(&registry, &message).await {
+        let viewing = app_state.read().selected_artifact().cloned();
+        match backend
+            .propose_stack(&registry, &defaults, viewing.as_ref(), &message)
+            .await
+        {
             Ok(stack) => {
-                let operations = validate_proposal(&registry, stack.operations);
+                let operations = validate_proposal(&registry, stack.operations, &defaults);
                 activity.set(CanvasActivity::Idle);
                 proposal.set(Some(StackProposal { operations }));
             }
@@ -522,11 +567,15 @@ fn propose_operations(
 /// would fail to compile are marked so the approval modal shows (but does
 /// not run) them; ops that compile but are semantically suspect for the
 /// request get a warning note.
-fn validate_proposal(registry: &ArtifactRegistry, operations: Vec<Operation>) -> Vec<ProposedOp> {
+fn validate_proposal(
+    registry: &ArtifactRegistry,
+    operations: Vec<Operation>,
+    defaults: &crate::registry::GenerationDefaults,
+) -> Vec<ProposedOp> {
     operations
         .into_iter()
         .map(|operation| {
-            let invalid_reason = ops::compile(registry, &operation)
+            let invalid_reason = ops::compile(registry, &operation, defaults)
                 .err()
                 .map(|error| error.to_string());
             let note = draft_on_visual_artifact(registry, &operation);
@@ -989,6 +1038,7 @@ fn Detail(
     mut composer: Signal<String>,
     activity: Signal<CanvasActivity>,
     disabled: bool,
+    on_rerun: EventHandler<Operation>,
 ) -> Element {
     let count = app_state.read().registry.artifacts.len();
     rsx! {
@@ -1002,6 +1052,7 @@ fn Detail(
                         composer,
                         activity,
                         disabled,
+                        on_rerun,
                     }
                 },
                 None => rsx! {
@@ -1026,6 +1077,7 @@ fn ArtifactDetail(
     mut composer: Signal<String>,
     activity: Signal<CanvasActivity>,
     disabled: bool,
+    on_rerun: EventHandler<Operation>,
 ) -> Element {
     let image = app_state.read().display_image(&artifact).map(str::to_owned);
     let is_visual = is_visual(&artifact);
@@ -1038,6 +1090,13 @@ fn ArtifactDetail(
         .artifacts
         .iter()
         .filter(|candidate| candidate.variant_of == Some(artifact.id))
+        .cloned()
+        .collect();
+    // Bound adapters: this artifact's entries plus the base chain's
+    // (variants inherit their base's bindings).
+    let bound_loras: Vec<crate::registry::LoraEntry> = registry
+        .loras_bound_to(artifact.id)
+        .into_iter()
         .cloned()
         .collect();
     let children: Vec<Artifact> = registry
@@ -1054,6 +1113,7 @@ fn ArtifactDetail(
     let variant_prefix = format!("/variant {ref_label} ");
     let regenerate_prefix = format!("/regenerate {ref_label} ");
     let modify_prefix = format!("/modify {ref_label} ");
+    let attach_lora_prefix = format!("/attach-lora {ref_label} ");
     let revision_rows: Vec<RevisionRow> = artifact
         .revisions
         .iter()
@@ -1119,8 +1179,17 @@ fn ArtifactDetail(
                                 label: "Modify",
                                 icon: IconName::Generate,
                                 disabled,
-                                title: "Mask-guided regional edit (needs --mask and --inpaint, or an LLM)",
+                                title: "Mask-guided regional edit — segmentation (SAM) must be available; check Settings → Status",
                                 onclick: move |_| composer.set(modify_prefix.clone()),
+                            }
+                        }
+                        if is_visual {
+                            ActionButton {
+                                label: "Attach LoRA",
+                                icon: IconName::Generate,
+                                disabled,
+                                title: "Bind an adapter (file in the lora dir) — auto-injected into this artifact's generations",
+                                onclick: move |_| composer.set(attach_lora_prefix.clone()),
                             }
                         }
                     }
@@ -1205,6 +1274,42 @@ fn ArtifactDetail(
                 }
             }
 
+            if !bound_loras.is_empty() {
+                Section { title: format!("LoRAs ({})", bound_loras.len()),
+                    div { class: "space-y-1",
+                        for lora in &bound_loras {
+                            div { class: "flex items-center gap-3 rounded-lg bg-white/[0.03] px-3 py-2 ring-1 ring-inset ring-white/[0.06]",
+                                span { class: "size-1.5 shrink-0 rounded-full bg-violet-400/70" }
+                                div { class: "min-w-0 flex-1",
+                                    p { class: "truncate text-[11px] text-zinc-300", "{lora.name}" }
+                                    p { class: "mt-0.5 truncate font-mono text-[9px] text-zinc-700", "{lora.path} · ×{lora.multiplier}" }
+                                }
+                                button {
+                                    class: "shrink-0 rounded-md bg-white/[0.05] px-2 py-1 text-[9px] text-zinc-500 transition hover:text-white",
+                                    title: "Adjust the weight",
+                                    onclick: {
+                                        let name = lora.name.clone();
+                                        let mut composer = composer;
+                                        move |_| composer.set(format!("/lora-scale {name} "))
+                                    },
+                                    "Scale"
+                                }
+                                button {
+                                    class: "shrink-0 rounded-md bg-white/[0.05] px-2 py-1 text-[9px] text-zinc-500 transition hover:text-rose-300",
+                                    title: "Unbind",
+                                    onclick: {
+                                        let name = lora.name.clone();
+                                        let mut composer = composer;
+                                        move |_| composer.set(format!("/lora-remove {name}"))
+                                    },
+                                    "Remove"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             if !artifact.revisions.is_empty() {
                 Section { title: format!("Revisions ({})", artifact.revisions.len()),
                     div { class: "space-y-1",
@@ -1262,12 +1367,21 @@ fn ArtifactDetail(
 
             if !log_entries.is_empty() {
                 Section { title: format!("Operation log ({})", log_entries.len()),
+                    p { class: "mb-2 -mt-2 text-[9px] leading-4 text-zinc-700",
+                        "Re-run an applied operation with the refresh icon — a fresh seed, same prompt (regenerate/modify/draft only)."
+                    }
                     div { class: "space-y-0.5",
                         for entry in log_entries.iter().rev() {
                             div { class: "flex items-center gap-3 rounded-lg px-2 py-1.5",
                                 span { class: "size-1.5 shrink-0 rounded-full {log_status_class(entry.status)}" }
                                 p { class: "min-w-0 flex-1 truncate font-mono text-[10px] text-zinc-500", "{entry.op.summary()}" }
                                 span { class: "shrink-0 text-[9px] uppercase tracking-wider text-zinc-700", "{log_status_label(entry.status)}" }
+                                RerunButton {
+                                    operation: entry.op.clone(),
+                                    applied: entry.status == crate::registry::ops::OpStatus::Applied,
+                                    disabled,
+                                    on_rerun,
+                                }
                             }
                         }
                     }
@@ -1293,6 +1407,50 @@ fn log_status_label(status: crate::registry::ops::OpStatus) -> &'static str {
         crate::registry::ops::OpStatus::Proposed => "proposed",
         crate::registry::ops::OpStatus::Rejected => "rejected",
         crate::registry::ops::OpStatus::Reverted => "reverted",
+    }
+}
+
+/// Whether re-running an operation is meaningful: only ops that produce a
+/// *new* visual/text result without duplicating state. `create`/`variant`/
+/// `compose` would mint duplicate artifacts; the LoRA ops are registry
+/// mutations that re-applying would redo.
+fn is_rerunnable(operation: &Operation) -> bool {
+    matches!(
+        operation,
+        Operation::Regenerate { .. }
+            | Operation::Resize { .. }
+            | Operation::Modify { .. }
+            | Operation::Draft { .. }
+    )
+}
+
+/// The re-run action for one operation-log row: re-executes the same op
+/// with a fresh seed. Disabled (with a reason) for ops that would duplicate
+/// state or that were never applied.
+#[component]
+fn RerunButton(
+    operation: Operation,
+    applied: bool,
+    disabled: bool,
+    on_rerun: EventHandler<Operation>,
+) -> Element {
+    let rerunnable = applied && is_rerunnable(&operation);
+    let title = if !applied {
+        "Only applied operations can be re-run"
+    } else if !is_rerunnable(&operation) {
+        "Re-running this would duplicate state — use /regenerate or /modify instead"
+    } else {
+        "Re-run this operation (fresh seed)"
+    };
+    rsx! {
+        button {
+            class: "grid size-6 shrink-0 place-items-center rounded-md text-zinc-700 transition hover:bg-white/[0.06] hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-30",
+            disabled: disabled || !rerunnable,
+            title,
+            aria_label: "Re-run",
+            onclick: move |_| on_rerun.call(operation.clone()),
+            Icon { name: IconName::Refresh, class: "size-2.5" }
+        }
     }
 }
 
@@ -1354,6 +1512,7 @@ fn Composer(
     mut value: Signal<String>,
     activity: Signal<CanvasActivity>,
     disabled: bool,
+    target_hint: Option<String>,
     onsubmit: EventHandler<()>,
 ) -> Element {
     let empty = value.read().trim().is_empty();
@@ -1366,9 +1525,18 @@ fn Composer(
         footer { class: "col-span-2 border-t border-white/[0.055] bg-zinc-950/45 px-6 py-4",
             div { class: "mx-auto max-w-3xl",
                 if let CanvasActivity::Failed(error) = &*activity.read() {
-                    p { class: "mb-2 text-[10px] leading-4 text-red-300/80", "{error}" }
+                    div { class: "mb-2 flex items-start gap-2 rounded-lg bg-rose-400/[0.07] px-3 py-2 ring-1 ring-inset ring-rose-400/20",
+                        span { class: "mt-0.5 size-1.5 shrink-0 rounded-full bg-rose-400" }
+                        p { class: "min-w-0 flex-1 text-[10px] leading-4 text-rose-200/90", "{error}" }
+                    }
                 }
                 div { class: "flex items-center gap-3 rounded-[18px] bg-zinc-900/80 p-2 pl-4 shadow-[0_18px_60px_rgba(0,0,0,.3)] ring-1 ring-inset ring-white/[0.09] backdrop-blur-xl focus-within:ring-violet-400/35",
+                    if let Some(target) = target_hint {
+                        span { class: "shrink-0 rounded-md bg-violet-400/10 px-2 py-1 font-mono text-[9px] text-violet-300 ring-1 ring-inset ring-violet-400/20",
+                            title: "Free-form changes apply to this artifact unless you name another",
+                            "→ {target}"
+                        }
+                    }
                     if let Some(summary) = summary {
                         div { class: "flex shrink-0 items-center gap-2 text-[10px] text-zinc-400",
                             span { class: "size-3 animate-spin rounded-full border border-zinc-700 border-t-violet-300" }
@@ -1377,7 +1545,7 @@ fn Composer(
                     }
                     textarea {
                         class: "block min-h-9 w-full resize-none bg-transparent py-1.5 text-[12px] leading-5 text-zinc-100 outline-none placeholder:text-zinc-700 disabled:opacity-40",
-                        placeholder: "/create character <description> [--name <name>] [--size WxH]   ·   /variant c:<ref> <description> [--axis <axis>]   ·   /regenerate c:<ref> [<change>]   ·   /modify c:<ref> <change> --mask <region> --inpaint <look>   ·   or describe what you want in plain language (LM Studio)",
+                        placeholder: "/create character <desc> · /variant c:<ref> <desc> · /regenerate c:<ref> · /resize c:<ref> WxH · /modify c:<ref> <change> · /attach-lora c:<ref> <lora> · or describe it in plain language",
                         value: "{value}",
                         disabled,
                         // WebKit rewrites `--` to an em dash and straight to
@@ -1434,11 +1602,17 @@ mod tests {
             description: "Mia".into(),
             name: Some("mia".into()),
             size: None,
+            steps: None,
+            loras: Vec::new(),
         };
         let variant = Operation::Variant {
             target: Ref::new("c:mia"),
             description: "older".into(),
+            name: None,
             axis: Some(VariantAxis::Age),
+            size: None,
+            steps: None,
+            loras: Vec::new(),
         };
         assert_eq!(stack_summary(&[]), "no operations");
         assert!(stack_summary(std::slice::from_ref(&create)).starts_with("create"));
@@ -1464,17 +1638,26 @@ mod tests {
             description: "a lantern".into(),
             name: None,
             size: None,
+            steps: None,
+            loras: Vec::new(),
         };
         let unknown_ref = Operation::Variant {
             target: Ref::new("c:ghost"),
             description: "a variant of nobody".into(),
+            name: None,
             axis: None,
+            size: None,
+            steps: None,
+            loras: Vec::new(),
         };
         let modify_without_image = Operation::Modify {
             target: Ref::new("c:mia"),
             description: "change her hair".into(),
             mask_prompt: Some("her hair".into()),
             inpaint_prompt: Some("a bob cut".into()),
+            size: None,
+            steps: None,
+            loras: Vec::new(),
         };
         let draft_on_visual = Operation::Draft {
             target: Ref::new("c:mia"),
@@ -1486,7 +1669,18 @@ mod tests {
         };
         let ops = validate_proposal(
             &registry,
-            vec![valid, unknown_ref, modify_without_image, draft_on_visual, draft_on_story],
+            vec![
+                valid,
+                unknown_ref,
+                modify_without_image,
+                draft_on_visual,
+                draft_on_story,
+            ],
+            &crate::registry::GenerationDefaults {
+                sizes: Default::default(),
+                steps: 4,
+                loras: Default::default(),
+            },
         );
         assert!(ops[0].invalid_reason.is_none());
         assert!(

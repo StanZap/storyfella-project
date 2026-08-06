@@ -13,8 +13,9 @@ use crate::{
 use super::{
     ops::OperationStack,
     pipeline::{GenerationBackend, PipelineError, PlannedEdit},
-    ArtifactRegistry,
+    Artifact, ArtifactRegistry, GenerationDefaults,
 };
+use crate::registry::discover_loras;
 
 /// The real backend the CLI (and the canvas) executes pipelines against.
 #[derive(Clone)]
@@ -78,7 +79,10 @@ impl CreativeBackend {
     /// The model identifier the planner currently requests (the Settings
     /// picker shows this; `None` when no LLM client was built).
     pub fn llm_model(&self) -> Option<String> {
-        self.llm.as_ref().map(LmStudioClient::model).map(str::to_owned)
+        self.llm
+            .as_ref()
+            .map(LmStudioClient::model)
+            .map(str::to_owned)
     }
 
     /// Swaps the planner model at runtime. The backend lives in app state
@@ -105,9 +109,81 @@ impl CreativeBackend {
          look (e.g. \"a short bob cut\")."
     }
 
-    /// The closed-vocabulary planner prompt: free text → an operation stack.
-    /// The registry listing constrains the model to real `c:` references.
-    fn propose_system_prompt(registry: &ArtifactRegistry) -> String {
+    /// The shared op vocabulary + intent rules block of the planner prompt
+    /// (used by both the tool-calling and the static-fallback prompts).
+    fn vocabulary_block() -> String {
+        "You plan operations for a visual story tool. Respond with JSON only, exactly \
+         this shape: {{\"operations\": [ ... ]}} where every operation is one of:\n\
+         {{\"op\": \"create\", \"kind\": \"story|scene|beat|character|environment|object\", \"description\": \"...\", \"name\": \"...\", \"size\": [w, h], \"steps\": n, \"loras\": [{{\"path\": \"...\", \"multiplier\": 0.8}}]}}\n\
+         {{\"op\": \"variant\", \"target\": \"c:<name>\", \"description\": \"...\", \"axis\": \"outfit|age|body|hair|expression|time-of-day|weather|season|mood\", \"size\": [w, h], \"steps\": n, \"loras\": [...]}}\n\
+         {{\"op\": \"regenerate\", \"target\": \"c:<name>\", \"prompt\": \"...\", \"size\": [w, h], \"steps\": n, \"loras\": [...]}}\n\
+         {{\"op\": \"resize\", \"target\": \"c:<name>\", \"width\": w, \"height\": h}}\n\
+         {{\"op\": \"compose\", \"scene\": \"c:<name>\", \"description\": \"...\", \"background\": \"c:<name>\", \"layers\": [{{\"artifact\": \"c:<name>\", \"variant\": \"c:<name>\"}}]}}\n\
+         {{\"op\": \"draft\", \"target\": \"c:<name>\", \"request\": \"...\"}}\n\
+         {{\"op\": \"modify\", \"target\": \"c:<name>\", \"description\": \"...\", \"mask_prompt\": \"...\", \"inpaint_prompt\": \"...\", \"size\": [w, h], \"steps\": n, \"loras\": [...]}}\n\
+         {{\"op\": \"attach-lora\", \"target\": \"c:<name>\", \"lora\": \"<adapter file>\", \"multiplier\": 0.8}}\n\
+         {{\"op\": \"lora-scale\", \"lora\": \"<adapter name>\", \"multiplier\": 0.9}}\n\
+         {{\"op\": \"lora-remove\", \"lora\": \"<adapter name>\"}}\n\
+         Choose the op by intent, not by wording:\n\
+         - create: a new artifact that does not exist yet.\n\
+         - variant: a whole new version of an existing visual artifact — a \
+         different look, age, outfit, or mood of the same subject. Never use \
+         it for a small localized change.\n\
+         - regenerate: redo an existing artifact's image in full, keeping the \
+         same subject — quality, style, or composition fixes of the whole image.\n\
+         - resize: change the image canvas — set the artifact's default size \
+         and regenerate at it. Only when the user asks for a size.\n\
+         - modify: a localized change to one region of an existing image (add \
+         glasses, change the hair, change the sky). It plans a mask region and \
+         the new look. A change to what an image shows is modify, not \
+         regenerate.\n\
+         - compose: assemble a scene from existing artifacts (background plus \
+         layered characters).\n\
+         - draft: ONLY a text note or idea attached to an artifact. It never \
+         changes or generates an image — never use draft for any request that \
+         changes what an image shows.\n\
+         - attach-lora: bind an adapter to an artifact (character consistency, \
+         style, or a specialist edit adapter) when the request implies one. Use \
+         only real adapter file names.\n\
+         - lora-scale/lora-remove: adjust or unbind an adapter the user names.\n\
+         Size and steps rules: sizes are [width, height] multiples of 32 within \
+         256..=2048; steps within 1..=50. Include \"size\", \"steps\", or \
+         \"loras\" in an op ONLY when the user explicitly asks for a specific \
+         size, more steps, or a named adapter — never invent them.\n\
+         Never invent adapter names.\n\
+         Examples: \"add glasses to mia\" → modify; \"make mia 10 years \
+         older\" → variant with axis age; \"the sky looks flat, redo it\" → \
+         regenerate; \"make the image 1024x1024\" → resize; \"use 8 steps\" → \
+         the op with \"steps\": 8; \"note that mia's ring was her \
+         grandmother's\" → draft.\n\
+         This vocabulary is closed — never invent an op name. References are the \
+         c:<name> keys (case-insensitive); use only those."
+            .to_owned()
+    }
+
+    /// The viewing note: requests that do not name another artifact apply
+    /// to the artifact currently shown in the canvas.
+    fn viewing_note(registry: &ArtifactRegistry, viewing: Option<&Artifact>) -> String {
+        match viewing {
+            Some(artifact) => format!(
+                "\nCurrently viewed artifact: {} ({} — {}).\nA request that does not name \
+                 another artifact explicitly applies to the viewed artifact: prefer it as \
+                 the target over its base or other artifacts.\n",
+                registry.ref_of(artifact.id),
+                artifact.kind,
+                if artifact.name.trim().is_empty() {
+                    "unnamed".to_owned()
+                } else {
+                    artifact.name.clone()
+                },
+            ),
+            None => String::new(),
+        }
+    }
+
+    /// The registry listing fed to the planner (a tool result in tool mode,
+    /// inline in the static fallback).
+    fn artifact_listing(registry: &ArtifactRegistry) -> String {
         let mut listing = String::new();
         for artifact in registry.iter() {
             listing.push_str(&format!(
@@ -121,37 +197,106 @@ impl CreativeBackend {
             }
             listing.push('\n');
         }
+        listing
+    }
+
+    /// The adapter listing (discovered files + config bindings).
+    fn adapter_listing(defaults: &GenerationDefaults) -> String {
+        let mut adapters: Vec<String> = discover_loras(&defaults.loras.dir);
+        for binding in defaults
+            .loras
+            .kinds
+            .character
+            .iter()
+            .chain(defaults.loras.kinds.environment.iter())
+            .chain(defaults.loras.kinds.object.iter())
+            .chain(defaults.loras.inpaint.iter())
+        {
+            if !adapters.iter().any(|file| file == &binding.file) {
+                adapters.push(binding.file.clone());
+            }
+        }
+        adapters.sort();
+        if adapters.is_empty() {
+            "none".to_owned()
+        } else {
+            adapters.join(", ")
+        }
+    }
+
+    /// The closed-vocabulary planner prompt for the static fallback (no
+    /// tool calling): registry and adapter listings are inlined.
+    /// `viewing` names the artifact currently shown in the canvas — requests
+    /// that do not name another artifact apply to it, so a change typed
+    /// while viewing a variant targets the variant, not its base.
+    fn propose_system_prompt(
+        registry: &ArtifactRegistry,
+        defaults: &GenerationDefaults,
+        viewing: Option<&Artifact>,
+    ) -> String {
         format!(
-            "You plan operations for a visual story tool. Respond with JSON only, exactly \
-             this shape: {{\"operations\": [ ... ]}} where every operation is one of:\n\
-             {{\"op\": \"create\", \"kind\": \"story|scene|beat|character|environment|object\", \"description\": \"...\", \"name\": \"...\"}}\n\
-             {{\"op\": \"variant\", \"target\": \"c:<name>\", \"description\": \"...\", \"axis\": \"outfit|age|body|hair|expression|time-of-day|weather|season|mood\"}}\n\
-             {{\"op\": \"regenerate\", \"target\": \"c:<name>\", \"prompt\": \"...\"}}\n\
-             {{\"op\": \"compose\", \"scene\": \"c:<name>\", \"description\": \"...\", \"background\": \"c:<name>\", \"layers\": [{{\"artifact\": \"c:<name>\", \"variant\": \"c:<name>\"}}]}}\n\
-             {{\"op\": \"draft\", \"target\": \"c:<name>\", \"request\": \"...\"}}\n\
-             {{\"op\": \"modify\", \"target\": \"c:<name>\", \"description\": \"...\", \"mask_prompt\": \"...\", \"inpaint_prompt\": \"...\"}}\n\
-             Choose the op by intent, not by wording:\n\
-             - create: a new artifact that does not exist yet.\n\
-             - variant: a whole new version of an existing visual artifact — a \
-             different look, age, outfit, or mood of the same subject. Never use \
-             it for a small localized change.\n\
-             - regenerate: redo an existing artifact's image in full, keeping the \
-             same subject — quality, style, or composition fixes of the whole image.\n\
-             - modify: a localized change to one region of an existing image (add \
-             glasses, change the hair, change the sky). It plans a mask region and \
-             the new look.\n\
-             - compose: assemble a scene from existing artifacts (background plus \
-             layered characters).\n\
-             - draft: ONLY a text note or idea attached to an artifact. It never \
-             changes or generates an image — never use draft for any request that \
-             changes what an image shows.\n\
-             Examples: \"add glasses to mia\" → modify; \"make mia 10 years \
-             older\" → variant with axis age; \"the sky looks flat, redo it\" → \
-             regenerate; \"note that mia's ring was her grandmother's\" → draft.\n\
-             This vocabulary is closed — never invent an op name. References are the \
-             c:<name> keys listed below (case-insensitive); use only those.\n\n\
-             Registry:\n{listing}"
+            "{}\n\nRegistry:\n{listing}{viewing_note}\nAdapters available: {adapter_listing}",
+            Self::vocabulary_block(),
+            listing = Self::artifact_listing(registry),
+            viewing_note = Self::viewing_note(registry, viewing),
+            adapter_listing = Self::adapter_listing(defaults),
         )
+    }
+
+    /// The tool-calling planner prompt: the model discovers the registry
+    /// and the adapters by calling tools, then answers with the JSON stack.
+    fn propose_tools_prompt(registry: &ArtifactRegistry, viewing: Option<&Artifact>) -> String {
+        let viewing = match viewing {
+            Some(artifact) => format!(
+                "\nCurrently viewed artifact: {} ({} — {}). A request that does not name \
+                 another artifact explicitly applies to the viewed artifact.\n",
+                registry.ref_of(artifact.id),
+                artifact.kind,
+                artifact.name,
+            ),
+            None => String::new(),
+        };
+        format!(
+            "{}\n\nCall list_artifacts and list_loras as many times as you need to discover \
+             the available artifacts and adapters, then respond with ONLY the JSON stack \
+             described above (no commentary, no markdown).{viewing}",
+            Self::vocabulary_block(),
+        )
+    }
+
+    /// The discovery tools the planner may call.
+    fn planner_tools() -> Vec<crate::llm::ToolDefinition> {
+        use crate::llm::{ToolDefinition, ToolFunction};
+        vec![
+            ToolDefinition {
+                r#type: "function",
+                function: ToolFunction {
+                    name: "list_artifacts".to_owned(),
+                    description: "List every artifact in the project with its c:<ref> key, \
+                                  kind, name, and description."
+                        .to_owned(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": false
+                    }),
+                },
+            },
+            ToolDefinition {
+                r#type: "function",
+                function: ToolFunction {
+                    name: "list_loras".to_owned(),
+                    description: "List the available LoRA adapter files (relative to the lora \
+                                  directory) plus the configured use-case bindings."
+                        .to_owned(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": false
+                    }),
+                },
+            },
+        ]
     }
 }
 
@@ -159,10 +304,15 @@ impl CreativeBackend {
     /// Drives the LLM to plan a free-form request as an operation stack
     /// against the closed vocabulary (the VLLM contract test bed, shared by
     /// the `svs stack propose` CLI and the canvas composer). `Err` when the
-    /// LLM is unavailable or its output is not a valid stack.
+    /// LLM is unavailable or its output is not a valid stack. `defaults`
+    /// lists the adapters the planner may propose; `viewing` names the
+    /// artifact currently shown in the canvas so ref-less requests target
+    /// it (the CLI passes `None`).
     pub async fn propose_stack(
         &self,
         registry: &ArtifactRegistry,
+        defaults: &GenerationDefaults,
+        viewing: Option<&Artifact>,
         message: &str,
     ) -> Result<OperationStack, String> {
         let Some(client) = &self.llm else {
@@ -171,6 +321,71 @@ impl CreativeBackend {
                     .to_owned(),
             );
         };
+        // Preferred: the model discovers artifacts/adapters by calling
+        // tools (any number of rounds), then emits the stack.
+        match Self::propose_with_tools(client, registry, defaults, viewing, message).await {
+            Ok(stack) => return Ok(stack),
+            Err(ProposeError::ToolsUnsupported(error)) => {
+                tracing::warn!(%error, "tool calling unavailable; falling back to the static planner");
+            }
+            Err(ProposeError::Failed(error)) => return Err(error),
+        }
+        // Fallback: the static listing + strict JSON schema.
+        Self::propose_static(client, registry, defaults, viewing, message).await
+    }
+
+    /// The tool-calling planner: multi-round discovery, then the final JSON
+    /// stack. `ToolsUnsupported` when the server rejects `tools` outright
+    /// (older LM Studio builds), so the caller can fall back.
+    async fn propose_with_tools(
+        client: &LmStudioClient,
+        registry: &ArtifactRegistry,
+        defaults: &GenerationDefaults,
+        viewing: Option<&Artifact>,
+        message: &str,
+    ) -> Result<OperationStack, ProposeError> {
+        let messages = [
+            ChatMessage::text("system", Self::propose_tools_prompt(registry, viewing)),
+            ChatMessage::text("user", message),
+        ];
+        let completion = client
+            .chat_with_tools(
+                &messages,
+                Self::planner_tools(),
+                // The strict schema rides every round: the model may call
+                // discovery tools, but its final answer stays inside the
+                // closed vocabulary (validated live against LM Studio).
+                Some(Self::stack_response_format()),
+                |name, _arguments| match name {
+                    "list_artifacts" => Self::artifact_listing(registry),
+                    "list_loras" => Self::adapter_listing(defaults),
+                    other => format!("unknown tool {other}"),
+                },
+                6,
+            )
+            .await
+            .map_err(|error| match error {
+                crate::llm::LmStudioError::Status { .. } => {
+                    ProposeError::ToolsUnsupported(error.to_string())
+                }
+                other => ProposeError::Failed(format!("LM Studio request failed: {other}")),
+            })?;
+        let content = completion
+            .choices
+            .first()
+            .and_then(|choice| choice.message.content.clone())
+            .ok_or_else(|| ProposeError::Failed("LM Studio returned no content".to_owned()))?;
+        Self::parse_stack(&content)
+    }
+
+    /// The static planner: one strict-schema call with the listings inline.
+    async fn propose_static(
+        client: &LmStudioClient,
+        registry: &ArtifactRegistry,
+        defaults: &GenerationDefaults,
+        viewing: Option<&Artifact>,
+        message: &str,
+    ) -> Result<OperationStack, String> {
         let options = ChatOptions {
             response_format: Some(Self::stack_response_format()),
             ..ChatOptions::default()
@@ -178,7 +393,10 @@ impl CreativeBackend {
         let completion = client
             .chat_with_options(
                 &[
-                    ChatMessage::text("system", Self::propose_system_prompt(registry)),
+                    ChatMessage::text(
+                        "system",
+                        Self::propose_system_prompt(registry, defaults, viewing),
+                    ),
                     ChatMessage::text("user", message),
                 ],
                 &options,
@@ -190,15 +408,33 @@ impl CreativeBackend {
             .first()
             .and_then(|choice| choice.message.content.clone())
             .ok_or_else(|| "LM Studio returned no content".to_owned())?;
+        Self::parse_stack(&content).map_err(|error| match error {
+            ProposeError::Failed(message) => message,
+            ProposeError::ToolsUnsupported(_) => unreachable!("the static path has no tools"),
+        })
+    }
+
+    fn parse_stack(content: &str) -> Result<OperationStack, ProposeError> {
         let stack: OperationStack =
-            serde_json::from_str(strip_json_fence(&content)).map_err(|error| {
-                format!("the LLM output was not a valid operation stack: {error}\n\n{content}")
+            serde_json::from_str(strip_json_fence(content)).map_err(|error| {
+                ProposeError::Failed(format!(
+                    "the LLM output was not a valid operation stack: {error}\n\n{content}"
+                ))
             })?;
         if stack.operations.is_empty() {
-            return Err("the LLM returned no operations".to_owned());
+            return Err(ProposeError::Failed(
+                "the LLM returned no operations".to_owned(),
+            ));
         }
         Ok(stack)
     }
+}
+
+/// The tool-calling planner's failure modes: the server rejected `tools`
+/// (fall back to the static path) or planning genuinely failed.
+enum ProposeError {
+    ToolsUnsupported(String),
+    Failed(String),
 }
 
 impl GenerationBackend for CreativeBackend {
@@ -371,7 +607,10 @@ impl CreativeBackend {
                                         "op": { "const": "create" },
                                         "kind": { "enum": ["story", "scene", "beat", "character", "environment", "object"] },
                                         "description": { "type": "string" },
-                                        "name": { "type": "string" }
+                                        "name": { "type": "string" },
+                                        "size": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 },
+                                        "steps": { "type": "integer" },
+                                        "loras": { "type": "array", "items": { "type": "object", "additionalProperties": false, "properties": { "path": { "type": "string" }, "multiplier": { "type": "number" } }, "required": ["path"] } }
                                     },
                                     "required": ["op", "kind", "description"]
                                 },
@@ -382,7 +621,10 @@ impl CreativeBackend {
                                         "op": { "const": "variant" },
                                         "target": { "type": "string" },
                                         "description": { "type": "string" },
-                                        "axis": { "enum": ["outfit", "age", "body", "hair", "expression", "time-of-day", "weather", "season", "mood"] }
+                                        "axis": { "enum": ["outfit", "age", "body", "hair", "expression", "time-of-day", "weather", "season", "mood"] },
+                                        "size": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 },
+                                        "steps": { "type": "integer" },
+                                        "loras": { "type": "array", "items": { "type": "object", "additionalProperties": false, "properties": { "path": { "type": "string" }, "multiplier": { "type": "number" } }, "required": ["path"] } }
                                     },
                                     "required": ["op", "target", "description"]
                                 },
@@ -392,9 +634,23 @@ impl CreativeBackend {
                                     "properties": {
                                         "op": { "const": "regenerate" },
                                         "target": { "type": "string" },
-                                        "prompt": { "type": "string" }
+                                        "prompt": { "type": "string" },
+                                        "size": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 },
+                                        "steps": { "type": "integer" },
+                                        "loras": { "type": "array", "items": { "type": "object", "additionalProperties": false, "properties": { "path": { "type": "string" }, "multiplier": { "type": "number" } }, "required": ["path"] } }
                                     },
                                     "required": ["op", "target"]
+                                },
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "op": { "const": "resize" },
+                                        "target": { "type": "string" },
+                                        "width": { "type": "integer" },
+                                        "height": { "type": "integer" }
+                                    },
+                                    "required": ["op", "target", "width", "height"]
                                 },
                                 {
                                     "type": "object",
@@ -437,9 +693,42 @@ impl CreativeBackend {
                                         "target": { "type": "string" },
                                         "description": { "type": "string" },
                                         "mask_prompt": { "type": "string" },
-                                        "inpaint_prompt": { "type": "string" }
+                                        "inpaint_prompt": { "type": "string" },
+                                        "size": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 },
+                                        "steps": { "type": "integer" },
+                                        "loras": { "type": "array", "items": { "type": "object", "additionalProperties": false, "properties": { "path": { "type": "string" }, "multiplier": { "type": "number" } }, "required": ["path"] } }
                                     },
                                     "required": ["op", "target", "description"]
+                                },
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "op": { "const": "attach-lora" },
+                                        "target": { "type": "string" },
+                                        "lora": { "type": "string" },
+                                        "multiplier": { "type": "number" }
+                                    },
+                                    "required": ["op", "target", "lora"]
+                                },
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "op": { "const": "lora-scale" },
+                                        "lora": { "type": "string" },
+                                        "multiplier": { "type": "number" }
+                                    },
+                                    "required": ["op", "lora", "multiplier"]
+                                },
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "op": { "const": "lora-remove" },
+                                        "lora": { "type": "string" }
+                                    },
+                                    "required": ["op", "lora"]
                                 }
                             ]
                         }
@@ -481,7 +770,7 @@ mod tests {
         assert_eq!(schema["json_schema"]["strict"], true);
         let items = &schema["json_schema"]["schema"]["properties"]["operations"]["items"]["oneOf"];
         let variants = items.as_array().expect("oneOf union per op");
-        assert_eq!(variants.len(), 6);
+        assert_eq!(variants.len(), 10);
         for variant in variants {
             assert_eq!(variant["additionalProperties"], false);
             assert!(
@@ -504,7 +793,12 @@ mod tests {
     #[test]
     fn planner_prompt_defines_when_each_op_applies() {
         let registry = ArtifactRegistry::new();
-        let prompt = CreativeBackend::propose_system_prompt(&registry);
+        let defaults = GenerationDefaults {
+            sizes: Default::default(),
+            steps: 4,
+            loras: Default::default(),
+        };
+        let prompt = CreativeBackend::propose_system_prompt(&registry, &defaults, None);
         for expectation in [
             "modify: a localized change to one region of an existing image",
             "variant: a whole new version of an existing visual artifact",
@@ -513,8 +807,118 @@ mod tests {
             "never use draft for any request that changes what an image shows",
             "add glasses to mia\" → modify",
             "make mia 10 years older\" → variant",
+            "attach-lora: bind an adapter to an artifact",
+            "Never invent adapter names",
+            "A change to what an image shows is modify, not",
         ] {
             assert!(prompt.contains(expectation), "missing: {expectation}");
+        }
+    }
+
+    #[test]
+    fn planner_prompt_names_the_viewed_artifact_as_the_default_target() {
+        let mut registry = ArtifactRegistry::new();
+        let mia = registry
+            .create_artifact(
+                crate::registry::ArtifactKind::Character,
+                crate::registry::CreateArtifact {
+                    name: "mia".into(),
+                    description: "Mia, the keeper".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let variant = registry
+            .create_artifact(
+                crate::registry::ArtifactKind::Character,
+                crate::registry::CreateArtifact {
+                    name: "mia-outfit".into(),
+                    description: "in yellow rain gear".into(),
+                    variant_of: Some(mia),
+                    axis: Some(crate::registry::VariantAxis::Outfit),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let defaults = GenerationDefaults {
+            sizes: Default::default(),
+            steps: 4,
+            loras: Default::default(),
+        };
+        let prompt = CreativeBackend::propose_system_prompt(
+            &registry,
+            &defaults,
+            registry.artifact(variant),
+        );
+        assert!(
+            prompt.contains("Currently viewed artifact: c:mia-outfit (character — mia-outfit)"),
+            "the viewed artifact is named: {prompt}"
+        );
+        assert!(
+            prompt.contains("applies to the viewed artifact: prefer it as the target"),
+            "ref-less requests bind to the viewed artifact: {prompt}"
+        );
+    }
+
+    #[test]
+    fn vocabulary_teaches_size_steps_and_lora_intent() {
+        let registry = ArtifactRegistry::new();
+        let defaults = GenerationDefaults {
+            sizes: Default::default(),
+            steps: 4,
+            loras: Default::default(),
+        };
+        let prompt = CreativeBackend::propose_system_prompt(&registry, &defaults, None);
+        for expectation in [
+            "\"op\": \"resize\", \"target\": \"c:<name>\", \"width\": w, \"height\": h",
+            "Include \"size\", \"steps\", or \"loras\" in an op ONLY when the user explicitly asks",
+            "\"make the image 1024x1024\" → resize",
+            "\"use 8 steps\" → the op with \"steps\": 8",
+            "Never invent adapter names",
+        ] {
+            assert!(prompt.contains(expectation), "missing: {expectation}");
+        }
+        // The tools prompt sends the model to the discovery tools.
+        let tools_prompt = CreativeBackend::propose_tools_prompt(&registry, None);
+        assert!(
+            tools_prompt.contains("Call list_artifacts and list_loras"),
+            "tool mode directs the model to discover: {tools_prompt}"
+        );
+        // The viewing note rides along in tool mode too.
+        let mut registry = ArtifactRegistry::new();
+        let mia = registry
+            .create_artifact(
+                crate::registry::ArtifactKind::Character,
+                crate::registry::CreateArtifact {
+                    name: "mia".into(),
+                    description: "Mia".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let tools_prompt = CreativeBackend::propose_tools_prompt(&registry, registry.artifact(mia));
+        assert!(
+            tools_prompt.contains("Currently viewed artifact: c:mia"),
+            "tool mode keeps the viewing note: {tools_prompt}"
+        );
+    }
+
+    #[test]
+    fn planner_tools_are_openai_shaped_and_discoverable() {
+        let tools = CreativeBackend::planner_tools();
+        let names: Vec<&str> = tools
+            .iter()
+            .map(|tool| tool.function.name.as_str())
+            .collect();
+        assert_eq!(names, ["list_artifacts", "list_loras"]);
+        for tool in &tools {
+            assert_eq!(tool.r#type, "function");
+            assert_eq!(tool.function.parameters["type"], "object");
+            assert!(!tool.function.description.is_empty());
+            // The tool definitions serialize to the OpenAI wire shape.
+            let value = serde_json::to_value(tool).expect("tool should serialize");
+            assert_eq!(value["type"], "function");
+            assert!(value["function"]["name"].is_string());
         }
     }
 }

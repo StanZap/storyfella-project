@@ -29,8 +29,11 @@ use smart_visual_sequencer::registry::pipeline::{
     ApprovalPolicy, BlockedOn, Decision, GenerationBackend, GenerationOverrides, InputPurpose,
     OutputKind, PipelineRun, RunOptions,
 };
-use smart_visual_sequencer::registry::{ArtifactKind, ArtifactRegistry, Ref, VariantAxis};
+use smart_visual_sequencer::registry::{
+    ArtifactKind, ArtifactRegistry, GenerationDefaults, Ref, VariantAxis,
+};
 use smart_visual_sequencer::runtime::KreaQuantization;
+use smart_visual_sequencer::vision::LoraSelection;
 
 #[derive(Parser)]
 #[command(
@@ -86,6 +89,10 @@ enum OpCommand {
         /// defaults apply when omitted).
         #[arg(long, value_parser = parse_size)]
         size: Option<(u32, u32)>,
+        /// Adapter to apply to this generation: `<file>@<multiplier>`
+        /// (repeatable; files resolve against the configured lora dir).
+        #[arg(long = "lora", value_parser = parse_lora)]
+        loras: Vec<LoraSelection>,
     },
     /// /variant <ref> <description> [axis] — new visual variant (its first
     /// image is an edit of the base).
@@ -93,7 +100,11 @@ enum OpCommand {
         target: Ref,
         description: String,
         #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
         axis: Option<String>,
+        #[arg(long = "lora", value_parser = parse_lora)]
+        loras: Vec<LoraSelection>,
     },
     /// /regenerate <ref> [prompt] — new revision of the active image.
     Regenerate {
@@ -107,6 +118,19 @@ enum OpCommand {
         size: Option<(u32, u32)>,
         #[arg(long)]
         model: Option<String>,
+        #[arg(long = "lora", value_parser = parse_lora)]
+        loras: Vec<LoraSelection>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long, value_enum, default_value = "interactive")]
+        approve: ApprovalArg,
+    },
+    /// /resize <ref> <WxH> — set the artifact's default size and
+    /// regenerate its image at it.
+    Resize {
+        target: Ref,
+        #[arg(value_parser = parse_size)]
+        size: (u32, u32),
         #[arg(long)]
         out: Option<PathBuf>,
         #[arg(long, value_enum, default_value = "interactive")]
@@ -154,11 +178,26 @@ enum OpCommand {
         size: Option<(u32, u32)>,
         #[arg(long)]
         model: Option<String>,
+        #[arg(long = "lora", value_parser = parse_lora)]
+        loras: Vec<LoraSelection>,
         #[arg(long)]
         out: Option<PathBuf>,
         #[arg(long, value_enum, default_value = "interactive")]
         approve: ApprovalArg,
     },
+    /// /attach-lora <ref> <lora> [--multiplier] — bind a registry LoRA to
+    /// an artifact; auto-injected into its generations.
+    AttachLora {
+        target: Ref,
+        /// Adapter file in the lora dir, or an existing registry entry.
+        lora: String,
+        #[arg(long)]
+        multiplier: Option<f32>,
+    },
+    /// /lora-scale <lora> <multiplier> — adjust a bound adapter's weight.
+    LoraScale { lora: String, multiplier: f32 },
+    /// /lora-remove <lora> — unbind an adapter from the registry.
+    LoraRemove { lora: String },
 }
 
 #[derive(Subcommand)]
@@ -263,6 +302,28 @@ fn parse_size(value: &str) -> Result<(u32, u32), String> {
     Ok((width, height))
 }
 
+/// Parses `<file>@<multiplier>` for `--lora` (multiplier optional, 1.0).
+fn parse_lora(value: &str) -> Result<LoraSelection, String> {
+    let (path, multiplier) = match value.rsplit_once('@') {
+        Some((path, multiplier)) => (
+            path.to_owned(),
+            multiplier
+                .parse::<f32>()
+                .map_err(|_| format!("invalid lora multiplier {multiplier:?}"))?,
+        ),
+        None => (value.to_owned(), 1.0),
+    };
+    if !(-2.0..=2.0).contains(&multiplier) {
+        return Err(format!(
+            "lora multiplier {multiplier} must be within -2..=2"
+        ));
+    }
+    if path.is_empty() {
+        return Err("--lora needs an adapter file: --lora <file>@<multiplier>".to_owned());
+    }
+    Ok(LoraSelection { path, multiplier })
+}
+
 fn parse_model(value: &str) -> Result<KreaQuantization, String> {
     match value {
         "krea-2-turbo-q2" => Ok(KreaQuantization::Q2),
@@ -299,10 +360,12 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Op { op } => {
             let mut registry = load_project(&cli.project)?;
             let (operation, cli_options) = build_operation(op)?;
+            // The config is always loaded: the LoRA ops resolve the
+            // `lora_dir` through the generation defaults.
+            let config = AppConfig::load().context("could not load config/app.toml")?;
             let needs_backend =
                 operation_needs_backend(&operation, cli_options.manual_text.as_deref());
             let backend = if needs_backend {
-                let config = AppConfig::load().context("could not load config/app.toml")?;
                 Some(CreativeBackend::new(&config))
             } else {
                 None
@@ -315,6 +378,7 @@ async fn run(cli: Cli) -> Result<()> {
                 &operation,
                 backend.as_ref().map(|b| b as &dyn GenerationBackend),
                 &cli_options,
+                &config.generation_defaults,
                 OpOrigin::User,
             )
             .await;
@@ -427,13 +491,18 @@ struct CliRunOptions {
 /// model ops (create of story/scene/beat, compose) never do; visual
 /// `create`/`variant` generate the first image as part of the op, so they
 /// do; draft only needs it for the LLM step, which `--text` bypasses.
+/// The LoRA ops are registry mutations — no backend, but they do need the
+/// loaded config (the `lora_dir` existence check).
 fn operation_needs_backend(operation: &Operation, manual_text: Option<&str>) -> bool {
     match operation {
         Operation::Create { kind, .. } => kind.is_visual(),
         Operation::Variant { .. } => true,
         Operation::Compose { .. } => false,
         Operation::Draft { .. } => manual_text.is_none(),
-        Operation::Regenerate { .. } | Operation::Modify { .. } => true,
+        Operation::Regenerate { .. } | Operation::Resize { .. } | Operation::Modify { .. } => true,
+        Operation::AttachLora { .. }
+        | Operation::LoraScale { .. }
+        | Operation::LoraRemove { .. } => false,
     }
 }
 
@@ -441,6 +510,7 @@ impl CliRunOptions {
     fn to_execute_options<'a>(
         &'a self,
         backend: Option<&'a dyn GenerationBackend>,
+        defaults: &'a GenerationDefaults,
         origin: OpOrigin,
     ) -> ExecuteOptions<'a> {
         ExecuteOptions {
@@ -454,6 +524,7 @@ impl CliRunOptions {
                 seed: self.seed,
             },
             generation: self.generation.clone(),
+            defaults,
             manual_text: self.manual_text.as_deref(),
             origin,
         }
@@ -468,40 +539,55 @@ fn build_operation(op: OpCommand) -> Result<(Operation, CliRunOptions)> {
             description,
             name,
             size,
+            loras,
         } => (
             Operation::Create {
                 kind: parse_kind(&kind).map_err(anyhow::Error::msg)?,
                 description,
                 name,
                 size,
+                steps: None,
+                loras: Vec::new(),
             },
             CliRunOptions {
                 work_dir: std::env::temp_dir(),
                 golden_dir: None,
                 approvals: ApprovalPolicy::auto(),
                 seed: None,
-                generation: GenerationOverrides::default(),
+                generation: GenerationOverrides {
+                    loras,
+                    ..Default::default()
+                },
                 manual_text: None,
             },
         ),
         OpCommand::Variant {
             target,
             description,
+            name,
             axis,
+            loras,
         } => (
             Operation::Variant {
                 target,
                 description,
+                name,
                 axis: axis
                     .map(|axis| parse_axis(&axis).map_err(anyhow::Error::msg))
                     .transpose()?,
+                size: None,
+                steps: None,
+                loras: Vec::new(),
             },
             CliRunOptions {
                 work_dir: std::env::temp_dir(),
                 golden_dir: None,
                 approvals: ApprovalPolicy::auto(),
                 seed: None,
-                generation: GenerationOverrides::default(),
+                generation: GenerationOverrides {
+                    loras,
+                    ..Default::default()
+                },
                 manual_text: None,
             },
         ),
@@ -512,10 +598,17 @@ fn build_operation(op: OpCommand) -> Result<(Operation, CliRunOptions)> {
             steps,
             size,
             model,
+            loras,
             out,
             approve,
         } => (
-            Operation::Regenerate { target, prompt },
+            Operation::Regenerate {
+                target,
+                prompt,
+                size: None,
+                steps: None,
+                loras: Vec::new(),
+            },
             CliRunOptions {
                 work_dir: work_dir(out.as_deref()),
                 golden_dir: out,
@@ -523,7 +616,32 @@ fn build_operation(op: OpCommand) -> Result<(Operation, CliRunOptions)> {
                 // A fresh seed by default so "regenerate" is not identical to
                 // the previous revision; pass --seed for golden replay.
                 seed: Some(seed.unwrap_or_else(random_seed)),
-                generation: GenerationOverrides { steps, size, model },
+                generation: GenerationOverrides {
+                    steps,
+                    size,
+                    model,
+                    loras,
+                },
+                manual_text: None,
+            },
+        ),
+        OpCommand::Resize {
+            target,
+            size: (width, height),
+            out,
+            approve,
+        } => (
+            Operation::Resize {
+                target,
+                width,
+                height,
+            },
+            CliRunOptions {
+                work_dir: work_dir(out.as_deref()),
+                golden_dir: out,
+                approvals: approval_policy(approve),
+                seed: Some(random_seed()),
+                generation: GenerationOverrides::default(),
                 manual_text: None,
             },
         ),
@@ -582,6 +700,7 @@ fn build_operation(op: OpCommand) -> Result<(Operation, CliRunOptions)> {
             steps,
             size,
             model,
+            loras,
             out,
             approve,
         } => (
@@ -590,13 +709,62 @@ fn build_operation(op: OpCommand) -> Result<(Operation, CliRunOptions)> {
                 description,
                 mask_prompt,
                 inpaint_prompt,
+                size: None,
+                steps: None,
+                loras: Vec::new(),
             },
             CliRunOptions {
                 work_dir: work_dir(out.as_deref()),
                 golden_dir: out,
                 approvals: approval_policy(approve),
                 seed: Some(seed.unwrap_or_else(random_seed)),
-                generation: GenerationOverrides { steps, size, model },
+                generation: GenerationOverrides {
+                    steps,
+                    size,
+                    model,
+                    loras,
+                },
+                manual_text: None,
+            },
+        ),
+        OpCommand::AttachLora {
+            target,
+            lora,
+            multiplier,
+        } => (
+            Operation::AttachLora {
+                target,
+                lora,
+                multiplier,
+            },
+            CliRunOptions {
+                work_dir: std::env::temp_dir(),
+                golden_dir: None,
+                approvals: ApprovalPolicy::auto(),
+                seed: None,
+                generation: GenerationOverrides::default(),
+                manual_text: None,
+            },
+        ),
+        OpCommand::LoraScale { lora, multiplier } => (
+            Operation::LoraScale { lora, multiplier },
+            CliRunOptions {
+                work_dir: std::env::temp_dir(),
+                golden_dir: None,
+                approvals: ApprovalPolicy::auto(),
+                seed: None,
+                generation: GenerationOverrides::default(),
+                manual_text: None,
+            },
+        ),
+        OpCommand::LoraRemove { lora } => (
+            Operation::LoraRemove { lora },
+            CliRunOptions {
+                work_dir: std::env::temp_dir(),
+                golden_dir: None,
+                approvals: ApprovalPolicy::auto(),
+                seed: None,
+                generation: GenerationOverrides::default(),
                 manual_text: None,
             },
         ),
@@ -608,9 +776,10 @@ async fn execute_one(
     operation: &Operation,
     backend: Option<&dyn GenerationBackend>,
     cli: &CliRunOptions,
+    defaults: &GenerationDefaults,
     origin: OpOrigin,
 ) -> Result<ops::OpOutcome> {
-    let options = cli.to_execute_options(backend, origin);
+    let options = cli.to_execute_options(backend, defaults, origin);
     let outcome = ops::execute(registry, operation, &options)
         .await
         .map_err(|error| anyhow!(error))?;
@@ -778,7 +947,17 @@ fn print_outcome(registry: &ArtifactRegistry, operation: &Operation, outcome: &o
             let id = outcome.artifact_id.expect("compose has a beat");
             println!("composed beat {}", registry.ref_of(id));
         }
-        Operation::Regenerate { .. } | Operation::Modify { .. } => {
+        Operation::AttachLora { .. } => {
+            let id = outcome.artifact_id.expect("attach-lora has an artifact");
+            println!("attached lora to {}", registry.ref_of(id));
+        }
+        Operation::LoraScale { lora, .. } => {
+            println!("scaled lora {lora}");
+        }
+        Operation::LoraRemove { lora } => {
+            println!("removed lora {lora}");
+        }
+        Operation::Regenerate { .. } | Operation::Resize { .. } | Operation::Modify { .. } => {
             let id = outcome.artifact_id.expect("visual ops have an artifact");
             let revision_id = outcome.revision_id.expect("visual ops start a revision");
             match outcome.status {
@@ -858,9 +1037,13 @@ fn operation_name(operation: &Operation) -> &'static str {
         Operation::Create { .. } => "create",
         Operation::Variant { .. } => "variant",
         Operation::Regenerate { .. } => "regenerate",
+        Operation::Resize { .. } => "resize",
         Operation::Compose { .. } => "compose",
         Operation::Draft { .. } => "draft",
         Operation::Modify { .. } => "modify",
+        Operation::AttachLora { .. } => "attach-lora",
+        Operation::LoraScale { .. } => "lora-scale",
+        Operation::LoraRemove { .. } => "lora-remove",
     }
 }
 
@@ -902,8 +1085,8 @@ async fn run_stack(
         .operations
         .iter()
         .any(|op| operation_needs_backend(op, None));
+    let config = AppConfig::load().context("could not load config/app.toml")?;
     let backend = if needs_backend {
-        let config = AppConfig::load().context("could not load config/app.toml")?;
         Some(CreativeBackend::new(&config))
     } else {
         None
@@ -923,6 +1106,7 @@ async fn run_stack(
             operation,
             backend.as_ref().map(|b| b as &dyn GenerationBackend),
             &cli,
+            &config.generation_defaults,
             origin,
         )
         .await
@@ -944,7 +1128,7 @@ async fn propose_stack(project_path: &Path, message: &str, out: Option<PathBuf>)
     let backend = CreativeBackend::new(&config);
 
     let stack = backend
-        .propose_stack(&registry, message)
+        .propose_stack(&registry, &config.generation_defaults, None, message)
         .await
         .map_err(|error| anyhow!(error))?;
     let pretty = serde_json::to_string_pretty(&stack).context("could not serialize stack")?;

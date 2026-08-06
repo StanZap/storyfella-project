@@ -176,12 +176,64 @@ config points at the gemma model used on the dev machine.
   (`CreativeBackend::propose_stack`, shared with `svs stack propose`) and
   shown in an approval modal with per-op toggles; approved stacks run in
   order through the same worker-thread machinery, so intra-op checkpoints
-  stay interactive. Deferred per §6:
+  stay interactive. The proposal prompt names the **currently viewed
+  artifact** (`propose_stack` takes it) — requests without an explicit
+  `c:` ref target the viewed artifact, so a change typed while viewing a
+  variant edits the variant, never its base; the composer shows the
+  binding as a `→ c:<ref>` chip. The operation log carries a **re-run**
+  icon per applied row (`regenerate`/`modify`/`draft` only — re-executing
+  the exact op with a fresh seed through the same worker path; creating
+  ops would duplicate state and are excluded with a tooltip).
+  Deferred per §6:
   artboard pan/zoom, `c:` autocomplete, syntax highlighting, and the
   compose/draft op surface (beats are item 5, Studio integration).
 - `paint_strokes` is vocabulary (a `Step` + builder method) but not
   executable in slice 1; `describe`/`critique` LLM steps degrade to manual
   input.
+
+## After slice 1: generation quality controls + LoRA registry
+
+- **Configurable defaults** (`config/app.toml`, editable in Settings →
+  Image generation, persisted line-preserving): `[generation] steps`,
+  `[generation.sizes]` per kind (`WxH` strings), `[lora]` bindings
+  (`inpaint`, `character`, `environment`, `object` file names within
+  `generation.lora_dir` plus a shared `multiplier`; discovery is recursive
+  (subfolders and symlinked model trees) with a refresh icon in Settings). The
+  canvas ops read a
+  live `Signal<GenerationDefaults>` (Workspace context); the CLI builds
+  them from the loaded config. Kind resolution order everywhere: the
+  artifact's explicit `--size` → the config override → the built-in kind
+  default.
+- **Sizes, steps, and adapters are user-requested intent.** The visual
+  ops (`create`/`variant`/`regenerate`/`modify`) carry optional `size`,
+  `steps`, and `loras` fields in the LLM JSON vocabulary, plus the
+  dedicated `resize` op (sets the artifact's default size **and**
+  regenerates at it). The planner prompt tells the model to include them
+  ONLY when the user explicitly asks for a size, more steps, or a named
+  adapter — never invented. All validated at compile (multiples of 32,
+  256..=2048; steps 1..=50; multipliers -2..=2).
+- **Tool-calling planner.** `CreativeBackend::propose_stack` runs a
+  multi-round tool session (`list_artifacts`, `list_loras` — the model
+  discovers the registry and the adapters itself) with the strict JSON
+  schema riding every round so the final stack stays in the closed
+  vocabulary (validated live against LM Studio). Servers that reject
+  `tools` fall back to the static listing + strict schema.
+- **`variant --name`** — explicit naming for variants (auto-naming
+  `{base}-{axis}` remains the fallback).
+- **LoRA registry** (§12 item 6): `ArtifactRegistry.loras` round-trips
+  the `lora_registry` table; `/attach-lora <ref> <file|entry>`
+  `[--multiplier]` binds (file must exist in `lora_dir`), `/lora-scale`
+  and `/lora-remove` adjust/unbind by entry name — all three in the slash
+  parser, the CLI, and the LLM closed vocabulary (the planner prompt lists
+  the discovered adapters so the LLM can propose bindings). Auto-injection
+  into every generation pipeline at compile: artifact-bound entries
+  (walking the variant-of base chain) first, then the config kind binding,
+  then the inpaint adapter on `modify`; first-wins by resolved path,
+  missing-on-disk adapters are skipped with a warning. Per-run `--lora
+  <file>@<mult>` CLI flags append after the auto-injected set (deduped).
+- `svs` CLI: `op attach-lora`/`lora-scale`/`lora-remove`, `--lora` on
+  `create`/`variant`/`regenerate`/`modify`, `stack run`/`propose` carry
+  the new ops.
 
 ## First CI surface
 

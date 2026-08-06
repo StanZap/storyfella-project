@@ -91,6 +91,11 @@ pub fn Workspace(config: AppConfig, app_state: Signal<AppState>) -> Element {
     let autosave = use_signal(AutosaveMode::default);
     use_context_provider(|| autosave);
 
+    // Generation defaults (steps, per-kind sizes, LoRA bindings): shared
+    // with the canvas ops and editable in Settings, which persists them.
+    let defaults = use_signal(|| config.generation_defaults.clone());
+    use_context_provider(|| defaults);
+
     // Save after every change (the default): the effect re-runs on state
     // changes, saves when the project is dirty, and clears the flag.
     use_effect(move || {
@@ -171,8 +176,8 @@ pub fn Workspace(config: AppConfig, app_state: Signal<AppState>) -> Element {
             div { class: "min-h-0 min-w-0",
                 match screen() {
                     AppScreen::Projects => rsx! { Projects { config: config.clone(), app_state, on_open: move |_| screen.set(AppScreen::Canvas) } },
-                    AppScreen::Canvas => rsx! { Canvas { app_state, backend } },
-                    AppScreen::Settings => rsx! { Settings { config: config.clone(), backend } },
+                    AppScreen::Canvas => rsx! { Canvas { app_state, backend, defaults } },
+                    AppScreen::Settings => rsx! { Settings { config: config.clone(), backend, defaults } },
                 }
             }
         }

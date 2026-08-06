@@ -255,6 +255,7 @@ async fn probe_fixture(
         max_tokens: Some(args.max_tokens),
         seed: Some(args.seed),
         response_format: Some(response_format.clone()),
+        ..Default::default()
     };
 
     let completion = match client.chat_with_options(&messages, &options).await {
