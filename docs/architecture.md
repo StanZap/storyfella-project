@@ -53,7 +53,8 @@ The native generation server is started with `--listen-ip 127.0.0.1
 
 The Canvas is the primary workspace. A slash command in the composer parses
 into a typed operation (`src/registry/slash.rs`); model-only operations
-(`create`, `variant`) apply instantly, while `regenerate`/`modify` run their
+(`compose`, `create` of text-only kinds) apply instantly, while visual
+`create`/`variant` (first image), `regenerate`, and `modify` run their
 pipeline against `CreativeBackend` in a spawned task.
 
 ```text
@@ -61,7 +62,9 @@ Composer: /create character Mia…  /variant c:mia …  /regenerate c:mia …
     │  slash::parse_slash → Operation (compile validates against the registry)
     ▼
 ops::execute (src/registry/ops.rs)
-    ├─ Direct (create/variant): registry mutation + operation-log entry
+    ├─ Direct (compose / text-only create): registry mutation + log entry
+    ├─ Create/Variant (visual): artifact + first-image pipeline (variants
+    │    reference the base's active image)
     └─ Pipeline (regenerate/modify):
          │  AppState::snapshot_for_undo (registry snapshot — undo basis)
          ▼

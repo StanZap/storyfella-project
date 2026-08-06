@@ -59,6 +59,16 @@ impl ArtifactKind {
         }
     }
 
+    /// Whether this kind carries images (characters, environments, objects).
+    /// Visual kinds get their first image generated as part of `create`/
+    /// `variant`; the rest are text-only.
+    pub fn is_visual(&self) -> bool {
+        matches!(
+            self,
+            ArtifactKind::Character | ArtifactKind::Environment | ArtifactKind::Object
+        )
+    }
+
     /// The default generation size for new visual artifacts of this kind
     /// (multiples of 32 within the contract bounds — see
     /// [`crate::registry::pipeline::is_valid_size`]). An artifact created

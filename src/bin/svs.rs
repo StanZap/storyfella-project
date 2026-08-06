@@ -76,7 +76,8 @@ enum Command {
 
 #[derive(Subcommand)]
 enum OpCommand {
-    /// /create <kind> <description> — new artifact.
+    /// /create <kind> <description> — new artifact (visual kinds generate
+    /// their first image as part of the create).
     Create {
         kind: String,
         description: String,
@@ -87,7 +88,8 @@ enum OpCommand {
         #[arg(long, value_parser = parse_size)]
         size: Option<(u32, u32)>,
     },
-    /// /variant <ref> <description> [axis] — new visual variant.
+    /// /variant <ref> <description> [axis] — new visual variant (its first
+    /// image is an edit of the base).
     Variant {
         target: Ref,
         description: String,
@@ -306,16 +308,23 @@ async fn run(cli: Cli) -> Result<()> {
             } else {
                 None
             };
-            let outcome = execute_one(
+            // Save even on failure: a visual op that fails its pipeline keeps
+            // the artifact and a failed revision (fail-fast, intermediates
+            // preserved), like `stack run`.
+            let result = execute_one(
                 &mut registry,
                 &operation,
                 backend.as_ref().map(|b| b as &dyn GenerationBackend),
                 &cli_options,
                 OpOrigin::User,
             )
-            .await?;
-            print_outcome(&registry, &operation, &outcome);
-            save_project(&cli.project, &registry)
+            .await;
+            if let Ok(outcome) = &result {
+                print_outcome(&registry, &operation, outcome);
+            }
+            let saved = save_project(&cli.project, &registry);
+            result?;
+            saved
         }
         Command::Stack { stack } => match stack {
             StackCommand::Run {
@@ -341,7 +350,10 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Runtime { runtime } => match runtime {
-            RuntimeCommand::Serve { model: profile, force } => {
+            RuntimeCommand::Serve {
+                model: profile,
+                force,
+            } => {
                 if force {
                     kill_resident_generation_servers()?;
                 }
@@ -412,12 +424,15 @@ struct CliRunOptions {
     manual_text: Option<String>,
 }
 
-/// Whether executing the operation needs the live backend. Model-only ops
-/// (create, variant, compose) never do; draft only needs it for the LLM
-/// step, which `--text` bypasses.
+/// Whether executing the operation needs the live backend. Text-only
+/// model ops (create of story/scene/beat, compose) never do; visual
+/// `create`/`variant` generate the first image as part of the op, so they
+/// do; draft only needs it for the LLM step, which `--text` bypasses.
 fn operation_needs_backend(operation: &Operation, manual_text: Option<&str>) -> bool {
     match operation {
-        Operation::Create { .. } | Operation::Variant { .. } | Operation::Compose { .. } => false,
+        Operation::Create { kind, .. } => kind.is_visual(),
+        Operation::Variant { .. } => true,
+        Operation::Compose { .. } => false,
         Operation::Draft { .. } => manual_text.is_none(),
         Operation::Regenerate { .. } | Operation::Modify { .. } => true,
     }
@@ -884,12 +899,10 @@ async fn run_stack(
         return Ok(());
     }
 
-    let needs_backend = stack.operations.iter().any(|op| {
-        matches!(
-            op,
-            Operation::Regenerate { .. } | Operation::Modify { .. } | Operation::Draft { .. }
-        )
-    });
+    let needs_backend = stack
+        .operations
+        .iter()
+        .any(|op| operation_needs_backend(op, None));
     let backend = if needs_backend {
         let config = AppConfig::load().context("could not load config/app.toml")?;
         Some(CreativeBackend::new(&config))

@@ -28,6 +28,15 @@ surfaces the artifact registry in the GUI.
    Rust ↔ Python `GenerateRequest` contract as best-effort native
    passthrough (`mask_images` in the sd.cpp body) so a validated backend
    can be flipped on later without a contract change.
+5. **Visual `create`/`variant` generate the first image.** Character,
+   environment, and object artifacts get their first image as part of the
+   operation (prompt = description, at the artifact's size); the variant's
+   first image is an edit of the base — its active image as the reference
+   (`generate(prompt: variant description, reference: base image)`),
+   matching what a manual `/regenerate c:<base> "<variant desc>"` would
+   have sent. A failed generation keeps the artifact with a failed
+   revision; `/regenerate` is the retry. Text-only kinds (story, scene,
+   beat) and `compose` stay model-only.
 
 ## Modules
 
@@ -84,6 +93,9 @@ svs --project p.db log [c:<ref>]
 defaults otherwise: character 512×768, object 768×768, environment/scene/beat
 1024×576); `regenerate`/`modify` honor it, and `--size`/`--steps` on those
 commands override it per run. Variants inherit the base artifact's size.
+`create`/`variant` of visual kinds generate the first image at that size as
+part of the op (so they need the generation backend — see the table below);
+variants use the base's active image as the reference.
 
 `--approve auto|interactive` (default interactive) resolves checkpoints;
 `--out <dir>` drops every intermediate (image, mask, composite) into a
@@ -98,9 +110,9 @@ can stay light (or run on another machine) without the generation backend:
 
 | Tier | Needs running | Ops |
 | --- | --- | --- |
-| Model-only | nothing — any machine, even a fresh checkout | `create`, `variant`, `compose`, `draft --text`, `log`, `project`, `stack run` of model-only stacks |
+| Model-only | nothing — any machine, even a fresh checkout | `create` of text-only kinds (story/scene/beat), `compose`, `draft --text`, `log`, `project`, `stack run` of model-only stacks |
 | LLM-assisted | LM Studio (see below) | `draft` (propose + approve), `modify` without explicit prompts (the LLM plans the mask/inpaint split), `stack propose` |
-| Generation | provisioned Krea profile + resident sd-server | `regenerate`, `modify` |
+| Generation | provisioned Krea profile + resident sd-server | `create`/`variant` of visual kinds (first image), `regenerate`, `modify` |
 
 LLM steps are soft dependencies: with LM Studio off, `draft`/`modify`
 degrade to manual input at a checkpoint instead of failing the stack.

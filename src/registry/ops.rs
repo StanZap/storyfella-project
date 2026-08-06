@@ -4,8 +4,10 @@
 //! Operations are the *intent* layer (semantic, logged, approval-gated,
 //! user/LLM-facing); pipelines (`pipeline.rs`) are the *execution* layer.
 //! Each operation compiles to a pipeline — except the model-only slice-1
-//! ops (create, variant, compose), which mutate the registry directly, and
-//! pure ops which do not exist in slice 1.
+//! ops (compose, and `create` of text-only kinds), which mutate the
+//! registry directly. Visual `create`/`variant` are both: the registry
+//! mutation plus a first-image pipeline (the variant references the base's
+//! active image).
 //!
 //! Slice-1 operations: `create`, `variant`, `regenerate`, `compose`,
 //! `draft`, and `modify` (the mask-edit path: segment → confirm mask →
@@ -219,7 +221,7 @@ impl Operation {
 /// The result of compiling an operation.
 #[derive(Clone, Debug)]
 pub enum CompiledOp {
-    /// A model-only operation; no pipeline (create, variant, compose).
+    /// A model-only operation; no pipeline (compose, and text-only create).
     Direct,
     /// A pipeline to execute against a backend.
     Pipeline(Pipeline),
@@ -301,7 +303,10 @@ pub enum OpError {
 pub fn compile(registry: &ArtifactRegistry, op: &Operation) -> Result<CompiledOp, CompileError> {
     match op {
         Operation::Create {
-            description, size, ..
+            kind,
+            description,
+            size,
+            ..
         } => {
             if description.trim().is_empty() {
                 return Err(CompileError::EmptyDescription);
@@ -314,7 +319,18 @@ pub fn compile(registry: &ArtifactRegistry, op: &Operation) -> Result<CompiledOp
                     });
                 }
             }
-            Ok(CompiledOp::Direct)
+            if !kind.is_visual() {
+                return Ok(CompiledOp::Direct);
+            }
+            // Visual kinds generate their first image as part of create: the
+            // description is the prompt, at the artifact's size (explicit
+            // `--size`, or the kind default).
+            let mut builder = super::pipeline::PipelineBuilder::new();
+            if let Some((width, height)) = size.or_else(|| kind.default_size()) {
+                builder.size(width, height);
+            }
+            builder.generate(PromptSource::Text(description.clone()), None, None);
+            Ok(CompiledOp::Pipeline(builder.build()?))
         }
         Operation::Variant {
             target,
@@ -334,7 +350,22 @@ pub fn compile(registry: &ArtifactRegistry, op: &Operation) -> Result<CompiledOp
             if description.trim().is_empty() {
                 return Err(CompileError::EmptyDescription);
             }
-            Ok(CompiledOp::Direct)
+            // The variant's first image is an edit of the base: the
+            // description as prompt with the base's active image as the
+            // reference, at the size the variant inherits.
+            let mut builder = super::pipeline::PipelineBuilder::new();
+            if let Some((width, height)) = base_artifact
+                .default_size
+                .or_else(|| base_artifact.kind.default_size())
+            {
+                builder.size(width, height);
+            }
+            let reference = registry
+                .latest_image(base)
+                .and_then(|revision| revision.asset_path.clone())
+                .map(|path| builder.reference_image(path));
+            builder.generate(PromptSource::Text(description.clone()), reference, None);
+            Ok(CompiledOp::Pipeline(builder.build()?))
         }
         Operation::Compose {
             scene,
@@ -511,6 +542,23 @@ pub async fn execute(
                     ..Default::default()
                 },
             )?;
+            if kind.is_visual() {
+                // The first image is part of create: compile the pipeline
+                // against the fresh artifact and run it like regenerate.
+                let CompiledOp::Pipeline(pipeline) = compile(registry, op)? else {
+                    unreachable!("visual create compiles to a pipeline");
+                };
+                return run_generation(
+                    registry,
+                    op,
+                    id,
+                    pipeline,
+                    description.clone(),
+                    |_| Ok(Vec::new()),
+                    options,
+                )
+                .await;
+            }
             let log_id = registry.push_log(op.clone(), options.origin, OpStatus::Applied, Some(id));
             Ok(OpOutcome {
                 artifact_id: Some(id),
@@ -552,14 +600,21 @@ pub async fn execute(
                     ..Default::default()
                 },
             )?;
-            let log_id = registry.push_log(op.clone(), options.origin, OpStatus::Applied, Some(id));
-            Ok(OpOutcome {
-                artifact_id: Some(id),
-                revision_id: None,
-                log_id: Some(log_id),
-                run: None,
-                status: OpStatus::Applied,
-            })
+            // The first image is part of variant: an edit of the base (its
+            // active image as reference), run like regenerate.
+            let CompiledOp::Pipeline(pipeline) = compile(registry, op)? else {
+                unreachable!("variant compiles to a pipeline");
+            };
+            return run_generation(
+                registry,
+                op,
+                id,
+                pipeline,
+                description.clone(),
+                |_| Ok(Vec::new()),
+                options,
+            )
+            .await;
         }
         Operation::Compose {
             scene,
@@ -677,16 +732,9 @@ pub async fn execute(
         }
         Operation::Regenerate { .. } | Operation::Modify { .. } => {
             let id = registry.resolve(op.target_ref().expect("visual ops have a target"))?;
-            let mut pipeline = match compile(registry, op)? {
-                CompiledOp::Pipeline(pipeline) => pipeline,
-                CompiledOp::Direct => unreachable!("visual ops always compile to pipelines"),
+            let CompiledOp::Pipeline(pipeline) = compile(registry, op)? else {
+                unreachable!("visual ops always compile to pipelines");
             };
-            pipeline
-                .apply_generation_overrides(&options.generation)
-                .map_err(CompileError::Build)?;
-            let backend = options.backend.ok_or(CompileError::BackendRequired)?;
-            let seed = options.run.seed.or(pipeline.params().seed);
-            let model = Some(pipeline.params().model.clone());
             let revision_prompt = match op {
                 Operation::Regenerate { prompt, .. } => prompt
                     .clone()
@@ -699,58 +747,81 @@ pub async fn execute(
                 Operation::Modify { description, .. } => description.clone(),
                 _ => unreachable!(),
             };
-            let revision_id = registry.start_revision(id, revision_prompt, seed, model)?;
-
-            let run = match pipeline.run(backend, &options.run).await {
-                Ok(run) => run,
-                Err(PipelineError::Rejected) => {
-                    registry.cancel_revision(id, revision_id)?;
-                    let log_id =
-                        registry.push_log(op.clone(), options.origin, OpStatus::Rejected, Some(id));
-                    return Ok(OpOutcome {
-                        artifact_id: Some(id),
-                        revision_id: Some(revision_id),
-                        log_id: Some(log_id),
-                        run: None,
-                        status: OpStatus::Rejected,
-                    });
-                }
-                Err(error) => {
-                    registry.fail_revision(id, revision_id, error.to_string())?;
-                    return Err(OpError::Pipeline(error));
-                }
+            let masks = |run: &super::pipeline::PipelineRun| -> Result<Vec<StoredMask>, OpError> {
+                let Operation::Modify { mask_prompt, .. } = op else {
+                    return Ok(Vec::new());
+                };
+                let mask = selected_mask_from_run(run)
+                    .ok_or_else(|| OpError::Apply("modify recorded no mask".to_owned()))?;
+                Ok(vec![StoredMask {
+                    id: Uuid::new_v4(),
+                    asset_path: mask.path.display().to_string(),
+                    source: super::MaskSource::Auto,
+                    prompt: mask_prompt.clone().or_else(|| segment_prompt_from_run(run)),
+                    score: Some(mask.score),
+                }])
             };
+            run_generation(registry, op, id, pipeline, revision_prompt, masks, options).await
+        }
+    }
+}
 
-            let asset = run
-                .final_image()
-                .ok_or_else(|| OpError::Apply("pipeline produced no final image".to_owned()))?;
-            let masks = match op {
-                Operation::Modify { mask_prompt, .. } => {
-                    let mask = selected_mask_from_run(&run)
-                        .ok_or_else(|| OpError::Apply("modify recorded no mask".to_owned()))?;
-                    vec![StoredMask {
-                        id: Uuid::new_v4(),
-                        asset_path: mask.path.display().to_string(),
-                        source: super::MaskSource::Auto,
-                        prompt: mask_prompt
-                            .clone()
-                            .or_else(|| segment_prompt_from_run(&run)),
-                        score: Some(mask.score),
-                    }]
-                }
-                _ => Vec::new(),
-            };
-            registry.finish_revision(id, revision_id, asset.display().to_string(), masks)?;
-            let log_id = registry.push_log(op.clone(), options.origin, OpStatus::Applied, Some(id));
-            Ok(OpOutcome {
+/// The shared visual-op execution: start a revision on the artifact, run
+/// the pipeline against the backend, then finish (promote the image) or
+/// fail (record the error; the artifact keeps its last good image). A
+/// rejected checkpoint cancels the revision and logs the op as rejected; a
+/// failed pipeline fails the revision and surfaces the error. One op-log
+/// entry is written with `op` on success and rejection.
+async fn run_generation(
+    registry: &mut ArtifactRegistry,
+    op: &Operation,
+    id: Uuid,
+    mut pipeline: Pipeline,
+    revision_prompt: String,
+    masks: impl FnOnce(&super::pipeline::PipelineRun) -> Result<Vec<StoredMask>, OpError>,
+    options: &ExecuteOptions<'_>,
+) -> Result<OpOutcome, OpError> {
+    pipeline
+        .apply_generation_overrides(&options.generation)
+        .map_err(CompileError::Build)?;
+    let backend = options.backend.ok_or(CompileError::BackendRequired)?;
+    let seed = options.run.seed.or(pipeline.params().seed);
+    let model = Some(pipeline.params().model.clone());
+    let revision_id = registry.start_revision(id, revision_prompt, seed, model)?;
+
+    let run = match pipeline.run(backend, &options.run).await {
+        Ok(run) => run,
+        Err(PipelineError::Rejected) => {
+            registry.cancel_revision(id, revision_id)?;
+            let log_id =
+                registry.push_log(op.clone(), options.origin, OpStatus::Rejected, Some(id));
+            return Ok(OpOutcome {
                 artifact_id: Some(id),
                 revision_id: Some(revision_id),
                 log_id: Some(log_id),
-                run: Some(run),
-                status: OpStatus::Applied,
-            })
+                run: None,
+                status: OpStatus::Rejected,
+            });
         }
-    }
+        Err(error) => {
+            registry.fail_revision(id, revision_id, error.to_string())?;
+            return Err(OpError::Pipeline(error));
+        }
+    };
+
+    let asset = run
+        .final_image()
+        .ok_or_else(|| OpError::Apply("pipeline produced no final image".to_owned()))?;
+    let masks = masks(&run)?;
+    registry.finish_revision(id, revision_id, asset.display().to_string(), masks)?;
+    let log_id = registry.push_log(op.clone(), options.origin, OpStatus::Applied, Some(id));
+    Ok(OpOutcome {
+        artifact_id: Some(id),
+        revision_id: Some(revision_id),
+        log_id: Some(log_id),
+        run: Some(run),
+        status: OpStatus::Applied,
+    })
 }
 
 /// Derives a memorable key/display name from a description: lowercase
@@ -830,11 +901,24 @@ fn segment_prompt_from_run(run: &super::pipeline::PipelineRun) -> Option<String>
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        path::{Path, PathBuf},
+        sync::Mutex,
+    };
+
     use super::*;
     use crate::registry::{
         pipeline::{BlockedOn, Decision, MaskCandidate, PipelineRun, StepOutput},
         CreateArtifact,
     };
+
+    /// A fresh temp folder for generated asset paths in tests (the pipeline
+    /// checks reference images exist on disk).
+    fn test_assets_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("svs-ops-assets-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("assets dir should create");
+        dir
+    }
 
     fn registry_with(artifacts: &[(ArtifactKind, &str)]) -> ArtifactRegistry {
         let mut registry = ArtifactRegistry::new();
@@ -1014,6 +1098,8 @@ mod tests {
     #[test]
     fn create_stores_the_size_and_variant_inherits_it() {
         let mut registry = ArtifactRegistry::new();
+        let assets = test_assets_dir();
+        let backend = VisualBackend::new(assets.join("mia.png"));
         let create = Operation::Create {
             kind: ArtifactKind::Character,
             description: "Mia, a lighthouse keeper".into(),
@@ -1021,7 +1107,7 @@ mod tests {
             size: Some((512, 768)),
         };
         let options = ExecuteOptions {
-            backend: None,
+            backend: Some(&backend),
             run: RunOptions::new(std::env::temp_dir()),
             generation: Default::default(),
             manual_text: None,
@@ -1055,8 +1141,10 @@ mod tests {
     }
 
     #[test]
-    fn create_and_variant_apply_directly_and_log() {
+    fn create_and_variant_apply_and_log() {
         let mut registry = ArtifactRegistry::new();
+        let assets = test_assets_dir();
+        let backend = VisualBackend::new(assets.join("mia.png"));
         let create = Operation::Create {
             kind: ArtifactKind::Character,
             description: "Mia, a lighthouse keeper".into(),
@@ -1064,7 +1152,7 @@ mod tests {
             size: None,
         };
         let options = ExecuteOptions {
-            backend: None,
+            backend: Some(&backend),
             run: RunOptions::new(std::env::temp_dir()),
             generation: Default::default(),
             manual_text: None,
@@ -1079,6 +1167,8 @@ mod tests {
             registry.artifact(mia).unwrap().kind,
             ArtifactKind::Character
         );
+        // The first image came with the create.
+        assert!(registry.latest_image(mia).is_some());
         assert_eq!(registry.log.len(), 1);
         assert_eq!(registry.log[0].status, OpStatus::Applied);
 
@@ -1098,7 +1188,194 @@ mod tests {
         // Variants are auto-named so their c: ref stays unique.
         assert_eq!(artifact.name, "mia-outfit");
         assert_eq!(registry.ref_of(variant_id), "c:mia-outfit");
+        // The variant's first image came with the variant.
+        assert!(registry.latest_image(variant_id).is_some());
         assert_eq!(registry.log.len(), 2);
+    }
+
+    #[test]
+    fn text_only_create_needs_no_backend() {
+        let mut registry = ArtifactRegistry::new();
+        let create = Operation::Create {
+            kind: ArtifactKind::Story,
+            description: "a lighthouse story".into(),
+            name: Some("tale".into()),
+            size: None,
+        };
+        let options = ExecuteOptions {
+            backend: None,
+            run: RunOptions::new(std::env::temp_dir()),
+            generation: Default::default(),
+            manual_text: None,
+            origin: OpOrigin::User,
+        };
+        let outcome = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(execute(&mut registry, &create, &options))
+            .unwrap();
+        assert_eq!(outcome.status, OpStatus::Applied);
+        assert_eq!(outcome.revision_id, None, "text-only kinds carry no image");
+        assert!(outcome.run.is_none());
+        assert_eq!(registry.log.len(), 1);
+    }
+
+    #[test]
+    fn visual_create_generates_the_first_image() {
+        let mut registry = ArtifactRegistry::new();
+        let backend = VisualBackend::new(test_assets_dir().join("mia.png"));
+        let create = Operation::Create {
+            kind: ArtifactKind::Character,
+            description: "Mia, a lighthouse keeper".into(),
+            name: Some("mia".into()),
+            size: None,
+        };
+        let options = ExecuteOptions {
+            backend: Some(&backend),
+            run: RunOptions::new(std::env::temp_dir()),
+            generation: Default::default(),
+            manual_text: None,
+            origin: OpOrigin::User,
+        };
+        let outcome = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(execute(&mut registry, &create, &options))
+            .unwrap();
+        let mia = outcome.artifact_id.unwrap();
+        let asset = registry
+            .latest_image(mia)
+            .and_then(|revision| revision.asset_path.clone());
+        assert!(asset.is_some(), "create generates the first image");
+        assert!(Path::new(asset.as_deref().unwrap()).is_file());
+        // One log entry, the create itself.
+        assert_eq!(registry.log.len(), 1);
+        assert_eq!(registry.log[0].status, OpStatus::Applied);
+        // The request: description as prompt, kind default size, no reference.
+        let request = &backend.requests()[0];
+        assert_eq!(request.prompt, "Mia, a lighthouse keeper");
+        assert_eq!((request.width, request.height), (Some(512), Some(768)));
+        assert!(request.reference_image_path.is_none());
+    }
+
+    #[test]
+    fn variant_first_image_references_the_base() {
+        let mut registry = ArtifactRegistry::new();
+        let assets = test_assets_dir();
+        let mia_asset = assets.join("mia.png");
+        std::fs::write(&mia_asset, b"png").expect("dummy image should write");
+        let base = registry
+            .create_artifact(
+                ArtifactKind::Character,
+                CreateArtifact {
+                    name: "mia".into(),
+                    description: "Mia, a lighthouse keeper".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let base_revision = registry
+            .start_revision(base, "Mia on the cliff".into(), Some(1), None)
+            .unwrap();
+        registry
+            .finish_revision(
+                base,
+                base_revision,
+                mia_asset.display().to_string(),
+                Vec::new(),
+            )
+            .unwrap();
+
+        let backend = VisualBackend::new(assets.join("mia-outfit.png"));
+        let variant = Operation::Variant {
+            target: Ref::new(registry.short_id(base)),
+            description: "in yellow rain gear".into(),
+            axis: Some(VariantAxis::Outfit),
+        };
+        let options = ExecuteOptions {
+            backend: Some(&backend),
+            run: RunOptions::new(std::env::temp_dir()),
+            generation: Default::default(),
+            manual_text: None,
+            origin: OpOrigin::User,
+        };
+        let outcome = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(execute(&mut registry, &variant, &options))
+            .unwrap();
+        let variant_id = outcome.artifact_id.unwrap();
+        assert!(
+            registry.latest_image(variant_id).is_some(),
+            "variant generates its first image"
+        );
+        // The first image is an edit of the base: its active image as the
+        // reference, the variant description as the prompt, the base's size.
+        let request = &backend.requests()[0];
+        assert_eq!(request.prompt, "in yellow rain gear");
+        assert_eq!(
+            request.reference_image_path.as_deref(),
+            Some(mia_asset.to_str().unwrap())
+        );
+        assert_eq!((request.width, request.height), (Some(512), Some(768)));
+
+        // A base without an image still generates, just without a reference.
+        let mut registry = ArtifactRegistry::new();
+        let base = registry
+            .create_artifact(
+                ArtifactKind::Object,
+                CreateArtifact {
+                    name: "lantern".into(),
+                    description: "an antique brass lantern".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let backend = VisualBackend::new(test_assets_dir().join("lantern-rusted.png"));
+        let options = ExecuteOptions {
+            backend: Some(&backend),
+            run: RunOptions::new(std::env::temp_dir()),
+            generation: Default::default(),
+            manual_text: None,
+            origin: OpOrigin::User,
+        };
+        let variant = Operation::Variant {
+            target: Ref::new(registry.short_id(base)),
+            description: "rusted".into(),
+            axis: Some(VariantAxis::Weather),
+        };
+        let outcome = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(execute(&mut registry, &variant, &options))
+            .unwrap();
+        let variant_id = outcome.artifact_id.unwrap();
+        assert!(registry.latest_image(variant_id).is_some());
+        assert!(backend.requests()[0].reference_image_path.is_none());
+    }
+
+    #[test]
+    fn visual_create_without_a_backend_is_a_compile_error() {
+        let mut registry = ArtifactRegistry::new();
+        let create = Operation::Create {
+            kind: ArtifactKind::Character,
+            description: "Mia".into(),
+            name: None,
+            size: None,
+        };
+        let options = ExecuteOptions {
+            backend: None,
+            run: RunOptions::new(std::env::temp_dir()),
+            generation: Default::default(),
+            manual_text: None,
+            origin: OpOrigin::User,
+        };
+        let error = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(execute(&mut registry, &create, &options))
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            OpError::Compile(CompileError::BackendRequired)
+        ));
+        // The artifact is still created before the generation step.
+        assert_eq!(registry.artifacts.len(), 1);
     }
 
     #[test]
@@ -1114,8 +1391,9 @@ mod tests {
                 },
             )
             .unwrap();
+        let backend = VisualBackend::new(test_assets_dir().join("mia-outfit.png"));
         let options = ExecuteOptions {
-            backend: None,
+            backend: Some(&backend),
             run: RunOptions::new(std::env::temp_dir()),
             generation: Default::default(),
             manual_text: None,
@@ -1255,6 +1533,84 @@ mod tests {
             _request: &str,
         ) -> futures_util::future::BoxFuture<'_, Result<Option<String>, PipelineError>> {
             Box::pin(async move { Ok(Some("The keeper winds the lamp.".to_owned())) })
+        }
+        fn llm_plan(
+            &self,
+            _request: &str,
+        ) -> futures_util::future::BoxFuture<
+            '_,
+            Result<Option<super::super::pipeline::PlannedEdit>, PipelineError>,
+        > {
+            unreachable!()
+        }
+    }
+
+    /// A fake generation backend: captures requests and returns a canned
+    /// image path for every generate call.
+    struct VisualBackend {
+        generated: PathBuf,
+        requests: Mutex<Vec<crate::vision::GenerateRequest>>,
+    }
+
+    impl VisualBackend {
+        fn new(generated: PathBuf) -> Self {
+            Self {
+                generated,
+                requests: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn requests(&self) -> Vec<crate::vision::GenerateRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    impl GenerationBackend for VisualBackend {
+        fn segment(
+            &self,
+            _request: &crate::vision::SegmentRequest,
+        ) -> futures_util::future::BoxFuture<
+            '_,
+            Result<crate::vision::SegmentResponse, PipelineError>,
+        > {
+            unreachable!()
+        }
+        fn generate(
+            &self,
+            request: &crate::vision::GenerateRequest,
+        ) -> futures_util::future::BoxFuture<
+            '_,
+            Result<crate::vision::GenerateResponse, PipelineError>,
+        > {
+            let request = request.clone();
+            let generated = self.generated.clone();
+            Box::pin(async move {
+                self.requests.lock().unwrap().push(request.clone());
+                // Write a real file so a later op using this revision as a
+                // reference image passes the pipeline's disk check.
+                if let Some(parent) = generated.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                std::fs::write(&generated, b"png").expect("dummy image should write");
+                Ok(crate::vision::GenerateResponse {
+                    status: "completed".to_owned(),
+                    image_path: Some(generated.display().to_string()),
+                    model: request.model.clone(),
+                    device: None,
+                    dtype: None,
+                    seed: request.seed,
+                    width: request.width,
+                    height: request.height,
+                    duration_ms: None,
+                    error: None,
+                })
+            })
+        }
+        fn llm_draft(
+            &self,
+            _request: &str,
+        ) -> futures_util::future::BoxFuture<'_, Result<Option<String>, PipelineError>> {
+            unreachable!()
         }
         fn llm_plan(
             &self,

@@ -53,9 +53,10 @@ failed | cancelled`.
   an optional `default_size` (validated: multiples of 32 within 256..=2048,
   the pipeline contract bounds); `None` means the kind default applies
   (character 512×768, object 768×768, environment/scene/beat 1024×576,
-  story text-only). Variants inherit the base's size. `regenerate`/`modify`
-  compile their pipeline with the resolved size; per-run overrides (CLI
-  `--size`) still win.
+  story text-only). Variants inherit the base's size. Visual `create`/
+  `variant` compile their first-image pipeline with the resolved size (the
+  variant also references the base's active image); `regenerate`/`modify`
+  use the same rule, and per-run overrides (CLI `--size`) still win.
 - **Revisions own the active image.** `start_revision` appends a `queued`
   revision and marks it active; `finish_revision` promotes it (completed +
   asset). `latest_image` is the last completed revision with an asset — a

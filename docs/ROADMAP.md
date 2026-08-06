@@ -233,6 +233,11 @@ core that drives prototyping; slices 2 and 3 extend it.
 
 Semantics notes:
 
+- **Visual `create`/`variant` generate the first image** as part of the
+  operation (prompt = description; the variant's first image is an edit of
+  the base — its active image as reference, the size it inherits). A failed
+  generation keeps the artifact with a failed revision; `/regenerate` is
+  the retry. Text-only kinds (story, scene, beat) still apply instantly.
 - `/modify` changes the artifact's defining description (character sheet,
   scene summary) on text artifacts; on visual artifacts it routes to the
   mask-guided regional edit pipeline (see §5): segment → confirm mask →
@@ -560,9 +565,12 @@ plan to ship, with its status; update it when work lands.
    registry snapshots. Artifacts carry an optional default generation size
    (`/create … --size WxH`; per-kind defaults otherwise: character 512×768,
    object 768×768, environment/scene/beat 1024×576) that `regenerate`/
-   `modify` honor. The legacy storyboard model was removed with it
-   (`src/models/`, `src/timeline/`, schema v3 drops `project_json`). —
-   **✅ implemented**; artboard pan/zoom, `c:` autocomplete, and syntax
+   `modify` honor. Visual `create`/`variant` generate the artifact's first
+   image as part of the operation (variants reference the base's active
+   image); a failed generation keeps the artifact with a failed revision,
+   and `/regenerate` is the retry. The legacy storyboard model was removed
+   with it (`src/models/`, `src/timeline/`, schema v3 drops `project_json`).
+   — **✅ implemented**; artboard pan/zoom, `c:` autocomplete, and syntax
    highlighting remain deferred (§6).
 5. **Studio integration:** scenes group the timeline; re-sync flows per
    mode (compose beats in the canvas, story sequencing). — **⏳ planned**

@@ -27,13 +27,6 @@ use super::{
     icons::{Icon, IconName},
 };
 
-/// The kinds that carry images and take variants.
-const VISUAL_KINDS: [ArtifactKind; 3] = [
-    ArtifactKind::Character,
-    ArtifactKind::Environment,
-    ArtifactKind::Object,
-];
-
 /// The sidebar group order (visual kinds first — the creation loop).
 const GROUP_ORDER: [ArtifactKind; 6] = [
     ArtifactKind::Character,
@@ -197,7 +190,7 @@ fn random_seed() -> u64 {
 }
 
 fn is_visual(artifact: &Artifact) -> bool {
-    VISUAL_KINDS.contains(&artifact.kind)
+    artifact.kind.is_visual()
 }
 
 fn revision_status_label(status: RevisionStatus) -> &'static str {
@@ -552,7 +545,7 @@ fn ArtifactDetail(
                             EmptyVisual {
                                 icon: IconName::Generate,
                                 title: if is_visual { "No image yet" } else { "Not a visual artifact" },
-                                description: if is_visual { "Run /regenerate to generate the first image (Krea must be provisioned)." } else { "This artifact carries text only — its images come from the layers that use it." }
+                                description: if is_visual { "The first image is generated with the create — this one failed or predates it. Run /regenerate to retry (Krea must be provisioned)." } else { "This artifact carries text only — its images come from the layers that use it." }
                             }
                         }
                     },

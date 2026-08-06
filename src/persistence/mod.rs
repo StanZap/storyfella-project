@@ -1030,9 +1030,73 @@ mod tests {
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     }
 
+    /// A fake generation backend: writes a dummy image file (so later ops
+    /// using the revision as a reference pass the pipeline's disk check)
+    /// and returns its path.
+    struct VisualBackend;
+    impl crate::registry::pipeline::GenerationBackend for VisualBackend {
+        fn segment(
+            &self,
+            _request: &crate::vision::SegmentRequest,
+        ) -> futures_util::future::BoxFuture<
+            '_,
+            Result<crate::vision::SegmentResponse, crate::registry::pipeline::PipelineError>,
+        > {
+            unreachable!()
+        }
+        fn generate(
+            &self,
+            request: &crate::vision::GenerateRequest,
+        ) -> futures_util::future::BoxFuture<
+            '_,
+            Result<crate::vision::GenerateResponse, crate::registry::pipeline::PipelineError>,
+        > {
+            let request = request.clone();
+            Box::pin(async move {
+                let path =
+                    std::env::temp_dir().join(format!("svs-persist-gen-{}.png", Uuid::new_v4()));
+                std::fs::write(&path, b"png").expect("dummy image should write");
+                Ok(crate::vision::GenerateResponse {
+                    status: "completed".to_owned(),
+                    image_path: Some(path.display().to_string()),
+                    model: request.model.clone(),
+                    device: None,
+                    dtype: None,
+                    seed: request.seed,
+                    width: request.width,
+                    height: request.height,
+                    duration_ms: None,
+                    error: None,
+                })
+            })
+        }
+        fn llm_draft(
+            &self,
+            _request: &str,
+        ) -> futures_util::future::BoxFuture<
+            '_,
+            Result<Option<String>, crate::registry::pipeline::PipelineError>,
+        > {
+            unreachable!()
+        }
+        fn llm_plan(
+            &self,
+            _request: &str,
+        ) -> futures_util::future::BoxFuture<
+            '_,
+            Result<
+                Option<crate::registry::pipeline::PlannedEdit>,
+                crate::registry::pipeline::PipelineError,
+            >,
+        > {
+            unreachable!()
+        }
+    }
+
     fn apply(registry: &mut ArtifactRegistry, operation: ops::Operation) {
+        let backend = VisualBackend;
         let options = ExecuteOptions {
-            backend: None,
+            backend: Some(&backend),
             run: RunOptions::new(std::env::temp_dir()),
             generation: Default::default(),
             manual_text: None,
