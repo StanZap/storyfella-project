@@ -9,6 +9,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use crate::{
+    errors::{CodedError, ErrorCode},
     llm::LmStudioConfig,
     registry::{GenerationDefaults, KindLoraBindings, LoraBinding, LoraBindings, SizeDefaults},
     runtime::KreaQuantization,
@@ -76,6 +77,20 @@ pub enum ConfigError {
         key: String,
         value: String,
     },
+}
+
+impl CodedError for ConfigError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::PlatformDirectories => ErrorCode::ConfigPlatformDirectories,
+            Self::Read { .. } => ErrorCode::ConfigRead,
+            Self::Parse { .. } => ErrorCode::ConfigParse,
+            Self::Write { .. } => ErrorCode::ConfigWrite,
+            Self::GenerationProfile(_) => ErrorCode::ConfigGenerationProfile,
+            Self::InvalidSize { .. } => ErrorCode::ConfigInvalidSize,
+            Self::MalformedSize { .. } => ErrorCode::ConfigMalformedSize,
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]

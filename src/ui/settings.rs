@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 
 use crate::{
     app::AppConfig,
+    errors::{CodedError, ReportedError},
     llm::LmStudioClient,
     registry::{backend::CreativeBackend, discover_loras, GenerationDefaults, LoraBinding},
     runtime::{
@@ -13,7 +14,7 @@ use crate::{
 };
 
 use super::{
-    components::{SectionHeading, SettingRow, StatusDot},
+    components::{ErrorDetailsButton, SectionHeading, SettingRow, StatusDot},
     icons::{Icon, IconName},
     AutosaveMode,
 };
@@ -32,7 +33,7 @@ enum ModelListState {
     Empty,
     Loading,
     Ready(Vec<String>),
-    Failed(String),
+    Failed(ReportedError),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -126,7 +127,7 @@ pub fn Settings(
     });
     let models_state = use_signal(|| ModelListState::Empty);
     let busy = use_signal(|| None::<ServiceId>);
-    let operation_error = use_signal(|| None::<String>);
+    let operation_error = use_signal(|| None::<ReportedError>);
 
     let effect_runtime = runtime.clone();
     let effect_config = config.clone();
@@ -245,7 +246,7 @@ fn fetch_models(config: AppConfig, mut state: Signal<ModelListState>) {
                 ids.dedup();
                 state.set(ModelListState::Ready(ids));
             }
-            Err(error) => state.set(ModelListState::Failed(error.to_string())),
+            Err(error) => state.set(ModelListState::Failed(error.report().log())),
         }
     });
 }
@@ -257,7 +258,7 @@ fn operate_service(
     action: ServiceAction,
     lm_model: Signal<String>,
     mut busy: Signal<Option<ServiceId>>,
-    mut operation_error: Signal<Option<String>>,
+    mut operation_error: Signal<Option<ReportedError>>,
     health: Signal<Vec<ServiceHealth>>,
     checking: Signal<bool>,
     checked_at: Signal<Option<String>>,
@@ -291,7 +292,7 @@ fn operate_service(
         busy.set(None);
         match result {
             Ok(()) => {}
-            Err(error) => operation_error.set(Some(error.to_string())),
+            Err(error) => operation_error.set(Some(error.report().log())),
         }
         run_checks(runtime, config, lm_model, health, checking, checked_at);
     });
@@ -324,7 +325,7 @@ fn StatusSettings(
     checking: Signal<bool>,
     checked_at: Signal<Option<String>>,
     busy: Signal<Option<ServiceId>>,
-    operation_error: Signal<Option<String>>,
+    operation_error: Signal<Option<ReportedError>>,
     on_check: EventHandler<MouseEvent>,
     on_operate: EventHandler<(ServiceId, ServiceAction)>,
 ) -> Element {
@@ -357,7 +358,14 @@ fn StatusSettings(
             }
         }
         if let Some(error) = operation_error() {
-            p { class: "mb-4 rounded-lg bg-rose-400/[0.06] px-3 py-2 text-[10px] leading-4 text-rose-200/80 ring-1 ring-inset ring-rose-300/[0.12]", "{error}" }
+            div { class: "mb-4 flex items-start gap-3 rounded-lg bg-rose-400/[0.06] px-3 py-2 ring-1 ring-inset ring-rose-300/[0.12]",
+                span { class: "mt-1 size-1.5 shrink-0 rounded-full bg-rose-400" }
+                div { class: "min-w-0 flex-1",
+                    p { class: "font-mono text-[9px] text-rose-300/70", "{error.code.code()}" }
+                    p { class: "mt-0.5 text-[10px] leading-4 text-rose-200/80", "{error.code.message()}" }
+                }
+                ErrorDetailsButton { error }
+            }
         }
         if services.is_empty() {
             div { class: "grid min-h-40 place-items-center rounded-xl border border-dashed border-white/[0.07]",
@@ -504,7 +512,8 @@ fn ModelPicker(
                     span { class: "text-[10px] text-zinc-600", "Loading models…" }
                 },
                 ModelListState::Failed(error) => rsx! {
-                    span { class: "truncate text-[10px] text-zinc-600", title: "{error}", "Could not reach LM Studio" }
+                    span { class: "max-w-52 truncate font-mono text-[9px] text-rose-300/70", title: "{error.details}", "{error.code.code()} · {error.code.message()}" }
+                    ErrorDetailsButton { error: error.clone() }
                     button { class: "shrink-0 rounded-lg bg-white/[0.05] px-2.5 py-1.5 text-[9px] text-zinc-500 transition hover:text-white", onclick: move |_| fetch_models(refresh_config.clone(), models_state), "Retry" }
                 },
                 ModelListState::Ready(models) => {

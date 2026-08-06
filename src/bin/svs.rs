@@ -20,6 +20,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use uuid::Uuid;
 
 use smart_visual_sequencer::app::AppConfig;
+use smart_visual_sequencer::errors::{CodedError, ErrorCode, ReportedError};
 use smart_visual_sequencer::persistence::ProjectDb;
 use smart_visual_sequencer::registry::backend::CreativeBackend;
 use smart_visual_sequencer::registry::ops::{
@@ -340,6 +341,12 @@ fn random_seed() -> u64 {
 }
 
 fn main() -> Result<()> {
+    // Errors surface through `CodedError::report`, which logs with the
+    // error code; without a subscriber those lines would be dropped.
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .compact()
+        .init();
     let cli = Cli::parse();
     let runtime = tokio::runtime::Runtime::new().context("failed to start the async runtime")?;
     runtime.block_on(run(cli))
@@ -425,7 +432,7 @@ async fn run(cli: Cli) -> Result<()> {
                 backend
                     .ensure_profile_ready(profile)
                     .await
-                    .map_err(|error| anyhow!(error))?;
+                    .map_err(|error| anyhow!(error.report().log()))?;
                 println!(
                     "generation runtime ready with {}; Ctrl-C to stop",
                     profile.profile_id()
@@ -434,7 +441,7 @@ async fn run(cli: Cli) -> Result<()> {
                 backend
                     .stop_generation()
                     .await
-                    .map_err(|error| anyhow!(error))?;
+                    .map_err(|error| anyhow!(error.report().log()))?;
                 println!("generation runtime stopped");
                 Ok(())
             }
@@ -459,19 +466,17 @@ fn kill_resident_generation_servers() -> Result<()> {
 /// Loads the registry snapshot from the SQLite database, creating the
 /// database (and schema) on first use.
 fn load_project(path: &Path) -> Result<ArtifactRegistry> {
-    let db = ProjectDb::open(path).context("could not open project database")?;
-    let stored = db
-        .load()
-        .context("could not load registry from project database")?;
+    let db = ProjectDb::open(path).map_err(|error| anyhow!(error.report().log()))?;
+    let stored = db.load().map_err(|error| anyhow!(error.report().log()))?;
     Ok(stored.registry)
 }
 
 /// Replaces the stored snapshot with the in-memory registry (the database is
 /// a snapshot, not an event log).
 fn save_project(path: &Path, registry: &ArtifactRegistry) -> Result<()> {
-    let db = ProjectDb::open(path).context("could not open project database")?;
+    let db = ProjectDb::open(path).map_err(|error| anyhow!(error.report().log()))?;
     db.save_registry(registry)
-        .context("could not save registry to project database")
+        .map_err(|error| anyhow!(error.report().log()))
 }
 
 // ------------------------------------------------------------------ operations
@@ -782,7 +787,7 @@ async fn execute_one(
     let options = cli.to_execute_options(backend, defaults, origin);
     let outcome = ops::execute(registry, operation, &options)
         .await
-        .map_err(|error| anyhow!(error))?;
+        .map_err(|error| anyhow!(error.report().log()))?;
     if let Some(run) = &outcome.run {
         copy_golden_outputs(cli.golden_dir.as_deref(), run)?;
     }
@@ -1113,6 +1118,8 @@ async fn run_stack(
         {
             Ok(outcome) => print_outcome(registry, operation, &outcome),
             Err(error) => {
+                // The error was already reported (coded log) inside
+                // `execute_one`; its text carries the code.
                 bail!("operation {} failed: {error}", operation.summary());
             }
         }
@@ -1130,7 +1137,9 @@ async fn propose_stack(project_path: &Path, message: &str, out: Option<PathBuf>)
     let stack = backend
         .propose_stack(&registry, &config.generation_defaults, None, message)
         .await
-        .map_err(|error| anyhow!(error))?;
+        .map_err(
+            |error| anyhow!(ReportedError::plain(ErrorCode::AppProposalFailed, error).log()),
+        )?;
     let pretty = serde_json::to_string_pretty(&stack).context("could not serialize stack")?;
     println!("{pretty}");
 

@@ -2,7 +2,12 @@ use std::path::{Path, PathBuf};
 
 use dioxus::prelude::*;
 
-use crate::{app::AppConfig, persistence::ProjectDb, state::AppState};
+use crate::{
+    app::AppConfig,
+    errors::{CodedError, ErrorCode, ReportedError},
+    persistence::ProjectDb,
+    state::AppState,
+};
 
 use super::icons::{Icon, IconName};
 
@@ -22,12 +27,11 @@ pub fn Projects(
     on_open: EventHandler<MouseEvent>,
 ) -> Element {
     let mut name = use_signal(String::new);
-    let status = use_signal(|| None::<String>);
+    let mut error_report = use_context::<Signal<Option<ReportedError>>>();
     let recent = use_signal(|| scan_projects(&config.project_dir));
 
     let recent_list = recent.read().clone();
     let recent_items = recent_list.iter().cloned().map(|item| {
-        let mut status = status;
         let mut app_state = app_state;
         rsx! {
             button {
@@ -37,13 +41,11 @@ pub fn Projects(
                     match ProjectDb::open(&path).and_then(|db| db.load()) {
                         Ok(stored) => {
                             app_state.write().open_project(stored, path);
-                            status.set(None);
                             on_open.call(event);
                         }
-                        Err(error) => status.set(Some(format!(
-                            "could not open {}: {error}",
-                            path.display()
-                        ))),
+                        Err(error) => {
+                            error_report.set(Some(error.report().log()));
+                        }
                     }
                 },
                 div { class: "grid aspect-video w-32 shrink-0 place-items-center rounded-xl bg-[linear-gradient(145deg,rgba(124,58,237,.16),rgba(24,24,27,.7))] text-violet-300 ring-1 ring-inset ring-white/[0.07]",
@@ -61,7 +63,6 @@ pub fn Projects(
 
     let create = {
         let project_dir = config.project_dir.clone();
-        let mut status = status;
         let mut name = name;
         move |event: MouseEvent| {
             let story_name = name();
@@ -71,20 +72,14 @@ pub fn Projects(
             match create_project_file(&project_dir, &story_name, app_state) {
                 Ok(()) => {
                     name.set(String::new());
-                    status.set(None);
                     on_open.call(event);
                 }
-                Err(error) => status.set(Some(format!(
-                    "could not create {}: {error}",
-                    project_dir.display()
-                ))),
+                Err(report) => error_report.set(Some(report.log())),
             }
         }
     };
 
     let open_dialog = {
-        let project_dir = config.project_dir.clone();
-        let mut status = status;
         move |event: MouseEvent| {
             let Some(picked) = rfd::FileDialog::new()
                 .set_title("Open project")
@@ -95,13 +90,9 @@ pub fn Projects(
             };
             match open_project_file(&picked, app_state) {
                 Ok(()) => {
-                    status.set(None);
                     on_open.call(event);
                 }
-                Err(error) => status.set(Some(format!(
-                    "could not open {}: {error}",
-                    project_dir.display()
-                ))),
+                Err(report) => error_report.set(Some(report.log())),
             }
         }
     };
@@ -121,10 +112,6 @@ pub fn Projects(
                         Icon { name: IconName::Arrow, class: "size-3.5 rotate-180" }
                         "Open…"
                     }
-                }
-
-                if let Some(error) = status() {
-                    p { class: "mb-6 rounded-lg bg-red-500/10 px-4 py-3 text-xs leading-5 text-red-300/90 ring-1 ring-inset ring-red-400/20", "{error}" }
                 }
 
                 div { class: "grid grid-cols-[minmax(0,1.4fr)_minmax(260px,.8fr)] gap-10",
@@ -197,16 +184,17 @@ fn create_project_file(
     project_dir: &Path,
     story_name: &str,
     mut app_state: Signal<AppState>,
-) -> Result<(), String> {
-    std::fs::create_dir_all(project_dir).map_err(|error| error.to_string())?;
+) -> Result<(), ReportedError> {
+    std::fs::create_dir_all(project_dir)
+        .map_err(|error| ReportedError::plain(ErrorCode::StoreSave, error.to_string()))?;
     let path = unique_project_path(project_dir, story_name);
-    let db = ProjectDb::open(&path).map_err(|error| error.to_string())?;
+    let db = ProjectDb::open(&path).map_err(|error| error.report())?;
     app_state.write().create_project(story_name);
     let registry = app_state.read().registry.clone();
     db.rename_project(story_name)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.report())?;
     db.save_registry(&registry)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.report())?;
     app_state.write().project_path = Some(path);
     app_state.write().has_unsaved_changes = false;
     Ok(())
@@ -214,10 +202,10 @@ fn create_project_file(
 
 /// Opens any `.svs-project.db` file in place (the file picker path;
 /// the Recent list is the same flow for the projects directory).
-fn open_project_file(path: &Path, mut app_state: Signal<AppState>) -> Result<(), String> {
+fn open_project_file(path: &Path, mut app_state: Signal<AppState>) -> Result<(), ReportedError> {
     let stored = ProjectDb::open(path)
         .and_then(|db| db.load())
-        .map_err(|error| format!("could not open project: {error}"))?;
+        .map_err(|error| error.report())?;
     app_state.write().open_project(stored, path.to_path_buf());
     Ok(())
 }

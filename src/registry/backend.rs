@@ -17,6 +17,65 @@ use super::{
 };
 use crate::registry::discover_loras;
 
+/// The request context for a failed segmentation: which image and prompt.
+fn segment_context(request: &SegmentRequest) -> Vec<(&'static str, String)> {
+    let mut context = Vec::new();
+    context.push(("image", request.image_path.clone()));
+    if let Some(prompt) = &request.prompt {
+        context.push(("prompt", prompt.clone()));
+    }
+    context
+}
+
+/// The request context for a failed generation: the exact prompt that was
+/// sent (the LLM-derived one or the manual one), the model, the
+/// parameters, and the job id for cross-referencing the runtime logs.
+/// This is what makes "why did this prompt not become a generation?"
+/// answerable from a single log line.
+fn generate_context(
+    request: &GenerateRequest,
+    job_id: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    let mut context = Vec::new();
+    context.push(("prompt", request.prompt.clone()));
+    if let Some(model) = &request.model {
+        context.push(("model", model.clone()));
+    }
+    if let Some(width) = request.width {
+        context.push(("width", width.to_string()));
+    }
+    if let Some(height) = request.height {
+        context.push(("height", height.to_string()));
+    }
+    if let Some(steps) = request.steps {
+        context.push(("steps", steps.to_string()));
+    }
+    if let Some(seed) = request.seed {
+        context.push(("seed", seed.to_string()));
+    }
+    if let Some(path) = &request.reference_image_path {
+        context.push(("reference", path.clone()));
+    }
+    if let Some(path) = &request.mask_path {
+        context.push(("mask", path.clone()));
+    }
+    if !request.loras.is_empty() {
+        context.push((
+            "loras",
+            request
+                .loras
+                .iter()
+                .map(|lora| format!("{}@{}", lora.path, lora.multiplier))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
+    }
+    if let Some(job) = job_id {
+        context.push(("job", job.to_owned()));
+    }
+    context
+}
+
 /// The real backend the CLI (and the canvas) executes pipelines against.
 #[derive(Clone)]
 pub struct CreativeBackend {
@@ -445,15 +504,16 @@ impl GenerationBackend for CreativeBackend {
         let this = self.clone();
         let request = request.clone();
         Box::pin(async move {
-            this.runtime
-                .start_vision_runtime()
-                .await
-                .map_err(PipelineError::backend)?;
+            this.runtime.start_vision_runtime().await.map_err(|error| {
+                PipelineError::backend_with_context(error, segment_context(&request))
+            })?;
             this.runtime
                 .vision_client()
                 .segment(&request)
                 .await
-                .map_err(PipelineError::backend)
+                .map_err(|error| {
+                    PipelineError::backend_with_context(error, segment_context(&request))
+                })
         })
     }
 
@@ -474,23 +534,36 @@ impl GenerationBackend for CreativeBackend {
             this.runtime
                 .ensure_profile_ready(profile)
                 .await
-                .map_err(PipelineError::backend)?;
+                .map_err(|error| {
+                    PipelineError::backend_with_context(error, generate_context(&request, None))
+                })?;
             let job = this
                 .runtime
                 .vision_client()
                 .submit_generation(&request, false)
                 .await
-                .map_err(PipelineError::backend)?;
-            let generated = this
-                .runtime
-                .wait_for_job(job)
-                .await
-                .map_err(PipelineError::backend)?;
+                .map_err(|error| {
+                    PipelineError::backend_with_context(error, generate_context(&request, None))
+                })?;
+            // The job id lets a failed run be cross-referenced against the
+            // Python runtime logs.
+            let job_id = job.id.clone();
+            let generated = this.runtime.wait_for_job(job).await.map_err(|error| {
+                PipelineError::backend_with_context(
+                    error,
+                    generate_context(&request, Some(&job_id)),
+                )
+            })?;
             let imported = this
                 .runtime
                 .import_asset(generated)
                 .await
-                .map_err(PipelineError::backend)?;
+                .map_err(|error| {
+                    PipelineError::backend_with_context(
+                        error,
+                        generate_context(&request, Some(&job_id)),
+                    )
+                })?;
             Ok(GenerateResponse {
                 status: "completed".to_owned(),
                 image_path: Some(imported),

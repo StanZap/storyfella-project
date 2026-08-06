@@ -34,6 +34,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::errors::{CodedError, ErrorCode};
 use crate::registry::{
     ops::{Operation, OperationLogEntry},
     Artifact, ArtifactRegistry, ArtifactRevision, BeatComposition, CompositionMode, Layer,
@@ -100,6 +101,20 @@ pub enum StoreError {
         column: String,
         value: String,
     },
+}
+
+impl CodedError for StoreError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::Open { .. } => ErrorCode::StoreOpen,
+            Self::Configure { .. } => ErrorCode::StoreConfigure,
+            Self::Migrate { .. } => ErrorCode::StoreMigrate,
+            Self::Save { .. } => ErrorCode::StoreSave,
+            Self::Serialize { .. } => ErrorCode::StoreSerialize,
+            Self::Load { .. } => ErrorCode::StoreLoad,
+            Self::Corrupt { .. } => ErrorCode::StoreCorrupt,
+        }
+    }
 }
 
 impl ProjectDb {

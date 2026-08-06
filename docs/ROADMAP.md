@@ -604,16 +604,34 @@ plan to ship, with its status; update it when work lands.
    every generation (artifact-bound first, then kind default, then the
    inpaint adapter on `modify`; per-run `--lora <file>@<mult>` flags on
    the CLI). — **✅ implemented**
-7. **Studio integration:** scenes group the timeline; re-sync flows per
+ 7. **Error codes and reporting:** a central registry (`src/errors.rs` —
+    `ErrorCode`, one stable `SVS-<DOMAIN>-<NNN>` per failure, with a short
+    message and a remediation hint) that every `thiserror` type implements
+    via `CodedError` (transparent variants delegate to the inner code).
+    `CodedError::report` builds the `ReportedError` payload the UI consumes —
+    a global error toast (code + short message) with a Details action
+    opening the full report modal (error text, request context, hint, and
+    Copy — button and click-on-text, via `document::eval` with the
+    execCommand fallback). The report carries a structured `context` list
+    (operation summary, generation prompt, model, size, steps, seed, job
+    id, work dir) attached at the failure site — `PipelineError::Backend`
+    keeps the `GenerateRequest` context from `CreativeBackend::generate`,
+    and the canvas attaches op/seed/work-dir — so a failed generation is
+    answerable from one log line (`report.log()`, the single log point,
+    emitted by the surface right before showing the report). Wired through
+    the canvas ops, free-form proposals, autosave, the Projects screen,
+    Settings service/model errors, and the `svs` CLI op paths (which also
+    init a tracing subscriber so reports actually log). — **✅ implemented**
+8. **Studio integration:** scenes group the timeline; re-sync flows per
    mode (compose beats in the canvas, story sequencing). — **⏳ deferred**
    behind the quality/control work above (user reprioritized; the canvas
    still surfaces beats, compose, and drafts per the session guide)
-8. **Storyfella DSL (in-repo):** the language crate (lexer/parser/compiler,
+9. **Storyfella DSL (in-repo):** the language crate (lexer/parser/compiler,
    CLI), the writer with the tokenized editor, asset chips and autocomplete;
    DSL asset references + validation; round-trip to canvas. — **⏳ planned**
-9. **LSP-style tooling** as the DSL matures (go-to-definition, refactor,
-   diagnostics). — **⏳ planned**
-10. **Self-contained distribution (no user-side dependencies):** one
+10. **LSP-style tooling** as the DSL matures (go-to-definition, refactor,
+    diagnostics). — **⏳ planned**
+11. **Self-contained distribution (no user-side dependencies):** one
    downloadable artifact per platform (AppImage/`.deb` on Linux, `.app`
    bundle on macOS, installer/portable zip on Windows) containing the app
    binary, a release-built `sd-server` (CUDA or CPU flavor), and the Python
@@ -636,10 +654,10 @@ plan to ship, with its status; update it when work lands.
 Design status: the canvas (roadmap item 4) replaced the legacy storyboard
 model — the GUI is the artifact registry; the `svs` CLI shares the same
 `ArtifactRegistry`/`ProjectDb` core (`docs/api-slice-1.md`). Work follows
-§12 — items 5 (generation quality controls) and 6 (LoRA registry) are
-implemented; Studio integration (item 7) was deferred by user
-reprioritization in favor of generation quality, the LoRA registry, and
-UX fixes.
+§12 — items 5 (generation quality controls), 6 (LoRA registry), and 7
+(error codes + reporting) are implemented; Studio integration (item 8) was
+deferred by user reprioritization in favor of generation quality, the LoRA
+registry, and UX fixes.
 
 ### Entry points (existing code)
 

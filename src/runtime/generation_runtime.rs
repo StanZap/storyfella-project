@@ -7,6 +7,8 @@ use parking_lot::Mutex;
 use thiserror::Error;
 use tokio::process::{Child, Command};
 
+use crate::errors::{CodedError, ErrorCode};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KreaQuantization {
     Q2,
@@ -117,6 +119,19 @@ pub enum GenerationRuntimeError {
     Start(#[source] std::io::Error),
     #[error("failed while stopping native generation runtime: {0}")]
     Stop(#[source] std::io::Error),
+}
+
+impl CodedError for GenerationRuntimeError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::AlreadyRunning => ErrorCode::RuntimeGenerationAlreadyRunning,
+            Self::MissingExecutable(_) => ErrorCode::RuntimeGenerationMissingExecutable,
+            Self::MissingArtifact(_) => ErrorCode::RuntimeGenerationMissingArtifact,
+            Self::CreateLoraDirectory { .. } => ErrorCode::RuntimeGenerationCreateLoraDirectory,
+            Self::Start(_) => ErrorCode::RuntimeGenerationStart,
+            Self::Stop(_) => ErrorCode::RuntimeGenerationStop,
+        }
+    }
 }
 
 impl GenerationRuntime {

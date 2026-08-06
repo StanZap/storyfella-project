@@ -35,6 +35,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::errors::{CodedError, ErrorCode, ReportedError};
 use crate::vision::{
     ComputeDevice, GenerateRequest, LoraSelection, SegmentBox, SegmentPoint, SegmentRequest,
     SegmentResponse,
@@ -1036,8 +1037,15 @@ pub trait GenerationBackend: Send + Sync {
 
 #[derive(Debug, Error)]
 pub enum PipelineError {
-    #[error("backend error: {0}")]
-    Backend(String),
+    /// A backend failure. `context` carries the request details (prompt,
+    /// model, params, seed, job id) from the failure site so the final
+    /// log line says what was being generated — the flat string alone is
+    /// not enough to debug a failed generation.
+    #[error("backend error: {message}")]
+    Backend {
+        message: String,
+        context: Vec<(&'static str, String)>,
+    },
     #[error("step {step} failed: {message}")]
     Step { step: usize, message: String },
     #[error("the stack was rejected at a checkpoint")]
@@ -1048,7 +1056,53 @@ pub enum PipelineError {
 
 impl PipelineError {
     pub fn backend(error: impl std::fmt::Display) -> Self {
-        Self::Backend(error.to_string())
+        Self::Backend {
+            message: error.to_string(),
+            context: Vec::new(),
+        }
+    }
+
+    /// A backend failure annotated with the request context (prompt,
+    /// model, size, steps, seed, job id, …) that explains what was being
+    /// generated when it failed.
+    pub fn backend_with_context(
+        error: impl std::fmt::Display,
+        context: Vec<(&'static str, String)>,
+    ) -> Self {
+        Self::Backend {
+            message: error.to_string(),
+            context,
+        }
+    }
+}
+
+impl CodedError for PipelineError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::Backend { .. } => ErrorCode::OpBackendFailed,
+            Self::Step { .. } => ErrorCode::OpStepFailed,
+            Self::Rejected => ErrorCode::OpRejected,
+            Self::Image(error) => error.code(),
+        }
+    }
+
+    /// The report keeps the request context the failure site attached —
+    /// it must survive the chain up to the surfacing point. The fallback
+    /// builds inline (calling `CodedError::report(self)` here would
+    /// resolve to this override and recurse).
+    fn report(&self) -> ReportedError {
+        match self {
+            Self::Backend { message, context } => ReportedError {
+                code: ErrorCode::OpBackendFailed,
+                details: format!("backend error: {message}"),
+                context: context.clone(),
+            },
+            _ => ReportedError {
+                code: self.code(),
+                details: self.to_string(),
+                context: Vec::new(),
+            },
+        }
     }
 }
 
@@ -1072,6 +1126,22 @@ pub enum PipelineBuildError {
     BadLoraMultiplier(f32),
     #[error("feather radius {0} is outside the 1..=64 bounds")]
     BadFeatherRadius(u32),
+}
+
+impl CodedError for PipelineBuildError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::Empty => ErrorCode::OpBuildEmpty,
+            Self::Ordering { .. } => ErrorCode::OpBuildOrdering,
+            Self::MaskWithoutReference => ErrorCode::OpBuildMaskWithoutReference,
+            Self::BadModel(_) => ErrorCode::OpBuildBadModel,
+            Self::BadSize { .. } => ErrorCode::OpBuildBadSize,
+            Self::BadSteps(_) => ErrorCode::OpBuildBadSteps,
+            Self::TooManyLoras(_) => ErrorCode::OpBuildTooManyLoras,
+            Self::BadLoraMultiplier(_) => ErrorCode::OpBuildBadLoraMultiplier,
+            Self::BadFeatherRadius(_) => ErrorCode::OpBuildBadFeatherRadius,
+        }
+    }
 }
 
 /// Builds a linear pipeline. Handles returned by the methods are typed by

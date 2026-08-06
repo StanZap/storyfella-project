@@ -2,6 +2,8 @@ use reqwest::{Client, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::errors::{CodedError, ErrorCode};
+
 #[derive(Clone, Debug)]
 pub struct VisionClient {
     http: Client,
@@ -200,6 +202,15 @@ pub enum VisionClientError {
     Request(#[source] reqwest::Error),
     #[error("vision runtime returned HTTP {status}: {body}")]
     Status { status: StatusCode, body: String },
+}
+
+impl CodedError for VisionClientError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::Request(_) => ErrorCode::VisionRequest,
+            Self::Status { .. } => ErrorCode::VisionStatus,
+        }
+    }
 }
 
 impl VisionClient {

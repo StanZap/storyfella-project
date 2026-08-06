@@ -1,5 +1,6 @@
 pub mod app;
 pub mod assets;
+pub mod errors;
 pub mod llm;
 pub mod persistence;
 pub mod registry;

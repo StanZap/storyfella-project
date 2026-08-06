@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use image::{GrayImage, RgbaImage};
 use thiserror::Error;
 
+use crate::errors::{CodedError, ErrorCode};
+
 #[derive(Debug, Error)]
 pub enum ImageOpsError {
     #[error("could not open {path}: {source}")]
@@ -30,6 +32,17 @@ pub enum ImageOpsError {
     },
     #[error("union requires at least one mask")]
     EmptyUnion,
+}
+
+impl CodedError for ImageOpsError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::Open { .. } => ErrorCode::ImgOpen,
+            Self::Write { .. } => ErrorCode::ImgWrite,
+            Self::DimensionMismatch { .. } => ErrorCode::ImgDimensionMismatch,
+            Self::EmptyUnion => ErrorCode::ImgEmptyUnion,
+        }
+    }
 }
 
 /// Blends `replacement` into `original` everywhere the hard mask is active.

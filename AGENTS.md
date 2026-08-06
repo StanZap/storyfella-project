@@ -29,8 +29,8 @@ Current shape: the artifact registry + typed operation layer (`src/registry/`), 
 # Current status
 
 The API slice (`docs/ROADMAP.md` §12 items 1–3), the canvas (item 4), the
-generation quality controls (item 5), and the LoRA registry (item 6) are
-implemented and validated:
+generation quality controls (item 5), the LoRA registry (item 6), and the
+error-code registry (item 7) are implemented and validated:
 
 - `src/registry/` — artifact registry (kinds, variants, scenes/beats + layers, revisions + masks, drafts, LoRA entries), typed slice-1 operations (`create`, `variant`, `regenerate`, `compose`, `draft`, `modify`) + LoRA ops (`attach-lora`, `lora-scale`, `lora-remove`), pipeline builder (closed step vocabulary, typed handles, static validation at `build()`, linear fail-fast stacks, checkpoints), composite mask fallback, live backend (`CreativeBackend`), slash-command parser (`slash.rs`) for the canvas composer.
 - `c:<name>` references are primary (case-insensitive exact match, ambiguity rejected; UUID/8-hex fallbacks).
@@ -39,15 +39,16 @@ implemented and validated:
 - `svs` CLI — `op` (incl. `--lora <file>@<mult>`, `attach-lora`/`lora-scale`/`lora-remove`), `stack run`/`propose`, `runtime serve --force`, `log`, `project`; `--out` golden runs; `--approve auto|interactive`.
 - **Generation quality controls** (`docs/ROADMAP.md` §12 item 5): per-kind default sizes + steps are configurable (`config/app.toml` `[generation.sizes]`/`steps`) and editable in Settings → Image generation (persisted line-preserving); a live `Signal<GenerationDefaults>` (Workspace context) drives the canvas ops. The LLM sets size/steps/adapters only when the user explicitly asks (visual ops carry `size`/`steps`/`loras`; the `resize` op persists a new default size and regenerates at it). Free-form planning runs a tool-calling loop (`list_artifacts`/`list_loras`) with a strict schema on the final stack, falling back to the static planner when `tools` are unsupported. `variant --name` supports explicit naming.
 - **LoRA registry** (§12 item 6): project-level entries (SQLite `lora_registry`, round-tripped) with per-artifact bindings (`/attach-lora`, `/lora-scale`, `/lora-remove` — slash, CLI, LLM vocabulary), config use-case bindings (`[lora]`: inpaint adapter for mask edits, per-kind defaults, shared multiplier), discovery from `lora_dir`, and auto-injection into every generation (artifact-bound → kind default → inpaint adapter on `modify`; missing-on-disk adapters warn and skip).
+- **Error codes + reporting** (§12 item 7): `src/errors.rs` is the central registry — every `thiserror` type implements `CodedError` mapping to a stable `SVS-<DOMAIN>-<NNN>` code (code, short message, remediation hint); `CodedError::report` builds the `ReportedError` payload the UI shows (a global toast, Workspace-owned `Signal<Option<ReportedError>>` context, with a Details modal: full text + context + hint + copy via `document::eval`). `ReportedError` carries a `context` list (operation, generation prompt, model, size, steps, seed, job id, work dir) attached at the failure site (`PipelineError::Backend` carries it up from `CreativeBackend::generate`) — surfaces emit the single coded log line with `report.log()`. The CLI's op paths report the same way (svs.rs inits a tracing subscriber).
 - `mask_path` in the Rust ↔ Python `GenerateRequest` contract (best-effort native passthrough; composite fallback is primary).
-- 113 Rust lib + bin tests pass. The default generation profile is
+- 130 Rust lib + bin tests pass. The default generation profile is
   `krea-2-turbo-q4`; q4 generation was validated end-to-end through the
   canvas on Linux/RTX 3090 (CUDA sd-server build; the q4 diffusion GGUF is
   placed on disk — `model_setup` is not run for locally-provided files).
   q2 generation was validated on macOS. `modify`'s mask path, LLM `draft`,
   `stack propose`, LoRA injection, and the new size/step controls still
   await live validation.
-- Next per §12: Studio integration (item 7) — **deferred** by user
+- Next per §12: Studio integration (item 8) — **deferred** by user
   reprioritization (generation quality + LoRA registry landed first; the
   tracker is authoritative).
 

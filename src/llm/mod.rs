@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::errors::{CodedError, ErrorCode};
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct LmStudioConfig {
     pub base_url: String,
@@ -149,6 +151,17 @@ pub enum LmStudioError {
     Status { status: StatusCode, body: String },
     #[error("LM Studio planning did not finish: {0}")]
     Planner(String),
+}
+
+impl CodedError for LmStudioError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::Build(_) => ErrorCode::LlmBuild,
+            Self::Request(_) => ErrorCode::LlmRequest,
+            Self::Status { .. } => ErrorCode::LlmStatus,
+            Self::Planner(_) => ErrorCode::LlmPlanner,
+        }
+    }
 }
 
 #[derive(Serialize)]

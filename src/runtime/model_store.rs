@@ -9,6 +9,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::errors::{CodedError, ErrorCode};
+
 use super::generation_runtime::{krea_profile, KreaQuantization, ModelArtifact};
 
 #[derive(Clone, Debug)]
@@ -45,6 +47,20 @@ pub enum ModelStoreError {
     },
     #[error("model artifact {path} failed SHA-256 verification")]
     Checksum { path: PathBuf },
+}
+
+impl CodedError for ModelStoreError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::CreateDirectory { .. } => ErrorCode::RuntimeModelCreateDirectory,
+            Self::Inspect { .. } => ErrorCode::RuntimeModelInspect,
+            Self::Request(_) => ErrorCode::RuntimeModelRequest,
+            Self::DownloadStatus { .. } => ErrorCode::RuntimeModelDownloadStatus,
+            Self::Write { .. } => ErrorCode::RuntimeModelWrite,
+            Self::Size { .. } => ErrorCode::RuntimeModelSize,
+            Self::Checksum { .. } => ErrorCode::RuntimeModelChecksum,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::errors::{CodedError, ErrorCode, ReportedError};
 use crate::vision::LoraSelection;
 
 use super::{
@@ -381,6 +382,29 @@ pub enum CompileError {
     Build(#[from] PipelineBuildError),
 }
 
+impl CodedError for CompileError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::Ref(error) => error.code(),
+            Self::Registry(error) => error.code(),
+            Self::BackendRequired => ErrorCode::OpBackendRequired,
+            Self::EmptyDescription => ErrorCode::OpEmptyDescription,
+            Self::InvalidSize { .. } => ErrorCode::OpInvalidSize,
+            Self::NotVariantable(_) => ErrorCode::OpNotVariantable,
+            Self::NotAScene { .. } => ErrorCode::OpNotAScene,
+            Self::NotAnEnvironment { .. } => ErrorCode::OpNotAnEnvironment,
+            Self::BadLayerKind { .. } => ErrorCode::OpBadLayerKind,
+            Self::NoActiveImage(_) => ErrorCode::OpNoActiveImage,
+            Self::NoPrompt(_) => ErrorCode::OpNoPrompt,
+            Self::IncompleteModify => ErrorCode::OpIncompleteModify,
+            Self::BadLoraMultiplier(_) => ErrorCode::OpBadLoraMultiplier,
+            Self::BadSteps(_) => ErrorCode::OpBadSteps,
+            Self::LoraFileMissing { .. } => ErrorCode::OpLoraFileMissing,
+            Self::Build(error) => error.code(),
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum OpError {
     #[error(transparent)]
@@ -393,6 +417,34 @@ pub enum OpError {
     Ref(#[from] RefError),
     #[error("operation failed while applying results: {0}")]
     Apply(String),
+}
+
+impl CodedError for OpError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::Compile(error) => error.code(),
+            Self::Pipeline(error) => error.code(),
+            Self::Registry(error) => error.code(),
+            Self::Ref(error) => error.code(),
+            Self::Apply(_) => ErrorCode::OpApplyFailed,
+        }
+    }
+
+    /// Delegates to the wrapped error so request context attached deep in
+    /// the pipeline (prompt, model, seed, job id) survives to the surface.
+    /// Note: the fallback must build the report inline — calling
+    /// `CodedError::report(self)` here would resolve to this override
+    /// (trait-qualified calls pick the impl for the concrete type).
+    fn report(&self) -> ReportedError {
+        match self {
+            Self::Pipeline(error) => error.report(),
+            _ => ReportedError {
+                code: self.code(),
+                details: self.to_string(),
+                context: Vec::new(),
+            },
+        }
+    }
 }
 
 /// Statically validates the operation against the registry and compiles it

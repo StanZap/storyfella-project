@@ -23,6 +23,7 @@ use std::{
 use dioxus::prelude::*;
 use uuid::Uuid;
 
+use crate::errors::{CodedError, ErrorCode, ReportedError};
 use crate::registry::{
     backend::CreativeBackend,
     ops::{self, ExecuteOptions, OpOrigin, Operation},
@@ -59,7 +60,6 @@ enum CanvasActivity {
     Running {
         summary: String,
     },
-    Failed(String),
 }
 
 impl CanvasActivity {
@@ -114,7 +114,7 @@ enum OpEvent {
     },
     Done {
         registry: ArtifactRegistry,
-        result: Result<ops::OpOutcome, String>,
+        result: Result<ops::OpOutcome, ReportedError>,
     },
 }
 
@@ -126,7 +126,8 @@ pub fn Canvas(
 ) -> Element {
     let mut composer = use_signal(String::new);
     let filter = use_signal(String::new);
-    let mut activity = use_signal(CanvasActivity::default);
+    let activity = use_signal(CanvasActivity::default);
+    let mut error_report = use_context::<Signal<Option<ReportedError>>>();
     let selected = app_state.read().selected_artifact().cloned();
     let busy = activity.read().is_busy();
     // The chip the composer shows: free-form changes apply to the viewed
@@ -163,8 +164,8 @@ pub fn Canvas(
         if is_slash_command(&input) {
             let operation = match parse_composer(&input, &app_state.read().registry, &defaults) {
                 Ok(operation) => operation,
-                Err(message) => {
-                    activity.set(CanvasActivity::Failed(message));
+                Err(report) => {
+                    error_report.set(Some(report.log()));
                     return;
                 }
             };
@@ -176,10 +177,19 @@ pub fn Canvas(
                 activity,
                 pending_approval,
                 reply_slot_for_run.clone(),
+                error_report,
             );
         } else {
             // Free text: the LLM proposes the operations; the user approves.
-            propose_operations(app_state, backend(), input, defaults, activity, proposal);
+            propose_operations(
+                app_state,
+                backend(),
+                input,
+                defaults,
+                activity,
+                proposal,
+                error_report,
+            );
         }
     };
 
@@ -240,6 +250,7 @@ pub fn Canvas(
                                 activity,
                                 pending_approval,
                                 reply_slot.clone(),
+                                error_report,
                             );
                         },
                         on_cancel: move |_| proposal.set(None),
@@ -276,6 +287,7 @@ pub fn Canvas(
                         activity,
                         pending_approval,
                         reply_slot_for_rerun.clone(),
+                        error_report,
                     );
                 },
             }
@@ -293,22 +305,24 @@ pub fn Canvas(
 }
 
 /// Parses composer text into an operation; non-slash input is rejected with
-/// a hint rather than silently ignored.
+/// a hint rather than silently ignored. Static-validation failures keep
+/// their precise error codes; parse failures map to the command-level code.
 fn parse_composer(
     input: &str,
     registry: &crate::registry::ArtifactRegistry,
     defaults: &crate::registry::GenerationDefaults,
-) -> Result<Operation, String> {
+) -> Result<Operation, ReportedError> {
     if !is_slash_command(input) {
-        return Err(
-            "Commands start with / — e.g. /create character <description>, /variant c:<ref> <description>"
-                .to_owned(),
-        );
+        return Err(ReportedError::plain(
+            ErrorCode::AppCommandInvalid,
+            "Commands start with / — e.g. /create character <description>, /variant c:<ref> <description>",
+        ));
     }
-    let operation = slash::parse_slash(input).map_err(|error| error.to_string())?;
+    let operation = slash::parse_slash(input)
+        .map_err(|error| ReportedError::plain(ErrorCode::AppCommandInvalid, error.to_string()))?;
     // Static validation against the registry (ref resolution, kinds, active
     // images) so errors surface before any backend work starts.
-    ops::compile(registry, &operation, defaults).map_err(|error| error.to_string())?;
+    ops::compile(registry, &operation, defaults).map_err(|error| error.report())?;
     Ok(operation)
 }
 
@@ -332,6 +346,7 @@ fn run_operations(
     mut activity: Signal<CanvasActivity>,
     mut pending_approval: Signal<Option<PendingApproval>>,
     reply_slot: Rc<RefCell<Option<mpsc::Sender<Decision>>>>,
+    mut error_report: Signal<Option<ReportedError>>,
 ) {
     let summary = stack_summary(&operations);
     app_state.write().snapshot_for_undo();
@@ -348,7 +363,10 @@ fn run_operations(
     spawn(async move {
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Runtime::new().expect("op worker runtime");
-            let mut result: Result<ops::OpOutcome, String> = Err("stack was empty".to_owned());
+            let mut result: Result<ops::OpOutcome, ReportedError> = Err(ReportedError::plain(
+                ErrorCode::AppStackEmpty,
+                "stack was empty",
+            ));
             for operation in &operations {
                 // The image a mask checkpoint on this op is judged against,
                 // resolved from the worker's registry — which earlier ops in
@@ -428,13 +446,27 @@ fn run_operations(
                 match runtime.block_on(ops::execute(&mut registry, operation, &options)) {
                     Ok(outcome) => {
                         if outcome.status == crate::registry::ops::OpStatus::Rejected {
-                            result = Err("operation rejected at a checkpoint".to_owned());
+                            result = Err(ReportedError::plain(
+                                ErrorCode::AppCheckpointRejected,
+                                "operation rejected at a checkpoint",
+                            )
+                            .with_context("operation", operation.summary()));
                             break;
                         }
                         result = Ok(outcome);
                     }
                     Err(error) => {
-                        result = Err(error.to_string());
+                        // Attach what the op was and how it was run (seed and
+                        // work_dir let the failure be reproduced/inspected);
+                        // the supervisor logs the report once.
+                        let mut report = error
+                            .report()
+                            .with_context("operation", operation.summary())
+                            .with_context("work_dir", options.run.work_dir.display().to_string());
+                        if let Some(seed) = options.run.seed {
+                            report = report.with_context("seed", seed.to_string());
+                        }
+                        result = Err(report);
                         break;
                     }
                 }
@@ -445,8 +477,10 @@ fn run_operations(
         // Supervisor: forward checkpoints to the modal, then apply the
         // finished registry. The poll loop keeps the dioxus executor free
         // (std channels have no async recv without tokio's sync feature).
-        let mut result: Result<ops::OpOutcome, String> =
-            Err("op worker exited without a result".to_owned());
+        let mut result: Result<ops::OpOutcome, ReportedError> = Err(ReportedError::plain(
+            ErrorCode::AppStackEmpty,
+            "op worker exited without a result",
+        ));
         // The worker moved the pre-op registry; `None` until it reports back
         // (a worker that dies without reporting leaves the current state).
         let mut finished_registry: Option<ArtifactRegistry> = None;
@@ -485,9 +519,12 @@ fn run_operations(
                 drop(state);
                 activity.set(CanvasActivity::Idle);
             }
-            Err(error) => {
+            Err(report) => {
                 drop(state);
-                activity.set(CanvasActivity::Failed(error));
+                activity.set(CanvasActivity::Idle);
+                // The single log point for op results: the worker attached
+                // the request context, this is where the line is emitted.
+                error_report.set(Some(report.log()));
             }
         }
     });
@@ -532,12 +569,17 @@ fn propose_operations(
     defaults: crate::registry::GenerationDefaults,
     mut activity: Signal<CanvasActivity>,
     mut proposal: Signal<Option<StackProposal>>,
+    mut error_report: Signal<Option<ReportedError>>,
 ) {
     if !backend.has_llm() {
-        activity.set(CanvasActivity::Failed(
-            "LM Studio is not configured or reachable — use slash commands instead \
-             (/create, /variant, /regenerate, /modify, /attach-lora)"
-                .to_owned(),
+        error_report.set(Some(
+            ReportedError::plain(
+                ErrorCode::AppLlmUnavailable,
+                "LM Studio is not configured or reachable — use slash commands instead \
+                 (/create, /variant, /regenerate, /modify, /attach-lora)",
+            )
+            .with_context("message", message)
+            .log(),
         ));
         return;
     }
@@ -557,7 +599,14 @@ fn propose_operations(
                 proposal.set(Some(StackProposal { operations }));
             }
             Err(error) => {
-                activity.set(CanvasActivity::Failed(error));
+                activity.set(CanvasActivity::Idle);
+                // The user message is the context: it is what the LLM was
+                // asked to turn into operations.
+                error_report.set(Some(
+                    ReportedError::plain(ErrorCode::AppProposalFailed, error)
+                        .with_context("message", message)
+                        .log(),
+                ));
             }
         }
     });
@@ -1524,12 +1573,6 @@ fn Composer(
     rsx! {
         footer { class: "col-span-2 border-t border-white/[0.055] bg-zinc-950/45 px-6 py-4",
             div { class: "mx-auto max-w-3xl",
-                if let CanvasActivity::Failed(error) = &*activity.read() {
-                    div { class: "mb-2 flex items-start gap-2 rounded-lg bg-rose-400/[0.07] px-3 py-2 ring-1 ring-inset ring-rose-400/20",
-                        span { class: "mt-0.5 size-1.5 shrink-0 rounded-full bg-rose-400" }
-                        p { class: "min-w-0 flex-1 text-[10px] leading-4 text-rose-200/90", "{error}" }
-                    }
-                }
                 div { class: "flex items-center gap-3 rounded-[18px] bg-zinc-900/80 p-2 pl-4 shadow-[0_18px_60px_rgba(0,0,0,.3)] ring-1 ring-inset ring-white/[0.09] backdrop-blur-xl focus-within:ring-violet-400/35",
                     if let Some(target) = target_hint {
                         span { class: "shrink-0 rounded-md bg-violet-400/10 px-2 py-1 font-mono text-[9px] text-violet-300 ring-1 ring-inset ring-violet-400/20",

@@ -12,12 +12,16 @@ use std::{
 use dioxus::prelude::*;
 
 use crate::{
-    app::AppConfig, persistence::ProjectDb, registry::backend::CreativeBackend,
-    runtime::HealthStatus, state::AppState,
+    app::AppConfig,
+    errors::{CodedError, ReportedError},
+    persistence::ProjectDb,
+    registry::backend::CreativeBackend,
+    runtime::HealthStatus,
+    state::AppState,
 };
 
 use canvas::Canvas;
-use components::{RailButton, StatusDot};
+use components::{ErrorToast, RailButton, StatusDot};
 use icons::{Icon, IconName};
 use projects::Projects;
 use settings::Settings;
@@ -50,15 +54,20 @@ impl AutosaveMode {
 }
 
 /// Writes the current registry snapshot to the project database. No-op
-/// when no project file is open; clears the dirty flag on success.
-pub fn persist_state(mut app_state: Signal<AppState>) {
+/// when no project file is open; clears the dirty flag on success. A
+/// failure is logged with its code and surfaced through the shared error
+/// report signal.
+pub fn persist_state(
+    mut app_state: Signal<AppState>,
+    mut error_report: Signal<Option<ReportedError>>,
+) {
     let Some(path) = app_state.read().project_path.clone() else {
         return;
     };
     let registry = app_state.read().registry.clone();
     match ProjectDb::open(&path).and_then(|db| db.save_registry(&registry)) {
         Ok(()) => app_state.write().has_unsaved_changes = false,
-        Err(error) => tracing::error!("could not save project {}: {error}", path.display()),
+        Err(error) => error_report.set(Some(error.report().log())),
     }
 }
 
@@ -96,17 +105,23 @@ pub fn Workspace(config: AppConfig, app_state: Signal<AppState>) -> Element {
     let defaults = use_signal(|| config.generation_defaults.clone());
     use_context_provider(|| defaults);
 
+    // The app-wide error surface: every failure is reported here (coded
+    // log + banner + details modal), whatever screen is showing.
+    let error_report = use_signal(|| None::<ReportedError>);
+    use_context_provider(|| error_report);
+
     // Save after every change (the default): the effect re-runs on state
     // changes, saves when the project is dirty, and clears the flag.
     use_effect(move || {
         if autosave() == AutosaveMode::OnChange && app_state.read().has_unsaved_changes {
-            persist_state(app_state);
+            persist_state(app_state, error_report);
         }
     });
 
     // Every-minute mode: one background loop that checks the current mode on
     // each tick (spawned once via use_hook, never duplicated).
     let autosave_loop = autosave;
+    let error_report_loop = error_report;
     use_hook(move || {
         spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
@@ -116,7 +131,7 @@ pub fn Workspace(config: AppConfig, app_state: Signal<AppState>) -> Element {
                 if autosave_loop() == AutosaveMode::EveryMinute
                     && app_state.read().has_unsaved_changes
                 {
-                    persist_state(app_state);
+                    persist_state(app_state, error_report_loop);
                 }
             }
         });
@@ -124,8 +139,9 @@ pub fn Workspace(config: AppConfig, app_state: Signal<AppState>) -> Element {
 
     // Cmd/Ctrl+S always saves, whatever the autosave mode.
     let shortcut_app_state = app_state;
+    let shortcut_error_report = error_report;
     dioxus::desktop::use_global_shortcut("CmdOrCtrl+S", move |_| {
-        persist_state(shortcut_app_state);
+        persist_state(shortcut_app_state, shortcut_error_report);
     })
     .expect("shortcut registration should succeed");
 
@@ -165,7 +181,7 @@ pub fn Workspace(config: AppConfig, app_state: Signal<AppState>) -> Element {
                             Icon { name: IconName::Redo, class: "size-3" }
                             "Redo"
                         }
-                        button { class: "flex h-8 items-center gap-2 rounded-lg bg-white/[0.055] px-3 text-[10px] font-medium text-zinc-400 transition hover:bg-white/[0.08] hover:text-white disabled:opacity-35", disabled: !dirty, title: "Save (Cmd/Ctrl+S)", onclick: move |_| persist_state(app_state),
+                        button { class: "flex h-8 items-center gap-2 rounded-lg bg-white/[0.055] px-3 text-[10px] font-medium text-zinc-400 transition hover:bg-white/[0.08] hover:text-white disabled:opacity-35", disabled: !dirty, title: "Save (Cmd/Ctrl+S)", onclick: move |_| persist_state(app_state, error_report),
                             Icon { name: IconName::Save, class: "size-3" }
                             "Save"
                         }
@@ -181,6 +197,7 @@ pub fn Workspace(config: AppConfig, app_state: Signal<AppState>) -> Element {
                 }
             }
         }
+        ErrorToast { error_report }
     }
 }
 

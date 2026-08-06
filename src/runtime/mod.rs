@@ -20,6 +20,8 @@ use parking_lot::Mutex;
 use thiserror::Error;
 use tokio::process::{Child, Command};
 
+use crate::errors::{CodedError, ErrorCode};
+
 pub struct PythonRuntime {
     runtime_dir: PathBuf,
     generation_url: Option<String>,
@@ -45,6 +47,18 @@ pub enum RuntimeError {
     Start(#[source] std::io::Error),
     #[error("failed while stopping Python runtime: {0}")]
     Stop(#[source] std::io::Error),
+}
+
+impl CodedError for RuntimeError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::AlreadyRunning => ErrorCode::RuntimeAlreadyRunning,
+            Self::MissingPython(_) => ErrorCode::RuntimeMissingPython,
+            Self::Resolve { .. } => ErrorCode::RuntimeResolve,
+            Self::Start(_) => ErrorCode::RuntimeStart,
+            Self::Stop(_) => ErrorCode::RuntimeStop,
+        }
+    }
 }
 
 impl PythonRuntime {

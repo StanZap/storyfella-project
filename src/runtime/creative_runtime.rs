@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::{
     app::AppConfig,
+    errors::{CodedError, ErrorCode},
     vision::{GenerationJobResponse, VisionClient, VisionClientError},
 };
 
@@ -59,6 +60,22 @@ pub enum CreativeRuntimeError {
         path: PathBuf,
         source: std::io::Error,
     },
+}
+
+impl CodedError for CreativeRuntimeError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::Generation(error) => error.code(),
+            Self::Python(error) => error.code(),
+            Self::Vision(error) => error.code(),
+            Self::ReadinessTimeout(_) => ErrorCode::RuntimeReadinessTimeout,
+            Self::Job(_) => ErrorCode::RuntimeJobFailed,
+            Self::MissingImage => ErrorCode::RuntimeMissingImage,
+            Self::ProfileMismatch { .. } => ErrorCode::RuntimeProfileMismatch,
+            Self::CreateAssetDirectory { .. } => ErrorCode::RuntimeCreateAssetDirectory,
+            Self::ImportAsset { .. } => ErrorCode::RuntimeImportAsset,
+        }
+    }
 }
 
 impl CreativeRuntime {

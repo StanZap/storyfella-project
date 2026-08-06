@@ -34,6 +34,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use self::ops::{OpOrigin, OpStatus, Operation, OperationLogEntry};
+use crate::errors::{CodedError, ErrorCode};
 
 /// The kinds of artifacts in the unified registry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -206,6 +207,16 @@ pub enum RefError {
     NotFound(String),
     #[error("ref `{value}` is ambiguous; it matches {matches} artifacts")]
     Ambiguous { value: String, matches: usize },
+}
+
+impl CodedError for RefError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::Invalid(_) => ErrorCode::RefInvalid,
+            Self::NotFound(_) => ErrorCode::RefNotFound,
+            Self::Ambiguous { .. } => ErrorCode::RefAmbiguous,
+        }
+    }
 }
 
 /// A single artifact in the unified registry.
@@ -565,6 +576,27 @@ pub enum RegistryError {
     LoraAmbiguous { value: String, matches: usize },
     #[error("lora multiplier {0} must be within -2..=2")]
     BadLoraMultiplier(f32),
+}
+
+impl CodedError for RegistryError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::NoArtifact(_) => ErrorCode::RegistryNoArtifact,
+            Self::NotVariantable { .. } => ErrorCode::RegistryNotVariantable,
+            Self::VariantOfVariant(_) => ErrorCode::RegistryVariantOfVariant,
+            Self::VariantKindMismatch { .. } => ErrorCode::RegistryVariantKindMismatch,
+            Self::BadParent { .. } => ErrorCode::RegistryBadParent,
+            Self::NoParentAllowed { .. } => ErrorCode::RegistryNoParentAllowed,
+            Self::NotABeat(..) => ErrorCode::RegistryNotABeat,
+            Self::NotInScene(_) => ErrorCode::RegistryNotInScene,
+            Self::NoRevision(..) => ErrorCode::RegistryNoRevision,
+            Self::InvalidSize { .. } => ErrorCode::RegistryInvalidSize,
+            Self::NoLoraEntry(_) => ErrorCode::RegistryNoLoraEntry,
+            Self::LoraNotFound(_) => ErrorCode::RegistryLoraNotFound,
+            Self::LoraAmbiguous { .. } => ErrorCode::RegistryLoraAmbiguous,
+            Self::BadLoraMultiplier(_) => ErrorCode::RegistryBadLoraMultiplier,
+        }
+    }
 }
 
 /// The in-memory artifact registry for one project.
