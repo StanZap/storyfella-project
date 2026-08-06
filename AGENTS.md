@@ -1,6 +1,6 @@
 You are working on **Smart Visual Sequencer**, a desktop-only Dioxus 0.7 application for planning, generating, and arranging visual stories. Rust owns the UI, state, models, persistence, process lifecycle, and LM Studio client. Python owns all ML framework code behind a FastAPI HTTP boundary. Image generation runs through a native `stable-diffusion.cpp` (Krea 2) process; it is not ComfyUI.
 
-Current shape: the artifact registry + typed operation layer (`src/registry/`) is implemented and driven by the `svs` CLI (see `# Current status` below); the creation canvas and SQLite are roadmap work. Read `docs/ROADMAP.md` §12 (the feature/status tracker) before planning changes.
+Current shape: the artifact registry + typed operation layer (`src/registry/`), the SQLite project store, and the canvas are implemented and driven by the `svs` CLI and the desktop app (see `# Current status` below). Read `docs/ROADMAP.md` §12 (the feature/status tracker) before planning changes.
 
 # Project rules
 
@@ -37,7 +37,12 @@ implemented and validated:
 - `src/ui/` — the Projects screen lists, creates, and opens `.svs-project.db` files; the **Canvas** is the artifact workspace (sidebar grouped by kind, detail pane with image/variants/revisions/children/operation log, slash composer, undo/redo via registry snapshots); the workspace saves via autosave (after every change / every minute / off) or Cmd/Ctrl+S; `AppState.project_path` tracks the open database. The legacy storyboard model (`Project`/`StoryboardFrame`/`Timeline`) was deleted with the canvas.
 - `svs` CLI — `op`, `stack run`/`propose`, `runtime serve --force`, `log`, `project`; `--out` golden runs; `--approve auto|interactive`.
 - `mask_path` in the Rust ↔ Python `GenerateRequest` contract (best-effort native passthrough; composite fallback is primary).
-- 85 Rust lib + bin tests pass; q2 generation validated on macOS. `modify`'s mask path, LLM `draft`, and `stack propose` await live validation (Linux/CUDA); the canvas generation loop is the next GUI validation target on the RTX box.
+- 91 Rust lib + bin tests pass. The default generation profile is
+  `krea-2-turbo-q4`; q4 generation was validated end-to-end through the
+  canvas on Linux/RTX 3090 (CUDA sd-server build; the q4 diffusion GGUF is
+  placed on disk — `model_setup` is not run for locally-provided files).
+  q2 generation was validated on macOS. `modify`'s mask path, LLM `draft`,
+  and `stack propose` still await live validation.
 - Next per §12: Studio integration (item 5). The tracker in §12 is authoritative — update it as features ship.
 
 # Validation

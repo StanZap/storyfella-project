@@ -186,8 +186,8 @@ enum RuntimeCommand {
     /// and keep it resident in this terminal; ops in other terminals reuse
     /// it. Ctrl-C stops it.
     Serve {
-        #[arg(long, default_value = "krea-2-turbo-q2", value_parser = parse_model)]
-        model: String,
+        #[arg(long, default_value = "krea-2-turbo-q4", value_parser = parse_model)]
+        model: KreaQuantization,
         /// Kill stale sd-server processes holding the port first (leftovers
         /// from interrupted sessions cannot be restarted by the runtime).
         #[arg(long)]
@@ -341,11 +341,10 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Runtime { runtime } => match runtime {
-            RuntimeCommand::Serve { model, force } => {
+            RuntimeCommand::Serve { model: profile, force } => {
                 if force {
                     kill_resident_generation_servers()?;
                 }
-                let profile = parse_model(&model).map_err(anyhow::Error::msg)?;
                 let config = AppConfig::load().context("could not load config/app.toml")?;
                 let backend = CreativeBackend::with_profile(&config, profile);
                 backend
@@ -353,8 +352,8 @@ async fn run(cli: Cli) -> Result<()> {
                     .await
                     .map_err(|error| anyhow!(error))?;
                 println!(
-                    "generation runtime ready with {model} ({}); Ctrl-C to stop",
-                    backend.profile().profile_id()
+                    "generation runtime ready with {}; Ctrl-C to stop",
+                    profile.profile_id()
                 );
                 let _ = tokio::signal::ctrl_c().await;
                 backend

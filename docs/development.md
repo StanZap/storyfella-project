@@ -52,6 +52,24 @@ uv sync --project python --extra segmentation
 The ML frameworks are intentionally optional; the API and contract tests do
 not require torch.
 
+### Native generation backend (`sd-server`)
+
+The app spawns the `sd-server` binary from the vendored
+`stable-diffusion.cpp` checkout (it is git-ignored, like `models/`). Build it
+once and place it where `generation.executable` points:
+
+```bash
+# CUDA build for NVIDIA GPUs — without it generation runs on CPU (~11 GB
+# weights; expect 30-45 s/step). Pick the compute capability of your card,
+# e.g. 86 for RTX 3090 (Ampere), 89 for RTX 40-series.
+cmake -S stable-diffusion.cpp -B stable-diffusion.cpp/build \
+  -DSD_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86
+cmake --build stable-diffusion.cpp/build --target sd-server -j
+cp stable-diffusion.cpp/build/bin/sd-server models/runtime/stable-diffusion.cpp/bin/
+```
+
+On Apple Silicon, build with MPS (`-DSD_MPS=ON`) instead.
+
 ## Run the desktop application
 
 ```bash
@@ -148,7 +166,7 @@ Configuration lives in [`config/app.toml`](../config/app.toml) and is loaded by
 | `lm_studio.api_key` | none | Optional bearer token |
 | `lm_studio.timeout_seconds` | `60` | Request timeout for planning/vision calls |
 | `generation.base_url` | `http://127.0.0.1:7861` | sd.cpp endpoint the Python adapter calls |
-| `generation.profile` | `krea-2-turbo-q2` | `krea-2-turbo-q2` or `krea-2-turbo-q4` |
+| `generation.profile` | `krea-2-turbo-q4` | `krea-2-turbo-q2` or `krea-2-turbo-q4` |
 | `generation.executable` | `<model_dir>/runtime/stable-diffusion.cpp/bin/sd-server` | Path to `sd-server` |
 | `generation.lora_dir` | `<model_dir>/loras` | LoRA root; request paths are relative to it |
 | `paths.python_runtime` | `python` | Directory containing `.venv` and `main.py` |

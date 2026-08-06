@@ -211,5 +211,5 @@ fn default_generation_url() -> String {
 }
 
 fn default_generation_profile() -> String {
-    "krea-2-turbo-q2".to_owned()
+    "krea-2-turbo-q4".to_owned()
 }

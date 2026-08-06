@@ -261,7 +261,7 @@ Each operation compiles to a pipeline:
 
 ```rust
 let pipeline = GenerationPipeline::new()
-    .model("krea-2-turbo-q2")
+    .model("krea-2-turbo-q4")
     .size(768, 448)
     .steps(4)
     .reference_image(&revision.asset_path)
@@ -572,6 +572,23 @@ plan to ship, with its status; update it when work lands.
    DSL asset references + validation; round-trip to canvas. — **⏳ planned**
 8. **LSP-style tooling** as the DSL matures (go-to-definition, refactor,
    diagnostics). — **⏳ planned**
+9. **Self-contained distribution (no user-side dependencies):** one
+   downloadable artifact per platform (AppImage/`.deb` on Linux, `.app`
+   bundle on macOS, installer/portable zip on Windows) containing the app
+   binary, a release-built `sd-server` (CUDA or CPU flavor), and the Python
+   vision runtime **frozen into a single executable** (`vision-server` via
+   PyInstaller or python-build-standalone + uv at release/CI time — no
+   system Python, no venv, no uv on user machines). The Rust spawn/
+   supervision/readiness architecture is unchanged; the only code change is
+   resolving `sd-server`/`vision-server` relative to the bundle root instead
+   of config-relative paths. Segmentation (torch) is the size driver — decide
+   whether the frozen runtime ships torch (full bundle) or drops it (slim
+   bundle, segmentation degrades via the existing "torch extras not
+   installed" path); generation never needs torch. Model weights stay out of
+   any bundle (multi-GiB, licensed) and keep provisioning through
+   `model_setup`. Explicitly out: embedding sd.cpp into the Rust process —
+   the C API exists, but in-process inference would rework the entire
+   runtime-lifecycle machinery for no user-facing gain. — **⏳ planned**
 
 ## 13. Implementation handoff
 

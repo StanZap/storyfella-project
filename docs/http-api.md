@@ -150,10 +150,10 @@ are written to `SVS_MASK_DIR` (default `<repo>/cache/masks`).
 
 This is the legacy blocking endpoint. `RoutedImageGenerator`
 (`python/runtime/image_generator.py`) dispatches by model name: a Krea profile
-id (`krea-2-turbo-q2` / `krea-2-turbo-q4`, the default) is sent to the native
-sd.cpp backend and waits for completion; any other model name is sent to the
-Diffusers SANA Sprint POC pipeline. The product path uses the async jobs
-endpoint instead.
+id (`krea-2-turbo-q4`, the default; `krea-2-turbo-q2` also accepted) is sent
+to the native sd.cpp backend and waits for completion; any other model name is
+sent to the Diffusers SANA Sprint POC pipeline. The product path uses the
+async jobs endpoint instead.
 
 ```bash
 curl -s http://127.0.0.1:8765/generate \
@@ -167,9 +167,9 @@ Response (native route):
 {
   "status": "completed",
   "image_path": "/repo/cache/generated/xxx.png",
-  "model": "krea-2-turbo-q2",
+  "model": "krea-2-turbo-q4",
   "device": "native",
-  "dtype": "Q2_K",
+  "dtype": "IQ4_XS",
   "seed": 0,
   "width": 768,
   "height": 448,
@@ -190,7 +190,7 @@ curl -s -X POST 'http://127.0.0.1:8765/generation/jobs?priority=interactive' \
   -d '{
     "prompt": "A quiet lighthouse above a silver sea at dusk",
     "width": 768, "height": 448, "steps": 4, "seed": 0,
-    "model": "krea-2-turbo-q2"
+    "model": "krea-2-turbo-q4"
   }'
 ```
 
@@ -202,7 +202,7 @@ Response (`202 Accepted`):
   "status": "queued",
   "queue_position": 0,
   "image_path": null,
-  "model": "krea-2-turbo-q2",
+  "model": "krea-2-turbo-q4",
   "priority": "interactive",
   "error": null
 }
@@ -220,7 +220,7 @@ and base64-encoded into sd.cpp's `ref_images` field for Krea edit mode
   "status": "completed",
   "queue_position": 0,
   "image_path": "/repo/cache/generated/yyy.png",
-  "model": "krea-2-turbo-q2",
+  "model": "krea-2-turbo-q4",
   "priority": "interactive",
   "error": null
 }

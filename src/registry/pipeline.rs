@@ -43,7 +43,7 @@ use crate::vision::{
 use super::image_ops::{self, ImageOpsError};
 
 /// The focus generation model (Krea 2 via stable-diffusion.cpp).
-pub const DEFAULT_MODEL: &str = "krea-2-turbo-q2";
+pub const DEFAULT_MODEL: &str = "krea-2-turbo-q4";
 /// The interactive draft profile used by the UI and the CLI defaults.
 pub const DEFAULT_WIDTH: u32 = 768;
 pub const DEFAULT_HEIGHT: u32 = 448;
