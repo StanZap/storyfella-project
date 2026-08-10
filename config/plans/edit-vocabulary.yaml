@@ -1,0 +1,60 @@
+# Four ways to change an artifact, and when each one is right. This is the
+# question people get wrong first — modify and variant look interchangeable
+# until you need one of them to stick.
+#
+# Small canvas (512x768) so the whole plan runs in ~2 minutes; identity holds
+# the same way at full size. Needs the generation backend.
+name: "Which verb do I want?"
+description: "modify, describe, variant, regenerate — what each one changes, and why an edit can vanish."
+speed_ms: 2500
+steps:
+  - create_project: "Verb Practice"
+    message: "Four commands change an artifact. They are not interchangeable, and picking the wrong one is the most common early mistake."
+  - go_canvas: true
+    wait_ms: 400
+
+  - compose: "/create character --name june --size 512x768 June, a woman in her twenties with long dark hair, denim jacket, plain grey wall"
+    message: "June. Read her description carefully — it is not just a prompt. Every later edit re-states it as the list of things to keep."
+  - expect_artifact: { name: "june", kind: character }
+  - expect_image: "june"
+    soft: true
+    wait_ms: 2000
+
+  - compose: "/regenerate c:june"
+    message: "REGENERATE — same description, new seed. Use it when the description is right but the roll of the dice was not. Nothing about the artifact changes."
+  - expect_image: "june"
+    soft: true
+    wait_ms: 2000
+
+  - compose: "/modify c:june dye her hair auburn"
+    message: "MODIFY — change the image by describing the change. No region to select: the model keeps what you did not mention. This makes a new revision."
+  - expect_image: "june"
+    soft: true
+    wait_ms: 2000
+    message: "Auburn hair, same June. But watch what happens on the next edit."
+
+  - compose: "/modify c:june give her round glasses"
+    message: "A second edit — and the auburn is gone. Not a bug: grounding re-states her DESCRIPTION, which still says 'long dark hair'. Edits make revisions; they never change what the artifact IS."
+  - expect_image: "june"
+    soft: true
+    wait_ms: 2500
+
+  - compose: "/describe c:june June, a woman in her twenties with long auburn hair, denim jacket, plain grey wall"
+    message: "DESCRIBE — rewrite what the artifact is. This is how a change becomes permanent. Now auburn is part of June rather than one revision of her."
+    wait_ms: 1200
+
+  - compose: "/modify c:june give her round glasses"
+    message: "The same edit again. This time auburn survives, because it is in the description the edit is measured against."
+  - expect_image: "june"
+    soft: true
+    wait_ms: 2500
+
+  - compose: "/variant c:june --name june-rain --axis outfit --size 512x768 in a yellow raincoat, hood up"
+    message: "VARIANT — when you want to keep BOTH. A variant is its own artifact with its own history, filed under June in the sidebar. Use it for looks that coexist; use describe when the change replaces what came before."
+  - expect_artifact: { name: "june-rain", kind: character }
+  - expect_image: "june-rain"
+    soft: true
+    wait_ms: 2500
+
+  - expect_no_error: true
+    message: "regenerate = reroll · modify = change the picture · describe = change the definition · variant = fork it. When an edit vanishes, you wanted describe."

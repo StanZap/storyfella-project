@@ -1,0 +1,45 @@
+# Canvas size and step count: what they cost and when to spend them.
+#
+# The draft profile is deliberately small and fast so iteration is cheap; you
+# raise the canvas once the composition is settled. This plan works small,
+# then resizes, so the difference is visible back to back.
+#
+# Four generations, one of them at full portrait size — roughly 3 minutes.
+# Needs the backend.
+name: "Canvas and quality"
+description: "Draft small, finish big — per-artifact sizes, --size overrides, /resize, and what --steps buys."
+speed_ms: 2200
+steps:
+  - create_project: "Canvas Practice"
+    message: "Generation cost scales with canvas and steps. The workflow is to iterate cheap and only spend once the picture is right."
+  - go_canvas: true
+    wait_ms: 400
+
+  - compose: "/create character --name tam --size 384x576 --steps 4 Tam, a courier on a rooftop at sunrise, cropped jacket, city behind"
+    message: "A thumbnail: 384x576 at 4 steps. Fast and rough on purpose — this is for deciding whether the idea works at all."
+  - expect_artifact: { name: "tam", kind: character }
+  - expect_image: "tam"
+    soft: true
+    wait_ms: 2000
+
+  - compose: "/regenerate c:tam"
+    message: "At this size a reroll is cheap, so explore here. Each one is a revision — nothing is lost by trying."
+  - expect_image: "tam"
+    soft: true
+    wait_ms: 1800
+
+  - compose: "/modify c:tam give her cropped bleached hair"
+    message: "Edits work at any size. Settle the design while it is still cheap to change your mind."
+  - expect_image: "tam"
+    soft: true
+    wait_ms: 2000
+
+  - compose: "/resize c:tam 1024x1536"
+    message: "RESIZE — sets the artifact's default canvas AND re-renders at it. Everything from here on uses the new size, so this is the moment you commit."
+  - expect_image: "tam"
+    soft: true
+    wait_ms: 3000
+    message: "Same character, full portrait canvas. Note the reference is re-encoded at the output grid — a mismatch there is what used to reframe the picture."
+
+  - expect_no_error: true
+    message: "Draft small, decide, then resize once. --size and --steps override per command; /resize changes the artifact's default for good."

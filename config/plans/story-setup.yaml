@@ -1,0 +1,53 @@
+# The shape of a story before any of it is drawn: what the kinds are for and
+# how they relate. Story, scene and beat are text-only, so most of this plan
+# is instant — only the character, environment and object generate.
+#
+# Three generations at 512x768 — roughly 1.5 minutes. Needs the backend.
+name: "Setting up a story"
+description: "The artifact kinds and how they fit together — premise, cast, places, props, scenes, beats."
+speed_ms: 2200
+steps:
+  - create_project: "The Lamplighter"
+    message: "A story is a set of artifacts of different kinds. Some carry text, some carry images, and they reference each other."
+  - go_canvas: true
+    wait_ms: 400
+
+  - compose: "/create story --name premise A lamplighter keeps the last gas lamps in a city that has forgotten them"
+    message: "STORY — the premise. Text only, no image. It is the thing everything else hangs off."
+  - expect_artifact: { name: "premise", kind: story }
+    wait_ms: 800
+
+  - compose: "/create character --name isak --size 512x768 Isak, a lamplighter in his sixties, long coat, soot on his hands, plain background"
+    message: "CHARACTER — a person. Visual kinds generate their first image as part of the create, so this one takes a moment."
+  - expect_artifact: { name: "isak", kind: character }
+  - expect_image: "isak"
+    soft: true
+    wait_ms: 2000
+
+  - compose: "/create environment --name lamp-street --size 512x768 a narrow cobbled street at blue hour, cast-iron gas lamps, wet stone"
+    message: "ENVIRONMENT — a place. Same treatment as a character: described once, reusable everywhere."
+  - expect_artifact: { name: "lamp-street", kind: environment }
+  - expect_image: "lamp-street"
+    soft: true
+    wait_ms: 2000
+
+  - compose: "/create object --name lamp-pole --size 512x512 a brass lamplighter's pole with a small hooked wick and flame"
+    message: "OBJECT — a prop. Square canvas suits it; each kind carries its own default size, and --size overrides per artifact."
+  - expect_artifact: { name: "lamp-pole", kind: object }
+  - expect_image: "lamp-pole"
+    soft: true
+    wait_ms: 2000
+
+  - compose: "/create scene --name first-round The evening he finds a lamp already lit"
+    message: "SCENE — a unit of story. Text only for now; scene composition (placing the cast and the place into a rendered frame) is roadmap work."
+  - expect_artifact: { name: "first-round", kind: scene }
+    wait_ms: 800
+
+  - compose: "/create beat --name lit-lamp Isak stops. Forty years, and never once has one been lit before him"
+    message: "BEAT — a moment inside a scene. Beats are where the sequence eventually gets its rhythm."
+  - compose: "/create beat --name the-watcher Someone is watching from the corner, holding a pole exactly like his"
+  - expect_artifact_count: { kind: beat, count: 2 }
+    wait_ms: 1200
+
+  - expect_no_error: true
+    message: "One premise, one lamplighter, one street, one prop, one scene, two beats. Text kinds are free and instant; visual kinds cost a generation. Build the structure first, then draw."

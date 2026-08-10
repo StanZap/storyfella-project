@@ -1,0 +1,55 @@
+# One character, several looks — the flagship use case. Each variant is a
+# separate artifact that shares the base's identity, so a story can call for
+# "Ines at the harbour, in rain gear, at dusk" without redrawing her.
+#
+# The identity-edit adapter rides variant/regenerate (config `[lora].variant`),
+# which is what keeps her recognisably the same person across all of them.
+# Six generations at 512x768 — roughly 3 minutes. Needs the backend.
+name: "Character sheet"
+description: "Build one character, then fan her out across outfit, weather and mood axes — same face throughout."
+speed_ms: 2500
+steps:
+  - create_project: "Character Sheet"
+    message: "A character sheet: one person, many looks. The point is that they stay the same person."
+  - go_canvas: true
+    wait_ms: 400
+
+  - compose: "/create character --name ines --size 512x768 Ines, a harbour pilot in her forties, weathered face, short greying hair, plain background"
+    message: "Ines. Deliberately plain background and no outfit named — traits the variants will set should stay OUT of the base description, or they fight the variant."
+  - expect_artifact: { name: "ines", kind: character }
+  - expect_image: "ines"
+    soft: true
+    wait_ms: 2000
+
+  - compose: "/variant c:ines --name ines-oilskins --axis outfit --size 512x768 in heavy yellow oilskins and a sou'wester"
+    message: "OUTFIT axis. The base image becomes the reference, so the variant is an edit of Ines rather than a new person who happens to match the words."
+  - expect_artifact: { name: "ines-oilskins", kind: character }
+  - expect_image: "ines-oilskins"
+    soft: true
+    wait_ms: 2000
+
+  - compose: "/variant c:ines --name ines-dusk --axis time-of-day --size 512x768 lit by low golden dusk light"
+    message: "TIME-OF-DAY axis. Axes are organisational tags — they group the sheet in the sidebar; the model reads the description, not the axis name."
+  - expect_artifact: { name: "ines-dusk", kind: character }
+  - expect_image: "ines-dusk"
+    soft: true
+    wait_ms: 2000
+
+  - compose: "/variant c:ines --name ines-storm --axis weather --size 512x768 rain running down her face, wind in her hair"
+    message: "WEATHER axis. Three looks now, all filed under Ines, each with its own revision history."
+  - expect_artifact: { name: "ines-storm", kind: character }
+  - expect_image: "ines-storm"
+    soft: true
+    wait_ms: 2000
+
+  - compose: "/variant c:ines --name ines-grim --axis mood --size 512x768 in heavy yellow oilskins, grim, jaw set, looking off to starboard"
+    message: "Variants do not nest — every one derives from the base, so the sheet stays one level deep and each look is reproducible from Ines alone. A combination is described in full, as here: oilskins AND the expression."
+  - expect_artifact: { name: "ines-grim", kind: character }
+  - expect_image: "ines-grim"
+    soft: true
+    wait_ms: 2500
+
+  - expect_artifact_count: { kind: character, count: 5 }
+    message: "Five character artifacts: the base and four looks. Click between them in the sidebar — same face, same age, same weathering."
+  - expect_no_error: true
+    message: "That is a character sheet. A scene can now reference whichever look it needs."
