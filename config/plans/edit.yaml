@@ -1,0 +1,45 @@
+# The edit loop: make an image, then change one thing about it and keep the
+# subject. This is the plan that would have caught the "nonsensical edit" bug
+# — every step here failed, or produced a wrong picture, before 2026-08-10.
+#
+# `modify` is an instruction edit: no mask, no segmentation, no approval
+# checkpoint, so it runs unattended. Needs the generation backend.
+name: "The edit loop"
+description: "Create a character, then restyle her by instruction — hair, then outfit — and check she survives each edit."
+speed_ms: 2000
+steps:
+  - create_project: "Edit Loop"
+    message: "A fresh project. This time the subject is editing: make one image, then change things about it."
+  - go_canvas: true
+    wait_ms: 400
+  - compose: "/create character --name mara Mara, a young woman with long dark hair, plain studio wall, grey sweater"
+    message: "Mara, described plainly. Her description doubles as the list of things an edit must preserve, so it is worth writing carefully."
+  - expect_artifact: { name: "mara", kind: character }
+  - expect_image: "mara"
+    soft: true
+    wait_ms: 2000
+    message: "A first portrait. Now the part that matters: changing one thing without losing her."
+
+  - compose: "/modify c:mara change her hair color to auburn"
+    message: "A recolour, in plain language — no mask, no region to select. The model keeps what the instruction did not mention."
+  - expect_image: "mara"
+    soft: true
+    wait_ms: 2000
+    message: "Same face, same sweater, same wall — auburn hair. The edit is localized because the instruction is, not because we cut a hole."
+
+  - compose: "/modify c:mara give her a short bob haircut"
+    message: "Harder: a haircut changes shape, not just colour. Her description says 'long dark hair', which contradicts this — the grounding step drops the length and keeps the rest."
+  - expect_image: "mara"
+    soft: true
+    wait_ms: 2000
+    message: "A bob, and still Mara. Terse instructions are the risk here: unGROUNDED, 'give her a bob' can return a different person entirely."
+
+  - compose: "/modify c:mara change her sweater to a yellow raincoat"
+    message: "Edits stack — this one applies to the bob-cut revision, not the original."
+  - expect_image: "mara"
+    soft: true
+    wait_ms: 2000
+    message: "The raincoat lands on the previous edit. Every revision is kept, so the operation log is the whole history of how she got here."
+
+  - expect_no_error: true
+    message: "Three edits, one subject, no masks and no compositing. That is the edit loop."

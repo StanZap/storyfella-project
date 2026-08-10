@@ -278,9 +278,20 @@ impl GenerationRuntime {
             // The identity-edit LoRA is trained with 768px VLM grounding;
             // the default ostris preset passes up to 1536px, which splits
             // or duplicates compositions (the model card warns about it).
+            //
+            // `vae_input_max_pixels` is the reference's in-context grid.
+            // sd.cpp caps it at 1MP by default (`min(cap, w*h)`), so a
+            // 1024x1536 (1.5MP) canvas encodes its reference at ~836x1254
+            // and the model renders that content stretched onto the larger
+            // output grid — a ~1.22x zoom that reframes the whole picture.
+            // A 2MP ceiling makes the cap inert at every canvas we allow,
+            // which is the node pack's `fit_mode: fit` ("the source is
+            // resampled to the target grid"); 2MP is also the identity-edit
+            // card's own resolution limit.
+            //
             // CLI-only: the server JSON API never exposes ref_image_args.
             .arg("--ref-image-args")
-            .arg("preset=krea2_edit")
+            .arg("preset=krea2_edit,vae_input_max_pixels=2097152")
             .arg("--listen-ip")
             .arg(host)
             .arg("--listen-port")

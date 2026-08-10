@@ -103,7 +103,11 @@ class NativeGenerationTests(unittest.TestCase):
         )
 
     @patch("urllib.request.urlopen")
-    def test_submit_encodes_mask_images_best_effort(self, urlopen: object) -> None:
+    def test_submit_sends_the_singular_mask_image_field(self, urlopen: object) -> None:
+        # sd.cpp parses `mask_image` (one image) via parse_image_json_field
+        # and silently ignores every other key: an array under `mask_images`
+        # left denoise_mask empty, so a masked edit re-rendered the whole
+        # frame. This assertion is the regression lock.
         urlopen.return_value = JsonResponse({"id": "job_mask", "status": "queued"})
         with TemporaryDirectory() as directory:
             mask = Path(directory) / "hair-mask.png"
@@ -116,16 +120,56 @@ class NativeGenerationTests(unittest.TestCase):
                 height=512,
                 steps=4,
                 seed=9,
-                mask_images=(mask,),
+                mask_image=mask,
             )
 
         request = urlopen.call_args.args[0]
         body = json.loads(request.data)
-        self.assertEqual(
-            body["mask_images"],
-            [base64.b64encode(b"mask-image").decode()],
-        )
+        self.assertEqual(body["mask_image"], base64.b64encode(b"mask-image").decode())
+        self.assertNotIn("mask_images", body)
         self.assertNotIn("ref_images", body)
+
+    @patch("urllib.request.urlopen")
+    def test_submit_sends_denoise_strength_only_with_an_init_image(
+        self, urlopen: object
+    ) -> None:
+        urlopen.return_value = JsonResponse({"id": "job_inpaint", "status": "queued"})
+        with TemporaryDirectory() as directory:
+            init = Path(directory) / "base.png"
+            init.write_bytes(b"init-image")
+            client = StableDiffusionCppClient()
+
+            client.submit(
+                prompt="bob cut",
+                width=512,
+                height=512,
+                steps=4,
+                seed=9,
+                init_image=init,
+                denoise_strength=1.0,
+            )
+            body = json.loads(urlopen.call_args.args[0].data)
+            self.assertEqual(body["init_image"], base64.b64encode(b"init-image").decode())
+            self.assertEqual(body["strength"], 1.0)
+
+    @patch("urllib.request.urlopen")
+    def test_submit_omits_denoise_strength_without_an_init_image(
+        self, urlopen: object
+    ) -> None:
+        urlopen.return_value = JsonResponse({"id": "job_txt2img", "status": "queued"})
+        client = StableDiffusionCppClient()
+
+        client.submit(
+            prompt="bob cut",
+            width=512,
+            height=512,
+            steps=4,
+            seed=9,
+            denoise_strength=1.0,
+        )
+
+        body = json.loads(urlopen.call_args.args[0].data)
+        self.assertNotIn("strength", body)
 
     @patch("urllib.request.urlopen")
     def test_submit_omits_masks_when_absent(self, urlopen: object) -> None:
@@ -136,7 +180,8 @@ class NativeGenerationTests(unittest.TestCase):
 
         request = urlopen.call_args.args[0]
         body = json.loads(request.data)
-        self.assertNotIn("mask_images", body)
+        self.assertNotIn("mask_image", body)
+        self.assertNotIn("init_image", body)
 
 
 if __name__ == "__main__":

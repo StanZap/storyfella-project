@@ -94,6 +94,10 @@ class GenerateRequest(BaseModel):
     # sd.cpp server keeps the unmasked latent pixels fixed per step, so the
     # edit is localized at the latent level (no pixel compositing needed).
     init_image_path: str | None = None
+    # img2img denoise strength for `init_image_path` (0-1). sd.cpp defaults
+    # to 0.75, which truncates the sigma schedule; masked edits send 1.0 and
+    # let the mask — not a partial schedule — protect the untouched pixels.
+    denoise_strength: float | None = Field(default=None, ge=0.0, le=1.0)
     width: int = Field(default=1024, ge=256, le=2048)
     height: int = Field(default=1024, ge=256, le=2048)
     steps: int = Field(default=8, ge=1, le=50)

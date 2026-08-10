@@ -65,9 +65,10 @@ class StableDiffusionCppClient:
         seed: int,
         loras: tuple[LoraSelection, ...] = (),
         reference_images: tuple[Path, ...] = (),
-        mask_images: tuple[Path, ...] = (),
+        mask_image: Path | None = None,
         init_image: Path | None = None,
         reference_strength: float | None = None,
+        denoise_strength: float | None = None,
     ) -> NativeJob:
         body: dict[str, Any] = {
             "prompt": prompt,
@@ -101,14 +102,26 @@ class StableDiffusionCppClient:
             # sends a tuned blend for reference-based ops.
             if reference_strength is not None:
                 body["control_strength"] = reference_strength
-        if mask_images:
-            # Masked-latent inpaint input: when `init_image` is also present,
-            # the server keeps the unmasked latent pixels fixed per step, so
-            # the edit is localized at the latent level and the Rust composite
-            # is only a fallback. Best-effort for backends that ignore it.
-            body["mask_images"] = [self._encode_image(path) for path in mask_images]
+        if mask_image is not None:
+            # Masked-latent inpaint input. The field is `mask_image`
+            # (singular, one image): sd.cpp parses it with
+            # parse_image_json_field, and any other key — an earlier
+            # revision sent `mask_images` as an array — is silently
+            # dropped, leaving denoise_mask empty so the whole frame is
+            # re-rendered. When `init_image` is also present the server
+            # keeps the unmasked latent pixels fixed per step
+            # (denoised = denoised*mask + init_latent*(1-mask)), so the
+            # edit is localized at the latent level and the Rust composite
+            # is only the boundary smoother.
+            body["mask_image"] = self._encode_image(mask_image)
         if init_image is not None:
             body["init_image"] = self._encode_image(init_image)
+            # img2img denoise strength: how much of the sigma schedule runs.
+            # sd.cpp defaults to 0.75, which truncates the schedule and
+            # renoises the *whole* canvas; for a masked edit the mask is
+            # what protects the rest, so the caller sets this explicitly.
+            if denoise_strength is not None:
+                body["strength"] = denoise_strength
         result = self._request("POST", "/sdcpp/v1/img_gen", body)
         return NativeJob(id=str(result["id"]), status=str(result["status"]))
 

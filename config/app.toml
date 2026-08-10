@@ -11,7 +11,14 @@ variant = "krea/krea2_identity_edit_v1_2.safetensors"
 multiplier = 1.0
 [lm_studio]
 base_url = "http://localhost:1234/v1"
-model = "google/gemma-4-e4b"
+# Instruction grounding for `modify` is a subtraction task — restate the
+# artifact's traits as invariants, minus the one the edit changes — and it
+# is model-sensitive. Measured 2026-08-10 on the same prompt: gemma-4-e4b
+# kept "long dark hair" while the edit asked for auburn (the editor rendered
+# both, splitting the hair down the middle) and in one phrasing invented a
+# colour outright; bonsai-27b updated the trait to "long auburn hair" and
+# got the haircut and outfit cases right too. Prefer a larger planner here.
+model = "prism-ml/bonsai-27b"
 # api_key = "lm-studio"
 timeout_seconds = 60
 

@@ -160,6 +160,39 @@ impl CreativeBackend {
          no markdown."
     }
 
+    /// Krea 2's identity-edit adapter is an instruct model: it edits a
+    /// reference image from a plain-language instruction. A terse
+    /// instruction under-specifies the result and the render collapses into
+    /// base-model priors — measured, `"make him smile"` returned an anime
+    /// illustration of a different person. Restating the invariants pulls
+    /// it back, but a template can only restate them *all*, including the
+    /// ones the edit is meant to override. Doing that subtraction is the
+    /// LLM's job here, and the only one.
+    fn ground_system_prompt() -> &'static str {
+        "You rewrite image-edit instructions for a photographic image editor. \
+         You are given the edit the user asked for and a description of the \
+         image being edited. Rewrite it as one instruction with all three of \
+         these parts, in this order:\n\
+         1. the edit itself;\n\
+         2. the exact words \"A photograph of the same person\" (or \"the same \
+         subject\" if it is not a person) — never omit this, it is what stops \
+         the editor inventing someone new;\n\
+         3. the traits from the description that must stay the same.\n\n\
+         Two rules govern part 3, and breaking either one visibly corrupts \
+         the image:\n\
+         - Use ONLY traits written in the description you are given. Never \
+         introduce an attribute it does not state — no invented colour, \
+         garment, or setting. A trait you invent contradicts the edit and the \
+         editor renders both at once.\n\
+         - Drop the specific attribute the edit changes, but keep the rest of \
+         the phrase it sits in. A cut changes length, not colour: drop the \
+         length words and keep the colour word the description gave. \
+         Restating the changed attribute makes the editor split the \
+         difference; dropping the unchanged ones lets it wander.\n\n\
+         Keep it under 60 words. Respond with the instruction only — no \
+         commentary, no markdown, no quotes."
+    }
+
     fn plan_system_prompt() -> &'static str {
         "You split visual-edit descriptions into two prompts. Respond with \
          JSON only, exactly this shape: {\"mask_prompt\": \"...\", \
@@ -615,6 +648,32 @@ impl GenerationBackend for CreativeBackend {
                 .import_asset(source)
                 .await
                 .map_err(PipelineError::backend)
+        })
+    }
+
+    fn llm_ground(&self, request: &str) -> BoxFuture<'_, Result<Option<String>, PipelineError>> {
+        let this = self.clone();
+        let request = request.to_owned();
+        Box::pin(async move {
+            let Some(client) = &this.llm else {
+                return Ok(None);
+            };
+            let messages = [
+                ChatMessage::text("system", Self::ground_system_prompt()),
+                ChatMessage::text("user", request),
+            ];
+            match client.chat(&messages).await {
+                Ok(completion) => Ok(completion
+                    .choices
+                    .first()
+                    .and_then(|choice| choice.message.content.clone())
+                    .map(|content| content.trim().trim_matches('"').trim().to_owned())
+                    .filter(|content| !content.is_empty())),
+                Err(error) => {
+                    tracing::warn!(%error, "LLM grounding degraded to the deterministic template");
+                    Ok(None)
+                }
+            }
         })
     }
 

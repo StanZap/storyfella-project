@@ -14,9 +14,13 @@
 //!   progress, and a pass/fail report is produced. This is the regression
 //!   suite — a plan that passes means the flows it covers still work.
 //!
-//! Checkpoints (mask approval, degraded edit plans) cannot be answered by
-//! a procedural run: the driver auto-rejects them, so a `modify` op in a
-//! plan fails fast with the checkpoint message.
+//! Checkpoints cannot be answered by a procedural run: the driver
+//! auto-rejects them, so any op that stops to ask fails fast with the
+//! checkpoint message. `modify` used to be such an op — it segmented and
+//! asked for mask approval. It no longer does: an instruction edit has no
+//! mask, so `modify` runs unattended in a plan (see `config/plans/edit.yaml`).
+//! The opt-in mask path (`--mask-prompt` + `--inpaint-prompt`) still
+//! checkpoints and still cannot be driven from a plan.
 
 use std::{
     path::{Path, PathBuf},

@@ -61,11 +61,22 @@ pub struct GenerationParams {
     pub steps: u32,
     pub seed: Option<u64>,
     pub loras: Vec<LoraSelection>,
-    /// The img2img blend for reference-based generations (see
-    /// [`GenerateRequest::reference_strength`]); `None` lets the backend
-    /// default — ops that pass a reference always set a tuned value.
+    /// The reference-conditioning strength for reference-based generations
+    /// (see [`GenerateRequest::reference_strength`]); `None` lets the
+    /// backend default.
     pub reference_strength: Option<f32>,
+    /// The img2img denoise strength applied when a `Generate` step sends an
+    /// init image (see [`GenerateRequest::denoise_strength`]); `None` lets
+    /// the backend default. Masked-latent inpaint sets
+    /// [`MASKED_LATENT_DENOISE`].
+    pub denoise_strength: Option<f32>,
 }
+
+/// Denoise strength for masked-latent inpaint: run the whole sigma
+/// schedule. The per-step denoise-mask blend is what preserves the unmasked
+/// latents, so truncating the schedule (the backend's 0.75 default) only
+/// weakens the edit inside the mask while buying no protection outside it.
+pub const MASKED_LATENT_DENOISE: f32 = 1.0;
 
 impl Default for GenerationParams {
     fn default() -> Self {
@@ -77,6 +88,7 @@ impl Default for GenerationParams {
             seed: None,
             loras: Vec::new(),
             reference_strength: None,
+            denoise_strength: None,
         }
     }
 }
@@ -230,6 +242,14 @@ pub enum LlmStepKind {
     Draft { request: String },
     /// Split an edit description into mask/inpaint prompts. -> Plan
     Plan { request: String },
+    /// Rewrite a terse edit instruction into one grounded against the
+    /// artifact it edits. -> Prompt
+    ///
+    /// Unlike [`Self::Plan`] this never blocks: `fallback` is a usable
+    /// deterministic grounding, so a missing LLM degrades silently instead
+    /// of stopping to ask the user. The LLM earns its place by doing what
+    /// the template cannot — dropping invariants the edit contradicts.
+    Ground { request: String, fallback: String },
     /// Caption an image. -> Prompt
     Describe { image: ImageHandle },
     /// Critique an image against a prompt. -> Feedback
@@ -521,6 +541,14 @@ impl Pipeline {
                         } else {
                             None
                         },
+                        // Only meaningful alongside an init image; sending
+                        // it otherwise would make the backend log a
+                        // phantom IMG2IMG.
+                        denoise_strength: if mask_path.is_some() {
+                            self.params.denoise_strength
+                        } else {
+                            None
+                        },
                     };
                     let response = backend.generate(&request).await?;
                     if response.status == "failed" {
@@ -625,6 +653,14 @@ impl Pipeline {
                                 }
                             }
                         }
+                    }
+                    LlmStepKind::Ground { request, fallback } => {
+                        // Soft dependency with a usable default: never blocks.
+                        let grounded = match backend.llm_ground(request).await {
+                            Ok(Some(grounded)) => grounded,
+                            Ok(None) | Err(_) => fallback.clone(),
+                        };
+                        StepValue::Prompt(grounded)
                     }
                     LlmStepKind::Plan { request } => {
                         // Soft dependency: degrades to manual input.
@@ -1049,6 +1085,13 @@ pub trait GenerationBackend: Send + Sync {
     fn llm_draft(&self, request: &str) -> BoxFuture<'_, Result<Option<String>, PipelineError>>;
     /// Returns `None` when no LLM is available (soft dependency).
     fn llm_plan(&self, request: &str) -> BoxFuture<'_, Result<Option<PlannedEdit>, PipelineError>>;
+    /// Rewrites a terse edit instruction into a grounded one. Returns
+    /// `None` when no LLM is available; the caller holds a deterministic
+    /// fallback, so this never blocks. The default declines, which makes
+    /// every backend without an LLM use that fallback.
+    fn llm_ground(&self, _request: &str) -> BoxFuture<'_, Result<Option<String>, PipelineError>> {
+        Box::pin(async { Ok(None) })
+    }
     /// Moves a locally-produced final image (e.g. the composite fallback
     /// output) into the persistent asset store, returning its stored path.
     /// The default keeps the source path — backends without a store (the
@@ -1215,6 +1258,11 @@ impl PipelineBuilder {
         self
     }
 
+    pub fn denoise_strength(&mut self, strength: f32) -> &mut Self {
+        self.params.denoise_strength = Some(strength);
+        self
+    }
+
     pub fn lora(&mut self, path: impl Into<String>, multiplier: f32) -> &mut Self {
         self.params.loras.push(LoraSelection {
             path: path.into(),
@@ -1346,6 +1394,23 @@ impl PipelineBuilder {
         self.steps.push(Step::Llm {
             kind: LlmStepKind::Draft {
                 request: request.into(),
+            },
+        });
+        PromptHandle { step }
+    }
+
+    /// Grounds a terse edit instruction against its artifact, falling back
+    /// to `fallback` when no LLM is configured. -> Prompt
+    pub fn llm_ground(
+        &mut self,
+        request: impl Into<String>,
+        fallback: impl Into<String>,
+    ) -> PromptHandle {
+        let step = self.steps.len();
+        self.steps.push(Step::Llm {
+            kind: LlmStepKind::Ground {
+                request: request.into(),
+                fallback: fallback.into(),
             },
         });
         PromptHandle { step }
@@ -1511,7 +1576,9 @@ fn step_references(step: &Step) -> Vec<usize> {
         Step::Union { masks } => masks.iter().map(|mask| mask.step).collect(),
         Step::PaintStrokes { image, .. } => vec![image.step],
         Step::Llm { kind } => match kind {
-            LlmStepKind::Draft { .. } | LlmStepKind::Plan { .. } => Vec::new(),
+            LlmStepKind::Draft { .. }
+            | LlmStepKind::Plan { .. }
+            | LlmStepKind::Ground { .. } => Vec::new(),
             LlmStepKind::Describe { image } => vec![image.step],
             LlmStepKind::Critique { image, .. } => vec![image.step],
         },
@@ -1785,6 +1852,8 @@ mod tests {
                 request.prompt == "a lighthouse at dusk"
                 && request.reference_image_path.as_deref() == Some(original.to_str().unwrap())
                 && request.mask_path.is_none()
+                && request.init_image_path.is_none()
+                && request.denoise_strength.is_none()
                 && request.width == Some(768)
                 && request.height == Some(448)
                 && request.steps == Some(4)
@@ -1835,6 +1904,7 @@ mod tests {
         let image = builder.reference_image(&original);
         let candidates = builder.segment(image, "her hair");
         let mask = builder.confirm_mask(candidates);
+        builder.denoise_strength(MASKED_LATENT_DENOISE);
         builder.inpaint("a short bob cut", image, mask);
         let pipeline = builder.build().unwrap();
 
@@ -1861,6 +1931,9 @@ mod tests {
             && request.reference_image_path.as_deref() == Some(original.to_str().unwrap())
             && request.mask_path.as_deref() == Some(candidate.to_str().unwrap())
             && request.init_image_path.as_deref() == Some(original.to_str().unwrap())
+            // The full sigma schedule: truncating it (the backend's 0.75
+            // default) only weakens the edit inside the mask.
+            && request.denoise_strength == Some(MASKED_LATENT_DENOISE)
         ));
 
         // The composite is the final image and preserves the outside pixels.

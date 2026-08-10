@@ -196,8 +196,9 @@ enum OpCommand {
         #[arg(long, value_enum, default_value = "interactive")]
         approve: ApprovalArg,
     },
-    /// /modify <ref> <description> — mask-guided regional edit
-    /// (segment → confirm mask → inpaint, composite fallback).
+    /// /modify <ref> <description> — edit the image from a plain-language
+    /// instruction ("give her a bob cut"). Pass --mask-prompt with
+    /// --inpaint-prompt to opt into the mask/inpaint path instead.
     Modify {
         target: Ref,
         description: String,

@@ -208,7 +208,9 @@ fn parse_modify(tokens: &[Token]) -> Result<Operation, SlashError> {
     let inpaint_prompt = flag_value(&flags, "--inpaint").map(str::to_owned);
     if mask_prompt.is_some() != inpaint_prompt.is_some() {
         return Err(SlashError(
-            "modify needs both --mask and --inpaint (or neither, when an LLM plans them)"
+            "modify takes both --mask and --inpaint, or neither. Neither is the \
+             normal case: the edit is described in plain language and no mask \
+             is involved."
                 .to_owned(),
         ));
     }

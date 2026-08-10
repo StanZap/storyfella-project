@@ -10,8 +10,8 @@
 //! active image).
 //!
 //! Slice-1 operations: `create`, `variant`, `regenerate`, `compose`,
-//! `draft`, and `modify` (the mask-edit path: segment → confirm mask →
-//! inpaint with the composite fallback).
+//! `draft`, and `modify` (an instruction edit against the artifact's own
+//! image; the mask/inpaint path is opt-in).
 //!
 //! Execution model: user-typed ops apply immediately and are logged; LLM
 //! proposals (`stack propose`) are gated by approval before execution.
@@ -120,8 +120,10 @@ pub enum Operation {
     },
     /// LLM proposes story text; the user approves (checkpoint).
     Draft { target: Ref, request: String },
-    /// Mask-guided regional edit: segment → confirm mask → inpaint
-    /// (composite fallback). Explicit prompts skip the LLM plan step.
+    /// Edit the artifact's active image from a plain-language instruction,
+    /// which is grounded against the artifact before it is sent. Supplying
+    /// both `mask_prompt` and `inpaint_prompt` opts into the mask path
+    /// (segment → confirm mask → inpaint → composite) instead.
     Modify {
         target: Ref,
         description: String,
@@ -815,10 +817,11 @@ pub fn compile(
             if let Some(steps) = steps {
                 builder.steps(*steps);
             }
-            // Mask-guided edits additionally carry the configured inpaint
-            // adapter (e.g. INPAINTKREA), after the artifact's bindings,
-            // then the per-run adapters.
-            for lora in auto_loras(registry, Some(artifact), artifact.kind, defaults, true, true) {
+            // The inpaint adapter rides only the opt-in mask path; an
+            // instruct edit is the same adapter set as `regenerate`.
+            let masked = mask_prompt.is_some() || inpaint_prompt.is_some();
+            for lora in auto_loras(registry, Some(artifact), artifact.kind, defaults, true, masked)
+            {
                 builder.lora(lora.path, lora.multiplier);
             }
             for lora in loras {
@@ -835,39 +838,59 @@ pub fn compile(
                 builder.lora(registered, lora.multiplier);
             }
             let image = builder.reference_image(asset);
-            let (mask_source, inpaint_source) = match (mask_prompt, inpaint_prompt) {
+            match (mask_prompt, inpaint_prompt) {
+                // Default: an instruction edit. Krea 2's identity-edit
+                // adapter is an instruct model — image plus plain-language
+                // instruction, and it preserves what the instruction did
+                // not ask to change. Localization comes from the
+                // instruction's semantics against the in-context reference,
+                // not from us protecting pixels afterwards, so there is no
+                // segmentation, no mask and no composite on this path.
+                //
+                // The instruction is grounded before it is sent — see
+                // `ground_instruction`. A bare instruction collapses the
+                // edit into base-model priors.
+                (None, None) => {
+                    // The LLM refines the grounding when one is configured;
+                    // `ground_instruction` is the fallback and is good
+                    // enough on its own, so this never blocks on the LLM.
+                    let fallback = ground_instruction(description, artifact);
+                    // The artifact's name is an internal handle, not a
+                    // visual trait: including it gets it echoed back into
+                    // the instruction ("vera — Vera, a young woman ...").
+                    let grounded = builder.llm_ground(
+                        format!(
+                            "Edit: {description}\nDescription of the image: {}",
+                            artifact.description
+                        ),
+                        fallback,
+                    );
+                    builder.generate(PromptSource::Prompt(grounded), Some(image), None);
+                }
+                // Opt-in: the mask path, for edits an instruction cannot
+                // express — filling a hole, removing an object, extending a
+                // canvas. This is INPAINTKREA territory and it is NOT yet
+                // driven correctly: that LoRA's own card is explicit that
+                // the weights alone are not the complete system (its
+                // workflow pre-fills the masked region in pixel space,
+                // which we do not do). Until that convention is
+                // implemented, expect the masked region to come back as
+                // whatever surrounds it. Tracked in
+                // .svs-e2e/logs/2026-08-10-instruct-edit.md.
                 (Some(mask), Some(inpaint)) => {
-                    // The inpaint re-render must stay coherent with the
-                    // scene: a bare edit prompt (e.g. "a short bob cut")
-                    // makes the reference-edit re-render the masked region
-                    // without context — in practice near-black results —
-                    // so the artifact's description is composed in.
                     let composed_inpaint = if artifact.description.trim().is_empty() {
                         inpaint.clone()
                     } else {
                         format!("{}, {}", artifact.description.trim(), inpaint)
                     };
-                    (
-                        PromptSource::Text(mask.clone()),
-                        PromptSource::Text(composed_inpaint),
-                    )
-                }
-                (None, None) => {
-                    let plan = builder.llm_plan(format!(
-                        "{description}\n\nArtifact: {} — {}",
-                        artifact.name, artifact.description
-                    ));
-                    (
-                        PromptSource::PlanPart(plan, super::pipeline::PlanPart::MaskPrompt),
-                        PromptSource::PlanPart(plan, super::pipeline::PlanPart::InpaintPrompt),
-                    )
+                    let candidates = builder.segment(image, PromptSource::Text(mask.clone()));
+                    let confirmed = builder.confirm_mask(candidates);
+                    builder.reference_strength(REFERENCE_INPAINT);
+                    builder.denoise_strength(super::pipeline::MASKED_LATENT_DENOISE);
+                    builder.inpaint(PromptSource::Text(composed_inpaint), image, confirmed);
                 }
                 _ => return Err(CompileError::IncompleteModify),
-            };
-            let candidates = builder.segment(image, mask_source);
-            let mask = builder.confirm_mask(candidates);
-            builder.reference_strength(REFERENCE_INPAINT);
-            builder.inpaint(inpaint_source, image, mask);
+            }
             Ok(CompiledOp::Pipeline(builder.build()?))
         }
         Operation::Draft { target, request } => {
@@ -932,6 +955,41 @@ fn validate_steps(steps: u32) -> Result<(), CompileError> {
 /// then the inpaint adapter for mask-guided edits. A configured adapter
 /// that is missing on disk is skipped with a warning rather than failing
 /// the generation.
+/// Anchors an edit instruction so the model edits *this* image instead of
+/// inventing a new one.
+///
+/// A terse instruction carries almost no signal, and the reference
+/// conditioning alone is too weak to hold the subject: measured 2026-08-10,
+/// `"make him smile"` against a photo of a man returned an *anime
+/// illustration of a different person*, twice, at two aspect ratios. The
+/// identity-edit card names the failure — unusual or under-specified input
+/// "may drift toward base model priors".
+///
+/// Two things pull it back, and both are needed. Naming the medium ("a
+/// photograph") recovers the medium but not the subject — the same prompt
+/// with only generic grounding returned a photograph of a *different* man in
+/// a different setting. Naming the specific invariants is what preserves
+/// identity, and the artifact's own description is exactly that list, so it
+/// is restated as the thing to hold constant.
+///
+/// Caveat: a description that contradicts the edit ("long dark hair" +
+/// "give her a bob cut") asks the model for both and it splits the
+/// difference. Keep traits the edit will override out of the description.
+fn ground_instruction(instruction: &str, artifact: &Artifact) -> String {
+    let subject = match artifact.kind {
+        ArtifactKind::Character => "the same person",
+        _ => "the same subject",
+    };
+    let instruction = instruction.trim().trim_end_matches('.');
+    let description = artifact.description.trim();
+    if description.is_empty() {
+        return format!("{instruction}. A photograph of {subject}. Keep everything else unchanged.");
+    }
+    format!(
+        "{instruction}. A photograph of {subject}: {description}. Keep everything else unchanged."
+    )
+}
+
 fn auto_loras(
     registry: &ArtifactRegistry,
     artifact: Option<&Artifact>,
@@ -1265,8 +1323,11 @@ pub async fn execute(
                 let Operation::Modify { mask_prompt, .. } = op else {
                     return Ok(Vec::new());
                 };
-                let mask = selected_mask_from_run(run)
-                    .ok_or_else(|| OpError::Apply("modify recorded no mask".to_owned()))?;
+                // An instruction edit segments nothing, so there is no mask
+                // to record — only the opt-in mask path produces one.
+                let Some(mask) = selected_mask_from_run(run) else {
+                    return Ok(Vec::new());
+                };
                 Ok(vec![StoredMask {
                     id: Uuid::new_v4(),
                     asset_path: mask.path.display().to_string(),
@@ -2242,6 +2303,93 @@ mod tests {
                 .iter()
                 .any(|lora| lora.path.ends_with("inpaintkrea.safetensors")),
             "the inpaint binding rides mask-guided edits"
+        );
+        assert_eq!(
+            modify_pipeline.params().denoise_strength,
+            Some(super::super::pipeline::MASKED_LATENT_DENOISE),
+            "masked-latent inpaint runs the full sigma schedule; the mask, \
+             not a truncated schedule, is what preserves the outside"
+        );
+
+        // The default (no mask/inpaint prompts) is an instruction edit: no
+        // segmentation, no composite, and none of the inpaint adapter.
+        let instruct = Operation::Modify {
+            target: Ref::new(registry.short_id(mia)),
+            description: "change her hair".into(),
+            mask_prompt: None,
+            inpaint_prompt: None,
+            size: None,
+            steps: None,
+            loras: Vec::new(),
+        };
+        let CompiledOp::Pipeline(instruct_pipeline) =
+            compile(&registry, &instruct, &defaults).unwrap()
+        else {
+            panic!("modify must compile to a pipeline");
+        };
+        assert!(
+            !instruct_pipeline
+                .params()
+                .loras
+                .iter()
+                .any(|lora| lora.path.ends_with("inpaintkrea.safetensors")),
+            "the inpaint adapter rides only the opt-in mask path"
+        );
+        assert_eq!(
+            instruct_pipeline.params().denoise_strength,
+            None,
+            "an instruction edit sends no init image, so no denoise strength"
+        );
+        assert!(
+            !instruct_pipeline.steps().iter().any(|step| matches!(
+                step,
+                crate::registry::pipeline::Step::Segment { .. }
+                    | crate::registry::pipeline::Step::Composite { .. }
+            )),
+            "an instruction edit neither segments nor composites"
+        );
+    }
+
+    #[test]
+    fn grounding_anchors_a_terse_instruction_to_its_artifact() {
+        let mut registry = ArtifactRegistry::new();
+        let id = registry
+            .create_artifact(
+                ArtifactKind::Character,
+                CreateArtifact {
+                    name: "marcus".into(),
+                    description: "Marcus, a young man at dusk, black turtleneck".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let artifact = registry.artifact(id).unwrap();
+
+        // A bare instruction under-specifies the render and it collapses
+        // into base-model priors (measured: "make him smile" returned an
+        // anime illustration of a different person). The grounding states
+        // the medium and restates the artifact's own traits as invariants.
+        let grounded = ground_instruction("make him smile", artifact);
+        assert!(grounded.starts_with("make him smile."), "{grounded}");
+        assert!(grounded.contains("A photograph of the same person"), "{grounded}");
+        assert!(grounded.contains("black turtleneck"), "{grounded}");
+        assert!(grounded.ends_with("Keep everything else unchanged."), "{grounded}");
+
+        // A description-less artifact still gets the medium anchor, which
+        // on its own recovers "a photograph" but not the likeness.
+        let bare = registry
+            .create_artifact(
+                ArtifactKind::Object,
+                CreateArtifact {
+                    name: "lantern".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let grounded = ground_instruction("make it brighter.", registry.artifact(bare).unwrap());
+        assert_eq!(
+            grounded,
+            "make it brighter. A photograph of the same subject. Keep everything else unchanged."
         );
     }
 

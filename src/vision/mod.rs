@@ -85,10 +85,11 @@ pub struct GenerateRequest {
     pub prompt: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reference_image_path: Option<String>,
-    /// How strongly a reference image guides the generation (the backend's
-    /// img2img blend, 0–1). The sd.cpp server defaults to 0.9 — near-full
-    /// renoise — which distorts turbo-model outputs; every reference-based
-    /// op sets an explicit, tuned value instead.
+    /// How strongly a reference image guides the generation (0–1). The
+    /// sd.cpp server maps this onto `control_strength`, which only its
+    /// ControlNet path reads — the krea2 reference-edit path ignores it.
+    /// Kept because the boundary is backend-agnostic; use
+    /// [`Self::denoise_strength`] for the knob that acts on this backend.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reference_strength: Option<f32>,
     /// Mask-guided inpaint/outpaint input (same W×H output). The pipeline
@@ -101,6 +102,12 @@ pub struct GenerateRequest {
     /// inpaint input; paired with `mask_path` and `reference_image_path`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub init_image_path: Option<String>,
+    /// How much of the sigma schedule runs over `init_image_path` (0–1).
+    /// The backend defaults to 0.75, which truncates the schedule and
+    /// renoises the whole canvas; a masked edit sends 1.0 so the mask —
+    /// not a partial schedule — is what preserves the untouched pixels.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub denoise_strength: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -140,6 +147,7 @@ impl GenerateRequest {
             reference_strength: None,
             mask_path: None,
             init_image_path: None,
+            denoise_strength: None,
             width: None,
             height: None,
             steps: None,
