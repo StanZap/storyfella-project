@@ -98,6 +98,14 @@ does that deterministically; when LM Studio is configured, `llm_ground`
 refines it by dropping the traits the edit overrides. The LLM is a soft
 dependency — it never blocks, and a missing one falls back to the template.
 
+**Every op that sends a delta grounds it**, not just `modify`: a variant
+description ("in heavy yellow oilskins") and an explicit regenerate prompt
+("make it warmer") are the same shape of terse instruction and drift the same
+way — an ungrounded variant of a woman in her forties returned a different
+person of a different sex. A variant grounds against its *base* artifact; a
+regenerate against its own. A regenerate with no prompt is the exception: it
+replays the previous revision's prompt, which was grounded when it was made.
+
 Because the anchor is the *artifact* description and not the current
 revision, edits do not accumulate: `dye her hair auburn` then `give her a bob
 cut` grounds the second edit against the original description, and the auburn

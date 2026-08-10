@@ -161,6 +161,10 @@ experience and the better way to eyeball UX.
 | Plan | Needs a backend | Covers |
 | --- | --- | --- |
 | `smoke.yaml` | no | Project creation, story and beat artifacts, registry state |
+| `story-setup.yaml` | yes | The artifact kinds and how they relate — mostly text, so it is quick (~30s) |
+| `edit-vocabulary.yaml` | yes | `modify` vs `describe` vs `variant` vs `regenerate`, including an edit vanishing and then surviving |
+| `character-sheet.yaml` | yes | One character fanned across outfit / time-of-day / weather / mood axes |
+| `canvas-and-quality.yaml` | yes | Draft small, iterate, then `/resize` once the composition is settled |
 | `edit.yaml` | yes | Create a character, then recolour / re-cut / re-dress her by instruction |
 | `iteration.yaml` | yes | The creation loop — create, variant, regenerate, beat |
 | `tour.yaml` | yes | Guided walkthrough of the product surface |
@@ -176,6 +180,17 @@ Steps that stop for approval cannot be driven from a plan: the driver
 auto-rejects checkpoints, so the op fails fast with the checkpoint message.
 `modify` is checkpoint-free (instruction edits segment nothing), but its
 opt-in mask path is not.
+
+Two traps worth knowing before writing one. A bare `- wait_ms: 800` is **not**
+a step — every step needs an action, and `wait_ms`/`message`/`soft` are
+modifiers on one; serde reports that mistake against the first step in the
+file rather than the offending one, so trust the message over the line
+number. And a plan runs against the live app on a spawned task, sharing the
+same state as the user: `create_project` (which every plan starts with)
+switches away from whatever project is open, and typing in the composer
+mid-run collides with the plan's own `compose` steps. Guide mode's assistant
+card has pause/stop for exactly this; check mode calls `std::process::exit`
+when the report prints.
 
 Runs are worth keeping — `.svs-e2e/logs/` is the gitignored home for plan
 output and generation logs, and `.svs-e2e/quality/` for the images a run

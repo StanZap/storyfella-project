@@ -34,12 +34,25 @@ surfaces the artifact registry in the GUI.
 5. **Visual `create`/`variant` generate the first image.** Character,
    environment, and object artifacts get their first image as part of the
    operation (prompt = description, at the artifact's size); the variant's
-   first image is an edit of the base — its active image as the reference
-   (`generate(prompt: variant description, reference: base image)`),
-   matching what a manual `/regenerate c:<base> "<variant desc>"` would
-   have sent. A failed generation keeps the artifact with a failed
-   revision; `/regenerate` is the retry. Text-only kinds (story, scene,
-   beat) and `compose` stay model-only.
+   first image is an edit of the base — its active image as the reference,
+   and the variant description **grounded against the base** before it is
+   sent (`generate(prompt: ground(variant description, base), reference:
+   base image)`). The grounding is not optional: a variant description is a
+   delta ("in heavy yellow oilskins") and sending it bare drifts off the
+   base entirely — measured, a variant of a woman in her forties came back
+   as a different person of a different sex. A failed generation keeps the
+   artifact with a failed revision; `/regenerate` is the retry. Text-only
+   kinds (story, scene, beat) and `compose` stay model-only.
+6. **Variants do not nest.** A variant must derive from a base artifact, so
+   the tree stays one level deep and every look is reproducible from the
+   base alone; `RegistryError` rejects a variant of a variant. Combinations
+   are described in full on a single variant ("in oilskins, grim") rather
+   than layered.
+7. **`describe` is the only way to change a description**, and the
+   description is what every edit grounds against — so it is how an edit
+   becomes canonical rather than one revision among many. See
+   `docs/architecture.md` for why the anchor is the artifact and not the
+   current revision.
 
 ## Modules
 
@@ -77,7 +90,9 @@ surfaces the artifact registry in the GUI.
   stored on the new revision (`masks`) with its grounding prompt and score.
 - `Ground` is a soft LLM step with a deterministic fallback, so unlike
   `Plan` it never blocks on a missing planner — it substitutes the template
-  and continues.
+  and continues. `variant` and `regenerate`-with-a-prompt emit it too; a
+  `regenerate` with no prompt does not, because it replays a prompt that was
+  already grounded when the revision was made.
 
 ## CLI
 
