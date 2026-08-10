@@ -20,7 +20,8 @@ This is intentionally a desktop-only application. Web, mobile, and WASM targets 
   (characters, environments, objects, scenes, stories), a detail pane with
   the active image, description, variants, revisions, children, and the
   operation log, plus a slash-command composer (`/create`, `/variant`,
-  `/regenerate`, `/modify` — the same typed vocabulary as the `svs` CLI).
+  `/regenerate`, `/modify`, `/describe` — the same typed vocabulary as the
+  `svs` CLI).
   Undo/redo restores registry snapshots.
 - **Image generation** starts the configured native Krea Q2/Q4 runtime and
   lightweight Python adapter on demand, waits for both to become ready, and
@@ -46,7 +47,8 @@ The shell deliberately uses a small reusable component vocabulary, low-contrast 
 2. Iterate versions: `/variant c:mia "in yellow rain gear" --axis outfit` — variants appear under the base artifact and can be selected like any artifact.
 3. Generate images (Krea provisioned): `/regenerate c:mia "make it warmer"` — the result is a new revision of the active image.
 4. Edit an image: `/modify c:mia "give her a short bob haircut"` — say what to change in plain language. The generation model is an instruction editor, so it keeps what you did not mention (face, pose, clothing, background); there is no region to select.
-5. Browse revisions in the detail pane; click any completed revision to show it; undo/redo in the header.
+5. Keep an edit: `/describe c:mia "Mia, a lighthouse keeper, short bob"` — edits produce revisions but never change what the artifact *is*, so the next `/modify` re-anchors to the description and an earlier change washes out. `describe` promotes a change to canonical; `/variant` turns one into its own artifact.
+6. Browse revisions in the detail pane; click any completed revision to show it; undo/redo in the header.
 
 Because `modify` re-states the artifact's description as the list of things to hold constant, **descriptions are worth writing carefully** — they are the edit's contract. An edit that contradicts the description ("long dark hair" + "dye it auburn") is reconciled by the configured LM Studio planner; without one, a deterministic fallback keeps the description verbatim and the contradiction can show up in the image.
 

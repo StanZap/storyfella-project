@@ -98,6 +98,15 @@ does that deterministically; when LM Studio is configured, `llm_ground`
 refines it by dropping the traits the edit overrides. The LLM is a soft
 dependency — it never blocks, and a missing one falls back to the template.
 
+Because the anchor is the *artifact* description and not the current
+revision, edits do not accumulate: `dye her hair auburn` then `give her a bob
+cut` grounds the second edit against the original description, and the auburn
+washes out. That is deliberate — an artifact has one canonical look and edits
+are experiments against it — so `describe` is the op that promotes an edit to
+canonical (`/describe c:mara "…, auburn hair, …"`), and `variant` is how a
+look becomes its own artifact. Anchoring on the current revision instead would
+need a caption of the active image; `/caption` is a placeholder today.
+
 Passing both `--mask-prompt` and `--inpaint-prompt` opts into the older
 regional flow instead (`Segment → Checkpoint(confirm mask) → Generate →
 Composite`, see `docs/ROADMAP.md` §5). That path still checkpoints — the

@@ -156,6 +156,15 @@ pub enum Operation {
     /// Unbind an adapter from the registry.
     #[serde(rename = "lora-remove")]
     LoraRemove { lora: String },
+    /// Replace an artifact's description — its canonical look.
+    ///
+    /// The description is what `modify` re-states as the traits an edit must
+    /// hold constant, so it is also what every later edit re-anchors to. An
+    /// edit does not change it: `/modify c:mara "dye her hair auburn"`
+    /// produces an auburn revision, but the next edit still grounds against
+    /// the original description and the auburn washes out. `describe` is how
+    /// a change becomes canonical and survives.
+    Describe { target: Ref, description: String },
 }
 
 /// One layer reference for `compose`.
@@ -289,6 +298,10 @@ impl Operation {
                 format!("lora-scale {lora} [{multiplier}]")
             }
             Operation::LoraRemove { lora } => format!("lora-remove {lora}"),
+            Operation::Describe {
+                target,
+                description,
+            } => format!("describe {target} {description:?}"),
         }
     }
 
@@ -300,7 +313,8 @@ impl Operation {
             | Operation::Resize { target, .. }
             | Operation::Draft { target, .. }
             | Operation::Modify { target, .. }
-            | Operation::AttachLora { target, .. } => Some(target),
+            | Operation::AttachLora { target, .. }
+            | Operation::Describe { target, .. } => Some(target),
             Operation::Compose { scene, .. } => Some(scene),
             Operation::Create { .. }
             | Operation::LoraScale { .. }
@@ -928,6 +942,16 @@ pub fn compile(
             registry.resolve_lora(lora)?;
             Ok(CompiledOp::Direct)
         }
+        Operation::Describe {
+            target,
+            description,
+        } => {
+            registry.resolve(target)?;
+            if description.trim().is_empty() {
+                return Err(CompileError::EmptyDescription);
+            }
+            Ok(CompiledOp::Direct)
+        }
     }
 }
 
@@ -1426,6 +1450,24 @@ pub async fn execute(
                 registry.push_log(op.clone(), options.origin, OpStatus::Applied, artifact_id);
             Ok(OpOutcome {
                 artifact_id,
+                revision_id: None,
+                log_id: Some(log_id),
+                run: None,
+                status: OpStatus::Applied,
+            })
+        }
+        Operation::Describe {
+            target,
+            description,
+        } => {
+            let id = registry.resolve(target)?;
+            if description.trim().is_empty() {
+                return Err(CompileError::EmptyDescription.into());
+            }
+            registry.set_description(id, description.trim())?;
+            let log_id = registry.push_log(op.clone(), options.origin, OpStatus::Applied, Some(id));
+            Ok(OpOutcome {
+                artifact_id: Some(id),
                 revision_id: None,
                 log_id: Some(log_id),
                 run: None,
@@ -2348,6 +2390,72 @@ mod tests {
             )),
             "an instruction edit neither segments nor composites"
         );
+    }
+
+    #[test]
+    fn describe_rewrites_the_anchor_that_edits_ground_against() {
+        let defaults = GenerationDefaults {
+            sizes: Default::default(),
+            steps: 4,
+            loras: Default::default(),
+        };
+        let mut registry = ArtifactRegistry::new();
+        let id = registry
+            .create_artifact(
+                ArtifactKind::Character,
+                CreateArtifact {
+                    name: "mara".into(),
+                    description: "Mara, long dark hair, grey sweater".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // Editing the image never moves the description, so a second edit
+        // still grounds against "long dark hair" and the first one washes
+        // out. `describe` is the only way to make a change canonical.
+        let grounded = ground_instruction("dye her hair auburn", registry.artifact(id).unwrap());
+        assert!(grounded.contains("long dark hair"), "{grounded}");
+
+        let op = Operation::Describe {
+            target: Ref::new(registry.short_id(id)),
+            description: "  Mara, long auburn hair, grey sweater  ".into(),
+        };
+        assert!(matches!(
+            compile(&registry, &op, &defaults).unwrap(),
+            CompiledOp::Direct
+        ));
+        let options = ExecuteOptions {
+            backend: None,
+            run: RunOptions::new(std::env::temp_dir()),
+            generation: Default::default(),
+            defaults: &defaults,
+            manual_text: None,
+            origin: OpOrigin::User,
+        };
+        let outcome = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(execute(&mut registry, &op, &options))
+            .unwrap();
+        assert_eq!(outcome.artifact_id, Some(id));
+        assert_eq!(outcome.status, OpStatus::Applied);
+        assert!(outcome.revision_id.is_none(), "describe makes no image");
+
+        let artifact = registry.artifact(id).unwrap();
+        assert_eq!(artifact.description, "Mara, long auburn hair, grey sweater");
+        let grounded = ground_instruction("give her a bob cut", artifact);
+        assert!(grounded.contains("auburn"), "{grounded}");
+        assert!(!grounded.contains("dark"), "{grounded}");
+
+        // An empty description would silently destroy the anchor.
+        let empty = Operation::Describe {
+            target: Ref::new(registry.short_id(id)),
+            description: "   ".into(),
+        };
+        assert!(matches!(
+            compile(&registry, &empty, &defaults),
+            Err(CompileError::EmptyDescription)
+        ));
     }
 
     #[test]

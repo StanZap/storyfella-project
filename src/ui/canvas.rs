@@ -277,7 +277,7 @@ fn propose_operations(
             ReportedError::plain(
                 ErrorCode::AppLlmUnavailable,
                 "LM Studio is not configured or reachable — use slash commands instead \
-                 (/create, /variant, /regenerate, /modify, /attach-lora)",
+                 (/create, /variant, /regenerate, /modify, /describe, /attach-lora)",
             )
             .with_context("message", message)
             .log(),
@@ -349,7 +349,9 @@ fn draft_on_visual_artifact(registry: &ArtifactRegistry, operation: &Operation) 
     let artifact = registry.artifact(id)?;
     artifact.kind.is_visual().then(|| {
         "a draft is a text note — it never changes the image. \
-         Use /modify (localized change), /variant (new look), or /regenerate (redo)."
+         Use /modify (change the image), /describe (change what the artifact \
+         IS, which every later edit is measured against), /variant (new look), \
+         or /regenerate (redo)."
             .to_owned()
     })
 }
@@ -1284,7 +1286,7 @@ fn Composer(
                     }
                     textarea {
                         class: "block min-h-9 w-full resize-none bg-transparent py-1.5 text-[12px] leading-5 text-zinc-100 outline-none placeholder:text-zinc-700 disabled:opacity-40",
-                        placeholder: "/create character <desc> · /variant c:<ref> <desc> · /regenerate c:<ref> · /resize c:<ref> WxH · /modify c:<ref> <change> · /attach-lora c:<ref> <lora> · or describe it in plain language",
+                        placeholder: "/create character <desc> · /variant c:<ref> <desc> · /regenerate c:<ref> · /resize c:<ref> WxH · /modify c:<ref> <change> · /describe c:<ref> <desc> · /attach-lora c:<ref> <lora> · or describe it in plain language",
                         value: "{value}",
                         disabled,
                         // WebKit rewrites `--` to an em dash and straight to

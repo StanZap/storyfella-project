@@ -68,9 +68,10 @@ pub fn parse_slash(input: &str) -> Result<Operation, SlashError> {
         "attach-lora" => parse_attach_lora(&tokens),
         "lora-scale" => parse_lora_scale(&tokens),
         "lora-remove" => parse_lora_remove(&tokens),
+        "describe" => parse_describe(&tokens),
         other => Err(SlashError(format!(
             "unknown command /{other}; expected /create, /variant, /regenerate, /resize, \
-             /modify, /attach-lora, /lora-scale, or /lora-remove"
+             /modify, /describe, /attach-lora, /lora-scale, or /lora-remove"
         ))),
     }
 }
@@ -142,6 +143,20 @@ fn parse_variant(tokens: &[Token]) -> Result<Operation, SlashError> {
         size,
         steps,
         loras,
+    })
+}
+
+fn parse_describe(tokens: &[Token]) -> Result<Operation, SlashError> {
+    let target = parse_ref(tokens, "describe")?;
+    let (description, _) = split_flags(tokens, 2, &[])?;
+    if description.trim().is_empty() {
+        return Err(SlashError(
+            "describe needs a description: /describe c:<ref> <description>".to_owned(),
+        ));
+    }
+    Ok(Operation::Describe {
+        target,
+        description,
     })
 }
 

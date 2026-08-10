@@ -1019,6 +1019,22 @@ impl ArtifactRegistry {
         Ok(())
     }
 
+    /// Replaces an artifact's description — its canonical look.
+    ///
+    /// This is not cosmetic: `modify` re-states the description as the traits
+    /// an edit must hold constant, so it is what every edit re-anchors to.
+    /// Editing an image never changes it, which is why an edit washes out on
+    /// the next one unless it is written back here.
+    pub fn set_description(
+        &mut self,
+        id: Uuid,
+        description: impl Into<String>,
+    ) -> Result<(), RegistryError> {
+        let artifact = self.artifact_mut(id).ok_or(RegistryError::NoArtifact(id))?;
+        artifact.description = description.into();
+        Ok(())
+    }
+
     /// Attaches a composition to a beat (the beat must live in a scene).
     pub fn set_composition(
         &mut self,

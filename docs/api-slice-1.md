@@ -91,7 +91,9 @@ svs --project p.db op variant c:<char> "in rain gear" --axis outfit
 svs --project p.db op regenerate c:<char> "make it warmer" --seed 42 --steps 4 --size 768x448 --out golden/
 svs --project p.db op draft c:<story> "write the opening"          # LLM + approval checkpoint
 svs --project p.db op draft c:<story> "write the opening" --text "…"   # manual, no checkpoint
-svs --project p.db op modify c:<char> "change her hair" --mask-prompt "her hair" --inpaint-prompt "a bob cut" --approve auto --out golden/
+svs --project p.db op modify c:<char> "give her a short bob haircut"   # instruction edit
+svs --project p.db op describe c:<char> "Mia, a lighthouse keeper, short bob"  # make an edit canonical
+svs --project p.db op modify c:<char> "change her hair" --mask-prompt "her hair" --inpaint-prompt "a bob cut" --approve auto --out golden/  # opt-in mask path
 svs --project p.db stack run stack.json --approve auto             # the VLLM contract test bed
 svs --project p.db stack propose "Add a rainy variant of the kitchen scene"   # LM Studio → JSON
 svs --project p.db runtime serve --force --model krea-2-turbo-q4   # resident generation profile

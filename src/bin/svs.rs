@@ -234,6 +234,10 @@ enum OpCommand {
     LoraScale { lora: String, multiplier: f32 },
     /// /lora-remove <lora> — unbind an adapter from the registry.
     LoraRemove { lora: String },
+    /// /describe <ref> <description> — replace the artifact's canonical
+    /// look. Edits re-anchor to this, so writing a change back here is how
+    /// it survives the next `modify`.
+    Describe { target: Ref, description: String },
 }
 
 #[derive(Subcommand)]
@@ -661,7 +665,8 @@ fn operation_needs_backend(operation: &Operation, manual_text: Option<&str>) -> 
         Operation::Regenerate { .. } | Operation::Resize { .. } | Operation::Modify { .. } => true,
         Operation::AttachLora { .. }
         | Operation::LoraScale { .. }
-        | Operation::LoraRemove { .. } => false,
+        | Operation::LoraRemove { .. }
+        | Operation::Describe { .. } => false,
     }
 }
 
@@ -939,6 +944,23 @@ fn build_operation(op: OpCommand) -> Result<(Operation, CliRunOptions)> {
                 manual_text: None,
             },
         ),
+        OpCommand::Describe {
+            target,
+            description,
+        } => (
+            Operation::Describe {
+                target,
+                description,
+            },
+            CliRunOptions {
+                work_dir: std::env::temp_dir(),
+                golden_dir: None,
+                approvals: ApprovalPolicy::auto(),
+                seed: None,
+                generation: GenerationOverrides::default(),
+                manual_text: None,
+            },
+        ),
         OpCommand::LoraRemove { lora } => (
             Operation::LoraRemove { lora },
             CliRunOptions {
@@ -1139,6 +1161,10 @@ fn print_outcome(registry: &ArtifactRegistry, operation: &Operation, outcome: &o
         Operation::LoraRemove { lora } => {
             println!("removed lora {lora}");
         }
+        Operation::Describe { .. } => {
+            let id = outcome.artifact_id.expect("describe has an artifact");
+            println!("described {}", registry.ref_of(id));
+        }
         Operation::Regenerate { .. } | Operation::Resize { .. } | Operation::Modify { .. } => {
             let id = outcome.artifact_id.expect("visual ops have an artifact");
             let revision_id = outcome.revision_id.expect("visual ops start a revision");
@@ -1226,6 +1252,7 @@ fn operation_name(operation: &Operation) -> &'static str {
         Operation::AttachLora { .. } => "attach-lora",
         Operation::LoraScale { .. } => "lora-scale",
         Operation::LoraRemove { .. } => "lora-remove",
+        Operation::Describe { .. } => "describe",
     }
 }
 
