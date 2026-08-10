@@ -623,7 +623,21 @@ pub fn compile(
                 .and_then(|revision| revision.asset_path.clone())
                 .map(|path| builder.reference_image(path));
             builder.reference_strength(REFERENCE_KEEP_SUBJECT);
-            builder.generate(PromptSource::Text(description.clone()), reference, None);
+            // A variant description is a *delta* ("in heavy yellow
+            // oilskins"), which is exactly the terse instruction that
+            // collapses toward base-model priors — measured, an ungrounded
+            // variant of a woman in her forties came back as a different
+            // person of a different sex, with a scene the base never had.
+            // Ground it against the base artifact, like `modify`.
+            let fallback = ground_instruction(description, base_artifact);
+            let grounded = builder.llm_ground(
+                format!(
+                    "Edit: {description}\nDescription of the image: {}",
+                    base_artifact.description
+                ),
+                fallback,
+            );
+            builder.generate(PromptSource::Prompt(grounded), reference, None);
             Ok(CompiledOp::Pipeline(builder.build()?))
         }
         Operation::Compose {
@@ -746,7 +760,25 @@ pub fn compile(
                 .and_then(|revision| revision.asset_path.clone())
                 .map(|path| builder.reference_image(path));
             builder.reference_strength(REFERENCE_KEEP_SUBJECT);
-            builder.generate(PromptSource::Text(resolved_prompt), reference, None);
+            // An explicit prompt is a delta ("make it warmer") and needs the
+            // same grounding as a variant or a modify. A regenerate *without*
+            // one replays the previous revision's prompt, which was already
+            // grounded when it was made — grounding it twice would nest the
+            // description inside itself.
+            let prompt_source = match prompt {
+                Some(delta) => {
+                    let fallback = ground_instruction(delta, artifact);
+                    PromptSource::Prompt(builder.llm_ground(
+                        format!(
+                            "Edit: {delta}\nDescription of the image: {}",
+                            artifact.description
+                        ),
+                        fallback,
+                    ))
+                }
+                None => PromptSource::Text(resolved_prompt),
+            };
+            builder.generate(prompt_source, reference, None);
             Ok(CompiledOp::Pipeline(builder.build()?))
         }
         Operation::Resize {
@@ -2738,9 +2770,16 @@ mod tests {
             "variant generates its first image"
         );
         // The first image is an edit of the base: its active image as the
-        // reference, the variant description as the prompt, the base's size.
+        // reference, the base's size, and the variant description *grounded*
+        // against the base. Sending the bare delta lets the render drift off
+        // the base entirely — measured, an ungrounded variant of a woman in
+        // her forties returned a different person of a different sex.
         let request = &backend.requests()[0];
-        assert_eq!(request.prompt, "in yellow rain gear");
+        assert_eq!(
+            request.prompt,
+            "in yellow rain gear. A photograph of the same person: Mia, a lighthouse keeper. \
+             Keep everything else unchanged."
+        );
         assert_eq!(
             request.reference_image_path.as_deref(),
             Some(mia_asset.to_str().unwrap())
