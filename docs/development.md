@@ -138,6 +138,50 @@ uv run python -m unittest discover -s tests
 Some tests skip themselves when the optional torch environment is absent, so a
 run that reports `OK (skipped=N)` is expected on a base environment.
 
+### End-to-end: plans (the app's own regression suite)
+
+Unit tests do not exercise the app. The automation driver (`src/driver/`)
+does: it plays a **plan** — a YAML script written in the app's own vocabulary
+— through the same code paths the UI uses (`src/commands.rs`), and asserts
+outcomes against app state. Plans never mention selectors, coordinates or
+DOM, so they do not break when the UI is restyled.
+
+```bash
+# Fast, backend-free: project, story, beats. Runs anywhere.
+cargo run --features desktop --bin smart-visual-sequencer -- \
+  --plan config/plans/smoke.yaml --mode check
+```
+
+`--mode check` runs the steps back to back and prints a verdict
+(`verdict: 7 passed, 0 failed`, non-zero exit on failure) — this is the
+regression mode. `--mode guide` (the default) runs the same plan slowly with
+an assistant card narrating each step in the UI, which is the tutorial
+experience and the better way to eyeball UX.
+
+| Plan | Needs a backend | Covers |
+| --- | --- | --- |
+| `smoke.yaml` | no | Project creation, story and beat artifacts, registry state |
+| `edit.yaml` | yes | Create a character, then recolour / re-cut / re-dress her by instruction |
+| `iteration.yaml` | yes | The creation loop — create, variant, regenerate, beat |
+| `tour.yaml` | yes | Guided walkthrough of the product surface |
+
+Writing a plan: steps are `verb: value` pairs, `expect_*` steps gate
+progress, `soft: true` downgrades a failure to a warning (use it for
+`expect_image`, which depends on generation timing), and `message:` is the
+narration shown in guide mode. `compose:` types text into the canvas
+composer character by character and submits it exactly like a user pressing
+Enter — prefer it over `command:` when the point is to exercise the UI.
+
+Steps that stop for approval cannot be driven from a plan: the driver
+auto-rejects checkpoints, so the op fails fast with the checkpoint message.
+`modify` is checkpoint-free (instruction edits segment nothing), but its
+opt-in mask path is not.
+
+Runs are worth keeping — `.svs-e2e/logs/` is the gitignored home for plan
+output and generation logs, and `.svs-e2e/quality/` for the images a run
+produced. See `AGENTS.md` for why experiment scratch stays inside the
+checkout rather than `/tmp`.
+
 ## CLI tools
 
 | Command | Purpose |
@@ -175,7 +219,7 @@ Configuration lives in [`config/app.toml`](../config/app.toml) and is loaded by
 | `generation.sizes.object` | `768x768` | Default canvas for object images |
 | `generation.sizes.scene` | `1024x576` | Default canvas for scene images |
 | `generation.sizes.beat` | `1024x576` | Default canvas for beat images |
-| `lora.inpaint` | none | Adapter file applied to mask-guided edits (`modify`), e.g. `inpaintkrea.safetensors` |
+| `lora.inpaint` | none | Adapter file applied to the opt-in mask path of `modify` (`--mask-prompt` + `--inpaint-prompt`), e.g. `inpaintkrea.safetensors`. Instruction edits do not load it |
 | `lora.character` | none | Adapter file applied to character generations without a project binding |
 | `lora.environment` | none | Adapter file applied to environment generations without a project binding |
 | `lora.object` | none | Adapter file applied to object generations without a project binding |

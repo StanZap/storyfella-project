@@ -20,14 +20,17 @@ surfaces the artifact registry in the GUI.
    derived from their description (`"Mia, a lighthouse keeper"` →
    `mia-a-lighthouse-keeper`); variants are auto-named `{base}-{axis}`
    (or `{base}-{slug}`) so every system-created key stays unique.
-4. **Native mask support for Krea:** unvalidated (sd.cpp `submit()` sends
-   no mask today), so the **composite fallback is primary** — the inpaint
-   pipeline generates with the reference image, then blends so every pixel
-   *outside* the confirmed mask is bit-identical to the original (feather
-   ramps inside the mask only). `mask_path` is carried in the
-   Rust ↔ Python `GenerateRequest` contract as best-effort native
-   passthrough (`mask_images` in the sd.cpp body) so a validated backend
-   can be flipped on later without a contract change.
+4. **Masks are no longer how `modify` works** (revised 2026-08-10). The
+   generation model is an instruction editor that preserves what the
+   instruction did not mention, so `modify` sends a reference image and a
+   grounded instruction and the mask machinery is opt-in. `mask_path` is
+   still carried in the Rust ↔ Python `GenerateRequest` contract, and the
+   sd.cpp body field is **`mask_image`** — singular. It was `mask_images`
+   (an array) for a long time; sd.cpp drops unrecognized keys silently, so
+   the mask never arrived and the composite pasted a region of a fully
+   re-rendered frame over the original. Anything the server does not name
+   in its JSON parser is discarded without a warning — check the parser
+   before concluding a generation input has no effect.
 5. **Visual `create`/`variant` generate the first image.** Character,
    environment, and object artifacts get their first image as part of the
    operation (prompt = description, at the artifact's size); the variant's
@@ -65,10 +68,16 @@ surfaces the artifact registry in the GUI.
   intermediates and fails the revision.
 - Undo is state restore (`ArtifactRegistry::snapshot`/`restore`), never
   pipeline re-execution.
-- The `modify` compiler: `LoadImage → Segment(mask prompt) → Checkpoint
-  (confirm mask) → Generate(reference, inpaint prompt) → Composite`; the
-  confirmed mask is stored on the new revision (`masks`), keeping its
-  grounding prompt and score for follow-up edits.
+- The `modify` compiler emits one of two shapes. Default (an instruction
+  edit): `LoadImage → Ground(instruction) → Generate(reference, grounded
+  instruction)` — no mask, no composite, no checkpoint, and the inpaint
+  adapter is not injected. With both `--mask-prompt` and `--inpaint-prompt`
+  (opt-in): `LoadImage → Segment(mask prompt) → Checkpoint(confirm mask) →
+  Generate(reference, inpaint prompt) → Composite`; the confirmed mask is
+  stored on the new revision (`masks`) with its grounding prompt and score.
+- `Ground` is a soft LLM step with a deterministic fallback, so unlike
+  `Plan` it never blocks on a missing planner — it substitutes the template
+  and continues.
 
 ## CLI
 

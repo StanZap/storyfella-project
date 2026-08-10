@@ -177,6 +177,25 @@ Response (native route):
 }
 ```
 
+### Edit inputs (shared by `/generate` and `/generation/jobs`)
+
+Beyond `prompt`/`width`/`height`/`steps`/`seed`/`model`, `GenerateRequest`
+(`python/models/schemas.py`) carries the fields that turn a generation into an
+edit. All are optional; omitting them all is a plain text-to-image render.
+
+| Field | sd.cpp body field | Meaning |
+| --- | --- | --- |
+| `reference_image_path` | `ref_images[0]` | The image being edited, injected as in-context tokens plus VLM grounding. Present for every edit. |
+| `loras[]` | `lora[]` | Adapters as `{path, multiplier}`; `path` is relative to the configured LoRA directory. |
+| `mask_path` | `mask_image` | Region to repaint (white = repaint). **Singular** — sd.cpp discards unknown keys silently, so a plural or misspelled name is dropped without an error and the mask simply never applies. |
+| `init_image_path` | `init_image` | The image to denoise from. Sent with `mask_path` for a masked-latent inpaint: the server pins the unmasked latents per step (`denoised = denoised*mask + init_latent*(1-mask)`). |
+| `denoise_strength` | `strength` | Fraction of the sigma schedule to run over `init_image_path`. sd.cpp defaults to `0.75`, which truncates the schedule and renoises the whole canvas; only meaningful alongside an init image. |
+| `reference_strength` | `control_strength` | Carried for backend neutrality, but sd.cpp reads `control_strength` only on its ControlNet path — it is a **no-op** for reference edits. Use `denoise_strength` for the knob that acts. |
+
+The instruction-edit path (the product default for `modify`) sends only
+`reference_image_path` and `loras`: no mask, no init image, no strengths. See
+`docs/architecture.md`.
+
 ## `POST /generation/jobs?priority=interactive|background` — async native generation
 
 The product-facing entry point. Only native Krea profiles (`krea-2-turbo-q2`,

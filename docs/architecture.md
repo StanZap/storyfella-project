@@ -84,14 +84,31 @@ ops::execute (src/registry/ops.rs)
 Artifact detail: image + revision history (served via /generated/<file>)
 ```
 
-A `modify` follows the canonical regional-edit flow (segment → confirm mask →
-inpaint, composite fallback) — see `docs/ROADMAP.md` §5. The canvas surfaces
-the mask checkpoint interactively: the op runs on a worker thread and the
-segmentation candidates are shown overlaid on the image in a modal — the one
-interactive step in the flow. The CLI offers the same choice
-(`svs op modify --approve interactive`); non-interactive runs auto-pick the
-best candidate. The interactive draft profile requests 768×448 at four steps
-to favor iteration speed on slower hardware.
+A `modify` is an **instruction edit**, not a regional one: `LoadImage →
+Ground(instruction) → Generate(reference, grounded instruction)`. Krea 2's
+identity-edit adapter takes an image plus a plain-language instruction and
+preserves what the instruction did not mention, so nothing is segmented,
+masked or composited, and the op runs unattended — there is no checkpoint.
+
+The `Ground` step is why it holds together. A terse instruction
+under-specifies the render and it collapses toward base-model priors, so the
+instruction is rewritten to name the medium and re-state the artifact's own
+description as the traits to keep. `ground_instruction` (`registry/ops.rs`)
+does that deterministically; when LM Studio is configured, `llm_ground`
+refines it by dropping the traits the edit overrides. The LLM is a soft
+dependency — it never blocks, and a missing one falls back to the template.
+
+Passing both `--mask-prompt` and `--inpaint-prompt` opts into the older
+regional flow instead (`Segment → Checkpoint(confirm mask) → Generate →
+Composite`, see `docs/ROADMAP.md` §5). That path still checkpoints — the
+canvas overlays the segmentation candidates in a modal, the CLI offers
+`--approve interactive`, and non-interactive runs auto-pick the best
+candidate — and it is retained for inpaint/outpaint work that an instruction
+cannot express. It does not currently produce correct results; see
+`AGENTS.md`.
+
+The interactive draft profile requests 768×448 at four steps to favor
+iteration speed on slower hardware.
 
 ## Process boundaries
 

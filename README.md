@@ -25,8 +25,8 @@ This is intentionally a desktop-only application. Web, mobile, and WASM targets 
 - **Image generation** starts the configured native Krea Q2/Q4 runtime and
   lightweight Python adapter on demand, waits for both to become ready, and
   leaves the model resident for subsequent requests. `regenerate` and
-  `modify` (mask-guided regional edits) run through the same pipelines as
-  the CLI.
+  `modify` (edits described in plain language) run through the same
+  pipelines as the CLI.
 - **Variants** are first-class artifacts (`c:mia-outfit`), created with the
   `/variant` command or the detail-pane action; axes (outfit, weather, …)
   are tags for organization.
@@ -45,10 +45,14 @@ The shell deliberately uses a small reusable component vocabulary, low-contrast 
 1. Create artifacts with the composer: `/create character "Mia, a lighthouse keeper" --name mia`, `/create environment "a storm-tossed harbor" --name harbor`, `/create object "an antique brass lantern" --name lantern`.
 2. Iterate versions: `/variant c:mia "in yellow rain gear" --axis outfit` — variants appear under the base artifact and can be selected like any artifact.
 3. Generate images (Krea provisioned): `/regenerate c:mia "make it warmer"` — the result is a new revision of the active image.
-4. Regional edits: `/modify c:mia "change her hair" --mask "her hair" --inpaint "a bob cut"` (or omit the prompts when an LLM is configured to plan them).
+4. Edit an image: `/modify c:mia "give her a short bob haircut"` — say what to change in plain language. The generation model is an instruction editor, so it keeps what you did not mention (face, pose, clothing, background); there is no region to select.
 5. Browse revisions in the detail pane; click any completed revision to show it; undo/redo in the header.
 
-The interactive draft profile currently requests a 768×448 image at four steps to favor iteration speed. Final-quality rendering, planner-assisted prompt rewriting, Studio sequencing, and presentation export remain roadmap work.
+Because `modify` re-states the artifact's description as the list of things to hold constant, **descriptions are worth writing carefully** — they are the edit's contract. An edit that contradicts the description ("long dark hair" + "dye it auburn") is reconciled by the configured LM Studio planner; without one, a deterministic fallback keeps the description verbatim and the contradiction can show up in the image.
+
+`/modify` also accepts `--mask` with `--inpaint` to opt into a mask-guided inpaint instead. That path is for filling or removing regions rather than restyling them, and it is **not driven correctly yet** — see `AGENTS.md`.
+
+The interactive draft profile currently requests a 768×448 image at four steps to favor iteration speed. Final-quality rendering, Studio sequencing, and presentation export remain roadmap work.
 
 ## Project layout
 

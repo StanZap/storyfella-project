@@ -13,7 +13,8 @@ current product code.
 | Document | Purpose |
 | --- | --- |
 | [`architecture.md`](architecture.md) | System boundaries, process model, and the creative data flow from prompt to revision. |
-| [`development.md`](development.md) | Prerequisites, build/run/test commands, configuration, and troubleshooting. |
+| [`development.md`](development.md) | Prerequisites, build/run/test commands (including end-to-end plans), configuration, and troubleshooting. |
+| [`api-slice-1.md`](api-slice-1.md) | The artifact registry, the typed operation/pipeline layer, and the `svs` CLI — the vocabulary shared by the CLI and the canvas. |
 | [`http-api.md`](http-api.md) | The Python vision runtime's HTTP contract: endpoints, schemas, jobs, and error behavior. |
 | [`runtime-lifecycle.md`](runtime-lifecycle.md) | How Rust launches and supervises the Python runtime and the native Krea generation server, plus model provisioning. |
 | [`data-model.md`](data-model.md) | The project/storyboard/timeline domain model, the persistence format, and known gaps. |
@@ -31,3 +32,11 @@ current product code.
    a command reference.
 5. Read [`data-model.md`](data-model.md) before touching project persistence or
    storyboard/timeline invariants.
+6. Read [`api-slice-1.md`](api-slice-1.md) before changing an operation, a
+   pipeline step, or the slash vocabulary — the CLI and the canvas compile to
+   the same typed ops, so a change there lands in both surfaces.
+
+`AGENTS.md` at the repository root is the other half of this: it records the
+measured behaviour of the ML backends — the settings that matter, the ones
+that turned out to be no-ops, and the failures they cause. Read it before
+tuning a generation parameter.
