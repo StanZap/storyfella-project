@@ -1,5 +1,7 @@
 pub mod app;
 pub mod assets;
+pub mod commands;
+pub mod driver;
 pub mod errors;
 pub mod llm;
 pub mod persistence;

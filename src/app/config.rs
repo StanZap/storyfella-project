@@ -149,6 +149,9 @@ struct SizeFileConfig {
 struct LoraFileConfig {
     /// Adapter applied to mask-guided edits (`modify`).
     inpaint: Option<String>,
+    /// Adapter applied to reference-edit ops (`variant`/`regenerate`) —
+    /// e.g. Krea's identity-preserving edit adapter.
+    variant: Option<String>,
     character: Option<String>,
     environment: Option<String>,
     object: Option<String>,
@@ -161,6 +164,7 @@ impl Default for LoraFileConfig {
     fn default() -> Self {
         Self {
             inpaint: None,
+            variant: None,
             character: None,
             environment: None,
             object: None,
@@ -268,6 +272,7 @@ impl AppConfig {
         let lora_bindings = LoraBindings {
             dir: lora_dir,
             inpaint: file_lora.inpaint.clone().map(|file| LoraBinding { file }),
+            variant: file_lora.variant.clone().map(|file| LoraBinding { file }),
             kinds: KindLoraBindings {
                 character: file_lora.character.clone().map(|file| LoraBinding { file }),
                 environment: file_lora

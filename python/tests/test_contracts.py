@@ -13,9 +13,11 @@ from runtime.sd_cpp import StableDiffusionCppError
 from runtime.segmenter import (
     BoxPrompt,
     MaskResult,
+    SegmentationError,
     SegmentationOptions,
     SegmentationResult,
     Sam2Segmenter,
+    Sam3Segmenter,
 )
 
 
@@ -56,11 +58,35 @@ class FakeSegmenter:
 
 
 class FakeGrounder:
-    def ground(self, image_path: Path, prompt: str, device: str) -> GroundingResult:
+    def ground(self, image_path: Path, prompt: str, device: str):
         del image_path, prompt, device
         return GroundingResult(
             boxes=(BoxPrompt(10.0, 20.0, 100.0, 200.0),),
             scores=(0.95,),
+        )
+
+
+class FailingSam3Segmenter:
+    def segment(self, options: SegmentationOptions) -> SegmentationResult:
+        raise SegmentationError("gated weights unavailable")
+
+
+class FakeSam3Segmenter:
+    def segment(self, options: SegmentationOptions) -> SegmentationResult:
+        assert options.text, "text-prompt routing expected"
+        return SegmentationResult(
+            masks=(
+                MaskResult(
+                    path=Path("/tmp/mask.png"),
+                    score=0.98,
+                    area_pixels=1234,
+                    bounding_box=BoxPrompt(10.0, 20.0, 100.0, 200.0),
+                ),
+            ),
+            model=options.model,
+            device="cpu",
+            dtype="float32",
+            duration_ms=15,
         )
 
 
@@ -161,9 +187,9 @@ class GenerateContractTests(unittest.TestCase):
         self.assertEqual(response.masks[0].path, "/tmp/mask.png")
         self.assertEqual(response.masks[0].area_pixels, 1234)
 
-    def test_text_only_segmentation_uses_grounding_backend(self) -> None:
+    def test_text_only_segmentation_uses_sam3_backend(self) -> None:
         response = VisionService(
-            segmenter=FakeSegmenter(), grounder=FakeGrounder()
+            segmenter=FakeSegmenter(), sam3_segmenter=FakeSam3Segmenter()
         ).segment(
             SegmentRequest(image_path="frame.png", prompt="lighthouse")
         )
@@ -171,7 +197,44 @@ class GenerateContractTests(unittest.TestCase):
         self.assertEqual(response.status, "completed")
         self.assertEqual(response.masks[0].area_pixels, 1234)
         self.assertEqual(response.detections[0].label, "lighthouse")
-        self.assertEqual(response.detections[0].score, 0.95)
+        self.assertEqual(response.detections[0].score, 0.98)
+
+    def test_sam3_saves_instance_masks(self) -> None:
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("optional segmentation dependencies are absent")
+
+        masks = torch.zeros((2, 4, 4), dtype=torch.bool)
+        masks[0, :2, :2] = True
+        masks[1, 1:4, 1:4] = True
+        scores = torch.tensor([0.7, 0.4])
+        with TemporaryDirectory() as directory:
+            segmenter = Sam3Segmenter(Path(directory))
+            results = [
+                segmenter._save_mask(masks[index], float(score))
+                for index, score in enumerate(scores)
+            ]
+            results = [result for result in results if result is not None]
+
+            self.assertEqual(len(results), 2)
+            self.assertEqual(results[0].area_pixels, 4)
+            self.assertEqual(results[1].area_pixels, 9)
+            self.assertTrue(all(result.path.is_file() for result in results))
+            self.assertEqual(results[1].bounding_box.x_min, 1.0)
+
+    def test_text_segmentation_degrades_when_sam3_unavailable(self) -> None:
+        response = VisionService(
+            segmenter=FakeSegmenter(),
+            sam3_segmenter=FailingSam3Segmenter(),
+            grounder=FakeGrounder(),
+        ).segment(
+            SegmentRequest(image_path="frame.png", prompt="lighthouse")
+        )
+
+        self.assertEqual(response.status, "completed")
+        self.assertEqual(response.masks[0].area_pixels, 1234)
+        self.assertEqual(response.model, "facebook/sam2.1-hiera-tiny")
 
     def test_segmenter_saves_highest_scoring_mask(self) -> None:
         try:

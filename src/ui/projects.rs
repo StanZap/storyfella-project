@@ -4,7 +4,8 @@ use dioxus::prelude::*;
 
 use crate::{
     app::AppConfig,
-    errors::{CodedError, ErrorCode, ReportedError},
+    commands,
+    errors::{CodedError, ReportedError},
     persistence::ProjectDb,
     state::AppState,
 };
@@ -69,8 +70,8 @@ pub fn Projects(
             if story_name.trim().is_empty() {
                 return;
             }
-            match create_project_file(&project_dir, &story_name, app_state) {
-                Ok(()) => {
+            match commands::create_project(&project_dir, &story_name, app_state) {
+                Ok(_) => {
                     name.set(String::new());
                     on_open.call(event);
                 }
@@ -88,7 +89,7 @@ pub fn Projects(
             else {
                 return;
             };
-            match open_project_file(&picked, app_state) {
+            match commands::open_project(&picked, app_state) {
                 Ok(()) => {
                     on_open.call(event);
                 }
@@ -176,94 +177,4 @@ fn scan_projects(project_dir: &Path) -> Vec<RecentProject> {
     };
     projects.sort_by(|a, b| b.name.cmp(&a.name));
     projects
-}
-
-/// Creates the database file for a new story (unique slug path) and saves
-/// the fresh registry into it before the screen switches to the canvas.
-fn create_project_file(
-    project_dir: &Path,
-    story_name: &str,
-    mut app_state: Signal<AppState>,
-) -> Result<(), ReportedError> {
-    std::fs::create_dir_all(project_dir)
-        .map_err(|error| ReportedError::plain(ErrorCode::StoreSave, error.to_string()))?;
-    let path = unique_project_path(project_dir, story_name);
-    let db = ProjectDb::open(&path).map_err(|error| error.report())?;
-    app_state.write().create_project(story_name);
-    let registry = app_state.read().registry.clone();
-    db.rename_project(story_name)
-        .map_err(|error| error.report())?;
-    db.save_registry(&registry)
-        .map_err(|error| error.report())?;
-    app_state.write().project_path = Some(path);
-    app_state.write().has_unsaved_changes = false;
-    Ok(())
-}
-
-/// Opens any `.svs-project.db` file in place (the file picker path;
-/// the Recent list is the same flow for the projects directory).
-fn open_project_file(path: &Path, mut app_state: Signal<AppState>) -> Result<(), ReportedError> {
-    let stored = ProjectDb::open(path)
-        .and_then(|db| db.load())
-        .map_err(|error| error.report())?;
-    app_state.write().open_project(stored, path.to_path_buf());
-    Ok(())
-}
-
-/// `"My Story"` → `my-story.svs-project.db`; an existing file gets a `-2`,
-/// `-3`, … suffix.
-fn unique_project_path(project_dir: &Path, name: &str) -> PathBuf {
-    let slug: String = name
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    let slug = slug.trim_matches('-').to_owned();
-    let slug = if slug.is_empty() {
-        "story".to_owned()
-    } else {
-        slug
-    };
-    let mut candidate = project_dir.join(format!("{slug}.svs-project.db"));
-    let mut index = 2;
-    while candidate.exists() {
-        candidate = project_dir.join(format!("{slug}-{index}.svs-project.db"));
-        index += 1;
-    }
-    candidate
-}
-
-#[cfg(test)]
-mod tests {
-    use super::unique_project_path;
-
-    #[test]
-    fn slugs_are_safe_filename_components() {
-        let dir = std::path::Path::new("/tmp/projects");
-        assert_eq!(
-            unique_project_path(dir, "The Lighthouse!"),
-            dir.join("the-lighthouse.svs-project.db")
-        );
-        assert_eq!(
-            unique_project_path(dir, "   "),
-            dir.join("story.svs-project.db")
-        );
-    }
-
-    #[test]
-    fn existing_files_get_a_suffix() {
-        let dir = std::env::temp_dir().join(format!("svs-slug-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("story.svs-project.db"), b"x").unwrap();
-        assert_eq!(
-            unique_project_path(&dir, "Story"),
-            dir.join("story-2.svs-project.db")
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 }

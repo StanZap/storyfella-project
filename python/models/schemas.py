@@ -83,8 +83,17 @@ class LoraSelection(BaseModel):
 class GenerateRequest(BaseModel):
     prompt: str
     reference_image_path: str | None = None
+    # The img2img blend (0-1) for a reference-based generation. sd.cpp
+    # defaults to 0.9 (near-full renoise), which distorts turbo-model
+    # outputs; the Rust pipeline always sends a tuned value.
+    reference_strength: float | None = Field(default=None, ge=0.0, le=1.0)
     mask_path: str | None = None  # best-effort native mask input; the Rust
     # pipeline composites as its guaranteed mechanism
+    # Masked-latent inpaint input: the original image whose masked region is
+    # re-rendered. Together with `mask_path` and `reference_image_path` the
+    # sd.cpp server keeps the unmasked latent pixels fixed per step, so the
+    # edit is localized at the latent level (no pixel compositing needed).
+    init_image_path: str | None = None
     width: int = Field(default=1024, ge=256, le=2048)
     height: int = Field(default=1024, ge=256, le=2048)
     steps: int = Field(default=8, ge=1, le=50)

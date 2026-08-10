@@ -452,6 +452,20 @@ impl CodedError for OpError {
 /// carries the configurable sizes and LoRA bindings that shape the
 /// generation (the canvas passes its live signal; the CLI passes the
 /// loaded config).
+/// Tuned img2img blends for reference-based ops. The sd.cpp server default
+/// (0.9) renoises almost everything — wrong for turbo models, which distort
+/// under near-full renoise. These keep the subject while allowing the op's
+/// intended change; inpaint is deliberately near-full inside the mask.
+const REFERENCE_KEEP_SUBJECT: f32 = 0.45;
+const REFERENCE_RESIZE: f32 = 0.35;
+const REFERENCE_INPAINT: f32 = 0.95;
+/// The auto-injected inpaint adapter (INPAINTKREA) collapses a reference
+/// edit into a near no-op at full weight on the native backend (its masked
+/// conditioning is not honored there), so the injection is capped at a
+/// weight where it behaves as a style adapter. Explicit per-run
+/// `--lora …@<mult>` choices are never capped.
+const INPAINT_LORA_MULTIPLIER_CAP: f32 = 0.5;
+
 pub fn compile(
     registry: &ArtifactRegistry,
     op: &Operation,
@@ -495,11 +509,21 @@ pub fn compile(
             }
             // The fresh artifact has no bindings yet; the kind-default
             // adapter (config) applies, then the per-run adapters.
-            for lora in auto_loras(registry, None, *kind, defaults, false) {
+            for lora in auto_loras(registry, None, *kind, defaults, false, false) {
                 builder.lora(lora.path, lora.multiplier);
             }
             for lora in loras {
-                builder.lora(lora.path.clone(), lora.multiplier);
+                // Adapters are sent to the native server under their
+                // registered (top-level) name.
+                let Some(registered) = defaults.loras.registered(&lora.path) else {
+                    tracing::warn!(
+                        file = %lora.path,
+                        dir = %defaults.loras.dir.display(),
+                        "per-run lora missing on disk; skipping",
+                    );
+                    continue;
+                };
+                builder.lora(registered, lora.multiplier);
             }
             builder.generate(PromptSource::Text(description.clone()), None, None);
             Ok(CompiledOp::Pipeline(builder.build()?))
@@ -560,17 +584,29 @@ pub fn compile(
                 Some(base_artifact),
                 base_artifact.kind,
                 defaults,
+                true,
                 false,
             ) {
                 builder.lora(lora.path, lora.multiplier);
             }
             for lora in loras {
-                builder.lora(lora.path.clone(), lora.multiplier);
+                // Adapters are sent to the native server under their
+                // registered (top-level) name.
+                let Some(registered) = defaults.loras.registered(&lora.path) else {
+                    tracing::warn!(
+                        file = %lora.path,
+                        dir = %defaults.loras.dir.display(),
+                        "per-run lora missing on disk; skipping",
+                    );
+                    continue;
+                };
+                builder.lora(registered, lora.multiplier);
             }
             let reference = registry
                 .latest_image(base)
                 .and_then(|revision| revision.asset_path.clone())
                 .map(|path| builder.reference_image(path));
+            builder.reference_strength(REFERENCE_KEEP_SUBJECT);
             builder.generate(PromptSource::Text(description.clone()), reference, None);
             Ok(CompiledOp::Pipeline(builder.build()?))
         }
@@ -674,15 +710,26 @@ pub fn compile(
             if let Some(steps) = steps {
                 builder.steps(*steps);
             }
-            for lora in auto_loras(registry, Some(artifact), artifact.kind, defaults, false) {
+            for lora in auto_loras(registry, Some(artifact), artifact.kind, defaults, true, false) {
                 builder.lora(lora.path, lora.multiplier);
             }
             for lora in loras {
-                builder.lora(lora.path.clone(), lora.multiplier);
+                // Adapters are sent to the native server under their
+                // registered (top-level) name.
+                let Some(registered) = defaults.loras.registered(&lora.path) else {
+                    tracing::warn!(
+                        file = %lora.path,
+                        dir = %defaults.loras.dir.display(),
+                        "per-run lora missing on disk; skipping",
+                    );
+                    continue;
+                };
+                builder.lora(registered, lora.multiplier);
             }
             let reference = active
                 .and_then(|revision| revision.asset_path.clone())
                 .map(|path| builder.reference_image(path));
+            builder.reference_strength(REFERENCE_KEEP_SUBJECT);
             builder.generate(PromptSource::Text(resolved_prompt), reference, None);
             Ok(CompiledOp::Pipeline(builder.build()?))
         }
@@ -714,10 +761,11 @@ pub fn compile(
             // last one used (the new canvas is the only intent).
             let mut builder = super::pipeline::PipelineBuilder::new();
             builder.size(*width, *height);
-            for lora in auto_loras(registry, Some(artifact), artifact.kind, defaults, false) {
+            for lora in auto_loras(registry, Some(artifact), artifact.kind, defaults, true, false) {
                 builder.lora(lora.path, lora.multiplier);
             }
             let image = builder.reference_image(asset);
+            builder.reference_strength(REFERENCE_RESIZE);
             builder.generate(PromptSource::Text(active.prompt.clone()), Some(image), None);
             Ok(CompiledOp::Pipeline(builder.build()?))
         }
@@ -770,18 +818,40 @@ pub fn compile(
             // Mask-guided edits additionally carry the configured inpaint
             // adapter (e.g. INPAINTKREA), after the artifact's bindings,
             // then the per-run adapters.
-            for lora in auto_loras(registry, Some(artifact), artifact.kind, defaults, true) {
+            for lora in auto_loras(registry, Some(artifact), artifact.kind, defaults, true, true) {
                 builder.lora(lora.path, lora.multiplier);
             }
             for lora in loras {
-                builder.lora(lora.path.clone(), lora.multiplier);
+                // Adapters are sent to the native server under their
+                // registered (top-level) name.
+                let Some(registered) = defaults.loras.registered(&lora.path) else {
+                    tracing::warn!(
+                        file = %lora.path,
+                        dir = %defaults.loras.dir.display(),
+                        "per-run lora missing on disk; skipping",
+                    );
+                    continue;
+                };
+                builder.lora(registered, lora.multiplier);
             }
             let image = builder.reference_image(asset);
             let (mask_source, inpaint_source) = match (mask_prompt, inpaint_prompt) {
-                (Some(mask), Some(inpaint)) => (
-                    PromptSource::Text(mask.clone()),
-                    PromptSource::Text(inpaint.clone()),
-                ),
+                (Some(mask), Some(inpaint)) => {
+                    // The inpaint re-render must stay coherent with the
+                    // scene: a bare edit prompt (e.g. "a short bob cut")
+                    // makes the reference-edit re-render the masked region
+                    // without context — in practice near-black results —
+                    // so the artifact's description is composed in.
+                    let composed_inpaint = if artifact.description.trim().is_empty() {
+                        inpaint.clone()
+                    } else {
+                        format!("{}, {}", artifact.description.trim(), inpaint)
+                    };
+                    (
+                        PromptSource::Text(mask.clone()),
+                        PromptSource::Text(composed_inpaint),
+                    )
+                }
                 (None, None) => {
                     let plan = builder.llm_plan(format!(
                         "{description}\n\nArtifact: {} — {}",
@@ -796,6 +866,7 @@ pub fn compile(
             };
             let candidates = builder.segment(image, mask_source);
             let mask = builder.confirm_mask(candidates);
+            builder.reference_strength(REFERENCE_INPAINT);
             builder.inpaint(inpaint_source, image, mask);
             Ok(CompiledOp::Pipeline(builder.build()?))
         }
@@ -856,61 +927,55 @@ fn validate_steps(steps: u32) -> Result<(), CompileError> {
 
 /// The LoRAs an auto-injected generation must carry, first-wins by
 /// resolved path: project entries bound to the artifact (or its variant
-/// base chain), then the config kind binding, then the inpaint use-case
-/// adapter for mask-guided edits. A configured adapter that is missing on
-/// disk is skipped with a warning rather than failing the generation.
+/// base chain), then the config kind binding, then the reference-edit
+/// use-case adapter (`variant`/`regenerate` — e.g. Krea's identity edit),
+/// then the inpaint adapter for mask-guided edits. A configured adapter
+/// that is missing on disk is skipped with a warning rather than failing
+/// the generation.
 fn auto_loras(
     registry: &ArtifactRegistry,
     artifact: Option<&Artifact>,
     kind: ArtifactKind,
     defaults: &GenerationDefaults,
+    edit: bool,
     inpaint: bool,
 ) -> Vec<crate::vision::LoraSelection> {
     let mut selections: Vec<crate::vision::LoraSelection> = Vec::new();
-    let mut push = |path: std::path::PathBuf, multiplier: f32| {
-        let path_string = path.display().to_string();
-        if !selections
-            .iter()
-            .any(|selection| selection.path == path_string)
-        {
-            selections.push(crate::vision::LoraSelection {
-                path: path_string,
-                multiplier,
-            });
+    let mut push = |file: &str, multiplier: f32| {
+        // The request must name the adapter as the native server registers
+        // it (top-level file of the lora directory — see
+        // `LoraBindings::registered`); existence is validated here.
+        let Some(path) = defaults.loras.registered(file) else {
+            tracing::warn!(
+                file = %file,
+                dir = %defaults.loras.dir.display(),
+                "lora missing on disk; skipping",
+            );
+            return;
+        };
+        if !selections.iter().any(|selection| selection.path == path) {
+            selections.push(crate::vision::LoraSelection { path, multiplier });
         }
     };
     if let Some(artifact) = artifact {
         for entry in registry.loras_bound_to(artifact.id) {
-            match defaults.loras.resolve(&entry.path) {
-                Some(path) => push(path, entry.multiplier),
-                None => tracing::warn!(
-                    file = %entry.path,
-                    dir = %defaults.loras.dir.display(),
-                    "bound lora missing on disk; skipping",
-                ),
-            }
+            push(&entry.path, entry.multiplier);
         }
     }
     if let Some(binding) = defaults.loras.kinds.binding_for(kind) {
-        match defaults.loras.resolve(&binding.file) {
-            Some(path) => push(path, defaults.loras.multiplier),
-            None => tracing::warn!(
-                file = %binding.file,
-                dir = %defaults.loras.dir.display(),
-                "kind lora missing on disk; skipping",
-            ),
+        push(&binding.file, defaults.loras.multiplier);
+    }
+    if edit {
+        if let Some(binding) = &defaults.loras.variant {
+            push(&binding.file, defaults.loras.multiplier);
         }
     }
     if inpaint {
         if let Some(binding) = &defaults.loras.inpaint {
-            match defaults.loras.resolve(&binding.file) {
-                Some(path) => push(path, defaults.loras.multiplier),
-                None => tracing::warn!(
-                    file = %binding.file,
-                    dir = %defaults.loras.dir.display(),
-                    "inpaint lora missing on disk; skipping",
-                ),
-            }
+            push(
+                &binding.file,
+                defaults.loras.multiplier.min(INPAINT_LORA_MULTIPLIER_CAP),
+            );
         }
     }
     selections
@@ -1356,7 +1421,11 @@ async fn run_generation(
         .final_image()
         .ok_or_else(|| OpError::Apply("pipeline produced no final image".to_owned()))?;
     let masks = masks(&run)?;
-    registry.finish_revision(id, revision_id, asset.display().to_string(), masks)?;
+    // Locally-produced finals (the composite fallback) live in the work
+    // dir; import them into the persistent asset store so the revision
+    // survives the work dir's cleanup.
+    let stored = backend.import_asset(asset.clone()).await?;
+    registry.finish_revision(id, revision_id, stored, masks)?;
     let log_id = registry.push_log(op.clone(), options.origin, OpStatus::Applied, Some(id));
     Ok(OpOutcome {
         artifact_id: Some(id),
@@ -1843,7 +1912,11 @@ mod tests {
     #[test]
     fn llm_proposed_ops_carry_the_requested_size_steps_and_loras() {
         let mut registry = ArtifactRegistry::new();
-        let backend = VisualBackend::new(test_assets_dir().join("mia.png"));
+        let assets = test_assets_dir();
+        let backend = VisualBackend::new(assets.join("mia.png"));
+        let lora_dir = assets.join("loras");
+        std::fs::create_dir_all(lora_dir.join("krea")).expect("lora dir should create");
+        std::fs::write(lora_dir.join("krea/char.safetensors"), b"lora").expect("dummy lora should write");
         let create = Operation::Create {
             kind: ArtifactKind::Character,
             description: "Mia, a lighthouse keeper".into(),
@@ -1855,7 +1928,8 @@ mod tests {
                 multiplier: 0.8,
             }],
         };
-        let test_defaults = test_defaults();
+        let mut test_defaults = test_defaults();
+        test_defaults.loras.dir = lora_dir;
         let options = ExecuteOptions {
             backend: Some(&backend),
             run: RunOptions::new(std::env::temp_dir()),
@@ -1878,7 +1952,7 @@ mod tests {
         assert_eq!((request.width, request.height), (Some(1024), Some(1024)));
         assert_eq!(request.steps, Some(8));
         assert_eq!(request.loras.len(), 1);
-        assert_eq!(request.loras[0].path, "krea/char.safetensors");
+        assert_eq!(request.loras[0].path, "krea-char.safetensors");
         assert_eq!(request.loras[0].multiplier, 0.8);
     }
 
@@ -1906,6 +1980,9 @@ mod tests {
             .unwrap();
 
         let backend = VisualBackend::new(assets.join("mia-regen.png"));
+        let lora_dir = assets.join("loras");
+        std::fs::create_dir_all(lora_dir.join("krea")).expect("lora dir should create");
+        std::fs::write(lora_dir.join("krea/style.safetensors"), b"lora").expect("dummy lora should write");
         let op = Operation::Regenerate {
             target: Ref::new(registry.short_id(mia)),
             prompt: Some("warmer".into()),
@@ -1916,7 +1993,8 @@ mod tests {
                 multiplier: 1.0,
             }],
         };
-        let test_defaults = test_defaults();
+        let mut test_defaults = test_defaults();
+        test_defaults.loras.dir = lora_dir;
         let options = ExecuteOptions {
             backend: Some(&backend),
             run: RunOptions::new(std::env::temp_dir()),
@@ -1935,7 +2013,7 @@ mod tests {
         assert!(request
             .loras
             .iter()
-            .any(|lora| lora.path == "krea/style.safetensors"));
+            .any(|lora| lora.path == "krea-style.safetensors"));
         // The artifact's stored default size is untouched (per-run only).
         assert_eq!(registry.artifact(mia).unwrap().default_size, None);
     }
@@ -2035,6 +2113,7 @@ mod tests {
                 inpaint: Some(crate::registry::LoraBinding {
                     file: "inpaintkrea.safetensors".into(),
                 }),
+                variant: None,
                 kinds: Default::default(),
                 multiplier: 1.0,
             },
@@ -2129,15 +2208,12 @@ mod tests {
             .unwrap();
         let request = &backend.requests()[0];
         assert_eq!(request.loras.len(), 2, "both bound adapters");
-        assert_eq!(
-            request.loras[0].path,
-            lora_dir.join("mia-v2.safetensors").display().to_string()
-        );
+        assert_eq!(request.loras[0].path, "mia-v2.safetensors");
         assert_eq!(request.loras[0].multiplier, 0.8);
         assert!(request
             .loras
             .iter()
-            .any(|lora| lora.path.ends_with("char-style.safetensors")));
+            .any(|lora| lora.path == "external-models-char-style.safetensors"));
 
         // A mask-guided edit additionally carries the inpaint adapter
         // (checked at compile: the modify pipeline's generation params).

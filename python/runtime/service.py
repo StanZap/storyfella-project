@@ -27,10 +27,12 @@ from runtime.image_generator import (
 )
 from runtime.sd_cpp import LoraSelection, StableDiffusionCppClient, StableDiffusionCppError
 from runtime.segmenter import (
+    DEFAULT_GEOMETRY_MODEL,
     DEFAULT_SEGMENTATION_MODEL,
     BoxPrompt,
     PointPrompt,
     Sam2Segmenter,
+    Sam3Segmenter,
     SegmentationError,
     SegmentationOptions,
     Segmenter,
@@ -44,12 +46,18 @@ class VisionService:
         self,
         image_generator: ImageGenerator | None = None,
         segmenter: Segmenter | None = None,
+        sam3_segmenter: Segmenter | None = None,
         grounder: TextGrounder | None = None,
         native_client: StableDiffusionCppClient | None = None,
     ) -> None:
         self._image_generator = (
             image_generator if image_generator is not None else RoutedImageGenerator()
         )
+        # Text prompts route to SAM 3 (native text prompting); geometry
+        # (points/boxes) stays on SAM 2. When SAM 3's gated weights are
+        # unavailable, prompt segmentation degrades to DINO grounding +
+        # SAM 2 — a soft dependency, like the LLM steps.
+        self._sam3_segmenter = sam3_segmenter if sam3_segmenter is not None else Sam3Segmenter()
         self._segmenter = segmenter if segmenter is not None else Sam2Segmenter()
         self._grounder = grounder if grounder is not None else GroundingDinoGrounder()
         self._native_client = native_client or StableDiffusionCppClient()
@@ -69,30 +77,70 @@ class VisionService:
 
     def segment(self, request: SegmentRequest) -> SegmentResponse:
         started = time.monotonic()
-        model = request.model or DEFAULT_SEGMENTATION_MODEL
+        text_prompt = bool(request.prompt) and not request.points and not request.boxes
+        model = request.model or (
+            DEFAULT_SEGMENTATION_MODEL if text_prompt else DEFAULT_GEOMETRY_MODEL
+        )
         try:
             boxes = tuple(
                 BoxPrompt(box.x_min, box.y_min, box.x_max, box.y_max)
                 for box in request.boxes
             )
-            grounding = None
-            if request.prompt and not request.points and not boxes:
-                grounding = self._grounder.ground(
-                    Path(request.image_path), request.prompt, request.device
+            if text_prompt:
+                # SAM 3's native text prompting: the modify prompt selects
+                # the region directly — no grounding step. Degrades to DINO
+                # boxes + SAM 2 when the SAM 3 weights are unavailable.
+                try:
+                    result = self._sam3_segmenter.segment(
+                        SegmentationOptions(
+                            image_path=Path(request.image_path),
+                            points=(),
+                            boxes=(),
+                            text=(request.prompt or "",),
+                            model=model,
+                            device=request.device,
+                        )
+                    )
+                except SegmentationError as sam3_error:
+                    degraded_model = DEFAULT_GEOMETRY_MODEL
+                    try:
+                        boxes = self._grounder.ground(
+                            Path(request.image_path), request.prompt or "", request.device
+                        ).boxes
+                        result = self._segmenter.segment(
+                            SegmentationOptions(
+                                image_path=Path(request.image_path),
+                                points=(),
+                                boxes=boxes,
+                                model=degraded_model,
+                                device=request.device,
+                            )
+                        )
+                        model = degraded_model
+                        print(
+                            f"warning: SAM 3 unavailable ({sam3_error}); "
+                            "segmented with DINO + SAM 2.1 instead",
+                            flush=True,
+                        )
+                    except (GroundingError, SegmentationError) as degrade_error:
+                        raise SegmentationError(
+                            f"SAM 3 unavailable ({sam3_error}) and the fallback also failed "
+                            f"({degrade_error})"
+                        ) from degrade_error
+            else:
+                result = self._segmenter.segment(
+                    SegmentationOptions(
+                        image_path=Path(request.image_path),
+                        points=tuple(
+                            PointPrompt(point.x, point.y, point.label)
+                            for point in request.points
+                        ),
+                        boxes=boxes,
+                        model=model,
+                        device=request.device,
+                    )
                 )
-                boxes = grounding.boxes
-            result = self._segmenter.segment(
-                SegmentationOptions(
-                    image_path=Path(request.image_path),
-                    points=tuple(
-                        PointPrompt(point.x, point.y, point.label) for point in request.points
-                    ),
-                    boxes=boxes,
-                    model=model,
-                    device=request.device,
-                )
-            )
-        except (GroundingError, SegmentationError, RuntimeError, ValueError) as error:
+        except (SegmentationError, RuntimeError, ValueError) as error:
             return SegmentResponse(status="failed", model=model, error=str(error))
 
         return SegmentResponse(
@@ -115,17 +163,17 @@ class VisionService:
                 [
                     SegmentDetection(
                         label=request.prompt or "object",
-                        score=score,
+                        score=mask.score,
                         bounding_box=SegmentBox(
-                            x_min=box.x_min,
-                            y_min=box.y_min,
-                            x_max=box.x_max,
-                            y_max=box.y_max,
+                            x_min=mask.bounding_box.x_min,
+                            y_min=mask.bounding_box.y_min,
+                            x_max=mask.bounding_box.x_max,
+                            y_max=mask.bounding_box.y_max,
                         ),
                     )
-                    for box, score in zip(grounding.boxes, grounding.scores, strict=True)
+                    for mask in result.masks
                 ]
-                if grounding is not None
+                if text_prompt
                 else []
             ),
             model=result.model,
@@ -155,8 +203,14 @@ class VisionService:
                         if request.reference_image_path
                         else None
                     ),
+                    reference_strength=request.reference_strength,
                     mask_path=(
                         Path(request.mask_path) if request.mask_path else None
+                    ),
+                    init_image_path=(
+                        Path(request.init_image_path)
+                        if request.init_image_path
+                        else None
                     ),
                 )
             )

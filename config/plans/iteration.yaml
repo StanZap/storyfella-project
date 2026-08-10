@@ -1,0 +1,39 @@
+# "From sketch to final" — the way a real user works: type in the composer,
+# send, look at the result, iterate. Each visual step generates an image, so
+# this plan needs the generation backend (it is the "creation loop" demo).
+name: "From sketch to final"
+description: "A realistic creation session: a character, an iteration on her look, a redo, and a beat to start the story."
+speed_ms: 2000
+steps:
+  - create_project: "The Summer House"
+    message: "A new story, a new canvas. This time I'll work the way you would: type, send, look, iterate."
+  - go_canvas: true
+    wait_ms: 400
+  - compose: "/create story --name premise A woman inherits her grandmother's summer house"
+    message: "First the premise — a Story artifact, just text for now."
+  - expect_artifact: { name: "premise", kind: story }
+  - compose: "/create character --name vera Vera, a woman in her thirties, linen dress, soft morning light"
+    message: "Introducing Vera. The first image generates from this description alone."
+  - expect_artifact: { name: "vera", kind: character }
+  - expect_image: "vera"
+    soft: true
+    wait_ms: 2000
+    message: "Vera has a first portrait. But the light feels off — a real user would iterate."
+  - compose: "/variant c:vera --name vera-dusk Vera at dusk, golden hour light, same linen dress"
+    message: "A variant: keep the character, change the moment. The base image becomes the reference, so she stays recognizably Vera."
+  - expect_artifact: { name: "vera-dusk", kind: character }
+  - expect_image: "vera-dusk"
+    soft: true
+    wait_ms: 2000
+    message: "There she is at dusk. The variant sits under the base in the sidebar, sharing her history."
+  - compose: "/regenerate c:vera-dusk"
+    message: "Not quite right? A regenerate redoes the active revision with a fresh seed — no prompt changes needed."
+  - expect_image: "vera-dusk"
+    soft: true
+    wait_ms: 2000
+    message: "A second take on the dusk portrait. The operation log on the right tells the whole story of how we got here."
+  - compose: "/create beat --name arrival The cab leaves before she finds the key under the flowerpot"
+    message: "And a beat to begin the story — the first seed of the sequence."
+  - expect_artifact_count: { kind: beat, count: 1 }
+  - expect_no_error: true
+    message: "No errors, three generations, one character with history, one beat. That's the creation loop — driven by the app itself."

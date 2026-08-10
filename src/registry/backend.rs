@@ -605,6 +605,19 @@ impl GenerationBackend for CreativeBackend {
         })
     }
 
+    fn import_asset(
+        &self,
+        source: std::path::PathBuf,
+    ) -> BoxFuture<'_, Result<String, PipelineError>> {
+        let this = self.clone();
+        Box::pin(async move {
+            this.runtime
+                .import_asset(source)
+                .await
+                .map_err(PipelineError::backend)
+        })
+    }
+
     fn llm_plan(&self, request: &str) -> BoxFuture<'_, Result<Option<PlannedEdit>, PipelineError>> {
         let this = self.clone();
         let request = request.to_owned();

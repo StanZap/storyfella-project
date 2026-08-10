@@ -178,6 +178,13 @@ impl GenerationRuntime {
                 source,
             }
         })?;
+        // sd.cpp registers only the top-level files of its lora directory;
+        // link subdirectory adapters to the top level before the server's
+        // registration scan runs at startup.
+        let linked = crate::registry::prepare_lora_links(&self.lora_directory);
+        if linked > 0 {
+            tracing::info!(count = linked, dir = %self.lora_directory.display(), "linked subdirectory loras for the native runtime");
+        }
 
         let child = self
             .command(profile, &model_root, host, port)
@@ -268,6 +275,12 @@ impl GenerationRuntime {
             .arg("--lora-apply-mode")
             .arg("at_runtime")
             .arg("--diffusion-fa")
+            // The identity-edit LoRA is trained with 768px VLM grounding;
+            // the default ostris preset passes up to 1536px, which splits
+            // or duplicates compositions (the model card warns about it).
+            // CLI-only: the server JSON API never exposes ref_image_args.
+            .arg("--ref-image-args")
+            .arg("preset=krea2_edit")
             .arg("--listen-ip")
             .arg(host)
             .arg("--listen-port")

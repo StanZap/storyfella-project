@@ -259,6 +259,12 @@ impl CreativeRuntime {
     }
 
     pub async fn import_asset(&self, source: PathBuf) -> Result<String, CreativeRuntimeError> {
+        // Already-stored finals (backend-generated images land here via the
+        // job path) are returned as-is; only locally-produced images (the
+        // composite fallback) are copied in.
+        if source.starts_with(&self.asset_directory) {
+            return Ok(source.display().to_string());
+        }
         tokio::fs::create_dir_all(&self.asset_directory)
             .await
             .map_err(|source| CreativeRuntimeError::CreateAssetDirectory {

@@ -81,19 +81,19 @@ fn parse_create(tokens: &[Token]) -> Result<Operation, SlashError> {
     })?;
     let kind = ArtifactKind::from_str(&kind.text).map_err(SlashError)?;
     let (description, flags) = split_flags(tokens, 2, &["--name", "--size", "--steps", "--lora"])?;
-    let name = flags.get("--name").cloned();
-    let size = match flags.get("--size") {
+    let name = flag_value(&flags, "--name").map(str::to_owned);
+    let size = match flag_value(&flags, "--size") {
         Some(value) => Some(parse_size(value).map_err(SlashError)?),
         None => None,
     };
-    let steps = match flags.get("--steps") {
+    let steps = match flag_value(&flags, "--steps") {
         Some(value) => Some(parse_steps(value).map_err(SlashError)?),
         None => None,
     };
-    let loras = match flags.get("--lora") {
-        Some(value) => vec![parse_lora_flag(value).map_err(SlashError)?],
-        None => Vec::new(),
-    };
+    let mut loras = Vec::new();
+    for value in flags.get("--lora").cloned().unwrap_or_default() {
+        loras.push(parse_lora_flag(&value).map_err(SlashError)?);
+    }
     if description.trim().is_empty() {
         return Err(SlashError("create needs a description".to_owned()));
     }
@@ -114,23 +114,23 @@ fn parse_variant(tokens: &[Token]) -> Result<Operation, SlashError> {
         2,
         &["--name", "--axis", "--size", "--steps", "--lora"],
     )?;
-    let name = flags.get("--name").cloned();
-    let axis = match flags.get("--axis") {
+    let name = flag_value(&flags, "--name").map(str::to_owned);
+    let axis = match flag_value(&flags, "--axis") {
         Some(value) => Some(VariantAxis::from_str(value).map_err(SlashError)?),
         None => None,
     };
-    let size = match flags.get("--size") {
+    let size = match flag_value(&flags, "--size") {
         Some(value) => Some(parse_size(value).map_err(SlashError)?),
         None => None,
     };
-    let steps = match flags.get("--steps") {
+    let steps = match flag_value(&flags, "--steps") {
         Some(value) => Some(parse_steps(value).map_err(SlashError)?),
         None => None,
     };
-    let loras = match flags.get("--lora") {
-        Some(value) => vec![parse_lora_flag(value).map_err(SlashError)?],
-        None => Vec::new(),
-    };
+    let mut loras = Vec::new();
+    for value in flags.get("--lora").cloned().unwrap_or_default() {
+        loras.push(parse_lora_flag(&value).map_err(SlashError)?);
+    }
     if description.trim().is_empty() {
         return Err(SlashError("variant needs a description".to_owned()));
     }
@@ -153,18 +153,18 @@ fn parse_regenerate(tokens: &[Token]) -> Result<Operation, SlashError> {
     } else {
         Some(description)
     };
-    let size = match flags.get("--size") {
+    let size = match flag_value(&flags, "--size") {
         Some(value) => Some(parse_size(value).map_err(SlashError)?),
         None => None,
     };
-    let steps = match flags.get("--steps") {
+    let steps = match flag_value(&flags, "--steps") {
         Some(value) => Some(parse_steps(value).map_err(SlashError)?),
         None => None,
     };
-    let loras = match flags.get("--lora") {
-        Some(value) => vec![parse_lora_flag(value).map_err(SlashError)?],
-        None => Vec::new(),
-    };
+    let mut loras = Vec::new();
+    for value in flags.get("--lora").cloned().unwrap_or_default() {
+        loras.push(parse_lora_flag(&value).map_err(SlashError)?);
+    }
     Ok(Operation::Regenerate {
         target,
         prompt,
@@ -204,26 +204,26 @@ fn parse_modify(tokens: &[Token]) -> Result<Operation, SlashError> {
     if description.trim().is_empty() {
         return Err(SlashError("modify needs a description".to_owned()));
     }
-    let mask_prompt = flags.get("--mask").cloned();
-    let inpaint_prompt = flags.get("--inpaint").cloned();
+    let mask_prompt = flag_value(&flags, "--mask").map(str::to_owned);
+    let inpaint_prompt = flag_value(&flags, "--inpaint").map(str::to_owned);
     if mask_prompt.is_some() != inpaint_prompt.is_some() {
         return Err(SlashError(
             "modify needs both --mask and --inpaint (or neither, when an LLM plans them)"
                 .to_owned(),
         ));
     }
-    let size = match flags.get("--size") {
+    let size = match flag_value(&flags, "--size") {
         Some(value) => Some(parse_size(value).map_err(SlashError)?),
         None => None,
     };
-    let steps = match flags.get("--steps") {
+    let steps = match flag_value(&flags, "--steps") {
         Some(value) => Some(parse_steps(value).map_err(SlashError)?),
         None => None,
     };
-    let loras = match flags.get("--lora") {
-        Some(value) => vec![parse_lora_flag(value).map_err(SlashError)?],
-        None => Vec::new(),
-    };
+    let mut loras = Vec::new();
+    for value in flags.get("--lora").cloned().unwrap_or_default() {
+        loras.push(parse_lora_flag(&value).map_err(SlashError)?);
+    }
     Ok(Operation::Modify {
         target,
         description,
@@ -247,7 +247,7 @@ fn parse_attach_lora(tokens: &[Token]) -> Result<Operation, SlashError> {
             )
         })?;
     let (_, flags) = split_flags(tokens, 3, &["--multiplier"])?;
-    let multiplier = match flags.get("--multiplier") {
+    let multiplier = match flag_value(&flags, "--multiplier") {
         Some(value) => Some(parse_multiplier(value).map_err(SlashError)?),
         None => None,
     };
@@ -347,9 +347,9 @@ fn split_flags(
     tokens: &[Token],
     start: usize,
     valid: &[&str],
-) -> Result<(String, HashMap<String, String>), SlashError> {
+) -> Result<(String, HashMap<String, Vec<String>>), SlashError> {
     let mut description = Vec::new();
-    let mut flags = HashMap::new();
+    let mut flags: HashMap<String, Vec<String>> = HashMap::new();
     let mut index = start;
     while index < tokens.len() {
         let token = &tokens[index];
@@ -384,10 +384,20 @@ fn split_flags(
                 token.text, token.text
             )));
         }
-        flags.insert(token.text.clone(), value.text.clone());
+        // Repeated flags accumulate (e.g. `--lora a --lora b`); every
+        // other option is single-valued and simply keeps its last value.
+        flags
+            .entry(token.text.clone())
+            .or_default()
+            .push(value.text.clone());
         index += 2;
     }
     Ok((description.join(" "), flags))
+}
+
+/// The single value of a flag, when the command takes it at most once.
+fn flag_value<'a>(flags: &'a HashMap<String, Vec<String>>, name: &str) -> Option<&'a str> {
+    flags.get(name).and_then(|values| values.first()).map(String::as_str)
 }
 
 /// Whether a token is an option attempt: starts with a dash and is not a
@@ -472,6 +482,7 @@ fn tokenize(input: &str) -> Vec<Token> {
 mod tests {
     use super::*;
     use crate::registry::ops::Operation;
+    use crate::vision::LoraSelection;
 
     #[test]
     fn create_parses_kind_description_and_optional_name() {
@@ -727,6 +738,30 @@ mod tests {
                 steps: None,
                 loras: Vec::new(),
             }
+        );
+    }
+
+    #[test]
+    fn repeated_lora_flags_accumulate() {
+        let operation = parse_slash(
+            "/create character Ada --lora krea/facial-krea.safetensors@0.8 --lora krea/INPAINTKREA-V1.safetensors@1.0",
+        )
+        .unwrap();
+        let Operation::Create { loras, .. } = operation else {
+            panic!("expected create");
+        };
+        assert_eq!(
+            loras,
+            vec![
+                LoraSelection {
+                    path: "krea/facial-krea.safetensors".to_owned(),
+                    multiplier: 0.8,
+                },
+                LoraSelection {
+                    path: "krea/INPAINTKREA-V1.safetensors".to_owned(),
+                    multiplier: 1.0,
+                },
+            ]
         );
     }
 

@@ -1,7 +1,13 @@
 [generation.sizes]
+# VAE tiling (enabled client-side) keeps the decode buffers small, so the
+# full portrait canvas fits the 24GiB card even with the resident encoder.
 character = "1024x1536"
 [lora]
 inpaint = "krea/INPAINTKREA-V1.safetensors"
+# Krea's identity-preserving edit adapter: applied to variant/regenerate
+# only (not create/modify — its 1.8GB resident footprint would push the
+# 24GiB card over budget on mask edits).
+variant = "krea/krea2_identity_edit_v1_2.safetensors"
 multiplier = 1.0
 [lm_studio]
 base_url = "http://localhost:1234/v1"

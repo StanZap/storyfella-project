@@ -16,25 +16,26 @@
 use std::{
     cell::RefCell,
     rc::Rc,
-    sync::{mpsc, Arc, Mutex},
-    time::Duration,
+    sync::mpsc,
 };
 
 use dioxus::prelude::*;
 use uuid::Uuid;
 
-use crate::errors::{CodedError, ErrorCode, ReportedError};
-use crate::registry::{
-    backend::CreativeBackend,
-    ops::{self, ExecuteOptions, OpOrigin, Operation},
-    pipeline::{
-        auto_decision, ApprovalPolicy, BlockedOn, Decision, GenerationOverrides, InputPurpose,
-        PlannedEdit, RunOptions,
+use crate::{
+    commands::{
+        self, ExecutionUi, MaskCandidateUi, OpActivity, PendingApproval, PendingMaskApproval,
     },
-    slash::{self, is_slash_command},
-    Artifact, ArtifactKind, ArtifactRegistry, ArtifactRevision, RevisionStatus, StoredMask,
+    errors::{ErrorCode, ReportedError},
+    registry::{
+        backend::CreativeBackend,
+        ops::{self, Operation},
+        pipeline::{Decision, PlannedEdit},
+        slash::is_slash_command,
+        Artifact, ArtifactKind, ArtifactRegistry, ArtifactRevision, RevisionStatus, StoredMask,
+    },
+    state::AppState,
 };
-use crate::state::AppState;
 
 use super::{
     components::EmptyVisual,
@@ -53,80 +54,17 @@ const GROUP_ORDER: [ArtifactKind; 6] = [
     ArtifactKind::Beat,
 ];
 
-#[derive(Clone, Debug, Default, PartialEq)]
-enum CanvasActivity {
-    #[default]
-    Idle,
-    Running {
-        summary: String,
-    },
-}
-
-impl CanvasActivity {
-    fn is_busy(&self) -> bool {
-        matches!(self, Self::Running { .. })
-    }
-}
-
-/// One segmentation candidate shown in the mask-confirmation modal.
-#[derive(Clone, Debug, PartialEq)]
-struct MaskCandidateUi {
-    path: String,
-    score: f64,
-    area_pixels: u64,
-}
-
-impl From<crate::registry::pipeline::MaskCandidate> for MaskCandidateUi {
-    fn from(candidate: crate::registry::pipeline::MaskCandidate) -> Self {
-        Self {
-            path: candidate.path.display().to_string(),
-            score: candidate.score,
-            area_pixels: candidate.area_pixels,
-        }
-    }
-}
-
-/// The mask checkpoint waiting on the user: which image to judge the
-/// candidates against, plus the candidates themselves.
-#[derive(Clone, Debug, PartialEq)]
-struct PendingMaskApproval {
-    image: Option<String>,
-    description: String,
-    candidates: Vec<MaskCandidateUi>,
-}
-
-/// The checkpoint waiting on the user, and which kind of answer it needs.
-#[derive(Clone, Debug, PartialEq)]
-enum PendingApproval {
-    /// Segment candidates to choose from (the mask checkpoint).
-    Mask(PendingMaskApproval),
-    /// The LLM could not plan the edit; the user supplies the split.
-    PlannedEdit { description: String },
-}
-
-/// Messages the op worker thread sends to the supervisor (UI thread).
-enum OpEvent {
-    PendingMask(PendingMaskApproval),
-    /// The LLM edit plan degraded; the worker only sends this for
-    /// `InputPurpose::PlannedEdit` (the canvas cannot answer other kinds).
-    PendingInput {
-        description: String,
-    },
-    Done {
-        registry: ArtifactRegistry,
-        result: Result<ops::OpOutcome, ReportedError>,
-    },
-}
-
 #[component]
 pub fn Canvas(
     app_state: Signal<AppState>,
     backend: Signal<CreativeBackend>,
     defaults: Signal<crate::registry::GenerationDefaults>,
 ) -> Element {
-    let mut composer = use_signal(String::new);
+    // Owned by the Workspace: the composer's text is the same signal the
+    // automation driver types into (a `compose` step writes it visibly).
+    let mut composer = use_context::<Signal<String>>();
     let filter = use_signal(String::new);
-    let activity = use_signal(CanvasActivity::default);
+    let activity = use_signal(OpActivity::default);
     let mut error_report = use_context::<Signal<Option<ReportedError>>>();
     let selected = app_state.read().selected_artifact().cloned();
     let busy = activity.read().is_busy();
@@ -162,23 +100,15 @@ pub fn Canvas(
         composer.set(String::new());
         let defaults = defaults.read().clone();
         if is_slash_command(&input) {
-            let operation = match parse_composer(&input, &app_state.read().registry, &defaults) {
-                Ok(operation) => operation,
-                Err(report) => {
-                    error_report.set(Some(report.log()));
-                    return;
-                }
-            };
-            run_operations(
-                app_state,
-                backend(),
-                vec![operation],
-                defaults,
+            let ui = ExecutionUi {
                 activity,
                 pending_approval,
-                reply_slot_for_run.clone(),
+                reply_slot: reply_slot_for_run.clone(),
                 error_report,
-            );
+            };
+            if let Err(report) = commands::run_slash_command(app_state, backend(), defaults, ui, &input) {
+                error_report.set(Some(report.log()));
+            }
         } else {
             // Free text: the LLM proposes the operations; the user approves.
             propose_operations(
@@ -242,15 +172,18 @@ pub fn Canvas(
                         operations,
                         on_approve: move |selected: Vec<Operation>| {
                             proposal.set(None);
-                            run_operations(
+                            let ui = ExecutionUi {
+                                activity,
+                                pending_approval,
+                                reply_slot: reply_slot.clone(),
+                                error_report,
+                            };
+                            commands::run_operations(
                                 app_state,
                                 backend(),
                                 selected,
                                 defaults.read().clone(),
-                                activity,
-                                pending_approval,
-                                reply_slot.clone(),
-                                error_report,
+                                ui,
                             );
                         },
                         on_cancel: move |_| proposal.set(None),
@@ -279,15 +212,18 @@ pub fn Canvas(
                     if disabled {
                         return;
                     }
-                    run_operations(
+                    let ui = ExecutionUi {
+                        activity,
+                        pending_approval,
+                        reply_slot: reply_slot_for_rerun.clone(),
+                        error_report,
+                    };
+                    commands::run_operations(
                         app_state,
                         backend(),
                         vec![op],
                         defaults.read().clone(),
-                        activity,
-                        pending_approval,
-                        reply_slot_for_rerun.clone(),
-                        error_report,
+                        ui,
                     );
                 },
             }
@@ -301,241 +237,6 @@ pub fn Canvas(
         }
         {modal}
         {proposal_modal}
-    }
-}
-
-/// Parses composer text into an operation; non-slash input is rejected with
-/// a hint rather than silently ignored. Static-validation failures keep
-/// their precise error codes; parse failures map to the command-level code.
-fn parse_composer(
-    input: &str,
-    registry: &crate::registry::ArtifactRegistry,
-    defaults: &crate::registry::GenerationDefaults,
-) -> Result<Operation, ReportedError> {
-    if !is_slash_command(input) {
-        return Err(ReportedError::plain(
-            ErrorCode::AppCommandInvalid,
-            "Commands start with / — e.g. /create character <description>, /variant c:<ref> <description>",
-        ));
-    }
-    let operation = slash::parse_slash(input)
-        .map_err(|error| ReportedError::plain(ErrorCode::AppCommandInvalid, error.to_string()))?;
-    // Static validation against the registry (ref resolution, kinds, active
-    // images) so errors surface before any backend work starts.
-    ops::compile(registry, &operation, defaults).map_err(|error| error.report())?;
-    Ok(operation)
-}
-
-/// Applies one or more operations: snapshot for undo, then execute each in
-/// order against the backend on a worker thread (its own tokio runtime) so
-/// checkpoints can block on the user without freezing the UI. The registry
-/// is written back on success **and** on failure (a failed revision is
-/// recorded; intermediates are kept); the stack stops at the first
-/// failure or checkpoint rejection (fail-fast, ops already applied stay).
-///
-/// Handshake: the worker sends [`OpEvent`]s over a std channel; the supervisor
-/// task on the UI thread forwards checkpoints to the modal and applies the
-/// finished registry. The user's decision travels back on a second channel
-/// whose UI end lives in `reply_slot` (UI thread only — signals are not
-/// cross-thread safe, so the worker never touches them).
-fn run_operations(
-    mut app_state: Signal<AppState>,
-    backend: CreativeBackend,
-    operations: Vec<Operation>,
-    defaults: crate::registry::GenerationDefaults,
-    mut activity: Signal<CanvasActivity>,
-    mut pending_approval: Signal<Option<PendingApproval>>,
-    reply_slot: Rc<RefCell<Option<mpsc::Sender<Decision>>>>,
-    mut error_report: Signal<Option<ReportedError>>,
-) {
-    let summary = stack_summary(&operations);
-    app_state.write().snapshot_for_undo();
-    activity.set(CanvasActivity::Running { summary });
-
-    let mut registry = app_state.read().registry.clone();
-    let (event_tx, event_rx) = mpsc::channel::<OpEvent>();
-    let (reply_tx, reply_rx) = mpsc::channel::<Decision>();
-    *reply_slot.borrow_mut() = Some(reply_tx);
-    // Shared across the per-op policies (the receiver is not Clone); the
-    // worker is single-threaded, so the lock never contends.
-    let reply_rx = Arc::new(Mutex::new(reply_rx));
-
-    spawn(async move {
-        std::thread::spawn(move || {
-            let runtime = tokio::runtime::Runtime::new().expect("op worker runtime");
-            let mut result: Result<ops::OpOutcome, ReportedError> = Err(ReportedError::plain(
-                ErrorCode::AppStackEmpty,
-                "stack was empty",
-            ));
-            for operation in &operations {
-                // The image a mask checkpoint on this op is judged against,
-                // resolved from the worker's registry — which earlier ops in
-                // the stack may have changed.
-                let approval_image = operation
-                    .target_ref()
-                    .and_then(|reference| registry.resolve(reference).ok())
-                    .and_then(|id| registry.latest_image(id))
-                    .and_then(|revision| revision.asset_path.clone());
-                let event_tx_for_policy = event_tx.clone();
-                let reply_rx_for_policy = reply_rx.clone();
-                let approvals =
-                    ApprovalPolicy::Interactive(Box::new(move |blocked| match blocked {
-                        BlockedOn::SelectMask {
-                            description,
-                            candidates,
-                        } => {
-                            let event = OpEvent::PendingMask(PendingMaskApproval {
-                                image: approval_image.clone(),
-                                description,
-                                candidates: candidates
-                                    .into_iter()
-                                    .map(MaskCandidateUi::from)
-                                    .collect(),
-                            });
-                            if event_tx_for_policy.send(event).is_err() {
-                                return Decision::Reject;
-                            }
-                            // Block until the modal answers (or the app closes).
-                            reply_rx_for_policy
-                                .lock()
-                                .expect("reply lock should not contend")
-                                .recv()
-                                .unwrap_or(Decision::Reject)
-                        }
-                        BlockedOn::ProvideInput {
-                            description,
-                            purpose,
-                        } => {
-                            // Only the edit-plan split is surfaceable here;
-                            // other degraded steps keep the auto behavior.
-                            if purpose != InputPurpose::PlannedEdit {
-                                return Decision::Reject;
-                            }
-                            let event = OpEvent::PendingInput { description };
-                            if event_tx_for_policy.send(event).is_err() {
-                                return Decision::Reject;
-                            }
-                            reply_rx_for_policy
-                                .lock()
-                                .expect("reply lock should not contend")
-                                .recv()
-                                .unwrap_or(Decision::Reject)
-                        }
-                        other => auto_decision(other),
-                    }));
-                let options = ExecuteOptions {
-                    backend: Some(&backend),
-                    run: RunOptions {
-                        work_dir: std::env::temp_dir()
-                            .join(format!("svs-canvas-{}", Uuid::new_v4())),
-                        approvals,
-                        // A fresh seed per visual op so regenerate is never an
-                        // exact replay; pass --seed on the CLI for golden runs.
-                        seed: Some(random_seed()),
-                    },
-                    generation: GenerationOverrides {
-                        // The configured default step count (Settings →
-                        // Image generation) shapes every canvas op.
-                        steps: Some(defaults.steps),
-                        ..Default::default()
-                    },
-                    defaults: &defaults,
-                    manual_text: None,
-                    origin: OpOrigin::User,
-                };
-                match runtime.block_on(ops::execute(&mut registry, operation, &options)) {
-                    Ok(outcome) => {
-                        if outcome.status == crate::registry::ops::OpStatus::Rejected {
-                            result = Err(ReportedError::plain(
-                                ErrorCode::AppCheckpointRejected,
-                                "operation rejected at a checkpoint",
-                            )
-                            .with_context("operation", operation.summary()));
-                            break;
-                        }
-                        result = Ok(outcome);
-                    }
-                    Err(error) => {
-                        // Attach what the op was and how it was run (seed and
-                        // work_dir let the failure be reproduced/inspected);
-                        // the supervisor logs the report once.
-                        let mut report = error
-                            .report()
-                            .with_context("operation", operation.summary())
-                            .with_context("work_dir", options.run.work_dir.display().to_string());
-                        if let Some(seed) = options.run.seed {
-                            report = report.with_context("seed", seed.to_string());
-                        }
-                        result = Err(report);
-                        break;
-                    }
-                }
-            }
-            let _ = event_tx.send(OpEvent::Done { registry, result });
-        });
-
-        // Supervisor: forward checkpoints to the modal, then apply the
-        // finished registry. The poll loop keeps the dioxus executor free
-        // (std channels have no async recv without tokio's sync feature).
-        let mut result: Result<ops::OpOutcome, ReportedError> = Err(ReportedError::plain(
-            ErrorCode::AppStackEmpty,
-            "op worker exited without a result",
-        ));
-        // The worker moved the pre-op registry; `None` until it reports back
-        // (a worker that dies without reporting leaves the current state).
-        let mut finished_registry: Option<ArtifactRegistry> = None;
-        loop {
-            match event_rx.recv_timeout(Duration::from_millis(50)) {
-                Ok(OpEvent::PendingMask(approval)) => {
-                    pending_approval.set(Some(PendingApproval::Mask(approval)));
-                }
-                Ok(OpEvent::PendingInput { description }) => {
-                    pending_approval.set(Some(PendingApproval::PlannedEdit { description }));
-                }
-                Ok(OpEvent::Done {
-                    registry: finished,
-                    result: outcome,
-                }) => {
-                    finished_registry = Some(finished);
-                    result = outcome;
-                    break;
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-        }
-        pending_approval.set(None);
-
-        let mut state = app_state.write();
-        state.registry = finished_registry.unwrap_or_else(|| state.registry.clone());
-        state.has_unsaved_changes = true;
-        match result {
-            Ok(outcome) => {
-                if let Some(id) = outcome.artifact_id {
-                    state.selected_artifact_id = Some(id);
-                }
-                drop(state);
-                activity.set(CanvasActivity::Idle);
-            }
-            Err(report) => {
-                drop(state);
-                activity.set(CanvasActivity::Idle);
-                // The single log point for op results: the worker attached
-                // the request context, this is where the line is emitted.
-                error_report.set(Some(report.log()));
-            }
-        }
-    });
-}
-
-/// The running-state label for an operation or stack.
-fn stack_summary(operations: &[Operation]) -> String {
-    match operations {
-        [single] => single.summary(),
-        [first, rest @ ..] => format!("{} (+{} more)", first.summary(), rest.len()),
-        [] => "no operations".to_owned(),
     }
 }
 
@@ -567,7 +268,7 @@ fn propose_operations(
     backend: CreativeBackend,
     message: String,
     defaults: crate::registry::GenerationDefaults,
-    mut activity: Signal<CanvasActivity>,
+    mut activity: Signal<OpActivity>,
     mut proposal: Signal<Option<StackProposal>>,
     mut error_report: Signal<Option<ReportedError>>,
 ) {
@@ -583,7 +284,7 @@ fn propose_operations(
         ));
         return;
     }
-    activity.set(CanvasActivity::Running {
+    activity.set(OpActivity::Running {
         summary: "proposing operations to the LLM…".to_owned(),
     });
     spawn(async move {
@@ -595,11 +296,11 @@ fn propose_operations(
         {
             Ok(stack) => {
                 let operations = validate_proposal(&registry, stack.operations, &defaults);
-                activity.set(CanvasActivity::Idle);
+                activity.set(OpActivity::Idle);
                 proposal.set(Some(StackProposal { operations }));
             }
             Err(error) => {
-                activity.set(CanvasActivity::Idle);
+                activity.set(OpActivity::Idle);
                 // The user message is the context: it is what the LLM was
                 // asked to turn into operations.
                 error_report.set(Some(
@@ -651,11 +352,6 @@ fn draft_on_visual_artifact(registry: &ArtifactRegistry, operation: &Operation) 
          Use /modify (localized change), /variant (new look), or /regenerate (redo)."
             .to_owned()
     })
-}
-
-fn random_seed() -> u64 {
-    let id = Uuid::new_v4();
-    u64::from_be_bytes(id.as_bytes()[..8].try_into().expect("eight bytes"))
 }
 
 /// The mask checkpoint modal: the segmentation candidates overlaid on the
@@ -1085,7 +781,7 @@ fn Detail(
     app_state: Signal<AppState>,
     artifact: Option<Artifact>,
     mut composer: Signal<String>,
-    activity: Signal<CanvasActivity>,
+    activity: Signal<OpActivity>,
     disabled: bool,
     on_rerun: EventHandler<Operation>,
 ) -> Element {
@@ -1124,7 +820,7 @@ fn ArtifactDetail(
     artifact: Artifact,
     registry: crate::registry::ArtifactRegistry,
     mut composer: Signal<String>,
-    activity: Signal<CanvasActivity>,
+    activity: Signal<OpActivity>,
     disabled: bool,
     on_rerun: EventHandler<Operation>,
 ) -> Element {
@@ -1559,7 +1255,7 @@ fn ActionButton(
 #[component]
 fn Composer(
     mut value: Signal<String>,
-    activity: Signal<CanvasActivity>,
+    activity: Signal<OpActivity>,
     disabled: bool,
     target_hint: Option<String>,
     onsubmit: EventHandler<()>,
@@ -1567,7 +1263,7 @@ fn Composer(
     let empty = value.read().trim().is_empty();
     let busy = activity.read().is_busy();
     let summary = match &*activity.read() {
-        CanvasActivity::Running { summary } => Some(summary.clone()),
+        OpActivity::Running { summary } => Some(summary.clone()),
         _ => None,
     };
     rsx! {
@@ -1621,7 +1317,7 @@ fn Composer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::{CreateArtifact, Ref, VariantAxis};
+    use crate::registry::{CreateArtifact, Ref};
 
     fn registry_with(name: &str, kind: ArtifactKind) -> ArtifactRegistry {
         let mut registry = ArtifactRegistry::new();
@@ -1636,31 +1332,6 @@ mod tests {
             )
             .expect("artifact should create");
         registry
-    }
-
-    #[test]
-    fn stack_summary_handles_single_ops_and_stacks() {
-        let create = Operation::Create {
-            kind: ArtifactKind::Character,
-            description: "Mia".into(),
-            name: Some("mia".into()),
-            size: None,
-            steps: None,
-            loras: Vec::new(),
-        };
-        let variant = Operation::Variant {
-            target: Ref::new("c:mia"),
-            description: "older".into(),
-            name: None,
-            axis: Some(VariantAxis::Age),
-            size: None,
-            steps: None,
-            loras: Vec::new(),
-        };
-        assert_eq!(stack_summary(&[]), "no operations");
-        assert!(stack_summary(std::slice::from_ref(&create)).starts_with("create"));
-        let combined = stack_summary(&[create, variant]);
-        assert!(combined.contains("(+1 more)"), "{combined}");
     }
 
     #[test]

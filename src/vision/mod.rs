@@ -85,11 +85,22 @@ pub struct GenerateRequest {
     pub prompt: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reference_image_path: Option<String>,
+    /// How strongly a reference image guides the generation (the backend's
+    /// img2img blend, 0–1). The sd.cpp server defaults to 0.9 — near-full
+    /// renoise — which distorts turbo-model outputs; every reference-based
+    /// op sets an explicit, tuned value instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference_strength: Option<f32>,
     /// Mask-guided inpaint/outpaint input (same W×H output). The pipeline
-    /// layer composites as its guaranteed mechanism; this field is the
-    /// best-effort native passthrough when the backend accepts a mask.
+    /// layer composites as its guaranteed mechanism; with `init_image_path`
+    /// also set, the backend keeps the unmasked latent pixels fixed per
+    /// step (masked-latent inpaint) and the composite is only a fallback.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mask_path: Option<String>,
+    /// The original image whose masked region is re-rendered (masked-latent
+    /// inpaint input; paired with `mask_path` and `reference_image_path`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub init_image_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -126,7 +137,9 @@ impl GenerateRequest {
         Self {
             prompt: prompt.into(),
             reference_image_path: None,
+            reference_strength: None,
             mask_path: None,
+            init_image_path: None,
             width: None,
             height: None,
             steps: None,

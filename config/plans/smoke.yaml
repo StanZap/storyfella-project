@@ -1,0 +1,13 @@
+# Fast regression check: create a story, two text artifacts, verify the
+# registry — all backend-free, so it runs anywhere. A failing step means a
+# flow is broken (a UX issue): plans are the app's own regression suite.
+name: "Smoke"
+description: "Fast check of the core flows — project, story, beats — no generation backend needed."
+steps:
+  - create_project: "Smoke Test"
+  - expect_project: "Smoke Test"
+  - command: "/create story --name premise A girl discovers a doorway behind the pantry"
+  - expect_artifact: { name: "premise", kind: story }
+  - command: "/create beat --name turn The door only opens at midnight"
+  - expect_artifact_count: { kind: beat, count: 1 }
+  - expect_no_error: true

@@ -179,6 +179,33 @@ The product-oriented native path supports resident Krea 2 Turbo Q2_K and IQ4_XS 
 
 The third proof of concept runs SAM 2.1 Tiny behind `/segment` with point or box prompts. Text prompts are grounded to boxes by Grounding DINO Tiny before SAM refinement. Both stages expose their own scores, and the chain runs on MPS, CUDA, or CPU. See [`docs/poc/segmentation/README.md`](docs/poc/segmentation/README.md) for the SAM decision and [`docs/poc/grounded-segmentation/README.md`](docs/poc/grounded-segmentation/README.md) for the connected pipeline result.
 
+## Visual evaluation (`svs eval`)
+
+The local LM Studio vision model doubles as an automated image reviewer —
+"eyes" for evaluating generations, mask edits, and regressions without a
+human at the screen. `svs eval` attaches images, asks questions, prints the
+model's verdict, and can gate a script's exit code on the answer:
+
+```sh
+# Judge a mask edit: is it localized? is identity preserved?
+svs eval -i base.png -i edited.png \
+  -p "Answer with ONLY YES or NO: is image 2 a localized edit of image 1
+      where only the intended region changed and the rest is identical?"
+
+# Gate a test script on the verdict (exit 1 when the answer lacks "yes")
+svs eval -i image.png -p "Are there visible artifacts?" --expect-not "yes"
+
+# Multiple questions, one round each (all images attached to every round)
+svs eval -i a.png -i b.png -p "Same person in both?" -p "Which is sharper?"
+```
+
+The default model is the configured planner model (`google/gemma-4-e4b`),
+which must have vision support. Images are downscaled to a 1024px maximum
+before sending (LM Studio rejects oversized payloads), and the default
+token budget is 2048 because the model reasons before answering. The
+`--expect`/`--expect-not` checks are case-insensitive substrings — craft
+prompts that elicit a strict YES/NO to gate reliably.
+
 ## Roadmap
 
 The ordered backlog with statuses lives in `docs/ROADMAP.md` §12

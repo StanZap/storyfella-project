@@ -66,6 +66,8 @@ class StableDiffusionCppClient:
         loras: tuple[LoraSelection, ...] = (),
         reference_images: tuple[Path, ...] = (),
         mask_images: tuple[Path, ...] = (),
+        init_image: Path | None = None,
+        reference_strength: float | None = None,
     ) -> NativeJob:
         body: dict[str, Any] = {
             "prompt": prompt,
@@ -79,6 +81,14 @@ class StableDiffusionCppClient:
                 "sample_method": "euler",
                 "guidance": {"txt_cfg": 1.0},
             },
+            # Tiled VAE: the full-canvas decode buffer OOMs the 24GiB card
+            # at 1024x1536+; tiling keeps the VAE working in tiles (the
+            # same mechanism ComfyUI uses), so large canvases fit. The tile
+            # size must be explicit: this sd.cpp build ignores tiling when
+            # only `enabled` is set, then the untiled decode/encode buffer
+            # (11.2 GB decode / 7.6 GB encode at 1024x1536) fails on the
+            # card whenever the LM Studio vision model is resident.
+            "vae_tiling_params": {"enabled": True, "tile_size": 256, "overlap": 32},
         }
         if loras:
             body["lora"] = [
@@ -86,11 +96,19 @@ class StableDiffusionCppClient:
             ]
         if reference_images:
             body["ref_images"] = [self._encode_image(path) for path in reference_images]
+            # sd.cpp defaults control_strength to 0.9 — near-full renoise —
+            # which distorts turbo-model outputs; the Rust pipeline always
+            # sends a tuned blend for reference-based ops.
+            if reference_strength is not None:
+                body["control_strength"] = reference_strength
         if mask_images:
-            # Best-effort native mask input (same W×H output). Whether the
-            # resident model honors it is a validation gate; the Rust pipeline
-            # composites as its guaranteed mechanism.
+            # Masked-latent inpaint input: when `init_image` is also present,
+            # the server keeps the unmasked latent pixels fixed per step, so
+            # the edit is localized at the latent level and the Rust composite
+            # is only a fallback. Best-effort for backends that ignore it.
             body["mask_images"] = [self._encode_image(path) for path in mask_images]
+        if init_image is not None:
+            body["init_image"] = self._encode_image(init_image)
         result = self._request("POST", "/sdcpp/v1/img_gen", body)
         return NativeJob(id=str(result["id"]), status=str(result["status"]))
 

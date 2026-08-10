@@ -61,6 +61,10 @@ pub struct GenerationParams {
     pub steps: u32,
     pub seed: Option<u64>,
     pub loras: Vec<LoraSelection>,
+    /// The img2img blend for reference-based generations (see
+    /// [`GenerateRequest::reference_strength`]); `None` lets the backend
+    /// default — ops that pass a reference always set a tuned value.
+    pub reference_strength: Option<f32>,
 }
 
 impl Default for GenerationParams {
@@ -72,6 +76,7 @@ impl Default for GenerationParams {
             steps: DEFAULT_STEPS,
             seed: None,
             loras: Vec::new(),
+            reference_strength: None,
         }
     }
 }
@@ -496,7 +501,8 @@ impl Pipeline {
                         .transpose()?;
                     let request = GenerateRequest {
                         prompt: prompt_text,
-                        reference_image_path: reference_path.map(|path| path.display().to_string()),
+                        reference_image_path: reference_path.clone().map(|path| path.display().to_string()),
+                        reference_strength: self.params.reference_strength,
                         width: Some(self.params.width),
                         height: Some(self.params.height),
                         steps: Some(self.params.steps),
@@ -504,7 +510,17 @@ impl Pipeline {
                         model: Some(self.params.model.clone()),
                         device: Some(ComputeDevice::Auto),
                         loras: self.params.loras.clone(),
-                        mask_path: mask_path.map(|path| path.display().to_string()),
+                        mask_path: mask_path.clone().map(|path| path.display().to_string()),
+                        // Masked-latent inpaint: the original image whose
+                        // masked region is re-rendered (the reference is the
+                        // same file in the modify flow). The backend keeps
+                        // the unmasked latent pixels fixed per step; the
+                        // composite step below is the fallback.
+                        init_image_path: if mask_path.is_some() {
+                            reference_path.map(|path| path.display().to_string())
+                        } else {
+                            None
+                        },
                     };
                     let response = backend.generate(&request).await?;
                     if response.status == "failed" {
@@ -1033,6 +1049,16 @@ pub trait GenerationBackend: Send + Sync {
     fn llm_draft(&self, request: &str) -> BoxFuture<'_, Result<Option<String>, PipelineError>>;
     /// Returns `None` when no LLM is available (soft dependency).
     fn llm_plan(&self, request: &str) -> BoxFuture<'_, Result<Option<PlannedEdit>, PipelineError>>;
+    /// Moves a locally-produced final image (e.g. the composite fallback
+    /// output) into the persistent asset store, returning its stored path.
+    /// The default keeps the source path — backends without a store (the
+    /// test doubles) leave results in place.
+    fn import_asset(
+        &self,
+        source: std::path::PathBuf,
+    ) -> BoxFuture<'_, Result<String, PipelineError>> {
+        Box::pin(async move { Ok(source.display().to_string()) })
+    }
 }
 
 #[derive(Debug, Error)]
@@ -1181,6 +1207,14 @@ impl PipelineBuilder {
         self
     }
 
+    /// How strongly a reference image guides the generation (0–1). The
+    /// sd.cpp default (0.9) renoises almost everything and distorts
+    /// turbo-model outputs, so ops that pass a reference set a tuned value.
+    pub fn reference_strength(&mut self, strength: f32) -> &mut Self {
+        self.params.reference_strength = Some(strength);
+        self
+    }
+
     pub fn lora(&mut self, path: impl Into<String>, multiplier: f32) -> &mut Self {
         self.params.loras.push(LoraSelection {
             path: path.into(),
@@ -1239,16 +1273,17 @@ impl PipelineBuilder {
         SelectedMaskHandle { step: mask.step }
     }
 
-    /// The canonical regional edit: generate with the reference image, then
-    /// composite so everything outside the confirmed mask is bit-identical
-    /// to the original. -> Image
+    /// The canonical regional edit: masked-latent inpaint (generate with the
+    /// reference, mask, and init image so the backend keeps the unmasked
+    /// pixels fixed), then composite so anything outside the confirmed mask
+    /// is bit-identical to the original. -> Image
     pub fn inpaint(
         &mut self,
         prompt: impl Into<PromptSource>,
         image: ImageHandle,
         mask: SelectedMaskHandle,
     ) -> ImageHandle {
-        let generated = self.generate(prompt, Some(image), None);
+        let generated = self.generate(prompt, Some(image), Some(mask));
         let step = self.steps.len();
         self.steps.push(Step::Composite {
             original: image,
@@ -1818,11 +1853,14 @@ mod tests {
             request.image_path == original.to_str().unwrap()
             && request.prompt.as_deref() == Some("her hair")
         ));
-        // The generate request was a plain edit (composite mode: no native mask).
+        // The generate request is a masked-latent inpaint: reference + mask
+        // + init image (the backend keeps the unmasked pixels fixed); the
+        // composite step below remains the fallback.
         assert!(matches!(&requests[1], CapturedRequest::Generate(request) if
             request.prompt == "a short bob cut"
             && request.reference_image_path.as_deref() == Some(original.to_str().unwrap())
-            && request.mask_path.is_none()
+            && request.mask_path.as_deref() == Some(candidate.to_str().unwrap())
+            && request.init_image_path.as_deref() == Some(original.to_str().unwrap())
         ));
 
         // The composite is the final image and preserves the outside pixels.

@@ -1,6 +1,8 @@
 mod canvas;
 mod components;
+mod guide;
 mod icons;
+mod plans;
 mod projects;
 mod settings;
 
@@ -13,8 +15,9 @@ use dioxus::prelude::*;
 
 use crate::{
     app::AppConfig,
-    errors::{CodedError, ReportedError},
-    persistence::ProjectDb,
+    commands::{self, ExecutionUi},
+    driver::{self, DriveContext, GuideMode, GuideSession, Plan, PlanLaunch},
+    errors::ReportedError,
     registry::backend::CreativeBackend,
     runtime::HealthStatus,
     state::AppState,
@@ -22,7 +25,9 @@ use crate::{
 
 use canvas::Canvas;
 use components::{ErrorToast, RailButton, StatusDot};
+use guide::GuideCard;
 use icons::{Icon, IconName};
+use plans::Plans;
 use projects::Projects;
 use settings::Settings;
 
@@ -58,28 +63,58 @@ impl AutosaveMode {
 /// failure is logged with its code and surfaced through the shared error
 /// report signal.
 pub fn persist_state(
-    mut app_state: Signal<AppState>,
+    app_state: Signal<AppState>,
     mut error_report: Signal<Option<ReportedError>>,
 ) {
-    let Some(path) = app_state.read().project_path.clone() else {
-        return;
-    };
-    let registry = app_state.read().registry.clone();
-    match ProjectDb::open(&path).and_then(|db| db.save_registry(&registry)) {
-        Ok(()) => app_state.write().has_unsaved_changes = false,
-        Err(error) => error_report.set(Some(error.report().log())),
+    if let Err(error) = commands::save_project(app_state) {
+        error_report.set(Some(error.log()));
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum AppScreen {
+pub enum AppScreen {
     Projects,
     Canvas,
+    Plans,
     Settings,
 }
 
+/// Starts a plan run through the shared driver surface: installs the
+/// session (the assistant card appears) and executes the steps. A run is
+/// refused while another is active.
+fn start_plan(
+    config: AppConfig,
+    app_state: Signal<AppState>,
+    backend: Signal<CreativeBackend>,
+    defaults: Signal<crate::registry::GenerationDefaults>,
+    screen: Signal<AppScreen>,
+    composer: Signal<String>,
+    driver_ui: ExecutionUi,
+    session: Signal<Option<GuideSession>>,
+    plan: Plan,
+    mode: GuideMode,
+    exit_on_done: bool,
+) {
+    if session.read().is_some() {
+        return;
+    }
+    let ctx = DriveContext {
+        config,
+        app_state,
+        backend,
+        defaults,
+        screen,
+        composer,
+    };
+    driver::run_plan(ctx, driver_ui, plan, mode, session, exit_on_done);
+}
+
 #[component]
-pub fn Workspace(config: AppConfig, app_state: Signal<AppState>) -> Element {
+pub fn Workspace(
+    config: AppConfig,
+    app_state: Signal<AppState>,
+    #[props(default = None)] plan_launch: Option<PlanLaunch>,
+) -> Element {
     // Land on Projects so a story is opened before any canvas work — the
     // canvas cannot save until a project file is bound.
     let mut screen = use_signal(|| AppScreen::Projects);
@@ -109,6 +144,59 @@ pub fn Workspace(config: AppConfig, app_state: Signal<AppState>) -> Element {
     // log + banner + details modal), whatever screen is showing.
     let error_report = use_signal(|| None::<ReportedError>);
     use_context_provider(|| error_report);
+
+    // The canvas composer text: owned here so the driver can type into it
+    // (the visible fidelity of a `compose` step), consumed by the canvas.
+    let composer = use_signal(String::new);
+    use_context_provider(|| composer);
+
+    // The automation driver: its own execution surface (the assistant card
+    // and the runner observe it; the global toast stays untouched) and the
+    // session signal the card renders.
+    let driver_ui = ExecutionUi::for_driver();
+    let session = use_signal(|| None::<GuideSession>);
+
+    // CLI launch (`--plan <file> --mode guide|check`): start the plan once
+    // the window is up; check mode prints the report and exits.
+    let hook_config = config.clone();
+    let hook_driver_ui = driver_ui.clone();
+    use_hook(move || {
+        let Some(launch) = plan_launch.clone() else {
+            return;
+        };
+        let PlanLaunch { path, mode } = launch;
+        let Some(path) = path else {
+            return;
+        };
+        let plan = match std::fs::read_to_string(&path)
+            .map_err(|error| format!("cannot read {path:?}: {error}"))
+            .and_then(|raw| Plan::from_yaml(&raw))
+        {
+            Ok(plan) => plan,
+            Err(error) => {
+                eprintln!("plan error: {error}");
+                std::process::exit(1);
+            }
+        };
+        let exit_on_done = mode == GuideMode::Check;
+        spawn(async move {
+            // Let the first frame settle before the run takes over.
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            start_plan(
+                hook_config,
+                app_state,
+                backend,
+                defaults,
+                screen,
+                composer,
+                hook_driver_ui,
+                session,
+                plan,
+                mode,
+                exit_on_done,
+            );
+        });
+    });
 
     // Save after every change (the default): the effect re-runs on state
     // changes, saves when the project is dirty, and clears the flag.
@@ -148,6 +236,29 @@ pub fn Workspace(config: AppConfig, app_state: Signal<AppState>) -> Element {
     let project_name = app_state.read().project_name.clone();
     let dirty = app_state.read().has_unsaved_changes;
 
+    // The Plans screen's run handler (captures its own config clone — the
+    // `move` closure must not steal the component's `config`; clones inside
+    // the body keep it `FnMut` for the `EventHandler`).
+    let plans_config = config.clone();
+    let plans_driver_ui = driver_ui.clone();
+    let on_run_plan = {
+        move |(plan, mode): (Plan, GuideMode)| {
+            start_plan(
+                plans_config.clone(),
+                app_state,
+                backend,
+                defaults,
+                screen,
+                composer,
+                plans_driver_ui.clone(),
+                session,
+                plan,
+                mode,
+                false,
+            )
+        }
+    };
+
     rsx! {
         main { class: "grid h-screen min-h-[640px] min-w-[900px] grid-cols-[64px_minmax(0,1fr)] grid-rows-[58px_minmax(0,1fr)] overflow-hidden bg-[#0b0b0e] font-sans text-zinc-100 selection:bg-violet-500/30",
             aside { class: "row-span-2 flex flex-col items-center border-r border-white/[0.055] bg-[#09090b] py-3",
@@ -157,6 +268,7 @@ pub fn Workspace(config: AppConfig, app_state: Signal<AppState>) -> Element {
                 nav { class: "flex flex-1 flex-col items-center gap-2",
                     RailButton { label: "Projects", icon: IconName::Home, active: screen() == AppScreen::Projects, onclick: move |_| screen.set(AppScreen::Projects) }
                     RailButton { label: "Canvas", icon: IconName::Canvas, active: screen() == AppScreen::Canvas, onclick: move |_| screen.set(AppScreen::Canvas) }
+                    RailButton { label: "Plans", icon: IconName::List, active: screen() == AppScreen::Plans, onclick: move |_| screen.set(AppScreen::Plans) }
                 }
                 RailButton { label: "Settings", icon: IconName::Settings, active: screen() == AppScreen::Settings, onclick: move |_| screen.set(AppScreen::Settings) }
             }
@@ -193,12 +305,23 @@ pub fn Workspace(config: AppConfig, app_state: Signal<AppState>) -> Element {
                 match screen() {
                     AppScreen::Projects => rsx! { Projects { config: config.clone(), app_state, on_open: move |_| screen.set(AppScreen::Canvas) } },
                     AppScreen::Canvas => rsx! { Canvas { app_state, backend, defaults } },
+                    AppScreen::Plans => rsx! { Plans { on_run: on_run_plan } },
                     AppScreen::Settings => rsx! { Settings { config: config.clone(), backend, defaults } },
                 }
             }
         }
         ErrorToast { error_report }
+        {guide_overlay(session)}
     }
+}
+
+/// The assistant card, when a plan run is active.
+fn guide_overlay(session: Signal<Option<GuideSession>>) -> Option<Element> {
+    session.read().as_ref().is_some().then(|| {
+        rsx! {
+            GuideCard { session }
+        }
+    })
 }
 
 /// Maps a stored asset path to the URL the `generated` asset handler

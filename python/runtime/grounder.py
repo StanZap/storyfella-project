@@ -1,4 +1,5 @@
-"""Text-to-box grounding adapters."""
+"""Text-to-box grounding adapters — the degradation path for prompt
+segmentation when SAM 3 (gated weights) is unavailable."""
 
 import threading
 from dataclasses import dataclass

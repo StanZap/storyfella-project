@@ -1,0 +1,30 @@
+# The welcome tour — run it in Guide mode from Plans to watch the app do
+# the work, narrated step by step. The `compose` steps type into the canvas
+# composer character by character, exactly like a user typing and sending.
+# Every step is app language: no selectors, no coordinates.
+name: "Welcome tour"
+description: "A guided walkthrough: create a story, a character, and watch the canvas work."
+speed_ms: 2400
+steps:
+  - create_project: "The Lighthouse"
+    message: "Welcome! I'll show you around by doing it myself. First I start a new story — the same thing you'd type in the form on the Projects screen."
+  - expect_project: "The Lighthouse"
+    message: "The story is open — its name is in the header. The canvas is empty: no artifacts yet."
+  - go_canvas: true
+    wait_ms: 600
+  - compose: "/create story --name keeper A lonely keeper tends the light on a stormy island"
+    message: "Every story begins with a Story artifact — pure text, no image needed. Watch the composer: I'm typing the same slash command you would, then pressing Enter."
+  - expect_artifact_count: { kind: story, count: 1 }
+    message: "There it is — one story in the sidebar. Now for the visual part."
+  - compose: "/create character --name ada Ada, a young lighthouse keeper in a warm wool coat, oil painting style"
+    message: "This creates a character AND generates its first image. Watch the composer again — then the detail pane will fill with Ada's portrait as the generation runs."
+  - expect_artifact: { name: "ada", kind: character }
+    message: "Ada is in the sidebar now — selected, with her detail pane on the right."
+  - expect_image: "ada"
+    soft: true
+    wait_ms: 3000
+    message: "Her first image finished generating. (If the backend is off, this step only warns — the plan still passes.)"
+  - go_projects: true
+    message: "Plans can navigate too — here's the Projects screen again. Your story is in Recent, saved to disk."
+  - expect_no_error: true
+    message: "And no errors were raised along the way. That's the whole tour!"

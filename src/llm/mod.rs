@@ -233,6 +233,26 @@ impl ChatMessage {
             tool_calls: None,
         }
     }
+
+    /// A user message carrying text plus several images (`data:` URLs) —
+    /// the vision-evaluation surface (`svs eval`): the model sees the
+    /// images in order and answers the question.
+    pub fn with_images(
+        role: impl Into<String>,
+        text: impl Into<String>,
+        image_data_urls: Vec<String>,
+    ) -> Self {
+        let mut parts = vec![ChatContentPart::Text { text: text.into() }];
+        parts.extend(image_data_urls.into_iter().map(|url| ChatContentPart::ImageUrl {
+            image_url: ImageUrl { url },
+        }));
+        Self {
+            role: role.into(),
+            content: ChatContent::Parts(parts),
+            tool_call_id: None,
+            tool_calls: None,
+        }
+    }
 }
 
 /// Strips a markdown fence around JSON (some models wrap their output in

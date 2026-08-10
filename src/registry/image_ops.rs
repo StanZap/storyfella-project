@@ -47,10 +47,18 @@ impl CodedError for ImageOpsError {
 
 /// Blends `replacement` into `original` everywhere the hard mask is active.
 ///
-/// Guarantee: every pixel *outside* the hard mask is bit-identical to the
-/// original, even with feathering. Feathering only softens the transition on
-/// pixels *inside* the mask (a blurred copy of the mask is clamped to zero
-/// outside it), so the outside boundary is exactly preserved.
+/// Guarantee: every pixel *outside* the (eroded) hard mask is bit-identical
+/// to the original, even with feathering. Feathering only softens the
+/// transition on pixels *inside* the mask (a blurred copy of the mask is
+/// clamped to zero outside it), so the outside boundary is exactly
+/// preserved.
+///
+/// The mask is eroded before blending so the seam between the original and
+/// the replacement lands inside the replacement's own content: a
+/// segmentation mask rarely matches the re-rendered silhouette exactly,
+/// and without erosion the mismatch shows as a visible outline along the
+/// mask boundary. The feather radius scales with the canvas so seams look
+/// the same at every size.
 pub fn composite(
     original: &Path,
     mask: &Path,
@@ -62,29 +70,49 @@ pub fn composite(
     let replacement_image = open_rgba(replacement)?;
     let mask_image = open_luma(mask)?;
 
-    let (width, height) = original_image.dimensions();
-    let expected = (width, height);
-    if replacement_image.dimensions() != expected {
-        return Err(ImageOpsError::DimensionMismatch {
-            what: "replacement image",
-            actual: replacement_image.dimensions(),
-            expected,
-        });
+    // The composite is the guaranteed mask-edit mechanism, so it must
+    // blend whatever canvases it is given: when the replacement (the
+    // inpaint output) has different dimensions than the original (e.g. a
+    // per-op size change), both the original and the mask are resized to
+    // the replacement's canvas before blending.
+    let (width, height) = replacement_image.dimensions();
+    let mut original_image = original_image;
+    let mut mask_image = mask_image;
+    if original_image.dimensions() != (width, height) {
+        original_image = image::imageops::resize(
+            &original_image,
+            width,
+            height,
+            image::imageops::FilterType::Lanczos3,
+        );
     }
-    if mask_image.dimensions() != expected {
-        return Err(ImageOpsError::DimensionMismatch {
-            what: "mask",
-            actual: mask_image.dimensions(),
-            expected,
-        });
+    if mask_image.dimensions() != (width, height) {
+        // The mask must stay hard-edged: nearest-neighbor resize preserves
+        // the selection boundary without introducing feathering fringes.
+        mask_image = image::imageops::resize(
+            &mask_image,
+            width,
+            height,
+            image::imageops::FilterType::Nearest,
+        );
     }
 
     let hard = mask_image.as_raw();
+    // Erode the selection so the blend seam sits inside the replacement's
+    // own content (the mask boundary rarely matches the re-rendered
+    // silhouette; without erosion the mismatch outlines the region).
+    let erosion = (width.min(height) as u32 / 200).clamp(1, 8);
+    let eroded = erode_mask(hard, width, height, erosion);
     let blended_alpha: Vec<u8> = if feather_radius == 0 {
-        hard.clone()
+        eroded.clone()
     } else {
-        let blurred = box_blur(hard, width, height, feather_radius);
-        hard.iter()
+        // The feather scales with the canvas: the same relative softness
+        // at every size keeps seams from becoming proportionally harsher
+        // on small canvases.
+        let feather = feather_radius.max(width.min(height) / 64);
+        let blurred = box_blur(&eroded, width, height, feather);
+        eroded
+            .iter()
             .zip(blurred)
             .map(|(&inside, value)| if inside > 0 { value } else { 0 })
             .collect()
@@ -203,6 +231,44 @@ fn save_luma(image: &GrayImage, output: &Path) -> Result<(), ImageOpsError> {
 /// Implemented as a running sum over the row/column conceptually extended by
 /// `radius` clamped pixels on each side, so edge windows average the clamped
 /// edge value correctly.
+/// Shrinks a hard mask by `radius` pixels: a pixel stays lit only when
+/// every pixel in its `radius`-box is lit (box erosion, out-of-bounds
+/// pixels count as unlit). Used before feathering so the blend seam lands
+/// inside the replacement's content.
+fn erode_mask(source: &[u8], width: u32, height: u32, radius: u32) -> Vec<u8> {
+    let width = width as usize;
+    let height = height as usize;
+    let radius = radius as usize;
+    let mut eroded = vec![0u8; width * height];
+    for y in 0..height {
+        for x in 0..width {
+            let mut lit = true;
+            'neighbors: for dy in 0..=2 * radius {
+                let neighbor_y = y as isize + dy as isize - radius as isize;
+                if neighbor_y < 0 || neighbor_y >= height as isize {
+                    lit = false;
+                    break;
+                }
+                for dx in 0..=2 * radius {
+                    let neighbor_x = x as isize + dx as isize - radius as isize;
+                    if neighbor_x < 0 || neighbor_x >= width as isize {
+                        lit = false;
+                        break 'neighbors;
+                    }
+                    if source[neighbor_y as usize * width + neighbor_x as usize] == 0 {
+                        lit = false;
+                        break 'neighbors;
+                    }
+                }
+            }
+            if lit {
+                eroded[y * width + x] = 255;
+            }
+        }
+    }
+    eroded
+}
+
 fn box_blur(source: &[u8], width: u32, height: u32, radius: u32) -> Vec<u8> {
     let width = width as usize;
     let height = height as usize;
@@ -302,14 +368,19 @@ mod tests {
         let reference = image::open(&original).unwrap().to_rgba8();
         for y in 0..48 {
             for x in 0..64 {
-                if x >= 32 {
+                // The mask is eroded before blending (erosion 1 on this
+                // tiny canvas; the frame border counts as unlit), so the
+                // replacement region is x∈[1,30], y∈[1,46]; the boundary
+                // band and the frame edges keep the original.
+                let in_replacement = (1..31).contains(&x) && (1..47).contains(&y);
+                if in_replacement {
+                    assert_eq!(result.get_pixel(x, y), &Rgba([40, 40, 200, 255]));
+                } else {
                     assert_eq!(
                         result.get_pixel(x, y),
                         reference.get_pixel(x, y),
-                        "pixel ({x}, {y}) outside the mask must be bit-identical"
+                        "pixel ({x}, {y}) outside the eroded mask must be bit-identical"
                     );
-                } else {
-                    assert_eq!(result.get_pixel(x, y), &Rgba([40, 40, 200, 255]));
                 }
             }
         }
@@ -346,21 +417,29 @@ mod tests {
     }
 
     #[test]
-    fn composite_rejects_dimension_mismatches() {
+    fn composite_resizes_mismatched_canvases_to_the_replacement() {
         let dir = test_dir();
         std::fs::create_dir_all(&dir).unwrap();
         let original = dir.join("original.png");
         let mask = dir.join("mask.png");
         let replacement = dir.join("replacement.png");
-        write_rgba(&original, 64, 48, [0, 0, 0, 255]);
+        let output = dir.join("output.png");
+        write_rgba(&original, 64, 48, [200, 40, 40, 255]);
         write_luma(&mask, 64, 48, 255);
-        write_rgba(&replacement, 32, 48, [0, 0, 0, 255]);
+        write_rgba(&replacement, 32, 48, [40, 40, 200, 255]);
 
-        let error = composite(&original, &mask, &replacement, 0, &dir.join("out.png")).unwrap_err();
-        assert!(
-            matches!(error, ImageOpsError::DimensionMismatch { .. }),
-            "expected a dimension mismatch, got {error}"
-        );
+        composite(&original, &mask, &replacement, 0, &output).unwrap();
+
+        // The output follows the replacement canvas, with the original's
+        // content resized into it (fully masked here, so it is the
+        // replacement pixels everywhere — except the 1px erosion band on
+        // this tiny canvas, which keeps the resized original).
+        let result = image::open(&output).unwrap().to_rgba8();
+        assert_eq!(result.dimensions(), (32, 48));
+        assert_eq!(result.get_pixel(1, 1), &Rgba([40, 40, 200, 255]));
+        assert_eq!(result.get_pixel(30, 46), &Rgba([40, 40, 200, 255]));
+        assert_eq!(result.get_pixel(0, 0), &Rgba([200, 40, 40, 255]));
+        assert_eq!(result.get_pixel(31, 47), &Rgba([200, 40, 40, 255]));
     }
 
     #[test]

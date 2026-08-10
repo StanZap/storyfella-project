@@ -16,11 +16,12 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use uuid::Uuid;
 
 use smart_visual_sequencer::app::AppConfig;
 use smart_visual_sequencer::errors::{CodedError, ErrorCode, ReportedError};
+use smart_visual_sequencer::llm::{ChatMessage, ChatOptions, LmStudioClient};
 use smart_visual_sequencer::persistence::ProjectDb;
 use smart_visual_sequencer::registry::backend::CreativeBackend;
 use smart_visual_sequencer::registry::ops::{
@@ -43,8 +44,7 @@ use smart_visual_sequencer::vision::LoraSelection;
     about = "Drive Smart Visual Sequencer operations from the command line"
 )]
 struct Cli {
-    /// SQLite project database (created on first use; `svs import` migrates
-    /// a legacy JSON project in one step).
+    /// SQLite project database (created on first use).
     #[arg(long, global = true, default_value = ".svs-project.db")]
     project: PathBuf,
     #[command(subcommand)]
@@ -70,11 +70,45 @@ enum Command {
         #[command(subcommand)]
         runtime: RuntimeCommand,
     },
+    /// Ask the local vision model (LM Studio) to judge images — the
+    /// automated reviewer's eyes for evaluating generations, edits, and
+    /// regressions. Attach images, ask questions, and optionally gate an
+    /// exit code on the answer.
+    Eval {
+        #[command(flatten)]
+        eval: EvalArgs,
+    },
     /// Show the operation log (all entries, or one artifact's).
     Log {
         /// Filter to one artifact's entries.
         target: Option<Ref>,
     },
+}
+
+/// The image-evaluation workflow against the local LM Studio vision model.
+#[derive(Args)]
+struct EvalArgs {
+    /// Image paths to attach (repeatable; the model sees them in order and
+    /// refers to them as image 1, image 2, …).
+    #[arg(long = "image", short = 'i', required = true)]
+    images: Vec<PathBuf>,
+    /// Question(s) to ask (repeatable — one round per question).
+    #[arg(long = "prompt", short = 'p', default_value = "Describe these images concisely, then note any visual defects, artifacts, or inconsistencies.")]
+    prompts: Vec<String>,
+    /// The LM Studio model id (defaults to the configured planner model,
+    /// which must have vision support).
+    #[arg(long = "model")]
+    model: Option<String>,
+    #[arg(long = "max-tokens", default_value_t = 2048)]
+    max_tokens: u32,
+    /// Check mode: exit 1 unless the answer contains this text
+    /// (case-insensitive substring).
+    #[arg(long = "expect")]
+    expect: Option<String>,
+    /// Check mode: exit 1 when the answer contains this text
+    /// (case-insensitive substring).
+    #[arg(long = "expect-not")]
+    expect_not: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -419,6 +453,7 @@ async fn run(cli: Cli) -> Result<()> {
             print_log(&registry, target.as_ref());
             Ok(())
         }
+        Command::Eval { eval } => run_eval(eval).await,
         Command::Runtime { runtime } => match runtime {
             RuntimeCommand::Serve {
                 model: profile,
@@ -449,11 +484,129 @@ async fn run(cli: Cli) -> Result<()> {
     }
 }
 
+/// Asks the local LM Studio vision model to judge images — the automated
+/// reviewer's eyes. One round per `--prompt`, all images attached in order;
+/// `--expect`/`--expect-not` gate the exit code so evaluation can gate a
+/// test script.
+async fn run_eval(eval: EvalArgs) -> Result<()> {
+    let config = AppConfig::load().context("could not load config/app.toml")?;
+    let mut lm_config = config.lm_studio.clone();
+    if let Some(model) = &eval.model {
+        lm_config.model = model.clone();
+    }
+    let client = LmStudioClient::new(lm_config.clone())
+        .map_err(|error| anyhow!(error.report().log()))?;
+
+    // Read every image up front so a missing file fails before any model
+    // round trips. Large canvases are downscaled to a fixed maximum
+    // dimension before encoding — LM Studio rejects oversized image
+    // payloads (two full 1024×1536 PNGs reliably come back empty).
+    const MAX_EVAL_DIMENSION: u32 = 1024;
+    let mut images: Vec<(String, String)> = Vec::new();
+    for path in &eval.images {
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("could not read image {}", path.display()))?;
+        let encoded = match image::load_from_memory(&bytes) {
+            Ok(image) => {
+                use image::GenericImageView as _;
+                let (width, height) = image.dimensions();
+                let scale = (width.max(height) as f32 / MAX_EVAL_DIMENSION as f32).max(1.0);
+                if scale > 1.0 {
+                    let resized = image.resize(
+                        (width as f32 / scale).round() as u32,
+                        (height as f32 / scale).round() as u32,
+                        image::imageops::FilterType::Lanczos3,
+                    );
+                    let mut buffer = std::io::Cursor::new(Vec::new());
+                    resized
+                        .write_to(&mut buffer, image::ImageFormat::Png)
+                        .context("could not re-encode image")?;
+                    buffer.into_inner()
+                } else {
+                    bytes
+                }
+            }
+            Err(_) => bytes,
+        };
+        use base64::Engine as _;
+        images.push((
+            path.display().to_string(),
+            format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(encoded)
+            ),
+        ));
+    }
+
+    let mut failures = 0usize;
+    for prompt in &eval.prompts {
+        let data_urls: Vec<String> = images.iter().map(|(_, url)| url.clone()).collect();
+        let messages = [
+            ChatMessage::text(
+                "system",
+                "You are a rigorous image evaluator for a visual-storytelling application. \
+                 Judge what you actually see in the attached images: composition, identity \
+                 consistency, localized edits, artifacts, distortion, and quality. Answer the \
+                 user's question directly.",
+            ),
+            ChatMessage::with_images(
+                "user",
+                format!(
+                    "{prompt}\n\nThe attached images are numbered in the order given (image 1, image 2, …). Be specific and concise."
+                ),
+                data_urls,
+            ),
+        ];
+        let options = ChatOptions {
+            max_tokens: Some(eval.max_tokens),
+            ..Default::default()
+        };
+        let answer = client
+            .chat_with_options(&messages, &options)
+            .await
+            .map_err(|error| anyhow!(error.report().log()))?;
+        let text = answer
+            .choices
+            .first()
+            .and_then(|choice| choice.message.content.clone())
+            .unwrap_or_else(|| "(no answer)".to_owned());
+
+        println!("model: {}", lm_config.model);
+        println!("question: {prompt}");
+        println!("{text}");
+        println!("----");
+
+        let lowered = text.to_lowercase();
+        if let Some(expected) = &eval.expect {
+            if !lowered.contains(&expected.to_lowercase()) {
+                failures += 1;
+                eprintln!(
+                    "expectation failed: the answer does not contain {:?}",
+                    expected
+                );
+            }
+        }
+        if let Some(banned) = &eval.expect_not {
+            if lowered.contains(&banned.to_lowercase()) {
+                failures += 1;
+                eprintln!(
+                    "expectation failed: the answer contains {:?}",
+                    banned
+                );
+            }
+        }
+    }
+
+    if failures > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 /// Kills sd-server processes this CLI does not own (stale instances from
 /// interrupted sessions hold the port and cannot be restarted by the
 /// runtime). `pkill` exits 1 when nothing matched, which is fine.
-fn kill_resident_generation_servers() -> Result<()> {
-    let status = std::process::Command::new("pkill")
+fn kill_resident_generation_servers() -> Result<()> {    let status = std::process::Command::new("pkill")
         .args(["-f", "sd-server --diffusion"])
         .status()
         .context("could not run pkill")?;
@@ -518,6 +671,22 @@ impl CliRunOptions {
         defaults: &'a GenerationDefaults,
         origin: OpOrigin,
     ) -> ExecuteOptions<'a> {
+        // Adapters are sent to the native server under their registered
+        // (top-level) name; missing files are dropped with a warning.
+        let loras: Vec<LoraSelection> = self
+            .generation
+            .loras
+            .iter()
+            .filter_map(|selection| {
+                defaults
+                    .loras
+                    .registered(&selection.path)
+                    .map(|path| LoraSelection {
+                        path,
+                        multiplier: selection.multiplier,
+                    })
+            })
+            .collect();
         ExecuteOptions {
             backend,
             run: RunOptions {
@@ -528,7 +697,14 @@ impl CliRunOptions {
                 },
                 seed: self.seed,
             },
-            generation: self.generation.clone(),
+            generation: GenerationOverrides {
+                // The configured default step count (Settings → Image
+                // generation) shapes every CLI visual op too, mirroring the
+                // canvas path; an explicit per-op `--steps` wins last.
+                steps: Some(defaults.steps),
+                loras,
+                ..self.generation.clone()
+            },
             defaults,
             manual_text: self.manual_text.as_deref(),
             origin,

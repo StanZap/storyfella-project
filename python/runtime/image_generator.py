@@ -31,7 +31,9 @@ class GenerationOptions:
     device: str
     loras: tuple[LoraSelection, ...] = ()
     reference_image_path: Path | None = None
+    reference_strength: float | None = None
     mask_path: Path | None = None
+    init_image_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -152,6 +154,8 @@ class StableDiffusionCppImageGenerator:
                 mask_images=(options.mask_path,)
                 if options.mask_path is not None
                 else (),
+                init_image=options.init_image_path,
+                reference_strength=options.reference_strength,
             )
             job = self.client.wait(job.id, timeout_seconds=600.0)
         except StableDiffusionCppError as error:

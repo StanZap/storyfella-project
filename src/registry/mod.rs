@@ -417,6 +417,9 @@ pub struct LoraBindings {
     pub dir: std::path::PathBuf,
     /// Adapter applied to mask-guided edits (`modify`) — e.g. INPAINTKREA.
     pub inpaint: Option<LoraBinding>,
+    /// Adapter applied to reference-edit ops (`variant`/`regenerate`) —
+    /// e.g. Krea's identity-preserving edit adapter.
+    pub variant: Option<LoraBinding>,
     /// Per-kind defaults: applied to every generation of that kind.
     pub kinds: KindLoraBindings,
     /// The weight for every config binding.
@@ -428,6 +431,7 @@ impl Default for LoraBindings {
         Self {
             dir: std::path::PathBuf::new(),
             inpaint: None,
+            variant: None,
             kinds: KindLoraBindings::default(),
             multiplier: 1.0,
         }
@@ -439,6 +443,109 @@ impl LoraBindings {
     pub fn resolve(&self, file: &str) -> Option<std::path::PathBuf> {
         let path = self.dir.join(file);
         path.is_file().then_some(path)
+    }
+
+    /// The name an adapter is registered under with the native generation
+    /// server (sd.cpp registers only the *top-level* files of its lora
+    /// directory — see [`prepare_lora_links`]): top-level files keep their
+    /// basename, subdirectory files are linked at the top level as
+    /// `<subdir>-<basename>`. `None` when the file does not exist.
+    pub fn registered(&self, file: &str) -> Option<String> {
+        let full = self.resolve(file)?;
+        let relative = full.strip_prefix(&self.dir).ok()?;
+        let file_name = relative.file_name()?.to_string_lossy().into_owned();
+        match relative.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+            Some(parent) => {
+                let parent_name = parent.file_name()?.to_string_lossy().into_owned();
+                Some(format!("{parent_name}-{file_name}"))
+            }
+            None => Some(file_name),
+        }
+    }
+}
+
+/// The native generation server registers only the top-level files of its
+/// lora directory, so adapters kept in subdirectories (e.g. `krea/…`) are
+/// linked to the top level as `<subdir>-<basename>` — mirroring
+/// [`LoraBindings::registered`]. Must run *before* the server starts (its
+/// registration scan happens at startup). Idempotent; existing top-level
+/// names win. Returns the number of links created.
+pub fn prepare_lora_links(dir: &std::path::Path) -> usize {
+    let mut created = 0;
+    let mut pending: Vec<std::path::PathBuf> = Vec::new();
+    collect_lora_files(dir, dir, &mut pending, &mut Vec::new());
+    for path in pending {
+        let Ok(relative) = path.strip_prefix(dir) else {
+            continue;
+        };
+        let Some(parent) = relative.parent().filter(|parent| !parent.as_os_str().is_empty()) else {
+            continue; // already top level
+        };
+        let Some(file_name) = relative.file_name() else {
+            continue;
+        };
+        let Some(parent_name) = parent.file_name() else {
+            continue;
+        };
+        let link = dir.join(format!("{}-{}", parent_name.to_string_lossy(), file_name.to_string_lossy()));
+        // A working top-level entry wins (a real file or a link that
+        // resolves); broken links (from an earlier layout) are replaced.
+        let already_usable = std::fs::symlink_metadata(&link)
+            .map(|meta| meta.file_type().is_symlink() && link.is_file())
+            .unwrap_or(false)
+            || (link.is_file() && !std::fs::symlink_metadata(&link).map(|m| m.file_type().is_symlink()).unwrap_or(false));
+        if already_usable {
+            continue;
+        }
+        let _ = std::fs::remove_file(&link);
+        // The link target is relative to the lora directory (symlink(2)
+        // resolves relative to the link's own parent), so the tree stays
+        // portable.
+        if link_lora_file(relative, &link).is_err() {
+            continue;
+        }
+        created += 1;
+    }
+    created
+}
+
+/// Links an adapter into the lora directory's top level (symlink on unix,
+/// copy elsewhere — Windows file systems often disallow symlinks).
+#[cfg(unix)]
+fn link_lora_file(source: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(source, link)
+}
+
+#[cfg(not(unix))]
+fn link_lora_file(source: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+    std::fs::copy(source, link).map(|_| ())
+}
+
+/// Lists every `.safetensors` file under `dir` (mirrors `walk_lora_dir`'s
+/// recursion without collecting relative paths).
+fn collect_lora_files(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    files: &mut Vec<std::path::PathBuf>,
+    visited: &mut Vec<std::path::PathBuf>,
+) {
+    let Ok(canonical) = std::fs::canonicalize(dir) else {
+        return;
+    };
+    if visited.contains(&canonical) {
+        return;
+    }
+    visited.push(canonical);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_lora_files(root, &path, files, visited);
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("safetensors") {
+            files.push(path);
+        }
     }
 }
 

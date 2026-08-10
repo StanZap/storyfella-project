@@ -1,6 +1,9 @@
 use tracing::Level;
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let plan_launch = smart_visual_sequencer::driver::PlanLaunch::from_args(&args);
+
     let level = if cfg!(debug_assertions) {
         Level::DEBUG
     } else {
@@ -14,5 +17,7 @@ fn main() {
         .init();
 
     tracing::info!("starting Smart Visual Sequencer");
-    dioxus::launch(smart_visual_sequencer::app::App);
+    dioxus::LaunchBuilder::new()
+        .with_context(plan_launch)
+        .launch(smart_visual_sequencer::app::App);
 }

@@ -51,6 +51,13 @@ class NativeGenerationTests(unittest.TestCase):
         body = json.loads(request.data)
         self.assertEqual(body["lora"], [{"path": "style.safetensors", "multiplier": 0.75}])
         self.assertEqual(body["sample_params"]["sample_steps"], 8)
+        # The tile size must be explicit: this sd.cpp build ignores tiling
+        # when only `enabled` is set, and the untiled decode/encode buffers
+        # OOM the 24GiB card at 1024x1536+ whenever LM Studio is resident.
+        self.assertEqual(
+            body["vae_tiling_params"],
+            {"enabled": True, "tile_size": 256, "overlap": 32},
+        )
 
     @patch("urllib.request.urlopen")
     def test_completed_image_is_saved_once(self, urlopen: object) -> None:
