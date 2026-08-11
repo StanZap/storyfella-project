@@ -51,6 +51,7 @@ pub enum ErrorCode {
     OpNoActiveImage,
     OpNoPrompt,
     OpIncompleteModify,
+    OpConflictingMaskSource,
     OpBadLoraMultiplier,
     OpBadSteps,
     OpLoraFileMissing,
@@ -301,6 +302,13 @@ impl ErrorCode {
                 "/modify requires both a mask prompt and an inpaint prompt, or \
                  LM Studio to plan them. Start LM Studio, or write the full \
                  command: /modify c:<ref> <region> into <look>.",
+            ),
+            Self::OpConflictingMaskSource => (
+                "SVS-OP-149",
+                "Modify was given two mask sources",
+                "A mask comes from one place: --mask-prompt segments it, \
+                 --mask-file loads one already on disk. Drop whichever you \
+                 did not mean.",
             ),
             Self::OpBadLoraMultiplier => (
                 "SVS-OP-111",
@@ -870,7 +878,7 @@ mod tests {
     /// would break reports already shared with users) is caught.
     #[test]
     fn registry_size_is_pinned() {
-        assert_eq!(codes().len(), 96, "error codes must never be renumbered");
+        assert_eq!(codes().len(), 97, "error codes must never be renumbered");
     }
 
     #[test]
@@ -964,6 +972,7 @@ mod tests {
             ErrorCode::OpNoActiveImage,
             ErrorCode::OpNoPrompt,
             ErrorCode::OpIncompleteModify,
+            ErrorCode::OpConflictingMaskSource,
             ErrorCode::OpBadLoraMultiplier,
             ErrorCode::OpBadSteps,
             ErrorCode::OpLoraFileMissing,

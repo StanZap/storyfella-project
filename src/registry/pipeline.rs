@@ -51,6 +51,32 @@ pub const DEFAULT_HEIGHT: u32 = 448;
 pub const DEFAULT_STEPS: u32 = 4;
 /// Seam-blending radius for the composite fallback.
 pub const COMPOSITE_FEATHER_RADIUS: u32 = 8;
+/// How far `inpaint`'s composite grows the mask before feathering.
+///
+/// A segmentation mask runs tighter than a soft silhouette — measured
+/// 2026-08-11, a hair mask scoring 0.977 still missed the flyaway strands,
+/// and the composite preserved them as a dark rim tracing the old outline
+/// over an otherwise correct edit. Growing the mask trades the
+/// bit-identical-outside guarantee for covering that rim; INPAINTKREA's own
+/// restore node makes the same trade at `mask_grow` 12 on a ~1MP canvas.
+pub const COMPOSITE_MASK_GROW: u32 = 12;
+/// The neutral colour `inpaint` pre-fills the masked init region with.
+///
+/// Chroma green: the point is a hue that appears nowhere in skin, hair or a
+/// studio wall, so it reads as "nothing here" rather than as content the
+/// generation should preserve. See
+/// [`crate::registry::image_ops::fill_masked`] for why a *predictive* fill
+/// (diffusing the surroundings inward) measured worse than none at all.
+pub const MASKED_INIT_FILL: [u8; 3] = [128, 128, 128];
+/// How far `inpaint` widens the mask *before generating*, as opposed to
+/// [`COMPOSITE_MASK_GROW`] which only widens the blend afterwards.
+///
+/// SAM resolves a silhouette to the edge it can see; flyaway hair, fur and
+/// motion blur fall outside that and are never handed to the backend, so
+/// they survive an edit that replaced everything around them. Growing here
+/// is the only place that can fix it — a composite cannot remove content the
+/// model was never allowed to re-render.
+pub const MASK_GENERATION_GROW: u32 = 12;
 
 /// Generation parameters shared by every `Generate` step in a pipeline.
 #[derive(Clone, Debug, PartialEq)]
@@ -180,6 +206,17 @@ pub enum Step {
     LoadImage {
         source: PathBuf,
     },
+    /// Loads a mask PNG on disk as an already-confirmed mask. -> SelectedMask
+    ///
+    /// This is the mask path's second source, beside `Segment`. A mask file
+    /// needs no confirmation checkpoint: `Segment` proposes *candidates* and
+    /// generating against the wrong one wastes a generation, but a file was
+    /// chosen deliberately by whoever wrote it. It is also the seam every
+    /// other source reduces to — SAM writes a PNG, a canvas brush would
+    /// write a PNG, and a test fixture *is* a PNG.
+    LoadMask {
+        source: PathBuf,
+    },
     /// Segments the working image; produces a *candidate set*. -> Mask
     Segment {
         image: ImageHandle,
@@ -199,6 +236,20 @@ pub enum Step {
         prompt: PromptSource,
         reference: Option<ImageHandle>,
         mask: Option<SelectedMaskHandle>,
+        /// The img2img starting image, when it differs from `reference`.
+        /// `None` keeps the reference in both roles. They separate on the
+        /// mask path: the reference must stay the untouched original (it is
+        /// what the edit adapter reads identity from), while the init is
+        /// pre-filled inside the mask so the model starts from the right
+        /// palette instead of pure noise. See [`Step::FillMasked`].
+        init: Option<ImageHandle>,
+    },
+    /// Replaces the masked region with colour diffused in from outside it,
+    /// producing the pre-filled init image for a masked-latent inpaint.
+    /// -> Image
+    FillMasked {
+        image: ImageHandle,
+        mask: SelectedMaskHandle,
     },
     /// The guaranteed mask-edit primitive: blends `replacement` into
     /// `original` everywhere the confirmed mask is active. -> Image
@@ -207,6 +258,10 @@ pub enum Step {
         mask: SelectedMaskHandle,
         replacement: ImageHandle,
         feather_radius: u32,
+        /// Pixels to grow the mask by before feathering. `0` keeps the
+        /// erode-and-clamp behaviour and its bit-identical-outside
+        /// guarantee; see [`crate::registry::image_ops::composite`].
+        mask_grow: u32,
     },
     Invert {
         mask: SelectedMaskHandle,
@@ -215,6 +270,12 @@ pub enum Step {
         mask: SelectedMaskHandle,
         radius: u32,
     }, // -> SelectedMask
+    /// Widens the region the backend may re-render (not the blend).
+    /// -> SelectedMask
+    GrowMask {
+        mask: SelectedMaskHandle,
+        radius: u32,
+    },
     Union {
         masks: Vec<SelectedMaskHandle>,
     }, // -> SelectedMask
@@ -352,6 +413,24 @@ impl Pipeline {
                         });
                     }
                     StepValue::Image(source.clone())
+                }
+                Step::FillMasked { image, mask } => {
+                    let image_path = value_image(values.get(image.step), index)?;
+                    let mask_path = value_selected_mask(values.get(mask.step), index)?;
+                    let output = options
+                        .work_dir
+                        .join(format!("fill-masked-{}.png", Uuid::new_v4()));
+                    image_ops::fill_masked(&image_path, &mask_path, MASKED_INIT_FILL, &output)?;
+                    StepValue::Image(output)
+                }
+                Step::LoadMask { source } => {
+                    if !source.exists() {
+                        return Err(PipelineError::Step {
+                            step: index,
+                            message: format!("mask image {} does not exist", source.display()),
+                        });
+                    }
+                    StepValue::MaskConfirmed(source.clone())
                 }
                 Step::Segment {
                     image,
@@ -493,6 +572,7 @@ impl Pipeline {
                     prompt,
                     reference,
                     mask,
+                    init,
                 } => {
                     let prompt_text = resolve_prompt(prompt, &values, index)?;
                     let reference_path = reference
@@ -539,7 +619,16 @@ impl Pipeline {
                         // the unmasked latent pixels fixed per step; the
                         // composite step below is the fallback.
                         init_image_path: if mask_path.is_some() {
-                            reference_path.map(|path| path.display().to_string())
+                            // The pre-filled init when there is one, else the
+                            // reference in both roles.
+                            match init {
+                                Some(handle) => Some(
+                                    value_image(values.get(handle.step), index)?
+                                        .display()
+                                        .to_string(),
+                                ),
+                                None => reference_path.map(|path| path.display().to_string()),
+                            }
                         } else {
                             None
                         },
@@ -570,6 +659,7 @@ impl Pipeline {
                     mask,
                     replacement,
                     feather_radius,
+                    mask_grow,
                 } => {
                     let original_path = value_image(values.get(original.step), index)?;
                     let mask_path = value_selected_mask(values.get(mask.step), index)?;
@@ -582,6 +672,7 @@ impl Pipeline {
                         &mask_path,
                         &replacement_path,
                         *feather_radius,
+                        *mask_grow,
                         &output,
                     )?;
                     StepValue::Image(output)
@@ -600,6 +691,14 @@ impl Pipeline {
                         .work_dir
                         .join(format!("feather-{}.png", Uuid::new_v4()));
                     image_ops::feather(&mask_path, *radius, &output)?;
+                    StepValue::MaskConfirmed(output)
+                }
+                Step::GrowMask { mask, radius } => {
+                    let mask_path = value_selected_mask(values.get(mask.step), index)?;
+                    let output = options
+                        .work_dir
+                        .join(format!("grow-mask-{}.png", Uuid::new_v4()));
+                    image_ops::grow(&mask_path, *radius, &output)?;
                     StepValue::MaskConfirmed(output)
                 }
                 Step::Union { masks } => {
@@ -827,12 +926,15 @@ fn resolve_prompt(
 fn step_label(step: &Step) -> &'static str {
     match step {
         Step::LoadImage { .. } => "load_image",
+        Step::LoadMask { .. } => "load_mask",
+        Step::FillMasked { .. } => "fill_masked",
         Step::Segment { .. } => "segment",
         Step::Checkpoint { .. } => "checkpoint",
         Step::Generate { .. } => "generate",
         Step::Composite { .. } => "composite",
         Step::Invert { .. } => "invert",
         Step::Feather { .. } => "feather",
+        Step::GrowMask { .. } => "grow_mask",
         Step::Union { .. } => "union",
         Step::PaintStrokes { .. } => "paint_strokes",
         Step::Llm { .. } => "llm",
@@ -1295,8 +1397,48 @@ impl PipelineBuilder {
             prompt: prompt.into(),
             reference,
             mask,
+            init: None,
         });
         ImageHandle { step }
+    }
+
+    /// A masked generation that starts from a distinct init image (see
+    /// [`Step::Generate`]'s `init`). -> Image
+    pub fn generate_from(
+        &mut self,
+        prompt: impl Into<PromptSource>,
+        reference: Option<ImageHandle>,
+        mask: Option<SelectedMaskHandle>,
+        init: ImageHandle,
+    ) -> ImageHandle {
+        let step = self.steps.len();
+        self.steps.push(Step::Generate {
+            prompt: prompt.into(),
+            reference,
+            mask,
+            init: Some(init),
+        });
+        ImageHandle { step }
+    }
+
+    /// Pre-fills the masked region with colour diffused in from outside it.
+    /// -> Image
+    pub fn fill_masked(&mut self, image: ImageHandle, mask: SelectedMaskHandle) -> ImageHandle {
+        let step = self.steps.len();
+        self.steps.push(Step::FillMasked { image, mask });
+        ImageHandle { step }
+    }
+
+    /// Loads a mask PNG as an already-confirmed mask. -> SelectedMask
+    ///
+    /// The counterpart to `segment` + `confirm_mask`: same downstream type,
+    /// no checkpoint. See [`Step::LoadMask`].
+    pub fn load_mask(&mut self, source: impl Into<PathBuf>) -> SelectedMaskHandle {
+        let step = self.steps.len();
+        self.steps.push(Step::LoadMask {
+            source: source.into(),
+        });
+        SelectedMaskHandle { step }
     }
 
     /// Segments the working image into a candidate mask set. -> Mask
@@ -1325,32 +1467,49 @@ impl PipelineBuilder {
 
     /// The canonical regional edit: masked-latent inpaint (generate with the
     /// reference, mask, and init image so the backend keeps the unmasked
-    /// pixels fixed), then composite so anything outside the confirmed mask
-    /// is bit-identical to the original. -> Image
+    /// pixels fixed), then composite to smooth the latent-level seam.
+    ///
+    /// The mask is grown twice, for two different reasons. First by
+    /// [`MASK_GENERATION_GROW`], widening what the backend is *allowed to
+    /// re-render* — a segmentation mask stops at the silhouette it can
+    /// resolve, so softer edges fall outside it and survive the edit
+    /// untouched. Then the composite grows again by [`COMPOSITE_MASK_GROW`]
+    /// to widen the *blend*, which is why it does not leave the outside
+    /// bit-identical. Callers needing the strict guarantee should use
+    /// [`Self::composite`] with `grow` 0. -> Image
     pub fn inpaint(
         &mut self,
         prompt: impl Into<PromptSource>,
         image: ImageHandle,
         mask: SelectedMaskHandle,
     ) -> ImageHandle {
-        let generated = self.generate(prompt, Some(image), Some(mask));
+        let mask = self.grow_mask(mask, MASK_GENERATION_GROW);
+        // The reference stays the untouched original — it is what the edit
+        // adapter reads identity from. Only the init is pre-filled, so the
+        // masked region starts from a neutral prior rather than from the
+        // content the edit is removing.
+        let init = self.fill_masked(image, mask);
+        let generated = self.generate_from(prompt, Some(image), Some(mask), init);
         let step = self.steps.len();
         self.steps.push(Step::Composite {
             original: image,
             mask,
             replacement: generated,
             feather_radius: COMPOSITE_FEATHER_RADIUS,
+            mask_grow: COMPOSITE_MASK_GROW,
         });
         ImageHandle { step }
     }
 
-    /// Explicit composite step (e.g. with a custom feather radius). -> Image
+    /// Explicit composite step (e.g. with a custom feather radius, or
+    /// `mask_grow` 0 for the bit-identical-outside guarantee). -> Image
     pub fn composite(
         &mut self,
         original: ImageHandle,
         mask: SelectedMaskHandle,
         replacement: ImageHandle,
         feather_radius: u32,
+        mask_grow: u32,
     ) -> ImageHandle {
         let step = self.steps.len();
         self.steps.push(Step::Composite {
@@ -1358,6 +1517,7 @@ impl PipelineBuilder {
             mask,
             replacement,
             feather_radius,
+            mask_grow,
         });
         ImageHandle { step }
     }
@@ -1371,6 +1531,14 @@ impl PipelineBuilder {
     pub fn feather(&mut self, mask: SelectedMaskHandle, radius: u32) -> SelectedMaskHandle {
         let step = self.steps.len();
         self.steps.push(Step::Feather { mask, radius });
+        SelectedMaskHandle { step }
+    }
+
+    /// Widens the mask the backend re-renders through. See
+    /// [`crate::registry::image_ops::grow`].
+    pub fn grow_mask(&mut self, mask: SelectedMaskHandle, radius: u32) -> SelectedMaskHandle {
+        let step = self.steps.len();
+        self.steps.push(Step::GrowMask { mask, radius });
         SelectedMaskHandle { step }
     }
 
@@ -1547,7 +1715,8 @@ fn validate(steps: &[Step], params: &GenerationParams) -> Result<(), PipelineBui
 /// All step indices a step consumes.
 fn step_references(step: &Step) -> Vec<usize> {
     match step {
-        Step::LoadImage { .. } => Vec::new(),
+        Step::LoadImage { .. } | Step::LoadMask { .. } => Vec::new(),
+        Step::FillMasked { image, mask } => vec![image.step, mask.step],
         Step::Segment { image, .. } => vec![image.step],
         Step::Checkpoint { on, .. } => match on {
             CheckpointOn::SelectMask(mask) => vec![mask.step],
@@ -1574,7 +1743,7 @@ fn step_references(step: &Step) -> Vec<usize> {
             vec![original.step, mask.step, replacement.step]
         }
         Step::Invert { mask } => vec![mask.step],
-        Step::Feather { mask, .. } => vec![mask.step],
+        Step::Feather { mask, .. } | Step::GrowMask { mask, .. } => vec![mask.step],
         Step::Union { masks } => masks.iter().map(|mask| mask.step).collect(),
         Step::PaintStrokes { image, .. } => vec![image.step],
         Step::Llm { kind } => match kind {
@@ -1779,6 +1948,7 @@ mod tests {
                 prompt: PromptSource::Text("a face".into()),
                 reference: None,
                 mask: None,
+                init: None,
             },
             Step::Checkpoint {
                 description: "confirm".into(),
@@ -1788,6 +1958,7 @@ mod tests {
                 prompt: PromptSource::Text("new hair".into()),
                 reference: None,
                 mask: Some(SelectedMaskHandle { step: 1 }),
+                init: None,
             },
         ];
         let pipeline = Pipeline {
@@ -1804,6 +1975,7 @@ mod tests {
             prompt: PromptSource::Text("a frame".into()),
             reference: Some(ImageHandle { step: 1 }), // references a later step
             mask: None,
+            init: None,
         }];
         let pipeline = Pipeline {
             steps,
@@ -1873,9 +2045,11 @@ mod tests {
         let original = dir.join("original.png");
         let generated = dir.join("generated.png");
         let candidate = dir.join("mask-candidate.png");
-        write_rgba(&original, 64, 48, [200, 40, 40, 255]);
-        write_rgba(&generated, 64, 48, [40, 40, 200, 255]);
-        write_mask(&candidate, 64, 48, true);
+        // Large enough that "beyond the grown mask" is a real region: the
+        // mask is widened once for generation and again for the blend.
+        write_rgba(&original, 256, 192, [200, 40, 40, 255]);
+        write_rgba(&generated, 256, 192, [40, 40, 200, 255]);
+        write_mask(&candidate, 256, 192, true);
 
         let backend = FakeBackend::with_generated(generated.clone()).with_masks(vec![
             MaskCandidate {
@@ -1885,8 +2059,8 @@ mod tests {
                 bounding_box: crate::vision::SegmentBox {
                     x_min: 0.0,
                     y_min: 0.0,
-                    x_max: 32.0,
-                    y_max: 48.0,
+                    x_max: 128.0,
+                    y_max: 192.0,
                 },
             },
             MaskCandidate {
@@ -1928,11 +2102,21 @@ mod tests {
         // The generate request is a masked-latent inpaint: reference + mask
         // + init image (the backend keeps the unmasked pixels fixed); the
         // composite step below remains the fallback.
+        //
+        // Reference and init are deliberately *different* files here: the
+        // reference stays the untouched original so the edit adapter reads
+        // identity from it, while the init is the pre-filled image so the
+        // masked region starts from the surrounding palette.
         assert!(matches!(&requests[1], CapturedRequest::Generate(request) if
             request.prompt == "a short bob cut"
             && request.reference_image_path.as_deref() == Some(original.to_str().unwrap())
-            && request.mask_path.as_deref() == Some(candidate.to_str().unwrap())
-            && request.init_image_path.as_deref() == Some(original.to_str().unwrap())
+            // Not the raw candidate: the mask handed to the backend is
+            // widened first, so softer edges than SAM resolved still get
+            // re-rendered.
+            && request.mask_path.as_deref().is_some_and(|path|
+                path.contains("grow-mask") && path != candidate.to_str().unwrap())
+            && request.init_image_path.as_deref().is_some_and(|path|
+                path.contains("fill-masked") && path != original.to_str().unwrap())
             // The full sigma schedule: truncating it (the backend's 0.75
             // default) only weakens the edit inside the mask.
             && request.denoise_strength == Some(MASKED_LATENT_DENOISE)
@@ -1944,15 +2128,133 @@ mod tests {
             .expect("composite should be the final output");
         let result = image::open(composite).unwrap().to_rgba8();
         let reference = image::open(&original).unwrap().to_rgba8();
-        for y in 0..48 {
-            for x in 32..64 {
+        // `inpaint` grows the mask by COMPOSITE_MASK_GROW before feathering,
+        // so the blend deliberately reaches past the boundary — that band is
+        // what covers a mask running tighter than its subject. Beyond the
+        // grow plus the feather, the original still survives untouched, so
+        // this stays a regional edit and never a whole-frame paste.
+        let reach = MASK_GENERATION_GROW + COMPOSITE_MASK_GROW + COMPOSITE_FEATHER_RADIUS;
+        for y in 0..192 {
+            for x in (128 + reach)..256 {
                 assert_eq!(
                     result.get_pixel(x, y),
                     reference.get_pixel(x, y),
-                    "pixel ({x}, {y}) outside the mask must be bit-identical"
+                    "pixel ({x}, {y}) beyond the grown mask must be bit-identical"
                 );
             }
         }
+        assert_ne!(
+            result.get_pixel(130, 96),
+            reference.get_pixel(130, 96),
+            "the grown band just outside the mask must be blended"
+        );
+    }
+
+    /// The same inpaint, sourced from a mask file instead of a segmentation:
+    /// same request to the backend, same preserved pixels, but no segment
+    /// call and nothing to decide.
+    #[test]
+    fn a_mask_file_inpaints_without_segmenting_or_blocking() {
+        let dir = work_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = dir.join("original.png");
+        let generated = dir.join("generated.png");
+        let fixture = dir.join("fixture-mask.png");
+        write_rgba(&original, 256, 192, [200, 40, 40, 255]);
+        write_rgba(&generated, 256, 192, [40, 40, 200, 255]);
+        write_mask(&fixture, 256, 192, true);
+
+        let backend = FakeBackend::with_generated(generated.clone());
+
+        let mut builder = PipelineBuilder::new();
+        let image = builder.reference_image(&original);
+        let mask = builder.load_mask(&fixture);
+        builder.denoise_strength(MASKED_LATENT_DENOISE);
+        builder.inpaint("a short bob cut", image, mask);
+        let pipeline = builder.build().unwrap();
+
+        let run = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(pipeline.run(&backend, &RunOptions::new(dir.join("work"))))
+            .unwrap();
+
+        assert!(
+            run.decisions.is_empty(),
+            "a mask file was already chosen; there is no candidate to confirm"
+        );
+        let requests = backend.requests();
+        assert!(
+            !requests
+                .iter()
+                .any(|request| matches!(request, CapturedRequest::Segment(_))),
+            "a mask file must not reach the segmenter"
+        );
+        assert!(matches!(&requests[0], CapturedRequest::Generate(request) if
+            request.mask_path.as_deref().is_some_and(|path|
+                path.contains("grow-mask") && path != fixture.to_str().unwrap())
+            && request.reference_image_path.as_deref() == Some(original.to_str().unwrap())
+            && request.init_image_path.as_deref().is_some_and(|path| path.contains("fill-masked"))
+            && request.denoise_strength == Some(MASKED_LATENT_DENOISE)
+        ));
+
+        let composite = run
+            .final_image()
+            .expect("composite should be the final output");
+        let result = image::open(composite).unwrap().to_rgba8();
+        let reference = image::open(&original).unwrap().to_rgba8();
+        // `inpaint` grows the mask by COMPOSITE_MASK_GROW before feathering,
+        // so the blend deliberately reaches past the boundary — that band is
+        // what covers a mask running tighter than its subject. Beyond the
+        // grow plus the feather, the original still survives untouched, so
+        // this stays a regional edit and never a whole-frame paste.
+        let reach = MASK_GENERATION_GROW + COMPOSITE_MASK_GROW + COMPOSITE_FEATHER_RADIUS;
+        for y in 0..192 {
+            for x in (128 + reach)..256 {
+                assert_eq!(
+                    result.get_pixel(x, y),
+                    reference.get_pixel(x, y),
+                    "pixel ({x}, {y}) beyond the grown mask must be bit-identical"
+                );
+            }
+        }
+        assert_ne!(
+            result.get_pixel(130, 96),
+            reference.get_pixel(130, 96),
+            "the grown band just outside the mask must be blended"
+        );
+    }
+
+    /// A missing mask file fails the step by name rather than reaching the
+    /// backend with an empty mask — the failure mode that produced the
+    /// "nonsensical edit" when `mask_images` was silently dropped.
+    #[test]
+    fn a_missing_mask_file_fails_the_step() {
+        let dir = work_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = dir.join("original.png");
+        let generated = dir.join("generated.png");
+        write_rgba(&original, 64, 48, [200, 40, 40, 255]);
+        write_rgba(&generated, 64, 48, [40, 40, 200, 255]);
+
+        let backend = FakeBackend::with_generated(generated);
+        let mut builder = PipelineBuilder::new();
+        let image = builder.reference_image(&original);
+        let mask = builder.load_mask(dir.join("absent.png"));
+        builder.inpaint("a short bob cut", image, mask);
+        let pipeline = builder.build().unwrap();
+
+        let error = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(pipeline.run(&backend, &RunOptions::new(dir.join("work"))))
+            .unwrap_err();
+        assert!(
+            matches!(&error, PipelineError::Step { message, .. } if message.contains("absent.png")),
+            "{error:?}"
+        );
+        assert!(
+            backend.requests().is_empty(),
+            "the run must stop before generating"
+        );
     }
 
     #[test]

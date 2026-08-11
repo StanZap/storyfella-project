@@ -234,7 +234,7 @@ Configuration lives in [`config/app.toml`](../config/app.toml) and is loaded by
 | `generation.sizes.object` | `768x768` | Default canvas for object images |
 | `generation.sizes.scene` | `1024x576` | Default canvas for scene images |
 | `generation.sizes.beat` | `1024x576` | Default canvas for beat images |
-| `lora.inpaint` | none | Adapter file applied to the opt-in mask path of `modify` (`--mask-prompt` + `--inpaint-prompt`), e.g. `inpaintkrea.safetensors`. Instruction edits do not load it |
+| `lora.inpaint` | none | Adapter file applied to the opt-in mask path of `modify` (`--inpaint-prompt` plus a mask source: `--mask-prompt` or `--mask-file`), e.g. `inpaintkrea.safetensors`. Instruction edits do not load it |
 | `lora.character` | none | Adapter file applied to character generations without a project binding |
 | `lora.environment` | none | Adapter file applied to environment generations without a project binding |
 | `lora.object` | none | Adapter file applied to object generations without a project binding |

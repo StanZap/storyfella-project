@@ -19,6 +19,8 @@
 //! approval) always block per the approval policy. Undo is state restore
 //! (`ArtifactRegistry::snapshot`/`restore`), never re-execution.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -139,6 +141,12 @@ pub enum Operation {
         description: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mask_prompt: Option<String>,
+        /// The mask path's other source: a PNG on disk, used instead of
+        /// segmenting. Mutually exclusive with `mask_prompt`. Additive rather
+        /// than folded into a source enum so operations persisted before it
+        /// existed still deserialize.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mask_file: Option<PathBuf>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         inpaint_prompt: Option<String>,
         /// Per-run canvas override (user-requested only).
@@ -417,8 +425,13 @@ pub enum CompileError {
     NoActiveImage(Uuid),
     #[error("regenerate has no prompt and the artifact has neither an active revision nor a description")]
     NoPrompt(Uuid),
-    #[error("modify requires both --mask-prompt and --inpaint-prompt (or an LLM to plan them)")]
+    #[error(
+        "modify requires --inpaint-prompt together with a mask source \
+         (--mask-prompt or --mask-file), or an LLM to plan them"
+    )]
     IncompleteModify,
+    #[error("modify takes one mask source: --mask-prompt or --mask-file, not both")]
+    ConflictingMaskSource,
     #[error("lora multiplier {0} must be within -2..=2")]
     BadLoraMultiplier(f32),
     #[error("steps {0} must be within 1..=50")]
@@ -444,6 +457,7 @@ impl CodedError for CompileError {
             Self::NoActiveImage(_) => ErrorCode::OpNoActiveImage,
             Self::NoPrompt(_) => ErrorCode::OpNoPrompt,
             Self::IncompleteModify => ErrorCode::OpIncompleteModify,
+            Self::ConflictingMaskSource => ErrorCode::OpConflictingMaskSource,
             Self::BadLoraMultiplier(_) => ErrorCode::OpBadLoraMultiplier,
             Self::BadSteps(_) => ErrorCode::OpBadSteps,
             Self::LoraFileMissing { .. } => ErrorCode::OpLoraFileMissing,
@@ -512,6 +526,15 @@ const REFERENCE_INPAINT: f32 = 0.95;
 /// weight where it behaves as a style adapter. Explicit per-run
 /// `--lora …@<mult>` choices are never capped.
 const INPAINT_LORA_MULTIPLIER_CAP: f32 = 0.5;
+
+/// Where `modify`'s opt-in mask comes from. Both reduce to the same
+/// `SelectedMaskHandle`, so everything downstream is identical.
+enum MaskSource {
+    /// Segment the active image from a text prompt, then confirm a candidate.
+    Segment(String),
+    /// A mask PNG already on disk — no segmentation, no checkpoint.
+    File(PathBuf),
+}
 
 pub fn compile(
     registry: &ArtifactRegistry,
@@ -879,6 +902,7 @@ pub fn compile(
             target,
             description,
             mask_prompt,
+            mask_file,
             inpaint_prompt,
             size,
             steps,
@@ -929,7 +953,7 @@ pub fn compile(
             }
             // The inpaint adapter rides only the opt-in mask path; an
             // instruct edit is the same adapter set as `regenerate`.
-            let masked = mask_prompt.is_some() || inpaint_prompt.is_some();
+            let masked = mask_prompt.is_some() || mask_file.is_some() || inpaint_prompt.is_some();
             for lora in auto_loras(
                 registry,
                 Some(artifact),
@@ -953,8 +977,16 @@ pub fn compile(
                 };
                 builder.lora(registered, lora.multiplier);
             }
+            // One mask, two possible sources; naming both is a mistake worth
+            // reporting rather than silently preferring one.
+            let mask_source = match (mask_prompt.as_ref(), mask_file.as_ref()) {
+                (Some(_), Some(_)) => return Err(CompileError::ConflictingMaskSource),
+                (Some(prompt), None) => Some(MaskSource::Segment(prompt.clone())),
+                (None, Some(path)) => Some(MaskSource::File(path.clone())),
+                (None, None) => None,
+            };
             let image = builder.reference_image(asset);
-            match (mask_prompt, inpaint_prompt) {
+            match (mask_source, inpaint_prompt) {
                 // Default: an instruction edit. Krea 2's identity-edit
                 // adapter is an instruct model — image plus plain-language
                 // instruction, and it preserves what the instruction did
@@ -985,22 +1017,25 @@ pub fn compile(
                 }
                 // Opt-in: the mask path, for edits an instruction cannot
                 // express — filling a hole, removing an object, extending a
-                // canvas. This is INPAINTKREA territory and it is NOT yet
-                // driven correctly: that LoRA's own card is explicit that
-                // the weights alone are not the complete system (its
-                // workflow pre-fills the masked region in pixel space,
-                // which we do not do). Until that convention is
-                // implemented, expect the masked region to come back as
-                // whatever surrounds it. Tracked in
-                // .svs-e2e/logs/2026-08-10-instruct-edit.md.
-                (Some(mask), Some(inpaint)) => {
+                // canvas. This is INPAINTKREA territory. The masked-latent
+                // generate itself is sound (validated 2026-08-11 with a
+                // fixture mask); what is not is the `composite` below —
+                // where the mask runs tighter than the thing it masks, the
+                // pixels it misses survive as a rim of the old content. See
+                // .svs-e2e/logs/2026-08-11-inpaintkrea-sources.md.
+                (Some(source), Some(inpaint)) => {
                     let composed_inpaint = if artifact.description.trim().is_empty() {
                         inpaint.clone()
                     } else {
                         format!("{}, {}", artifact.description.trim(), inpaint)
                     };
-                    let candidates = builder.segment(image, PromptSource::Text(mask.clone()));
-                    let confirmed = builder.confirm_mask(candidates);
+                    let confirmed = match source {
+                        MaskSource::Segment(prompt) => {
+                            let candidates = builder.segment(image, PromptSource::Text(prompt));
+                            builder.confirm_mask(candidates)
+                        }
+                        MaskSource::File(path) => builder.load_mask(path),
+                    };
                     builder.reference_strength(REFERENCE_INPAINT);
                     builder.denoise_strength(super::pipeline::MASKED_LATENT_DENOISE);
                     builder.inpaint(PromptSource::Text(composed_inpaint), image, confirmed);
@@ -1822,6 +1857,7 @@ mod tests {
             &stack.operations[5],
             Operation::Modify {
                 mask_prompt: Some(_),
+                mask_file: None,
                 inpaint_prompt: Some(_),
                 ..
             }
@@ -1877,6 +1913,7 @@ mod tests {
             target: Ref::new(story.to_string()),
             description: "change it".into(),
             mask_prompt: Some("everything".into()),
+            mask_file: None,
             inpaint_prompt: Some("different".into()),
             size: None,
             steps: None,
@@ -2492,6 +2529,7 @@ mod tests {
             target: Ref::new(registry.short_id(mia)),
             description: "change her hair".into(),
             mask_prompt: Some("her hair".into()),
+            mask_file: None,
             inpaint_prompt: Some("a bob cut".into()),
             size: None,
             steps: None,
@@ -2521,12 +2559,95 @@ mod tests {
              not a truncated schedule, is what preserves the outside"
         );
 
+        // A mask file is the same mask path with a different source: it
+        // loads the mask instead of segmenting for it, and skips the
+        // confirmation checkpoint (a file was already chosen deliberately).
+        let from_file = Operation::Modify {
+            target: Ref::new(registry.short_id(mia)),
+            description: "change her hair".into(),
+            mask_prompt: None,
+            mask_file: Some(PathBuf::from("/fixtures/mia-hair-0.png")),
+            inpaint_prompt: Some("a bob cut".into()),
+            size: None,
+            steps: None,
+            loras: Vec::new(),
+        };
+        let CompiledOp::Pipeline(file_pipeline) =
+            compile(&registry, &from_file, &defaults).unwrap()
+        else {
+            panic!("modify must compile to a pipeline");
+        };
+        assert!(
+            file_pipeline.steps().iter().any(|step| matches!(
+                step,
+                super::super::pipeline::Step::LoadMask { source }
+                    if source == std::path::Path::new("/fixtures/mia-hair-0.png")
+            )),
+            "the mask file becomes a LoadMask step"
+        );
+        assert!(
+            !file_pipeline
+                .steps()
+                .iter()
+                .any(|step| matches!(step, super::super::pipeline::Step::Segment { .. })),
+            "a mask file segments nothing"
+        );
+        assert!(
+            !file_pipeline
+                .steps()
+                .iter()
+                .any(|step| matches!(step, super::super::pipeline::Step::Checkpoint { .. })),
+            "a mask file has no candidates to confirm"
+        );
+        assert!(
+            file_pipeline
+                .params()
+                .loras
+                .iter()
+                .any(|lora| lora.path.ends_with("inpaintkrea.safetensors")),
+            "the mask path carries the inpaint adapter whichever source fed it"
+        );
+
+        // Two mask sources is a mistake worth reporting, not one to resolve
+        // by silently preferring either.
+        let both = Operation::Modify {
+            target: Ref::new(registry.short_id(mia)),
+            description: "change her hair".into(),
+            mask_prompt: Some("her hair".into()),
+            mask_file: Some(PathBuf::from("/fixtures/mia-hair-0.png")),
+            inpaint_prompt: Some("a bob cut".into()),
+            size: None,
+            steps: None,
+            loras: Vec::new(),
+        };
+        assert!(matches!(
+            compile(&registry, &both, &defaults),
+            Err(CompileError::ConflictingMaskSource)
+        ));
+
+        // A mask source without an inpaint prompt is still incomplete.
+        let no_inpaint = Operation::Modify {
+            target: Ref::new(registry.short_id(mia)),
+            description: "change her hair".into(),
+            mask_prompt: None,
+            mask_file: Some(PathBuf::from("/fixtures/mia-hair-0.png")),
+            inpaint_prompt: None,
+            size: None,
+            steps: None,
+            loras: Vec::new(),
+        };
+        assert!(matches!(
+            compile(&registry, &no_inpaint, &defaults),
+            Err(CompileError::IncompleteModify)
+        ));
+
         // The default (no mask/inpaint prompts) is an instruction edit: no
         // segmentation, no composite, and none of the inpaint adapter.
         let instruct = Operation::Modify {
             target: Ref::new(registry.short_id(mia)),
             description: "change her hair".into(),
             mask_prompt: None,
+            mask_file: None,
             inpaint_prompt: None,
             size: None,
             steps: None,
@@ -2706,6 +2827,7 @@ mod tests {
                 target: target.clone(),
                 description: "give her a bob cut".into(),
                 mask_prompt: None,
+                mask_file: None,
                 inpaint_prompt: None,
                 size: None,
                 steps: None,

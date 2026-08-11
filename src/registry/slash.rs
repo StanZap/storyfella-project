@@ -28,7 +28,7 @@
 //! instead of silently becoming part of the description. Quoted text is
 //! never treated as an option.
 
-use std::{collections::HashMap, fmt, str::FromStr};
+use std::{collections::HashMap, fmt, path::PathBuf, str::FromStr};
 
 use crate::registry::{ops::Operation, pipeline::is_valid_size, ArtifactKind, Ref, VariantAxis};
 
@@ -101,7 +101,14 @@ pub const OPS: &[OpSpec] = &[
     OpSpec {
         name: "/modify",
         params: &["c:<ref>", "<instruction>"],
-        flags: &["--mask", "--inpaint", "--size", "--steps", "--lora"],
+        flags: &[
+            "--mask",
+            "--mask-file",
+            "--inpaint",
+            "--size",
+            "--steps",
+            "--lora",
+        ],
         summary: "instruction edit against the description",
     },
     OpSpec {
@@ -353,18 +360,33 @@ fn parse_modify(tokens: &[Token]) -> Result<Operation, SlashError> {
     let (description, flags) = split_flags(
         tokens,
         2,
-        &["--mask", "--inpaint", "--size", "--steps", "--lora"],
+        &[
+            "--mask",
+            "--mask-file",
+            "--inpaint",
+            "--size",
+            "--steps",
+            "--lora",
+        ],
     )?;
     if description.trim().is_empty() {
         return Err(SlashError("modify needs a description".to_owned()));
     }
     let mask_prompt = flag_value(&flags, "--mask").map(str::to_owned);
+    let mask_file = flag_value(&flags, "--mask-file").map(PathBuf::from);
     let inpaint_prompt = flag_value(&flags, "--inpaint").map(str::to_owned);
-    if mask_prompt.is_some() != inpaint_prompt.is_some() {
+    if mask_prompt.is_some() && mask_file.is_some() {
         return Err(SlashError(
-            "modify takes both --mask and --inpaint, or neither. Neither is the \
-             normal case: the edit is described in plain language and no mask \
-             is involved."
+            "modify takes one mask source: --mask segments it, --mask-file \
+             loads one already on disk."
+                .to_owned(),
+        ));
+    }
+    if (mask_prompt.is_some() || mask_file.is_some()) != inpaint_prompt.is_some() {
+        return Err(SlashError(
+            "modify takes a mask source (--mask or --mask-file) together with \
+             --inpaint, or neither. Neither is the normal case: the edit is \
+             described in plain language and no mask is involved."
                 .to_owned(),
         ));
     }
@@ -384,6 +406,7 @@ fn parse_modify(tokens: &[Token]) -> Result<Operation, SlashError> {
         target,
         description,
         mask_prompt,
+        mask_file,
         inpaint_prompt,
         size,
         steps,
@@ -772,6 +795,7 @@ mod tests {
             "--lora" => "adapter@0.8",
             "--axis" => "outfit",
             "--mask" => "hair",
+            "--mask-file" => "masks/hair-0.png",
             "--inpaint" => "bob",
             "--multiplier" => "0.8",
             "--seed" => "4471",
@@ -964,12 +988,47 @@ mod tests {
                 target: Ref::new("c:mia"),
                 description: "change her hair".to_owned(),
                 mask_prompt: Some("her hair".to_owned()),
+                mask_file: None,
                 inpaint_prompt: Some("a bob cut".to_owned()),
                 size: None,
                 steps: None,
                 loras: Vec::new(),
             }
         );
+    }
+
+    #[test]
+    fn modify_takes_a_mask_file_as_the_other_mask_source() {
+        assert_eq!(
+            parse_slash(
+                "/modify c:mia \"change her hair\" --mask-file masks/mia-hair-0.png \
+                 --inpaint \"a bob cut\""
+            )
+            .unwrap(),
+            Operation::Modify {
+                target: Ref::new("c:mia"),
+                description: "change her hair".to_owned(),
+                mask_prompt: None,
+                mask_file: Some(PathBuf::from("masks/mia-hair-0.png")),
+                inpaint_prompt: Some("a bob cut".to_owned()),
+                size: None,
+                steps: None,
+                loras: Vec::new(),
+            }
+        );
+
+        // One mask, one source.
+        let both = parse_slash(
+            "/modify c:mia \"change her hair\" --mask \"her hair\" \
+             --mask-file masks/mia-hair-0.png --inpaint \"a bob cut\"",
+        )
+        .unwrap_err();
+        assert!(both.0.contains("one mask source"), "{}", both.0);
+
+        // A mask source still needs a look to paint into it.
+        let lonely =
+            parse_slash("/modify c:mia \"change her hair\" --mask-file masks/m.png").unwrap_err();
+        assert!(lonely.0.contains("--inpaint"), "{}", lonely.0);
     }
 
     #[test]

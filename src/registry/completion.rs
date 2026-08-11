@@ -564,7 +564,14 @@ mod tests {
         assert_eq!(completions.head, "flags");
         assert_eq!(
             labels(&completions),
-            ["--mask", "--inpaint", "--size", "--steps", "--lora"]
+            [
+                "--mask",
+                "--mask-file",
+                "--inpaint",
+                "--size",
+                "--steps",
+                "--lora"
+            ]
         );
 
         // /describe takes none, so nothing is offered rather than a wrong list.

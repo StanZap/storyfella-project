@@ -47,23 +47,37 @@ impl CodedError for ImageOpsError {
 
 /// Blends `replacement` into `original` everywhere the hard mask is active.
 ///
-/// Guarantee: every pixel *outside* the (eroded) hard mask is bit-identical
-/// to the original, even with feathering. Feathering only softens the
-/// transition on pixels *inside* the mask (a blurred copy of the mask is
-/// clamped to zero outside it), so the outside boundary is exactly
-/// preserved.
+/// With `grow == 0` this guarantees that every pixel *outside* the (eroded)
+/// hard mask is bit-identical to the original, even with feathering:
+/// feathering only softens the transition on pixels *inside* the mask (a
+/// blurred copy of the mask is clamped to zero outside it), so the outside
+/// boundary is exactly preserved.
 ///
-/// The mask is eroded before blending so the seam between the original and
-/// the replacement lands inside the replacement's own content: a
-/// segmentation mask rarely matches the re-rendered silhouette exactly,
-/// and without erosion the mismatch shows as a visible outline along the
-/// mask boundary. The feather radius scales with the canvas so seams look
+/// `grow` chooses which way the boundary mismatch is paid for, and the two
+/// directions are not interchangeable:
+///
+/// - `grow == 0` **erodes**. The seam lands inside the replacement's own
+///   content and the guarantee above holds exactly. The cost is that
+///   anything the mask *under*-covers survives untouched — where a
+///   segmentation mask runs tighter than its subject (hair against a wall,
+///   fur, anything with a soft silhouette), the pixels it missed remain as a
+///   rim of the old content tracing the old outline.
+/// - `grow > 0` **dilates** by that many pixels before feathering, so the
+///   blend starts outside the silhouette and covers the rim. This is what
+///   INPAINTKREA's own restore node does (`mask_grow` 12, then
+///   `mask_feather` 10). It deliberately gives up the bit-identical
+///   guarantee: pixels outside the mask do change, within `grow` of the
+///   boundary.
+///
+/// Neither is right for every mask, which is why this is a parameter and
+/// not a default. The feather radius scales with the canvas so seams look
 /// the same at every size.
 pub fn composite(
     original: &Path,
     mask: &Path,
     replacement: &Path,
     feather_radius: u32,
+    grow: u32,
     output: &Path,
 ) -> Result<(), ImageOpsError> {
     let original_image = open_rgba(original)?;
@@ -98,24 +112,36 @@ pub fn composite(
     }
 
     let hard = mask_image.as_raw();
-    // Erode the selection so the blend seam sits inside the replacement's
-    // own content (the mask boundary rarely matches the re-rendered
-    // silhouette; without erosion the mismatch outlines the region).
-    let erosion = (width.min(height) as u32 / 200).clamp(1, 8);
-    let eroded = erode_mask(hard, width, height, erosion);
-    let blended_alpha: Vec<u8> = if feather_radius == 0 {
-        eroded.clone()
+    // The feather scales with the canvas: the same relative softness at
+    // every size keeps seams from becoming proportionally harsher on small
+    // canvases.
+    let feather = feather_radius.max(width.min(height) / 64);
+    let blended_alpha: Vec<u8> = if grow > 0 {
+        // Dilate, then feather across the grown boundary. No clamp: letting
+        // the blur spread past the original mask is the point — that is what
+        // covers a silhouette the mask ran tighter than.
+        let grown = dilate_mask(hard, width, height, grow);
+        if feather_radius == 0 {
+            grown
+        } else {
+            box_blur(&grown, width, height, feather)
+        }
     } else {
-        // The feather scales with the canvas: the same relative softness
-        // at every size keeps seams from becoming proportionally harsher
-        // on small canvases.
-        let feather = feather_radius.max(width.min(height) / 64);
-        let blurred = box_blur(&eroded, width, height, feather);
-        eroded
-            .iter()
-            .zip(blurred)
-            .map(|(&inside, value)| if inside > 0 { value } else { 0 })
-            .collect()
+        // Erode the selection so the blend seam sits inside the
+        // replacement's own content, and clamp the blur to the eroded mask
+        // so pixels outside it stay bit-identical.
+        let erosion = (width.min(height) / 200).clamp(1, 8);
+        let eroded = erode_mask(hard, width, height, erosion);
+        if feather_radius == 0 {
+            eroded
+        } else {
+            let blurred = box_blur(&eroded, width, height, feather);
+            eroded
+                .iter()
+                .zip(blurred)
+                .map(|(&inside, value)| if inside > 0 { value } else { 0 })
+                .collect()
+        }
     };
 
     let mut output_image = original_image.clone();
@@ -149,6 +175,66 @@ pub fn composite(
         })
 }
 
+/// Replaces the masked region with a flat neutral colour.
+///
+/// The masked-latent inpaint sends an init image, and the model reads it:
+/// measured 2026-08-11, changing the init moved the output by 16 mean levels
+/// even at `denoise_strength` 1.0. So what the masked region contains is a
+/// *prior* the generation is steered by, and leaving the original content
+/// there means steering it back toward what the edit was meant to remove.
+///
+/// The fill is deliberately flat and deliberately not background-coloured.
+/// An earlier revision diffused colour inward from outside the mask, on the
+/// assumption that the surroundings approximate what is behind the subject.
+/// For a hair mask they do not — most of that boundary is face and shoulder,
+/// so the diffusion handed the model a skin-toned prior and the vacated wall
+/// came back *further* from the truth (172,171,159 against a real
+/// (228,232,231), versus (193,198,192) with no fill at all).
+///
+/// A flat colour that appears nowhere in the subject says "there is nothing
+/// here" without proposing anything. This *is* INPAINTKREA's convention, not
+/// an inference from one: `KreaAspectPreservePrepare`
+/// (github.com/aitrepreneur/ComfyUI-KreaAspectPreserveOutpaint) fills
+/// `mask > 0.5` with pure green in pixel space before generating, and the
+/// separate `DefaultGreenMaskColor` node exists only to make a hand-painted
+/// mask match that. Note they use *pure* `(0, 255, 0)`; the values tried
+/// here so far are not that, and the comparison is still open.
+pub fn fill_masked(
+    image: &Path,
+    mask: &Path,
+    colour: [u8; 3],
+    output: &Path,
+) -> Result<(), ImageOpsError> {
+    let source = open_rgba(image)?;
+    let (width, height) = source.dimensions();
+    let mut mask_image = open_luma(mask)?;
+    if mask_image.dimensions() != (width, height) {
+        mask_image = image::imageops::resize(
+            &mask_image,
+            width,
+            height,
+            image::imageops::FilterType::Nearest,
+        );
+    }
+
+    let mut filled = source.clone();
+    let mask_raw = mask_image.as_raw();
+    let raw = filled.as_mut();
+    for index in 0..(width * height) as usize {
+        if mask_raw[index] >= 128 {
+            for channel in 0..3 {
+                raw[index * 4 + channel] = colour[channel];
+            }
+            raw[index * 4 + 3] = 255;
+        }
+    }
+
+    filled.save(output).map_err(|source| ImageOpsError::Write {
+        path: output.to_path_buf(),
+        source,
+    })
+}
+
 /// Produces the inverse mask (255 - value per pixel).
 pub fn invert(mask: &Path, output: &Path) -> Result<(), ImageOpsError> {
     let image = open_luma(mask)?;
@@ -160,6 +246,31 @@ pub fn invert(mask: &Path, output: &Path) -> Result<(), ImageOpsError> {
 }
 
 /// Blurs a binary mask into a soft-edged mask.
+/// Grows a hard mask by `radius` pixels, keeping it hard-edged.
+///
+/// Distinct from the composite's own `grow`, which widens the *blend* only.
+/// This widens the region the backend is allowed to re-render. A
+/// segmentation mask stops at the silhouette it can resolve, so anything
+/// softer than that edge — flyaway hair, fur, motion blur — falls outside
+/// it and is never regenerated; no amount of compositing can remove content
+/// the model was not permitted to touch. Measured 2026-08-11: blonde
+/// strands survived a hair replacement for exactly this reason.
+pub fn grow(mask: &Path, radius: u32, output: &Path) -> Result<(), ImageOpsError> {
+    let image = open_luma(mask)?;
+    let (width, height) = image.dimensions();
+    let grown = if radius == 0 {
+        image
+    } else {
+        GrayImage::from_raw(
+            width,
+            height,
+            dilate_mask(image.as_raw(), width, height, radius),
+        )
+        .expect("dilation preserves dimensions")
+    };
+    save_luma(&grown, output)
+}
+
 pub fn feather(mask: &Path, radius: u32, output: &Path) -> Result<(), ImageOpsError> {
     let image = open_luma(mask)?;
     let (width, height) = image.dimensions();
@@ -269,6 +380,44 @@ fn erode_mask(source: &[u8], width: u32, height: u32, radius: u32) -> Vec<u8> {
     eroded
 }
 
+/// Grows a hard mask by `radius` pixels: a pixel lights when any pixel in
+/// its `radius`-box is lit. The box structuring element is separable, so
+/// this runs as a horizontal max pass then a vertical one rather than the
+/// O(r²) neighbourhood scan `erode_mask` uses — `grow` is typically an order
+/// of magnitude larger than the erosion.
+fn dilate_mask(source: &[u8], width: u32, height: u32, radius: u32) -> Vec<u8> {
+    let width = width as usize;
+    let height = height as usize;
+    let radius = radius as usize;
+
+    let mut horizontal = vec![0u8; width * height];
+    for y in 0..height {
+        let row = y * width;
+        for x in 0..width {
+            let start = x.saturating_sub(radius);
+            let end = (x + radius).min(width - 1);
+            if source[row + start..=row + end]
+                .iter()
+                .any(|&value| value > 0)
+            {
+                horizontal[row + x] = 255;
+            }
+        }
+    }
+
+    let mut dilated = vec![0u8; width * height];
+    for y in 0..height {
+        let start = y.saturating_sub(radius);
+        let end = (y + radius).min(height - 1);
+        for x in 0..width {
+            if (start..=end).any(|row| horizontal[row * width + x] > 0) {
+                dilated[y * width + x] = 255;
+            }
+        }
+    }
+    dilated
+}
+
 fn box_blur(source: &[u8], width: u32, height: u32, radius: u32) -> Vec<u8> {
     let width = width as usize;
     let height = height as usize;
@@ -362,7 +511,7 @@ mod tests {
         write_half_mask(&mask, 64, 48);
         write_rgba(&replacement, 64, 48, [40, 40, 200, 255]);
 
-        composite(&original, &mask, &replacement, 0, &output).unwrap();
+        composite(&original, &mask, &replacement, 0, 0, &output).unwrap();
 
         let result = image::open(&output).unwrap().to_rgba8();
         let reference = image::open(&original).unwrap().to_rgba8();
@@ -398,7 +547,7 @@ mod tests {
         write_half_mask(&mask, 64, 48);
         write_rgba(&replacement, 64, 48, [40, 40, 200, 255]);
 
-        composite(&original, &mask, &replacement, 8, &output).unwrap();
+        composite(&original, &mask, &replacement, 8, 0, &output).unwrap();
 
         let result = image::open(&output).unwrap().to_rgba8();
         let reference = image::open(&original).unwrap().to_rgba8();
@@ -416,6 +565,75 @@ mod tests {
         assert_ne!(result.get_pixel(31, 24), &Rgba([40, 40, 200, 255]));
     }
 
+    /// The opposite trade to the two tests above: growing the mask covers
+    /// content the mask ran tighter than, at the cost of the
+    /// bit-identical-outside guarantee. The rim this reaches is the old
+    /// hair a 0.977-scoring mask still missed (2026-08-11).
+    #[test]
+    fn composite_with_mask_grow_reaches_past_the_mask_boundary() {
+        let dir = test_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = dir.join("original.png");
+        let mask = dir.join("mask.png");
+        let replacement = dir.join("replacement.png");
+        let grown = dir.join("grown.png");
+        let strict = dir.join("strict.png");
+        write_rgba(&original, 64, 48, [200, 40, 40, 255]);
+        write_half_mask(&mask, 64, 48);
+        write_rgba(&replacement, 64, 48, [40, 40, 200, 255]);
+
+        composite(&original, &mask, &replacement, 0, 6, &grown).unwrap();
+        composite(&original, &mask, &replacement, 0, 0, &strict).unwrap();
+
+        let grown_image = image::open(&grown).unwrap().to_rgba8();
+        let strict_image = image::open(&strict).unwrap().to_rgba8();
+        let reference = image::open(&original).unwrap().to_rgba8();
+
+        // Just outside the mask boundary: strict keeps the original, grown
+        // replaces it. That difference is the whole point of the parameter.
+        assert_eq!(strict_image.get_pixel(34, 24), reference.get_pixel(34, 24));
+        assert_eq!(grown_image.get_pixel(34, 24), &Rgba([40, 40, 200, 255]));
+
+        // The growth is bounded: well beyond `grow` the original survives
+        // either way, so this never becomes a whole-frame paste.
+        assert_eq!(grown_image.get_pixel(50, 24), reference.get_pixel(50, 24));
+    }
+
+    /// The masked region must come back as the requested flat colour and
+    /// nothing else: no trace of what was under the mask (which is what the
+    /// edit is removing) and no sampling of the surroundings (which for a
+    /// hair mask is mostly skin).
+    #[test]
+    fn fill_masked_replaces_the_region_with_the_neutral_colour() {
+        let dir = test_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.png");
+        let mask = dir.join("mask.png");
+        let output = dir.join("filled.png");
+
+        // Left half black (the thing being removed), right half pale.
+        let mut image = RgbaImage::new(64, 48);
+        for (x, _y, pixel) in image.enumerate_pixels_mut() {
+            *pixel = if x < 32 {
+                Rgba([10, 10, 10, 255])
+            } else {
+                Rgba([228, 232, 231, 255])
+            };
+        }
+        image.save(&source).unwrap();
+        write_half_mask(&mask, 64, 48);
+
+        fill_masked(&source, &mask, [0, 177, 64], &output).unwrap();
+        let filled = image::open(&output).unwrap().to_rgba8();
+
+        // Inside the mask: exactly the fill, not the black it replaced and
+        // not the pale tone next door.
+        assert_eq!(filled.get_pixel(10, 24), &Rgba([0, 177, 64, 255]));
+        assert_eq!(filled.get_pixel(31, 0), &Rgba([0, 177, 64, 255]));
+        // Outside the mask nothing moves.
+        assert_eq!(filled.get_pixel(50, 24), &Rgba([228, 232, 231, 255]));
+    }
+
     #[test]
     fn composite_resizes_mismatched_canvases_to_the_replacement() {
         let dir = test_dir();
@@ -428,7 +646,7 @@ mod tests {
         write_luma(&mask, 64, 48, 255);
         write_rgba(&replacement, 32, 48, [40, 40, 200, 255]);
 
-        composite(&original, &mask, &replacement, 0, &output).unwrap();
+        composite(&original, &mask, &replacement, 0, 0, &output).unwrap();
 
         // The output follows the replacement canvas, with the original's
         // content resized into it (fully masked here, so it is the

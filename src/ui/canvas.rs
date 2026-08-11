@@ -1491,6 +1491,7 @@ mod tests {
             target: Ref::new("c:mia"),
             description: "change her hair".into(),
             mask_prompt: Some("her hair".into()),
+            mask_file: None,
             inpaint_prompt: Some("a bob cut".into()),
             size: None,
             steps: None,
