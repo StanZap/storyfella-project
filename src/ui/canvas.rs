@@ -946,7 +946,7 @@ fn ArtifactDetail(
                 match image {
                     Some(path) => rsx! {
                         if let Some(url) = generated_asset_url(&path) {
-                            img { class: "max-h-full w-auto max-w-full object-contain", src: "{url}", alt: artifact.name }
+                            img { class: "h-full max-h-full w-full object-contain", src: "{url}", alt: artifact.name }
                         }
                     },
                     None => rsx! {
@@ -996,7 +996,7 @@ fn ArtifactDetail(
             }
 
             // The history scrolls inside itself, so the page never does.
-            div { class: "min-h-0 shrink-0 basis-[34%] overflow-y-auto border-t border-white/[0.05] px-5 py-4",
+            div { class: "min-h-0 max-h-[32%] shrink-0 overflow-y-auto border-t border-white/[0.05] px-5 py-3",
             if !active_masks.is_empty() {
                 Section { title: format!("Masks ({})", active_masks.len()),
                     p { class: "mb-3 -mt-2 text-[9px] leading-4 text-zinc-700",
@@ -1034,10 +1034,10 @@ fn ArtifactDetail(
                     // delta against it. Because edits ground against the
                     // description rather than the current image, experiments
                     // never accumulate — Promote is what makes one stick.
-                    div { class: "space-y-1",
+                    div { class: "space-y-0.5",
                         for revision in revision_rows {
                             div {
-                                class: if artifact.active_revision_id == Some(revision.id) { "flex w-full items-center gap-3 rounded-lg bg-white/[0.06] px-3 py-2" } else { "group flex w-full items-center gap-3 rounded-lg px-3 py-2 transition hover:bg-white/[0.035]" },
+                                class: if artifact.active_revision_id == Some(revision.id) { "flex w-full items-center gap-2.5 rounded-md bg-white/[0.06] px-2.5 py-1" } else { "group flex w-full items-center gap-2.5 rounded-md px-2.5 py-1 transition hover:bg-white/[0.035]" },
                                 span { class: "{status_dot_class(revision.status)}" }
                                 button {
                                     class: "min-w-0 flex-1 text-left disabled:opacity-40",
@@ -1048,8 +1048,8 @@ fn ArtifactDetail(
                                         let revision_id = revision.id;
                                         move |_| { app_state.write().activate_revision(artifact_id, revision_id); }
                                     },
-                                    p { class: "truncate text-[11px] text-zinc-300", "{revision.prompt}" }
-                                    p { class: "mt-0.5 text-[9px] text-zinc-700", "{revision.meta}" }
+                                    p { class: "truncate text-[11px] leading-4 text-zinc-300", "{revision.prompt}" }
+                                    p { class: "truncate text-[9px] leading-3 text-zinc-700", "{revision.meta}" }
                                 }
                                 if revision.origin == crate::registry::RevisionOrigin::Experiment {
                                     span { class: "shrink-0 rounded bg-amber-400/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.05em] text-amber-300",
@@ -1252,8 +1252,8 @@ fn ProvenanceLink(
 #[component]
 fn Section(title: String, children: Element) -> Element {
     rsx! {
-        div { class: "mb-8",
-            h3 { class: "mb-3 text-[9px] font-semibold uppercase tracking-[0.16em] text-zinc-600", "{title}" }
+        div { class: "mb-4 last:mb-0",
+            h3 { class: "mb-1.5 text-[9px] font-semibold uppercase tracking-[0.16em] text-zinc-600", "{title}" }
             {children}
         }
     }
