@@ -1029,7 +1029,7 @@ fn ArtifactDetail(
                 // Floats over the render, pinned left. Always the base plus
                 // its variants, whichever member is open.
                 div { class: "pointer-events-none absolute bottom-3 left-0 z-20 flex max-w-[60%] items-end gap-2 overflow-x-auto px-4",
-                    div { class: "pointer-events-auto flex items-end gap-2 rounded-xl bg-black/45 p-2 backdrop-blur ring-1 ring-inset ring-white/[0.07]",
+                    div { class: "pointer-events-auto flex items-start gap-2 rounded-xl bg-black/45 p-2 backdrop-blur ring-1 ring-inset ring-white/[0.07]",
                     VariantChip {
                         label: "base".to_owned(),
                         image: base_thumb.clone(),
@@ -1051,11 +1051,16 @@ fn ArtifactDetail(
                         }
                     }
                     button {
-                        class: "grid h-16 w-12 shrink-0 place-items-center rounded-lg border border-dashed border-white/[0.12] text-lg font-light text-zinc-700 transition hover:text-zinc-300 disabled:opacity-40",
+                        class: "shrink-0",
                         disabled,
-                        title: "New variant",
+                        title: shortcuts::tooltip("New variant", "new-variant"),
                         onclick: move |_| composer.set(variant_prefix_strip.clone()),
-                        "+"
+                        div { class: "grid h-16 w-12 place-items-center rounded-lg border border-dashed border-white/[0.12] text-lg font-light text-zinc-700 transition hover:text-zinc-300",
+                            "+"
+                        }
+                        // Matches the chips' label line so every item in the
+                        // row is the same height.
+                        p { class: "mt-1 text-center font-mono text-[9px] text-transparent", "new" }
                     }
                     }
                 }
