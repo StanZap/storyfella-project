@@ -183,7 +183,9 @@ If a session cannot be expressed as a plan, that is the finding.
 
 ## 7. Doc changes owed
 
-- `ROADMAP.md` §9: unresolved reference becomes *pending*, not a compile error.
-- `ROADMAP.md` §12 item 4: reference this plan for the canvas rework.
-- `architecture.md`: the prompt-to-revision section should note that the
-  inspector and the command bar are two views of one operation vocabulary.
+Done. `ROADMAP.md` §9 now calls an unresolved reference *pending* rather than
+a compile error and records that the Writer surface landed ahead of the
+language crate; §10 lists the applied schema versions; §12 item 4 describes
+the grid-and-detail canvas. `AGENTS.md` describes the current `src/ui/`
+layout. `architecture.md` records that the CLI, the command bar, the palette
+and the inspector are four views of one vocabulary.

@@ -51,8 +51,11 @@ The native generation server is started with `--listen-ip 127.0.0.1
 
 ## The prompt-to-revision flow
 
-The Canvas is the primary workspace. A slash command in the composer parses
-into a typed operation (`src/registry/slash.rs`); model-only operations
+The Canvas is the primary workspace. Commands reach it from four places that
+share one vocabulary: the `svs` CLI, the tokenized command bar, the `Ctrl+K`
+palette, and the inspector rail — every control in the rail emits the command
+a person would have typed, so the two cannot diverge. All of them parse
+through `src/registry/slash.rs`; model-only operations
 (`compose`, `create` of text-only kinds) apply instantly, while visual
 `create`/`variant` (first image), `regenerate`, and `modify` run their
 pipeline against `CreativeBackend` in a spawned task.

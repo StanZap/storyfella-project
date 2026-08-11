@@ -411,8 +411,12 @@ Decisions:
 - **References by name in the DSL** (`character: mia`), ids under the hood;
   the compiler catches collisions; the writer's autocomplete resolves names
   to ids as you type.
-- **Validation extends to assets:** `character: mia` where `mia` does not
-  exist is a compile error, with the canvas as the fix surface.
+- **Validation extends to assets, but unresolved is *pending*, not an
+  error:** `character: mia` where `mia` does not exist is amber with a
+  Create affordance, not red. Same information, opposite valence — the story
+  reads as a work queue rather than a list of mistakes, and the canvas is
+  the fix surface. (Settled while building the writer; see
+  `docs/design/ui-plan.md` §3.)
 - **The writer reuses the tokenized-editor primitive** designed for the
   prompt bar (`/op` highlighting, `c:` chips) — one editor component, two
   uses.
@@ -426,7 +430,10 @@ formats (TOML `ProjectStore`, stopgap JSON registry) were removed with their
 one-time imports — the current format evolves via `schema_meta` migrations.
 Assets (PNGs) stay as files on disk; the database stores relative paths
 (this also fixes the known "absolute asset paths" gap). Schema versioning
-via a `schema_meta` table.
+via a `schema_meta` table. Applied so far: v1 (§10 tables), v2/v3 (the
+legacy storyboard column, added then dropped), v4 (per-artifact default
+size), v5 (per-artifact default steps and pinned seed), v6 (`RevisionOrigin`
+on revisions), v7 (`projects.story_source`, the Writer's text).
 
 ```sql
 CREATE TABLE schema_meta (version INTEGER NOT NULL, applied_at TEXT NOT NULL);
@@ -560,11 +567,16 @@ plan to ship, with its status; update it when work lands.
    lossless round-trip); the CLI persists to `.svs-project.db`; the GUI
    opens/creates projects from the Projects screen and saves via autosave
    or Cmd/Ctrl+S. — **✅ implemented**
-4. **The canvas:** the artifact workspace — sidebar grouped by kind,
-   detail pane (image, description, variants, revisions, children, operation
-   log), slash-command composer (`/create`, `/variant`, `/regenerate`,
-   `/modify` — the same typed vocabulary as the `svs` CLI), undo/redo via
-   registry snapshots. Artifacts carry an optional default generation size
+4. **The canvas:** the artifact workspace in two states — a grid at rest
+   (variants stacked behind their base, in-flight work dimmed and badged in
+   place) and an image-dominant detail pane with an inspector rail, whose
+   every control is also a command. The tokenized command bar and the
+   `Ctrl+K` palette are further views of the same typed vocabulary as the
+   `svs` CLI (`/create`, `/variant`, `/regenerate`, `/modify`, `/set`);
+   undo/redo via registry snapshots. Revisions carry a `RevisionOrigin` so
+   canon and experiment are distinguishable, and `Promote` (`/describe`) is
+   what makes an experiment canonical. The kind-grouped sidebar it replaced
+   was deleted with it. See `docs/design/ui-plan.md`. Artifacts carry an optional default generation size
    (`/create … --size WxH`; per-kind defaults otherwise: character 512×768,
    object 768×768, environment/scene/beat 1024×576) that `regenerate`/
    `modify` honor. Visual `create`/`variant` generate the artifact's first
@@ -627,8 +639,15 @@ plan to ship, with its status; update it when work lands.
    behind the quality/control work above (user reprioritized; the canvas
    still surfaces beats, compose, and drafts per the session guide)
 9. **Storyfella DSL (in-repo):** the language crate (lexer/parser/compiler,
-   CLI), the writer with the tokenized editor, asset chips and autocomplete;
-   DSL asset references + validation; round-trip to canvas. — **⏳ planned**
+   CLI); DSL asset references + validation; round-trip to canvas.
+   — **⏳ planned.** The *surface* exists ahead of it: the Writer screen
+   edits `.sf` text with references resolved against the registry and
+   pending ones offered for creation, and `registry/completion.rs` is the
+   same discipline at small scale (spans on every token, one tokenizer,
+   `complete(input, cursor)`, `signature`). What is missing is the language:
+   `ui/writer.rs` reads line by line, and its `outline`/`highlight` are the
+   seam a real lexer replaces. Story text currently lives in the project
+   database (schema v7), not in `.sf` files on disk.
 10. **LSP-style tooling** as the DSL matures (go-to-definition, refactor,
     diagnostics). — **⏳ planned**
 11. **Self-contained distribution (no user-side dependencies):** one
