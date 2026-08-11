@@ -190,7 +190,7 @@ pub fn Gallery(
                     "Artifacts"
                 }
                 p { class: "text-[10px] text-zinc-700",
-                    "hjkl move · ⏎ open · n new · / command · ⌃K palette"
+                    "hjkl move · ⏎ open · n new · / command"
                 }
                 input {
                     class: "ml-auto h-8 w-56 rounded-lg bg-white/[0.045] px-3 text-[11px] text-zinc-200 outline-none ring-1 ring-inset ring-white/[0.06] transition placeholder:text-zinc-700 focus:ring-violet-400/40",

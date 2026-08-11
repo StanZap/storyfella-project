@@ -139,6 +139,33 @@ pub fn Canvas(
                 }
             }
             "n" if !viewing => composer.set("/create character ".to_owned()),
+            // In detail, `[` and `]` walk the variant filmstrip — the same
+            // set the strip shows, so the keys and the row agree.
+            key @ ("[" | "]") if viewing => {
+                let state = app_state.peek();
+                let Some(open) = state.selected_artifact() else {
+                    return;
+                };
+                let base = open.variant_of.unwrap_or(open.id);
+                let mut family = vec![base];
+                family.extend(
+                    state
+                        .registry
+                        .artifacts
+                        .iter()
+                        .filter(|candidate| candidate.variant_of == Some(base))
+                        .map(|candidate| candidate.id),
+                );
+                let at = family.iter().position(|id| *id == open.id).unwrap_or(0);
+                let next = if key == "]" {
+                    (at + 1).min(family.len() - 1)
+                } else {
+                    at.saturating_sub(1)
+                };
+                let target = family[next];
+                drop(state);
+                app_state.write().select_artifact(target);
+            }
             "/" => {
                 document::eval(
                     "const el = document.getElementById(\"svs-cmdbar\");
@@ -826,8 +853,14 @@ fn ArtifactDetail(
     let variant_prefix = format!("/variant {ref_label} ");
     let regenerate_prefix = format!("/regenerate {ref_label} ");
     let modify_prefix = format!("/modify {ref_label} ");
-    let attach_lora_prefix = format!("/attach-lora {ref_label} ");
     let variant_prefix_strip = variant_prefix.clone();
+    // The strip shows the base and its variants, so it stays the same set
+    // whether you opened the base or one of its variants.
+    let base_id = artifact.variant_of.unwrap_or(artifact.id);
+    let base_thumb = registry
+        .latest_image(base_id)
+        .and_then(|revision| revision.asset_path.as_deref())
+        .and_then(generated_asset_url);
     let revision_rows: Vec<RevisionRow> = artifact
         .revisions
         .iter()
@@ -851,35 +884,36 @@ fn ArtifactDetail(
         .unwrap_or_default();
 
     rsx! {
-        div { class: "mx-auto w-full max-w-[1100px] px-8 py-6",
-            // The way back to the grid. Opening an artifact replaces the
-            // whole screen, so without this there is no exit.
-            button {
-                class: "-ml-2 mb-5 flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-medium text-zinc-500 transition hover:bg-white/[0.04] hover:text-zinc-300",
-                onclick: move |_| app_state.write().clear_selection(),
-                span { class: "text-[13px] leading-none", "‹" }
-                "All artifacts"
-            }
-            // Header: identity + provenance links.
-            div { class: "mb-5 flex flex-wrap items-start gap-4",
-                div { class: "min-w-0 flex-1",
-                    div { class: "mb-2 flex flex-wrap items-center gap-2",
-                        span { class: "rounded-md bg-white/[0.05] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.14em] text-zinc-400 ring-1 ring-inset ring-white/[0.07]", "{artifact.kind}" }
-                        span { class: "rounded-md bg-zinc-900 px-2 py-1 font-mono text-[10px] text-violet-300 ring-1 ring-inset ring-violet-400/20", "{registry.ref_of(artifact.id)}" }
-                        if let Some(axis) = artifact.variant_axis {
-                            span { class: "rounded-md bg-violet-400/10 px-2 py-1 text-[9px] font-medium text-violet-300", "variant · {axis}" }
-                        }
-                    }
-                    h2 { class: "truncate text-xl font-semibold tracking-[-0.02em] text-zinc-100", if artifact.name.trim().is_empty() { "Unnamed" } else { "{artifact.name}" } }
-                    if let Some(base_id) = artifact.variant_of {
-                        ProvenanceLink { label: "Base", registry: registry.clone(), target: base_id, on_select: move |id| app_state.write().select_artifact(id) }
-                    }
-                    if let Some(parent_id) = artifact.parent_id {
-                        ProvenanceLink { label: "Parent", registry: registry.clone(), target: parent_id, on_select: move |id| app_state.write().select_artifact(id) }
-                    }
+        // Three regions with their own space, so the page never scrolls:
+        // the render takes what is left, the filmstrip is a fixed row, and
+        // the history scrolls inside itself. Scrolling *past* the picture to
+        // reach the revisions was the thing that made this feel like a
+        // document rather than a workspace.
+        div { class: "flex h-full min-h-0 flex-col",
+
+            // Breadcrumb row — the identity, compressed to one line.
+            div { class: "flex shrink-0 items-center gap-2 border-b border-white/[0.05] px-5 py-2.5",
+                button {
+                    class: "-ml-2 flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-medium text-zinc-500 transition hover:bg-white/[0.04] hover:text-zinc-300",
+                    onclick: move |_| app_state.write().clear_selection(),
+                    span { class: "text-[13px] leading-none", "‹" }
+                    "All artifacts"
+                }
+                span { class: "text-zinc-800", "/" }
+                span { class: "truncate text-[12px] font-semibold text-zinc-200",
+                    if artifact.name.trim().is_empty() { "Unnamed" } else { "{artifact.name}" }
+                }
+                if let Some(axis) = artifact.variant_axis {
+                    span { class: "shrink-0 rounded bg-violet-400/10 px-1.5 py-0.5 text-[9px] font-medium text-violet-300", "variant · {axis}" }
+                }
+                if let Some(base_id) = artifact.variant_of {
+                    ProvenanceLink { label: "Base", registry: registry.clone(), target: base_id, on_select: move |id| app_state.write().select_artifact(id) }
+                }
+                if let Some(parent_id) = artifact.parent_id {
+                    ProvenanceLink { label: "Parent", registry: registry.clone(), target: parent_id, on_select: move |id| app_state.write().select_artifact(id) }
                 }
                 if is_visual {
-                    div { class: "ml-auto flex shrink-0 items-center gap-2",
+                    div { class: "ml-auto flex shrink-0 items-center gap-1.5",
                         ActionButton {
                             label: "New variant",
                             icon: IconName::Add,
@@ -899,29 +933,20 @@ fn ArtifactDetail(
                                 label: "Modify",
                                 icon: IconName::Generate,
                                 disabled,
-                                title: "Mask-guided regional edit — segmentation (SAM) must be available; check Settings → Status",
+                                title: "Instruction edit against the description",
                                 onclick: move |_| composer.set(modify_prefix.clone()),
-                            }
-                        }
-                        if is_visual {
-                            ActionButton {
-                                label: "Attach LoRA",
-                                icon: IconName::Generate,
-                                disabled,
-                                title: "Bind an adapter (file in the lora dir) — auto-injected into this artifact's generations",
-                                onclick: move |_| composer.set(attach_lora_prefix.clone()),
                             }
                         }
                     }
                 }
             }
 
-            // The render dominates: this is what the screen is for.
-            div { class: "mb-4 grid place-items-center overflow-hidden rounded-2xl bg-black/25 ring-1 ring-inset ring-white/[0.07]",
+            // The render takes whatever the other two regions leave.
+            div { class: "grid min-h-0 flex-1 place-items-center overflow-hidden bg-black/25 p-4",
                 match image {
                     Some(path) => rsx! {
                         if let Some(url) = generated_asset_url(&path) {
-                            img { class: "max-h-[64vh] w-auto max-w-full object-contain", src: "{url}", alt: artifact.name }
+                            img { class: "max-h-full w-auto max-w-full object-contain", src: "{url}", alt: artifact.name }
                         }
                     },
                     None => rsx! {
@@ -936,6 +961,42 @@ fn ArtifactDetail(
                 }
             }
 
+            if is_visual {
+                // Fixed row between the render and the history — the base
+                // plus its variants, with the open one ringed.
+                div { class: "flex shrink-0 items-end justify-center gap-2 overflow-x-auto border-t border-white/[0.05] px-4 py-3",
+                    VariantChip {
+                        label: "base".to_owned(),
+                        image: base_thumb.clone(),
+                        active: artifact.variant_of.is_none(),
+                        target: base_id,
+                        onpick: move |id| { app_state.write().select_artifact(id); },
+                    }
+                    for (index , variant) in variants.iter().enumerate() {
+                        VariantChip {
+                            key: "{variant.id}",
+                            label: format!("v{}", index + 1),
+                            image: registry
+                                .latest_image(variant.id)
+                                .and_then(|revision| revision.asset_path.as_deref())
+                                .and_then(generated_asset_url),
+                            active: variant.id == artifact.id,
+                            target: variant.id,
+                            onpick: move |id| { app_state.write().select_artifact(id); },
+                        }
+                    }
+                    button {
+                        class: "grid h-16 w-12 shrink-0 place-items-center rounded-lg border border-dashed border-white/[0.12] text-lg font-light text-zinc-700 transition hover:text-zinc-300 disabled:opacity-40",
+                        disabled,
+                        title: "New variant",
+                        onclick: move |_| composer.set(variant_prefix_strip.clone()),
+                        "+"
+                    }
+                }
+            }
+
+            // The history scrolls inside itself, so the page never does.
+            div { class: "min-h-0 shrink-0 basis-[34%] overflow-y-auto border-t border-white/[0.05] px-5 py-4",
             if !active_masks.is_empty() {
                 Section { title: format!("Masks ({})", active_masks.len()),
                     p { class: "mb-3 -mt-2 text-[9px] leading-4 text-zinc-700",
@@ -967,37 +1028,6 @@ fn ArtifactDetail(
                 }
             }
 
-            if is_visual {
-                div { class: "mb-8 flex items-center gap-2 overflow-x-auto pb-1",
-                    span { class: "shrink-0 pr-1 text-[9px] uppercase tracking-[0.14em] text-zinc-700",
-                        "Variants"
-                    }
-                    for variant in variants {
-                        button {
-                            class: "group shrink-0",
-                            title: "{variant.name}",
-                            onclick: {
-                                let id = variant.id;
-                                move |_| app_state.write().select_artifact(id)
-                            },
-                            div { class: "relative h-16 w-12 overflow-hidden rounded-lg bg-white/[0.04] ring-1 ring-inset ring-white/[0.09] transition group-hover:ring-violet-400/50",
-                                if let Some(image) = registry.latest_image(variant.id).and_then(|revision| revision.asset_path.as_deref()) {
-                                    if let Some(url) = generated_asset_url(image) { img { class: "h-full w-full object-cover", src: "{url}", alt: "{variant.name}" } }
-                                } else {
-                                    div { class: "absolute inset-0 grid place-items-center text-zinc-700", Icon { name: IconName::Layers, class: "size-3.5" } }
-                                }
-                            }
-                        }
-                    }
-                    button {
-                        class: "grid h-16 w-12 shrink-0 place-items-center rounded-lg text-lg font-light text-zinc-700 ring-1 ring-inset ring-white/[0.09] transition hover:text-zinc-300 disabled:opacity-40",
-                        disabled,
-                        title: "New variant",
-                        onclick: move |_| composer.set(variant_prefix_strip.clone()),
-                        "+"
-                    }
-                }
-            }
             if !artifact.revisions.is_empty() {
                 Section { title: format!("Revisions ({})", artifact.revisions.len()),
                     // Canon renders the description; an experiment renders a
@@ -1098,6 +1128,38 @@ fn ArtifactDetail(
                         }
                     }
                 }
+            }
+            }
+        }
+    }
+}
+
+/// One frame in the variant filmstrip.
+#[component]
+fn VariantChip(
+    label: String,
+    image: Option<String>,
+    active: bool,
+    target: Uuid,
+    onpick: EventHandler<Uuid>,
+) -> Element {
+    rsx! {
+        button {
+            class: "group shrink-0",
+            onclick: move |_| onpick.call(target),
+            div {
+                class: if active { "relative h-16 w-12 overflow-hidden rounded-lg bg-white/[0.04] ring-2 ring-violet-400" } else { "relative h-16 w-12 overflow-hidden rounded-lg bg-white/[0.04] ring-1 ring-inset ring-white/[0.09] transition group-hover:ring-violet-400/50" },
+                if let Some(url) = image {
+                    img { class: "h-full w-full object-cover", src: "{url}", alt: "{label}" }
+                } else {
+                    div { class: "absolute inset-0 grid place-items-center text-zinc-700",
+                        Icon { name: IconName::Layers, class: "size-3.5" }
+                    }
+                }
+            }
+            p {
+                class: if active { "mt-1 text-center font-mono text-[9px] text-violet-300" } else { "mt-1 text-center font-mono text-[9px] text-zinc-600" },
+                "{label}"
             }
         }
     }
