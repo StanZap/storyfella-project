@@ -15,10 +15,7 @@ use super::icons::{Icon, IconName};
 
 /// The run-mode segmented control.
 #[component]
-fn ModeToggle(
-    mode: GuideMode,
-    mut on_mode: EventHandler<GuideMode>,
-) -> Element {
+fn ModeToggle(mode: GuideMode, mut on_mode: EventHandler<GuideMode>) -> Element {
     let button = |label: &'static str, value: GuideMode| {
         let active = mode == value;
         let active_class = if active {

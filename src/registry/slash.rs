@@ -13,8 +13,9 @@
 //! /lora-remove character-main
 //! ```
 //!
-//! Double quotes group words into one argument; every flag takes exactly one
-//! value. Descriptions are free text, so flags may appear anywhere. `--size`
+//! Double quotes group words into one argument, and inside them `\"` is a
+//! literal quote — without that a description could never contain one. Every
+//! flag takes exactly one value. Descriptions are free text, so flags may appear anywhere. `--size`
 //! takes `WxH` (the `×` sign is accepted too) and must be within contract
 //! bounds; without it, the artifact gets the kind default
 //! ([`ArtifactKind::default_size`]).
@@ -48,6 +49,102 @@ pub fn is_slash_command(input: &str) -> bool {
     input.trim_start().starts_with('/')
 }
 
+/// One operation's grammar: the shape the parser expects and the flags it
+/// accepts.
+///
+/// This is the single source of truth for three consumers — the parser's
+/// "unknown command" message, the command bar's signature help, and
+/// completion. A flag added to a `parse_*` function without being added
+/// here will not be offered, which is what the `flags_match_parsers` test
+/// guards against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpSpec {
+    /// Including the leading slash.
+    pub name: &'static str,
+    /// Positional parameters after the operation itself.
+    pub params: &'static [&'static str],
+    pub flags: &'static [&'static str],
+    pub summary: &'static str,
+}
+
+pub const OPS: &[OpSpec] = &[
+    OpSpec {
+        name: "/create",
+        params: &["<kind>", "<description>"],
+        flags: &["--name", "--size", "--steps", "--lora"],
+        summary: "new artifact",
+    },
+    OpSpec {
+        name: "/variant",
+        params: &["c:<ref>", "<description>"],
+        flags: &["--name", "--axis", "--size", "--steps", "--lora"],
+        summary: "new look from a base",
+    },
+    OpSpec {
+        name: "/regenerate",
+        params: &["c:<ref>", "[prompt]"],
+        flags: &["--size", "--steps", "--lora"],
+        summary: "reroll from the description",
+    },
+    OpSpec {
+        name: "/set",
+        params: &["c:<ref>"],
+        flags: &["--steps", "--seed"],
+        summary: "stored generation defaults; renders nothing",
+    },
+    OpSpec {
+        name: "/resize",
+        params: &["c:<ref>", "<WxH>"],
+        flags: &[],
+        summary: "set the artifact canvas",
+    },
+    OpSpec {
+        name: "/modify",
+        params: &["c:<ref>", "<instruction>"],
+        flags: &["--mask", "--inpaint", "--size", "--steps", "--lora"],
+        summary: "instruction edit against the description",
+    },
+    OpSpec {
+        name: "/describe",
+        params: &["c:<ref>", "<description>"],
+        flags: &[],
+        summary: "make a look canonical",
+    },
+    OpSpec {
+        name: "/attach-lora",
+        params: &["c:<ref>", "<lora>"],
+        flags: &["--multiplier"],
+        summary: "bind an adapter to an artifact",
+    },
+    OpSpec {
+        name: "/lora-scale",
+        params: &["<lora>", "<multiplier>"],
+        flags: &[],
+        summary: "change an adapter's weight",
+    },
+    OpSpec {
+        name: "/lora-remove",
+        params: &["<lora>"],
+        flags: &[],
+        summary: "detach an adapter",
+    },
+];
+
+/// Looks up an operation by name, with or without the leading slash.
+pub fn op_spec(name: &str) -> Option<&'static OpSpec> {
+    let name = name.strip_prefix('/').unwrap_or(name);
+    OPS.iter().find(|op| &op.name[1..] == name)
+}
+
+/// The vocabulary as a user-facing list, for error messages.
+fn op_list() -> String {
+    let names: Vec<&str> = OPS.iter().map(|op| op.name).collect();
+    match names.split_last() {
+        Some((last, rest)) => format!("{}, or {last}", rest.join(", ")),
+        None => String::new(),
+    }
+}
+
 /// Parses a slash command into a typed [`Operation`].
 pub fn parse_slash(input: &str) -> Result<Operation, SlashError> {
     let tokens = tokenize(input);
@@ -64,14 +161,15 @@ pub fn parse_slash(input: &str) -> Result<Operation, SlashError> {
         "variant" => parse_variant(&tokens),
         "regenerate" => parse_regenerate(&tokens),
         "resize" => parse_resize(&tokens),
+        "set" => parse_set(&tokens),
         "modify" => parse_modify(&tokens),
         "attach-lora" => parse_attach_lora(&tokens),
         "lora-scale" => parse_lora_scale(&tokens),
         "lora-remove" => parse_lora_remove(&tokens),
         "describe" => parse_describe(&tokens),
         other => Err(SlashError(format!(
-            "unknown command /{other}; expected /create, /variant, /regenerate, /resize, \
-             /modify, /describe, /attach-lora, /lora-scale, or /lora-remove"
+            "unknown command /{other}; expected {}",
+            op_list()
         ))),
     }
 }
@@ -206,6 +304,47 @@ fn parse_resize(tokens: &[Token]) -> Result<Operation, SlashError> {
         target,
         width,
         height,
+    })
+}
+
+/// `/set c:<ref> [--steps N|auto] [--seed N|random]`.
+///
+/// `auto` and `random` clear a stored default rather than setting one —
+/// which is why the fields are `Option<Option<_>>`: absent means "leave it
+/// alone", `Some(None)` means "unpin it".
+fn parse_set(tokens: &[Token]) -> Result<Operation, SlashError> {
+    let target = parse_ref(tokens, "set")?;
+    let (extra, flags) = split_flags(tokens, 2, &["--steps", "--seed"])?;
+    if !extra.trim().is_empty() {
+        return Err(SlashError(format!(
+            "unexpected argument {:?}; set takes only options: /set c:<ref> [--steps N|auto] [--seed N|random]",
+            extra.trim()
+        )));
+    }
+    let steps = match flag_value(&flags, "--steps") {
+        Some("auto") => Some(None),
+        Some(value) => Some(Some(parse_steps(value).map_err(SlashError)?)),
+        None => None,
+    };
+    let seed = match flag_value(&flags, "--seed") {
+        Some("random") => Some(None),
+        Some(value) => Some(Some(value.parse::<u64>().map_err(|_| {
+            SlashError(format!(
+                "invalid seed {value:?}; expected a number or `random`"
+            ))
+        })?)),
+        None => None,
+    };
+    if steps.is_none() && seed.is_none() {
+        return Err(SlashError(
+            "set needs something to set: /set c:<ref> [--steps N|auto] [--seed N|random]"
+                .to_owned(),
+        ));
+    }
+    Ok(Operation::Set {
+        target,
+        steps,
+        seed,
     })
 }
 
@@ -414,12 +553,15 @@ fn split_flags(
 
 /// The single value of a flag, when the command takes it at most once.
 fn flag_value<'a>(flags: &'a HashMap<String, Vec<String>>, name: &str) -> Option<&'a str> {
-    flags.get(name).and_then(|values| values.first()).map(String::as_str)
+    flags
+        .get(name)
+        .and_then(|values| values.first())
+        .map(String::as_str)
 }
 
 /// Whether a token is an option attempt: starts with a dash and is not a
 /// lone dash (a prose separator like `—` stays in the description).
-fn is_flag_like(text: &str) -> bool {
+pub(crate) fn is_flag_like(text: &str) -> bool {
     text.starts_with('-') && !text.trim_start_matches('-').is_empty()
 }
 
@@ -446,25 +588,92 @@ fn parse_size(value: &str) -> Result<(u32, u32), String> {
     Ok((width, height))
 }
 
+/// A byte range into the original input.
+///
+/// Spans are what make an editing surface possible: highlighting, `c:`
+/// chips, completion and error underlines all need to know *where* a token
+/// sits, not just what it says. They index the input as typed — before
+/// smart-punctuation normalization — so `—` occupies its own three bytes
+/// even though its token text is `--`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl Span {
+    pub fn empty_at(offset: usize) -> Self {
+        Self {
+            start: offset,
+            end: offset,
+        }
+    }
+
+    /// Whether `cursor` sits inside the span or at either edge. Both edges
+    /// count: a caret touching the end of a token is still "in" it, which is
+    /// what typing at the end of a word means.
+    pub fn contains(&self, cursor: usize) -> bool {
+        cursor >= self.start && cursor <= self.end
+    }
+
+    pub fn len(&self) -> usize {
+        self.end.saturating_sub(self.start)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.start == self.end
+    }
+}
+
 /// One token of the command line.
-struct Token {
-    text: String,
+#[derive(Clone, Debug)]
+pub struct Token {
+    pub text: String,
     /// Whether the token was wrapped in quotes (quoted tokens are content,
     /// never options, even when they start with a dash).
-    quoted: bool,
+    pub quoted: bool,
+    /// Where the token sits in the original input, quotes included.
+    pub span: Span,
 }
 
 /// Splits on whitespace, grouping `"quoted segments"` (straight or curly
 /// quotes) into single tokens. Smart punctuation is normalized: `—` → `--`,
 /// `–` → `-`. Unbalanced quotes parse as plain text.
-fn tokenize(input: &str) -> Vec<Token> {
+///
+/// This is the only tokenizer. The command bar highlights with it rather
+/// than carrying its own, so the two can never disagree about where a
+/// token starts or whether it was quoted.
+pub fn tokenize(input: &str) -> Vec<Token> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut quoted = false;
     let mut in_quotes = false;
-    for character in input.trim().chars() {
+    let mut escaped = false;
+    let mut start: Option<usize> = None;
+    let mut end = 0usize;
+
+    for (index, character) in input.char_indices() {
+        let after = index + character.len_utf8();
+        // Inside quotes a backslash escapes the next character, so a
+        // description can contain a quote. Without this the language cannot
+        // express `a "storm" coat` at all.
+        if escaped {
+            start.get_or_insert(index);
+            end = after;
+            current.push(character);
+            escaped = false;
+            continue;
+        }
+        if character == '\\' && in_quotes {
+            start.get_or_insert(index);
+            end = after;
+            escaped = true;
+            continue;
+        }
         match character {
             '"' | '“' | '”' => {
+                start.get_or_insert(index);
+                end = after;
                 if in_quotes {
                     in_quotes = false;
                     quoted = true;
@@ -472,24 +681,45 @@ fn tokenize(input: &str) -> Vec<Token> {
                     in_quotes = true;
                 }
             }
-            '—' => current.push_str("--"),
-            '–' => current.push('-'),
+            '—' => {
+                start.get_or_insert(index);
+                end = after;
+                current.push_str("--");
+            }
+            '–' => {
+                start.get_or_insert(index);
+                end = after;
+                current.push('-');
+            }
             character if character.is_whitespace() && !in_quotes => {
                 if !current.is_empty() {
                     tokens.push(Token {
                         text: std::mem::take(&mut current),
                         quoted,
+                        span: Span {
+                            start: start.unwrap_or(index),
+                            end,
+                        },
                     });
                     quoted = false;
                 }
+                start = None;
             }
-            character => current.push(character),
+            character => {
+                start.get_or_insert(index);
+                end = after;
+                current.push(character);
+            }
         }
     }
     if !current.is_empty() {
         tokens.push(Token {
             text: current,
             quoted,
+            span: Span {
+                start: start.unwrap_or(end),
+                end,
+            },
         });
     }
     tokens
@@ -500,6 +730,82 @@ mod tests {
     use super::*;
     use crate::registry::ops::Operation;
     use crate::vision::LoraSelection;
+
+    #[test]
+    fn quotes_can_be_escaped_inside_a_quoted_argument() {
+        // The inspector emits descriptions with `{:?}`, which escapes
+        // embedded quotes; without escape handling the text came back
+        // mangled as `\storm\`.
+        let tokens = tokenize(r#"/describe c:mara "a \"storm\" coat""#);
+        let texts: Vec<&str> = tokens.iter().map(|token| token.text.as_str()).collect();
+        assert_eq!(texts, ["/describe", "c:mara", r#"a "storm" coat"#]);
+        assert!(tokens[2].quoted);
+    }
+
+    #[test]
+    fn a_backslash_outside_quotes_is_literal() {
+        // Escaping applies only inside quotes; unquoted prose keeps its
+        // backslashes rather than silently losing them.
+        let tokens = tokenize(r"/create character a back\slash");
+        let texts: Vec<&str> = tokens.iter().map(|token| token.text.as_str()).collect();
+        assert_eq!(texts, ["/create", "character", "a", r"back\slash"]);
+    }
+
+    #[test]
+    fn flags_match_parsers() {
+        // Every flag advertised in OPS must be one the parser accepts.
+        // Offering a flag that fails on submit would make completion a trap,
+        // and the two lists live in different places, so pin them together.
+        let base = |op: &str| match op {
+            "/create" => "/create character a description",
+            "/variant" => "/variant c:x a description",
+            "/regenerate" => "/regenerate c:x",
+            "/modify" => "/modify c:x a description",
+            "/attach-lora" => "/attach-lora c:x adapter",
+            "/set" => "/set c:x",
+            other => panic!("{other} advertises flags but has no base command here"),
+        };
+        let value = |flag: &str| match flag {
+            "--name" => "mia",
+            "--size" => "512x768",
+            "--steps" => "8",
+            "--lora" => "adapter@0.8",
+            "--axis" => "outfit",
+            "--mask" => "hair",
+            "--inpaint" => "bob",
+            "--multiplier" => "0.8",
+            "--seed" => "4471",
+            other => panic!("no test value for {other}"),
+        };
+
+        for op in OPS {
+            for flag in op.flags {
+                let input = format!("{} {flag} {}", base(op.name), value(flag));
+                if let Err(error) = parse_slash(&input) {
+                    assert!(
+                        !error.0.starts_with("unknown option"),
+                        "{} advertises {flag}, but the parser rejects it: {}",
+                        op.name,
+                        error.0
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_operation_in_the_table_parses() {
+        // A name in OPS that parse_slash does not dispatch would be offered
+        // by completion and then fail as "unknown command".
+        for op in OPS {
+            let error = parse_slash(op.name).unwrap_err();
+            assert!(
+                !error.0.starts_with("unknown command"),
+                "{} is in OPS but parse_slash does not handle it",
+                op.name
+            );
+        }
+    }
 
     #[test]
     fn create_parses_kind_description_and_optional_name() {

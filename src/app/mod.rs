@@ -1,4 +1,5 @@
 mod config;
+pub mod sample;
 
 pub use config::{AppConfig, ConfigError, GenerationConfig, DEFAULT_CONFIG_PATH};
 

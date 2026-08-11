@@ -1,10 +1,16 @@
 mod canvas;
+mod cmdbar;
 mod components;
+pub mod gallery;
 mod guide;
 mod icons;
+mod inspector;
+mod keys;
+mod palette;
 mod plans;
 mod projects;
 mod settings;
+pub mod writer;
 
 use std::{
     path::{Path, PathBuf},
@@ -24,12 +30,13 @@ use crate::{
 };
 
 use canvas::Canvas;
-use components::{ErrorToast, RailButton, StatusDot};
+use components::{ErrorToast, StatusDot};
 use guide::GuideCard;
 use icons::{Icon, IconName};
 use plans::Plans;
 use projects::Projects;
 use settings::Settings;
+use writer::Writer;
 
 /// How often the workspace writes the project to disk.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -62,18 +69,22 @@ impl AutosaveMode {
 /// when no project file is open; clears the dirty flag on success. A
 /// failure is logged with its code and surfaced through the shared error
 /// report signal.
-pub fn persist_state(
-    app_state: Signal<AppState>,
-    mut error_report: Signal<Option<ReportedError>>,
-) {
+pub fn persist_state(app_state: Signal<AppState>, mut error_report: Signal<Option<ReportedError>>) {
     if let Err(error) = commands::save_project(app_state) {
         error_report.set(Some(error.log()));
     }
 }
 
+/// Newtypes so two `Signal<usize>` contexts stay distinguishable.
+#[derive(Clone, Copy)]
+pub struct WriterCaret(pub Signal<usize>);
+#[derive(Clone, Copy)]
+pub struct GridCursor(pub Signal<usize>);
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AppScreen {
     Projects,
+    Writer,
     Canvas,
     Plans,
     Settings,
@@ -82,6 +93,7 @@ pub enum AppScreen {
 /// Starts a plan run through the shared driver surface: installs the
 /// session (the assistant card appears) and executes the steps. A run is
 /// refused while another is active.
+#[allow(clippy::too_many_arguments)]
 fn start_plan(
     config: AppConfig,
     app_state: Signal<AppState>,
@@ -89,6 +101,9 @@ fn start_plan(
     defaults: Signal<crate::registry::GenerationDefaults>,
     screen: Signal<AppScreen>,
     composer: Signal<String>,
+    writer_caret: WriterCaret,
+    grid_cursor: GridCursor,
+    palette_open: Signal<bool>,
     driver_ui: ExecutionUi,
     session: Signal<Option<GuideSession>>,
     plan: Plan,
@@ -105,6 +120,9 @@ fn start_plan(
         defaults,
         screen,
         composer,
+        writer_caret,
+        grid_cursor,
+        palette_open,
     };
     driver::run_plan(ctx, driver_ui, plan, mode, session, exit_on_done);
 }
@@ -150,6 +168,19 @@ pub fn Workspace(
     let composer = use_signal(String::new);
     use_context_provider(|| composer);
 
+    // Whether the command palette is showing. Owned here because the
+    // shortcut that toggles it is app-wide.
+    let palette_open = use_signal(|| false);
+    use_context_provider(|| palette_open);
+
+    // The two cursors — the writer's caret line and the grid's keyboard
+    // selection. Owned here so the plan driver can move them: a demo that
+    // cannot move a cursor can only narrate, never show.
+    let writer_caret = WriterCaret(use_signal(|| 0usize));
+    use_context_provider(|| writer_caret);
+    let grid_cursor = GridCursor(use_signal(|| 0usize));
+    use_context_provider(|| grid_cursor);
+
     // The automation driver: its own execution surface (the assistant card
     // and the runner observe it; the global toast stays untouched) and the
     // session signal the card renders.
@@ -189,6 +220,9 @@ pub fn Workspace(
                 defaults,
                 screen,
                 composer,
+                writer_caret,
+                grid_cursor,
+                palette_open,
                 hook_driver_ui,
                 session,
                 plan,
@@ -233,8 +267,50 @@ pub fn Workspace(
     })
     .expect("shortcut registration should succeed");
 
+    // The palette is opened from here rather than from the canvas so the
+    // shortcut registers once for the app, not once per screen mount.
+    let mut palette_open = use_context::<Signal<bool>>();
+    dioxus::desktop::use_global_shortcut("CmdOrCtrl+K", move |_| {
+        let showing = *palette_open.peek();
+        palette_open.set(!showing);
+    })
+    .expect("shortcut registration should succeed");
+
     let project_name = app_state.read().project_name.clone();
     let dirty = app_state.read().has_unsaved_changes;
+    let artifact_count = app_state.read().registry.artifacts.len();
+
+    // The one key listener for the app. Screens observe `last_key` rather
+    // than installing their own bridge — the JS listener is registered
+    // against `window`, so a second one would never receive anything.
+    let mut last_key = use_signal(|| None::<keys::KeyEvent>);
+    use_context_provider(|| last_key);
+    let mut goto = use_signal(|| false);
+    let mut tick = use_signal(|| 0u64);
+    keys::use_keys(move |press| {
+        // `g` then `s`/`c` switches screens, matching the tab hints. The
+        // pending `g` lives here because the pair spans two presses.
+        if *goto.peek() {
+            goto.set(false);
+            match press.key.as_str() {
+                "s" => {
+                    screen.set(AppScreen::Writer);
+                    return;
+                }
+                "c" => {
+                    screen.set(AppScreen::Canvas);
+                    return;
+                }
+                _ => {}
+            }
+        } else if press.key == "g" {
+            goto.set(true);
+            return;
+        }
+        let next = *tick.peek() + 1;
+        tick.set(next);
+        last_key.set(Some((next, press)));
+    });
 
     // The Plans screen's run handler (captures its own config clone — the
     // `move` closure must not steal the component's `config`; clones inside
@@ -250,6 +326,9 @@ pub fn Workspace(
                 defaults,
                 screen,
                 composer,
+                writer_caret,
+                grid_cursor,
+                palette_open,
                 plans_driver_ui.clone(),
                 session,
                 plan,
@@ -260,43 +339,41 @@ pub fn Workspace(
     };
 
     rsx! {
-        main { class: "grid h-screen min-h-[640px] min-w-[900px] grid-cols-[64px_minmax(0,1fr)] grid-rows-[58px_minmax(0,1fr)] overflow-hidden bg-[#0b0b0e] font-sans text-zinc-100 selection:bg-violet-500/30",
-            aside { class: "row-span-2 flex flex-col items-center border-r border-white/[0.055] bg-[#09090b] py-3",
-                button { class: "mb-6 grid size-10 place-items-center text-violet-300", aria_label: "Smart Visual Sequencer", onclick: move |_| screen.set(AppScreen::Canvas),
-                    Icon { name: IconName::Sparkles, class: "size-[21px]" }
-                }
-                nav { class: "flex flex-1 flex-col items-center gap-2",
-                    RailButton { label: "Projects", icon: IconName::Home, active: screen() == AppScreen::Projects, onclick: move |_| screen.set(AppScreen::Projects) }
-                    RailButton { label: "Canvas", icon: IconName::Canvas, active: screen() == AppScreen::Canvas, onclick: move |_| screen.set(AppScreen::Canvas) }
-                    RailButton { label: "Plans", icon: IconName::List, active: screen() == AppScreen::Plans, onclick: move |_| screen.set(AppScreen::Plans) }
-                }
-                RailButton { label: "Settings", icon: IconName::Settings, active: screen() == AppScreen::Settings, onclick: move |_| screen.set(AppScreen::Settings) }
-            }
+        // The prototype's chrome: a top bar of screen tabs, the work, and a
+        // status bar. The old icon rail is gone — with two primary screens
+        // and a palette, a permanent 64px column was navigation nobody used.
+        main { class: "grid h-screen min-h-[640px] min-w-[900px] grid-rows-[44px_minmax(0,1fr)_26px] overflow-hidden bg-[#0b0b0e] font-sans text-zinc-100 selection:bg-violet-500/30",
 
-            header { class: "flex min-w-0 items-center justify-between border-b border-white/[0.055] bg-[#0b0b0e]/90 px-5 backdrop-blur-xl",
-                div { class: "flex min-w-0 items-center gap-3",
-                    if screen() == AppScreen::Canvas {
-                        button { class: "truncate text-[12px] font-medium text-zinc-300 transition hover:text-white", "{project_name}" }
-                        if dirty { span { class: "size-1 rounded-full bg-zinc-600", title: "Unsaved changes" } }
-                    } else {
-                        p { class: "text-[12px] font-medium text-zinc-400", if screen() == AppScreen::Projects { "Projects" } else { "Settings" } }
+            header { class: "flex min-w-0 items-center gap-3.5 border-b border-white/[0.055] bg-[#101014] px-3.5",
+                button {
+                    class: "text-[11px] font-semibold uppercase tracking-[0.04em] text-zinc-600 transition hover:text-zinc-400",
+                    onclick: move |_| screen.set(AppScreen::Projects),
+                    "Storyfella"
+                }
+                p { class: "min-w-0 truncate text-[12px] text-zinc-400",
+                    "{project_name}"
+                    if dirty {
+                        span { class: "ml-1.5 text-violet-400", title: "Unsaved changes", "●" }
                     }
                 }
-                div { class: "flex items-center gap-4",
-                    div { class: "flex items-center gap-2 text-[10px] text-zinc-600", StatusDot { status: HealthStatus::Idle } span { "Local · starts on demand" } }
-                    if screen() == AppScreen::Canvas {
-                        button { class: "flex h-8 items-center gap-2 rounded-lg bg-white/[0.055] px-3 text-[10px] font-medium text-zinc-400 transition hover:bg-white/[0.08] hover:text-white disabled:opacity-35", title: "Undo (Ctrl+Z)", disabled: !app_state.read().can_undo(), onclick: move |_| { app_state.write().undo(); },
-                            Icon { name: IconName::Undo, class: "size-3" }
-                            "Undo"
-                        }
-                        button { class: "flex h-8 items-center gap-2 rounded-lg bg-white/[0.055] px-3 text-[10px] font-medium text-zinc-400 transition hover:bg-white/[0.08] hover:text-white disabled:opacity-35", title: "Redo (Ctrl+Shift+Z)", disabled: !app_state.read().can_redo(), onclick: move |_| { app_state.write().redo(); },
-                            Icon { name: IconName::Redo, class: "size-3" }
-                            "Redo"
-                        }
-                        button { class: "flex h-8 items-center gap-2 rounded-lg bg-white/[0.055] px-3 text-[10px] font-medium text-zinc-400 transition hover:bg-white/[0.08] hover:text-white disabled:opacity-35", disabled: !dirty, title: "Save (Cmd/Ctrl+S)", onclick: move |_| persist_state(app_state, error_report),
-                            Icon { name: IconName::Save, class: "size-3" }
-                            "Save"
-                        }
+
+                nav { class: "ml-auto flex items-center gap-0.5",
+                    ScreenTab { label: "Story", hint: "g s", active: screen() == AppScreen::Writer, onclick: move |_| screen.set(AppScreen::Writer) }
+                    ScreenTab { label: "Canvas", hint: "g c", active: screen() == AppScreen::Canvas, onclick: move |_| screen.set(AppScreen::Canvas) }
+                    ScreenTab { label: "Projects", hint: "", active: screen() == AppScreen::Projects, onclick: move |_| screen.set(AppScreen::Projects) }
+                    ScreenTab { label: "Plans", hint: "", active: screen() == AppScreen::Plans, onclick: move |_| screen.set(AppScreen::Plans) }
+                    ScreenTab { label: "Settings", hint: "", active: screen() == AppScreen::Settings, onclick: move |_| screen.set(AppScreen::Settings) }
+                }
+
+                div { class: "flex items-center gap-1",
+                    button { class: "grid size-7 place-items-center rounded-lg text-zinc-600 transition hover:bg-white/[0.05] hover:text-zinc-200 disabled:opacity-30", title: "Undo (Ctrl+Z)", disabled: !app_state.read().can_undo(), onclick: move |_| { app_state.write().undo(); },
+                        Icon { name: IconName::Undo, class: "size-3" }
+                    }
+                    button { class: "grid size-7 place-items-center rounded-lg text-zinc-600 transition hover:bg-white/[0.05] hover:text-zinc-200 disabled:opacity-30", title: "Redo (Ctrl+Shift+Z)", disabled: !app_state.read().can_redo(), onclick: move |_| { app_state.write().redo(); },
+                        Icon { name: IconName::Redo, class: "size-3" }
+                    }
+                    button { class: "grid size-7 place-items-center rounded-lg text-zinc-600 transition hover:bg-white/[0.05] hover:text-zinc-200 disabled:opacity-30", title: "Save (Cmd/Ctrl+S)", disabled: !dirty, onclick: move |_| persist_state(app_state, error_report),
+                        Icon { name: IconName::Save, class: "size-3" }
                     }
                 }
             }
@@ -304,14 +381,48 @@ pub fn Workspace(
             div { class: "min-h-0 min-w-0",
                 match screen() {
                     AppScreen::Projects => rsx! { Projects { config: config.clone(), app_state, on_open: move |_| screen.set(AppScreen::Canvas) } },
+                    AppScreen::Writer => rsx! { Writer { app_state } },
                     AppScreen::Canvas => rsx! { Canvas { app_state, backend, defaults } },
                     AppScreen::Plans => rsx! { Plans { on_run: on_run_plan } },
                     AppScreen::Settings => rsx! { Settings { config: config.clone(), backend, defaults } },
                 }
             }
+
+            // Status bar: where the keyboard hints and counts live, so they
+            // stop crowding the surfaces they describe.
+            footer { class: "flex items-center gap-3 border-t border-white/[0.055] bg-[#101014] px-3 font-mono text-[10.5px] text-zinc-600",
+                span { class: "rounded bg-violet-400/15 px-2 py-0.5 text-[10px] font-bold tracking-[0.08em] text-violet-300",
+                    "NORMAL"
+                }
+                span { "{artifact_count} artifacts" }
+                div { class: "ml-auto flex items-center gap-3",
+                    StatusDot { status: HealthStatus::Idle }
+                    span { class: "font-sans text-zinc-700", "⌃K palette · ⌃S save" }
+                }
+            }
         }
         ErrorToast { error_report }
         {guide_overlay(session)}
+    }
+}
+
+/// One screen tab in the top bar.
+#[component]
+fn ScreenTab(
+    label: &'static str,
+    hint: &'static str,
+    active: bool,
+    onclick: EventHandler<()>,
+) -> Element {
+    rsx! {
+        button {
+            class: if active { "flex items-center gap-1.5 rounded-lg bg-violet-400/15 px-2.5 py-1 text-[11px] font-medium text-violet-300" } else { "flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-medium text-zinc-600 transition hover:text-zinc-300" },
+            onclick: move |_| onclick.call(()),
+            "{label}"
+            if !hint.is_empty() {
+                span { class: "font-mono text-[9px] opacity-55", "{hint}" }
+            }
+        }
     }
 }
 

@@ -521,7 +521,9 @@ impl Pipeline {
                         .transpose()?;
                     let request = GenerateRequest {
                         prompt: prompt_text,
-                        reference_image_path: reference_path.clone().map(|path| path.display().to_string()),
+                        reference_image_path: reference_path
+                            .clone()
+                            .map(|path| path.display().to_string()),
                         reference_strength: self.params.reference_strength,
                         width: Some(self.params.width),
                         height: Some(self.params.height),
@@ -1576,9 +1578,9 @@ fn step_references(step: &Step) -> Vec<usize> {
         Step::Union { masks } => masks.iter().map(|mask| mask.step).collect(),
         Step::PaintStrokes { image, .. } => vec![image.step],
         Step::Llm { kind } => match kind {
-            LlmStepKind::Draft { .. }
-            | LlmStepKind::Plan { .. }
-            | LlmStepKind::Ground { .. } => Vec::new(),
+            LlmStepKind::Draft { .. } | LlmStepKind::Plan { .. } | LlmStepKind::Ground { .. } => {
+                Vec::new()
+            }
             LlmStepKind::Describe { image } => vec![image.step],
             LlmStepKind::Critique { image, .. } => vec![image.step],
         },

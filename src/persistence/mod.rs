@@ -51,6 +51,8 @@ pub struct StoredProject {
     pub id: Uuid,
     pub name: String,
     pub registry: ArtifactRegistry,
+    /// The `.sf` story text the Writer edits (see schema v7).
+    pub story_source: String,
 }
 
 /// SQLite-backed storage for one project (one registry per database).
@@ -143,6 +145,20 @@ impl ProjectDb {
         self.write_snapshot(registry)
     }
 
+    /// Writes the story text the Writer edits.
+    pub fn save_story_source(&self, source: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE projects SET story_source = ?1, updated_at = ?2",
+            params![source, unix_now()],
+        )
+        .map_err(|source| StoreError::Save {
+            path: self.path.clone(),
+            source,
+        })?;
+        Ok(())
+    }
+
     /// Renames the `projects` row (used at creation, and by any future
     /// rename UI).
     pub fn rename_project(&self, name: &str) -> Result<(), StoreError> {
@@ -202,9 +218,10 @@ impl ProjectDb {
             })?;
             tx.execute(
                 "INSERT INTO artifacts (id, project_id, kind, name, description, \
-                 variant_of_id, variant_axis, default_width, default_height, parent_id, \
+                 variant_of_id, variant_axis, default_width, default_height, \
+                 default_steps, default_seed, parent_id, \
                  composition_mode, active_revision_id, drafts_json, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                 params![
                     artifact.id.to_string(),
                     project_id,
@@ -215,6 +232,8 @@ impl ProjectDb {
                     artifact.variant_axis.map(enum_to_db),
                     artifact.default_size.map(|(width, _)| width as i64),
                     artifact.default_size.map(|(_, height)| height as i64),
+                    artifact.default_steps.map(|steps| steps as i64),
+                    artifact.default_seed.map(|seed| seed as i64),
                     artifact.parent_id.map(|id| id.to_string()),
                     artifact.composition.as_ref().map(|c| enum_to_db(c.mode)),
                     artifact.active_revision_id.map(|id| id.to_string()),
@@ -231,7 +250,8 @@ impl ProjectDb {
             for revision in &artifact.revisions {
                 tx.execute(
                     "INSERT INTO revisions (id, artifact_id, prompt, asset_path, status, \
-                     seed, model, error, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                     seed, model, error, origin, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                     params![
                         revision.id.to_string(),
                         artifact.id.to_string(),
@@ -241,6 +261,7 @@ impl ProjectDb {
                         revision.seed.map(|seed| seed as i64),
                         revision.model,
                         revision.error,
+                        enum_to_db(revision.origin),
                         now,
                     ],
                 )
@@ -347,11 +368,17 @@ impl ProjectDb {
     /// Loads the project row and the full registry snapshot.
     pub fn load(&self) -> Result<StoredProject, StoreError> {
         let conn = self.conn.lock();
-        let (row_id, row_name) = conn
+        let (row_id, row_name, story_source) = conn
             .query_row(
-                "SELECT id, name FROM projects ORDER BY rowid LIMIT 1",
+                "SELECT id, name, story_source FROM projects ORDER BY rowid LIMIT 1",
                 [],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
             )
             .optional()
             .map_err(|source| StoreError::Load {
@@ -373,7 +400,8 @@ impl ProjectDb {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, kind, name, description, variant_of_id, variant_axis, \
-                     default_width, default_height, parent_id, composition_mode, \
+                     default_width, default_height, default_steps, default_seed, \
+                     parent_id, composition_mode, \
                      active_revision_id, drafts_json \
                      FROM artifacts ORDER BY rowid",
                 )
@@ -392,10 +420,12 @@ impl ProjectDb {
                         variant_axis: row.get(5)?,
                         default_width: row.get(6)?,
                         default_height: row.get(7)?,
-                        parent_id: row.get(8)?,
-                        composition_mode: row.get(9)?,
-                        active_revision_id: row.get(10)?,
-                        drafts_json: row.get(11)?,
+                        default_steps: row.get(8)?,
+                        default_seed: row.get(9)?,
+                        parent_id: row.get(10)?,
+                        composition_mode: row.get(11)?,
+                        active_revision_id: row.get(12)?,
+                        drafts_json: row.get(13)?,
                     })
                 })
                 .map_err(|source| StoreError::Load {
@@ -435,6 +465,8 @@ impl ProjectDb {
                         (Some(width), Some(height)) => Some((width as u32, height as u32)),
                         _ => None,
                     },
+                    default_steps: row.default_steps.map(|steps| steps as u32),
+                    default_seed: row.default_seed.map(|seed| seed as u64),
                     parent_id: row
                         .parent_id
                         .as_deref()
@@ -466,8 +498,8 @@ impl ProjectDb {
         {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, artifact_id, prompt, asset_path, status, seed, model, error \
-                     FROM revisions ORDER BY rowid",
+                    "SELECT id, artifact_id, prompt, asset_path, status, seed, model, error, \
+                     origin FROM revisions ORDER BY rowid",
                 )
                 .map_err(|source| StoreError::Load {
                     path: self.path.clone(),
@@ -484,6 +516,7 @@ impl ProjectDb {
                         seed: row.get(5)?,
                         model: row.get(6)?,
                         error: row.get(7)?,
+                        origin: row.get(8)?,
                     })
                 })
                 .map_err(|source| StoreError::Load {
@@ -554,6 +587,7 @@ impl ProjectDb {
                     seed: revision.seed.map(|seed| seed as u64),
                     model: revision.model.clone(),
                     error: revision.error.clone(),
+                    origin: enum_from_db(&self.path, "revisions.origin", &revision.origin)?,
                     masks: masks
                         .get(&revision.id)
                         .map(|rows| {
@@ -748,6 +782,7 @@ impl ProjectDb {
 
         registry.artifacts = artifacts;
         Ok(StoredProject {
+            story_source,
             id: project_id,
             name: row_name,
             registry,
@@ -864,7 +899,9 @@ impl ProjectDb {
 /// Schema version 1 — the §10 tables. Appending to `MIGRATIONS` with a new
 /// `CREATE TABLE IF NOT EXISTS`/`ALTER TABLE` script migrates existing
 /// databases; `schema_meta` records what has been applied.
-const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4];
+const MIGRATIONS: &[&str] = &[
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+];
 
 /// Schema version 2 — the GUI carried the legacy `Project` model
 /// (storyboard + timeline) as JSON on the `projects` row until the canvas
@@ -882,6 +919,28 @@ const SCHEMA_V3: &str = "ALTER TABLE projects DROP COLUMN project_json;";
 const SCHEMA_V4: &str = "\
 ALTER TABLE artifacts ADD COLUMN default_width INTEGER;\n\
 ALTER TABLE artifacts ADD COLUMN default_height INTEGER;";
+
+/// Schema version 5 — artifact-level generation defaults reachable from the
+/// inspector: a step count and a pinned seed (`NULL` = reroll each run).
+const SCHEMA_V5: &str = "\
+ALTER TABLE artifacts ADD COLUMN default_steps INTEGER;\n\
+ALTER TABLE artifacts ADD COLUMN default_seed INTEGER;";
+
+/// Schema version 6 — a revision records whether it renders the artifact's
+/// description or an experiment against it. Existing rows default to
+/// `canon`, which is what they were before experiments were distinguished.
+const SCHEMA_V6: &str = "\
+ALTER TABLE revisions ADD COLUMN origin TEXT NOT NULL DEFAULT 'canon' \
+  CHECK (origin IN ('canon','experiment'));";
+
+/// Schema version 7 — the story source the Writer edits.
+///
+/// Roadmap §9 makes `.sf` files on disk the story's source of truth. Until
+/// the language crate exists the text lives in the project database, which
+/// keeps it saved and undoable with everything else; moving it to a file is
+/// a later migration, not a format to preserve.
+const SCHEMA_V7: &str = "\
+ALTER TABLE projects ADD COLUMN story_source TEXT NOT NULL DEFAULT '';";
 
 const SCHEMA_V1: &str = "
 CREATE TABLE projects (
@@ -979,6 +1038,8 @@ struct ArtifactRow {
     variant_axis: Option<String>,
     default_width: Option<i64>,
     default_height: Option<i64>,
+    default_steps: Option<i64>,
+    default_seed: Option<i64>,
     parent_id: Option<String>,
     composition_mode: Option<String>,
     active_revision_id: Option<String>,
@@ -994,6 +1055,7 @@ struct RevisionRow {
     seed: Option<i64>,
     model: Option<String>,
     error: Option<String>,
+    origin: String,
 }
 
 struct MaskRow {
@@ -1061,6 +1123,7 @@ fn op_name(operation: &Operation) -> &'static str {
         Operation::Variant { .. } => "variant",
         Operation::Regenerate { .. } => "regenerate",
         Operation::Resize { .. } => "resize",
+        Operation::Set { .. } => "set",
         Operation::Compose { .. } => "compose",
         Operation::Draft { .. } => "draft",
         Operation::Modify { .. } => "modify",
@@ -1345,6 +1408,7 @@ mod tests {
             seed: Some(42),
             model: Some("krea-2-q4".to_owned()),
             error: None,
+            origin: crate::registry::RevisionOrigin::Experiment,
             masks: vec![StoredMask {
                 id: Uuid::new_v4(),
                 asset_path: "assets/generated/mia-mask.png".to_owned(),

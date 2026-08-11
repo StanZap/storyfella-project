@@ -22,6 +22,7 @@
 //!   seed and model so golden runs can be replayed identically.
 
 pub mod backend;
+pub mod completion;
 pub mod image_ops;
 pub mod ops;
 pub mod pipeline;
@@ -49,6 +50,17 @@ pub enum ArtifactKind {
 }
 
 impl ArtifactKind {
+    /// Every kind, in declaration order. Used by completion so a new kind
+    /// shows up in the command bar without a second list to maintain.
+    pub const ALL: [ArtifactKind; 6] = [
+        ArtifactKind::Story,
+        ArtifactKind::Scene,
+        ArtifactKind::Beat,
+        ArtifactKind::Character,
+        ArtifactKind::Environment,
+        ArtifactKind::Object,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             ArtifactKind::Story => "story",
@@ -127,6 +139,19 @@ pub enum VariantAxis {
 }
 
 impl VariantAxis {
+    /// Every axis, in declaration order — the `--axis` value set.
+    pub const ALL: [VariantAxis; 9] = [
+        VariantAxis::Outfit,
+        VariantAxis::Age,
+        VariantAxis::Body,
+        VariantAxis::Hair,
+        VariantAxis::Expression,
+        VariantAxis::TimeOfDay,
+        VariantAxis::Weather,
+        VariantAxis::Season,
+        VariantAxis::Mood,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             VariantAxis::Outfit => "outfit",
@@ -238,6 +263,15 @@ pub struct Artifact {
     /// explicitly with `/create … --size WxH`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_size: Option<(u32, u32)>,
+    /// The step count this artifact's generations default to. `None` means
+    /// the profile default applies. Set with `/set … --steps`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_steps: Option<u32>,
+    /// A pinned seed. `Some` makes every generation reproducible — the same
+    /// prompt gives the same picture, so an edit shows only what the edit
+    /// changed. `None` rerolls each run. Set with `/set … --seed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_seed: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<Uuid>,
     /// Beat-only: how this beat's image is composed from layers.
@@ -321,9 +355,55 @@ pub struct ArtifactRevision {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Whether this renders the description or an experiment against it.
+    #[serde(default)]
+    pub origin: RevisionOrigin,
     /// Masks are a view over this specific revision image.
     #[serde(default)]
     pub masks: Vec<StoredMask>,
+}
+
+/// Why a revision exists.
+///
+/// The distinction the canvas has to make visible: a `Canon` revision renders
+/// the artifact's own description, while an `Experiment` renders a delta
+/// against it (`/modify`, or `/regenerate` with an explicit prompt). Because
+/// edits ground against the description and not against the current image,
+/// experiments do not accumulate — which is surprising until you can see
+/// which revisions are which. Promoting one is `/describe`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RevisionOrigin {
+    #[default]
+    Canon,
+    Experiment,
+}
+
+impl RevisionOrigin {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RevisionOrigin::Canon => "canon",
+            RevisionOrigin::Experiment => "experiment",
+        }
+    }
+
+    /// Whether the operation renders the description or a delta against it.
+    /// A `variant` is canon *for the new artifact it creates*.
+    pub fn of(op: &Operation) -> Self {
+        match op {
+            Operation::Modify { .. } => Self::Experiment,
+            Operation::Regenerate {
+                prompt: Some(_), ..
+            } => Self::Experiment,
+            _ => Self::Canon,
+        }
+    }
+}
+
+impl fmt::Display for RevisionOrigin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -454,7 +534,10 @@ impl LoraBindings {
         let full = self.resolve(file)?;
         let relative = full.strip_prefix(&self.dir).ok()?;
         let file_name = relative.file_name()?.to_string_lossy().into_owned();
-        match relative.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        match relative
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
             Some(parent) => {
                 let parent_name = parent.file_name()?.to_string_lossy().into_owned();
                 Some(format!("{parent_name}-{file_name}"))
@@ -478,7 +561,10 @@ pub fn prepare_lora_links(dir: &std::path::Path) -> usize {
         let Ok(relative) = path.strip_prefix(dir) else {
             continue;
         };
-        let Some(parent) = relative.parent().filter(|parent| !parent.as_os_str().is_empty()) else {
+        let Some(parent) = relative
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        else {
             continue; // already top level
         };
         let Some(file_name) = relative.file_name() else {
@@ -487,13 +573,20 @@ pub fn prepare_lora_links(dir: &std::path::Path) -> usize {
         let Some(parent_name) = parent.file_name() else {
             continue;
         };
-        let link = dir.join(format!("{}-{}", parent_name.to_string_lossy(), file_name.to_string_lossy()));
+        let link = dir.join(format!(
+            "{}-{}",
+            parent_name.to_string_lossy(),
+            file_name.to_string_lossy()
+        ));
         // A working top-level entry wins (a real file or a link that
         // resolves); broken links (from an earlier layout) are replaced.
         let already_usable = std::fs::symlink_metadata(&link)
             .map(|meta| meta.file_type().is_symlink() && link.is_file())
             .unwrap_or(false)
-            || (link.is_file() && !std::fs::symlink_metadata(&link).map(|m| m.file_type().is_symlink()).unwrap_or(false));
+            || (link.is_file()
+                && !std::fs::symlink_metadata(&link)
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false));
         if already_usable {
             continue;
         }
@@ -922,6 +1015,8 @@ impl ArtifactRegistry {
             variant_of,
             variant_axis: axis,
             default_size,
+            default_steps: None,
+            default_seed: None,
             parent_id: parent,
             composition: None,
             active_revision_id: None,
@@ -938,6 +1033,7 @@ impl ArtifactRegistry {
         prompt: String,
         seed: Option<u64>,
         model: Option<String>,
+        origin: RevisionOrigin,
     ) -> Result<Uuid, RegistryError> {
         let artifact = self
             .artifact_mut(artifact_id)
@@ -951,6 +1047,7 @@ impl ArtifactRegistry {
             seed,
             model,
             error: None,
+            origin,
             masks: Vec::new(),
         });
         artifact.active_revision_id = Some(revision_id);
@@ -1032,6 +1129,21 @@ impl ArtifactRegistry {
     ) -> Result<(), RegistryError> {
         let artifact = self.artifact_mut(id).ok_or(RegistryError::NoArtifact(id))?;
         artifact.description = description.into();
+        Ok(())
+    }
+
+    /// Sets the artifact's default step count (`None` = the profile
+    /// default applies).
+    pub fn set_default_steps(&mut self, id: Uuid, steps: Option<u32>) -> Result<(), RegistryError> {
+        let artifact = self.artifact_mut(id).ok_or(RegistryError::NoArtifact(id))?;
+        artifact.default_steps = steps;
+        Ok(())
+    }
+
+    /// Pins or releases the artifact's seed. `None` rerolls each run.
+    pub fn set_default_seed(&mut self, id: Uuid, seed: Option<u64>) -> Result<(), RegistryError> {
+        let artifact = self.artifact_mut(id).ok_or(RegistryError::NoArtifact(id))?;
+        artifact.default_seed = seed;
         Ok(())
     }
 
@@ -1704,6 +1816,8 @@ mod tests {
             variant_of: None,
             variant_axis: None,
             default_size: None,
+            default_steps: None,
+            default_seed: None,
             parent_id: None,
             composition: None,
             active_revision_id: None,
@@ -1718,6 +1832,8 @@ mod tests {
             variant_of: None,
             variant_axis: None,
             default_size: None,
+            default_steps: None,
+            default_seed: None,
             parent_id: None,
             composition: None,
             active_revision_id: None,
@@ -1739,13 +1855,13 @@ mod tests {
         let mut registry = registry_with(&[(ArtifactKind::Character, "Mia")]);
         let id = registry.artifacts[0].id;
         let first = registry
-            .start_revision(id, "first".into(), Some(1), None)
+            .start_revision(id, "first".into(), Some(1), None, RevisionOrigin::Canon)
             .unwrap();
         registry
             .finish_revision(id, first, "first.png".into(), Vec::new())
             .unwrap();
         let second = registry
-            .start_revision(id, "second".into(), Some(2), None)
+            .start_revision(id, "second".into(), Some(2), None, RevisionOrigin::Canon)
             .unwrap();
         registry
             .fail_revision(id, second, "backend exploded".into())

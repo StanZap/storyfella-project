@@ -80,6 +80,30 @@ pub fn Projects(
         }
     };
 
+    // A populated project to look at the layouts with. Creates the project
+    // the normal way, then fills the registry and story before the first
+    // save so it lands on disk like any other.
+    let create_sample = {
+        let project_dir = config.project_dir.clone();
+        let asset_dir = config.asset_dir.clone();
+        move |event: MouseEvent| match commands::create_project(
+            &project_dir,
+            "Keeper of the Low Light",
+            app_state,
+        ) {
+            Ok(_) => {
+                let (registry, story) = crate::app::sample::project(&asset_dir);
+                let mut state = app_state.write();
+                state.registry = registry;
+                state.story_source = story;
+                state.has_unsaved_changes = true;
+                drop(state);
+                on_open.call(event);
+            }
+            Err(report) => error_report.set(Some(report.log())),
+        }
+    };
+
     let open_dialog = {
         move |event: MouseEvent| {
             let Some(picked) = rfd::FileDialog::new()
@@ -146,6 +170,18 @@ pub fn Projects(
                             onclick: create,
                             "Create story"
                             Icon { name: IconName::Arrow, class: "size-3.5" }
+                        }
+
+                        div { class: "mt-8 border-t border-white/[0.06] pt-5",
+                            p { class: "text-xs font-medium text-zinc-400", "Or open the sample" }
+                            p { class: "mt-1.5 text-[11px] leading-5 text-zinc-600",
+                                "Twelve artifacts with variants, and a story that names three that do not exist yet — enough to see how the screens behave when they are full."
+                            }
+                            button {
+                                class: "mt-4 flex h-9 w-full items-center justify-center gap-2 rounded-xl bg-violet-400/15 text-[11px] font-semibold text-violet-200 transition hover:bg-violet-400/25",
+                                onclick: create_sample,
+                                "Create sample project"
+                            }
                         }
                     }
                 }

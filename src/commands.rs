@@ -341,10 +341,12 @@ pub fn run_operations(
         loop {
             match event_rx.recv_timeout(Duration::from_millis(50)) {
                 Ok(OpEvent::PendingMask(approval)) => {
-                    ui.pending_approval.set(Some(PendingApproval::Mask(approval)));
+                    ui.pending_approval
+                        .set(Some(PendingApproval::Mask(approval)));
                 }
                 Ok(OpEvent::PendingInput { description }) => {
-                    ui.pending_approval.set(Some(PendingApproval::PlannedEdit { description }));
+                    ui.pending_approval
+                        .set(Some(PendingApproval::PlannedEdit { description }));
                 }
                 Ok(OpEvent::Done {
                     registry: finished,
@@ -439,8 +441,12 @@ pub fn save_project(mut app_state: Signal<AppState>) -> Result<(), ReportedError
         return Ok(());
     };
     let registry = app_state.read().registry.clone();
+    let story_source = app_state.read().story_source.clone();
     ProjectDb::open(&path)
-        .and_then(|db| db.save_registry(&registry))
+        .and_then(|db| {
+            db.save_registry(&registry)?;
+            db.save_story_source(&story_source)
+        })
         .map_err(|error| error.report())?;
     app_state.write().has_unsaved_changes = false;
     Ok(())

@@ -1,0 +1,93 @@
+# A narrated walk through the two screens, start to finish.
+#
+# Every step here *does* something you can see — a caret moves and the panel
+# re-derives, a focus ring travels, a tile goes into its rendering state, the
+# palette opens. Narration that needed no action uses `say`, so the app is
+# never faking activity to carry a line of text.
+#
+# Runs against the sample project, so nothing waits on a backend. The one
+# render is `simulate_render`: it shows the in-flight UX using the picture
+# the artifact already has. No model runs and no image is produced.
+#
+#   Guide mode — watch it drive the app and narrate each step.
+#   Check mode — the same walk as a regression; a failure is a UX bug.
+name: "UI tour"
+description: "The Story and Canvas screens end to end, on a populated project. Shows the states, not just the navigation. No backend needed."
+speed_ms: 2400
+steps:
+  - sample_project: true
+    message: "A story with twelve artifacts, five variants, and a few renders already made. Nothing here needs the model running."
+    wait_ms: 1600
+
+  # ------------------------------------------------------------- the story
+  - go_story: true
+    message: "The Story screen. The text on the left is the source; everything on the right is derived from where the caret is."
+    wait_ms: 2400
+
+  - caret: 9
+    message: "Caret inside the harbor scene. The panel fills with what this beat references — mara and tam resolve, so they show their pictures."
+    wait_ms: 3000
+
+  - caret: 30
+    message: "Move to the lighthouse scene and the panel re-derives. keeper_elias and lighthouse_tower are amber: the story names them, but no artifact exists."
+    wait_ms: 3200
+
+  - say: true
+    message: "Amber is PENDING, not an error. The story is a work queue — Create turns a name into an artifact rather than scolding you for a typo."
+    wait_ms: 3000
+
+  # ------------------------------------------------------------ the canvas
+  - go_canvas: true
+    message: "The Canvas at rest is the grid. The picture is what you navigate by."
+    wait_ms: 2400
+
+  - cursor: "mara"
+    message: "hjkl moves this focus ring. mara has three variants, so they stack behind her tile."
+    wait_ms: 2600
+
+  - cursor: "isak"
+    message: "And the cursor travels. Notice isak is mid-render — dimmed, badged, still in the grid rather than in a toast that vanishes."
+    wait_ms: 2800
+
+  - simulate_render: "harbor_dock"
+    message: "Watch harbor_dock go in flight and come back. Work in progress stays where the work is; you never lose the thing you were looking at."
+    wait_ms: 1400
+
+  # ------------------------------------------------------------ the detail
+  - open: "mara"
+    message: "Opening an artifact replaces the grid. The render dominates; the rail holds everything that decides how it is made."
+    wait_ms: 2800
+
+  - say: true
+    message: "The description is tagged CANON because that is what it is — every generation is grounded against it. Steps and a pinned seed are stored on the artifact."
+    wait_ms: 3000
+
+  - say: true
+    message: "Revisions split into canon and experiment. An experiment renders a delta, not the description, which is why edits never accumulate. Promote is what makes one stick."
+    wait_ms: 3200
+
+  # ------------------------------------------------- one vocabulary, twice
+  - compose: "/set c:mara --steps 8"
+    message: "Every control in the rail is also a command. Watch the Steps row change — the rail and the bar are two views of one state."
+    wait_ms: 2600
+  - expect_no_error: true
+
+  - compose: "/describe c:mara A harbourmaster in her fifties, silver crop, storm-grey oilskin"
+    message: "DESCRIBE rewrites canon. The rail's description follows, and every later generation grounds against the new text."
+    wait_ms: 2600
+  - expect_no_error: true
+
+  - back: true
+    message: "Escape returns to the grid."
+    wait_ms: 1600
+
+  - palette: true
+    message: "Ctrl+K opens the palette from anywhere: the same vocabulary again, browsable this time, with every artifact reachable by name."
+    wait_ms: 3200
+
+  - palette: false
+    wait_ms: 900
+
+  - expect_artifact: { name: "mara", kind: character }
+  - expect_no_error: true
+    message: "Two screens, one vocabulary — the CLI, the command bar, the palette, and the inspector all speak it."

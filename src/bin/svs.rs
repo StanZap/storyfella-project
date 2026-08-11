@@ -93,7 +93,11 @@ struct EvalArgs {
     #[arg(long = "image", short = 'i', required = true)]
     images: Vec<PathBuf>,
     /// Question(s) to ask (repeatable — one round per question).
-    #[arg(long = "prompt", short = 'p', default_value = "Describe these images concisely, then note any visual defects, artifacts, or inconsistencies.")]
+    #[arg(
+        long = "prompt",
+        short = 'p',
+        default_value = "Describe these images concisely, then note any visual defects, artifacts, or inconsistencies."
+    )]
     prompts: Vec<String>,
     /// The LM Studio model id (defaults to the configured planner model,
     /// which must have vision support).
@@ -499,8 +503,8 @@ async fn run_eval(eval: EvalArgs) -> Result<()> {
     if let Some(model) = &eval.model {
         lm_config.model = model.clone();
     }
-    let client = LmStudioClient::new(lm_config.clone())
-        .map_err(|error| anyhow!(error.report().log()))?;
+    let client =
+        LmStudioClient::new(lm_config.clone()).map_err(|error| anyhow!(error.report().log()))?;
 
     // Read every image up front so a missing file fails before any model
     // round trips. Large canvases are downscaled to a fixed maximum
@@ -594,10 +598,7 @@ async fn run_eval(eval: EvalArgs) -> Result<()> {
         if let Some(banned) = &eval.expect_not {
             if lowered.contains(&banned.to_lowercase()) {
                 failures += 1;
-                eprintln!(
-                    "expectation failed: the answer contains {:?}",
-                    banned
-                );
+                eprintln!("expectation failed: the answer contains {:?}", banned);
             }
         }
     }
@@ -611,7 +612,8 @@ async fn run_eval(eval: EvalArgs) -> Result<()> {
 /// Kills sd-server processes this CLI does not own (stale instances from
 /// interrupted sessions hold the port and cannot be restarted by the
 /// runtime). `pkill` exits 1 when nothing matched, which is fine.
-fn kill_resident_generation_servers() -> Result<()> {    let status = std::process::Command::new("pkill")
+fn kill_resident_generation_servers() -> Result<()> {
+    let status = std::process::Command::new("pkill")
         .args(["-f", "sd-server --diffusion"])
         .status()
         .context("could not run pkill")?;
@@ -666,6 +668,7 @@ fn operation_needs_backend(operation: &Operation, manual_text: Option<&str>) -> 
         Operation::AttachLora { .. }
         | Operation::LoraScale { .. }
         | Operation::LoraRemove { .. }
+        | Operation::Set { .. }
         | Operation::Describe { .. } => false,
     }
 }
@@ -1165,6 +1168,17 @@ fn print_outcome(registry: &ArtifactRegistry, operation: &Operation, outcome: &o
             let id = outcome.artifact_id.expect("describe has an artifact");
             println!("described {}", registry.ref_of(id));
         }
+        Operation::Set { .. } => {
+            let id = outcome.artifact_id.expect("set has an artifact");
+            let artifact = registry.artifact(id).expect("set artifact exists");
+            let steps = artifact
+                .default_steps
+                .map_or_else(|| "auto".to_owned(), |steps| steps.to_string());
+            let seed = artifact
+                .default_seed
+                .map_or_else(|| "random".to_owned(), |seed| seed.to_string());
+            println!("set {} steps={steps} seed={seed}", registry.ref_of(id));
+        }
         Operation::Regenerate { .. } | Operation::Resize { .. } | Operation::Modify { .. } => {
             let id = outcome.artifact_id.expect("visual ops have an artifact");
             let revision_id = outcome.revision_id.expect("visual ops start a revision");
@@ -1246,6 +1260,7 @@ fn operation_name(operation: &Operation) -> &'static str {
         Operation::Variant { .. } => "variant",
         Operation::Regenerate { .. } => "regenerate",
         Operation::Resize { .. } => "resize",
+        Operation::Set { .. } => "set",
         Operation::Compose { .. } => "compose",
         Operation::Draft { .. } => "draft",
         Operation::Modify { .. } => "modify",

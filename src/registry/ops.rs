@@ -32,7 +32,7 @@ use super::{
         PromptSource, RunOptions,
     },
     Artifact, ArtifactKind, ArtifactRegistry, CreateArtifact, GenerationDefaults, Layer, LayerRole,
-    Ref, RefError, RegistryError, StoredMask, VariantAxis,
+    Ref, RefError, RegistryError, RevisionOrigin, StoredMask, VariantAxis,
 };
 
 /// The kinds an operation can have. Slice 1 only ships primitives; compound
@@ -100,6 +100,16 @@ pub enum Operation {
         steps: Option<u32>,
         #[serde(default)]
         loras: Vec<LoraSelection>,
+    },
+    /// Change the artifact's stored generation defaults without rendering
+    /// anything. `Some(None)` clears a default; `None` leaves it alone —
+    /// the distinction the inspector needs to unpin a seed.
+    Set {
+        target: Ref,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        steps: Option<Option<u32>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seed: Option<Option<u64>>,
     },
     /// Change the artifact's canvas: store the new default size **and**
     /// regenerate the active image at it (the subject is kept via the
@@ -258,6 +268,26 @@ impl Operation {
                     .map(|prompt| format!(" {prompt:?}"))
                     .unwrap_or_default()
             ),
+            Operation::Set {
+                target,
+                steps,
+                seed,
+            } => {
+                let mut parts = Vec::new();
+                if let Some(steps) = steps {
+                    parts.push(match steps {
+                        Some(value) => format!("--steps {value}"),
+                        None => "--steps auto".to_owned(),
+                    });
+                }
+                if let Some(seed) = seed {
+                    parts.push(match seed {
+                        Some(value) => format!("--seed {value}"),
+                        None => "--seed random".to_owned(),
+                    });
+                }
+                format!("set {target} {}", parts.join(" "))
+            }
             Operation::Resize {
                 target,
                 width,
@@ -311,6 +341,7 @@ impl Operation {
             Operation::Variant { target, .. }
             | Operation::Regenerate { target, .. }
             | Operation::Resize { target, .. }
+            | Operation::Set { target, .. }
             | Operation::Draft { target, .. }
             | Operation::Modify { target, .. }
             | Operation::AttachLora { target, .. }
@@ -520,6 +551,8 @@ pub fn compile(
             if let Some((width, height)) = size.or_else(|| defaults.size_for(*kind)) {
                 builder.size(width, height);
             }
+            // No stored defaults to consult: the artifact does not exist
+            // yet, so only the op's own values apply.
             if let Some(steps) = steps {
                 builder.steps(*steps);
             }
@@ -588,8 +621,13 @@ pub fn compile(
             }) {
                 builder.size(width, height);
             }
-            if let Some(steps) = steps {
-                builder.steps(*steps);
+            // Steps and seed are inherited from the base the same way size
+            // is; the variant gets its own stored defaults only if set later.
+            if let Some(steps) = steps.or(base_artifact.default_steps) {
+                builder.steps(steps);
+            }
+            if let Some(seed) = base_artifact.default_seed {
+                builder.seed(seed);
             }
             // The variant inherits the base's bound adapters and the kind
             // default (the base artifact stands in for the not-yet-created
@@ -737,10 +775,23 @@ pub fn compile(
             {
                 builder.size(width, height);
             }
-            if let Some(steps) = steps {
-                builder.steps(*steps);
+            // Same precedence for steps and seed: the artifact's stored
+            // default applies unless the op names one. A pinned seed is what
+            // makes an edit show only what the edit changed.
+            if let Some(steps) = steps.or(artifact.default_steps) {
+                builder.steps(steps);
             }
-            for lora in auto_loras(registry, Some(artifact), artifact.kind, defaults, true, false) {
+            if let Some(seed) = artifact.default_seed {
+                builder.seed(seed);
+            }
+            for lora in auto_loras(
+                registry,
+                Some(artifact),
+                artifact.kind,
+                defaults,
+                true,
+                false,
+            ) {
                 builder.lora(lora.path, lora.multiplier);
             }
             for lora in loras {
@@ -809,7 +860,14 @@ pub fn compile(
             // last one used (the new canvas is the only intent).
             let mut builder = super::pipeline::PipelineBuilder::new();
             builder.size(*width, *height);
-            for lora in auto_loras(registry, Some(artifact), artifact.kind, defaults, true, false) {
+            for lora in auto_loras(
+                registry,
+                Some(artifact),
+                artifact.kind,
+                defaults,
+                true,
+                false,
+            ) {
                 builder.lora(lora.path, lora.multiplier);
             }
             let image = builder.reference_image(asset);
@@ -860,14 +918,26 @@ pub fn compile(
             {
                 builder.size(width, height);
             }
-            if let Some(steps) = steps {
-                builder.steps(*steps);
+            // Same precedence for steps and seed: the artifact's stored
+            // default applies unless the op names one. A pinned seed is what
+            // makes an edit show only what the edit changed.
+            if let Some(steps) = steps.or(artifact.default_steps) {
+                builder.steps(steps);
+            }
+            if let Some(seed) = artifact.default_seed {
+                builder.seed(seed);
             }
             // The inpaint adapter rides only the opt-in mask path; an
             // instruct edit is the same adapter set as `regenerate`.
             let masked = mask_prompt.is_some() || inpaint_prompt.is_some();
-            for lora in auto_loras(registry, Some(artifact), artifact.kind, defaults, true, masked)
-            {
+            for lora in auto_loras(
+                registry,
+                Some(artifact),
+                artifact.kind,
+                defaults,
+                true,
+                masked,
+            ) {
                 builder.lora(lora.path, lora.multiplier);
             }
             for lora in loras {
@@ -984,6 +1054,10 @@ pub fn compile(
             }
             Ok(CompiledOp::Direct)
         }
+        Operation::Set { target, .. } => {
+            registry.resolve(target)?;
+            Ok(CompiledOp::Direct)
+        }
     }
 }
 
@@ -1039,7 +1113,9 @@ fn ground_instruction(instruction: &str, artifact: &Artifact) -> String {
     let instruction = instruction.trim().trim_end_matches('.');
     let description = artifact.description.trim();
     if description.is_empty() {
-        return format!("{instruction}. A photograph of {subject}. Keep everything else unchanged.");
+        return format!(
+            "{instruction}. A photograph of {subject}. Keep everything else unchanged."
+        );
     }
     format!(
         "{instruction}. A photograph of {subject}: {description}. Keep everything else unchanged."
@@ -1488,6 +1564,27 @@ pub async fn execute(
                 status: OpStatus::Applied,
             })
         }
+        Operation::Set {
+            target,
+            steps,
+            seed,
+        } => {
+            let id = registry.resolve(target)?;
+            if let Some(steps) = steps {
+                registry.set_default_steps(id, *steps)?;
+            }
+            if let Some(seed) = seed {
+                registry.set_default_seed(id, *seed)?;
+            }
+            let log_id = registry.push_log(op.clone(), options.origin, OpStatus::Applied, Some(id));
+            Ok(OpOutcome {
+                artifact_id: Some(id),
+                revision_id: None,
+                log_id: Some(log_id),
+                run: None,
+                status: OpStatus::Applied,
+            })
+        }
         Operation::Describe {
             target,
             description,
@@ -1530,7 +1627,8 @@ async fn run_generation(
     let backend = options.backend.ok_or(CompileError::BackendRequired)?;
     let seed = options.run.seed.or(pipeline.params().seed);
     let model = Some(pipeline.params().model.clone());
-    let revision_id = registry.start_revision(id, revision_prompt, seed, model)?;
+    let revision_id =
+        registry.start_revision(id, revision_prompt, seed, model, RevisionOrigin::of(op))?;
 
     let run = match pipeline.run(backend, &options.run).await {
         Ok(run) => run,
@@ -1656,7 +1754,7 @@ mod tests {
     use super::*;
     use crate::registry::{
         pipeline::{BlockedOn, Decision, MaskCandidate, PipelineRun, StepOutput},
-        CreateArtifact,
+        CreateArtifact, RevisionOrigin,
     };
 
     /// A fresh temp folder for generated asset paths in tests (the pipeline
@@ -1805,7 +1903,13 @@ mod tests {
         let mut registry = registry_with(&[(ArtifactKind::Character, "Mia")]);
         let id = registry.artifacts[0].id;
         let revision = registry
-            .start_revision(id, "Mia on the cliff".into(), Some(1), None)
+            .start_revision(
+                id,
+                "Mia on the cliff".into(),
+                Some(1),
+                None,
+                RevisionOrigin::Canon,
+            )
             .unwrap();
         registry
             .finish_revision(id, revision, "assets/mia.png".into(), Vec::new())
@@ -1835,7 +1939,13 @@ mod tests {
         let id = registry.artifacts[0].id;
         registry.artifact_mut(id).unwrap().default_size = Some((512, 768));
         let revision = registry
-            .start_revision(id, "Mia on the cliff".into(), Some(1), None)
+            .start_revision(
+                id,
+                "Mia on the cliff".into(),
+                Some(1),
+                None,
+                RevisionOrigin::Canon,
+            )
             .unwrap();
         registry
             .finish_revision(id, revision, "assets/mia.png".into(), Vec::new())
@@ -2004,7 +2114,13 @@ mod tests {
             )
             .unwrap();
         let base_revision = registry
-            .start_revision(base, "Mia on the cliff".into(), Some(1), None)
+            .start_revision(
+                base,
+                "Mia on the cliff".into(),
+                Some(1),
+                None,
+                RevisionOrigin::Canon,
+            )
             .unwrap();
         registry
             .finish_revision(
@@ -2051,7 +2167,8 @@ mod tests {
         let backend = VisualBackend::new(assets.join("mia.png"));
         let lora_dir = assets.join("loras");
         std::fs::create_dir_all(lora_dir.join("krea")).expect("lora dir should create");
-        std::fs::write(lora_dir.join("krea/char.safetensors"), b"lora").expect("dummy lora should write");
+        std::fs::write(lora_dir.join("krea/char.safetensors"), b"lora")
+            .expect("dummy lora should write");
         let create = Operation::Create {
             kind: ArtifactKind::Character,
             description: "Mia, a lighthouse keeper".into(),
@@ -2108,7 +2225,13 @@ mod tests {
             )
             .unwrap();
         let revision = registry
-            .start_revision(mia, "Mia on the cliff".into(), Some(1), None)
+            .start_revision(
+                mia,
+                "Mia on the cliff".into(),
+                Some(1),
+                None,
+                RevisionOrigin::Canon,
+            )
             .unwrap();
         registry
             .finish_revision(mia, revision, mia_asset.display().to_string(), Vec::new())
@@ -2117,7 +2240,8 @@ mod tests {
         let backend = VisualBackend::new(assets.join("mia-regen.png"));
         let lora_dir = assets.join("loras");
         std::fs::create_dir_all(lora_dir.join("krea")).expect("lora dir should create");
-        std::fs::write(lora_dir.join("krea/style.safetensors"), b"lora").expect("dummy lora should write");
+        std::fs::write(lora_dir.join("krea/style.safetensors"), b"lora")
+            .expect("dummy lora should write");
         let op = Operation::Regenerate {
             target: Ref::new(registry.short_id(mia)),
             prompt: Some("warmer".into()),
@@ -2170,7 +2294,13 @@ mod tests {
             )
             .unwrap();
         let revision = registry
-            .start_revision(mia, "Mia on the cliff".into(), Some(1), None)
+            .start_revision(
+                mia,
+                "Mia on the cliff".into(),
+                Some(1),
+                None,
+                RevisionOrigin::Canon,
+            )
             .unwrap();
         registry
             .finish_revision(mia, revision, mia_asset.display().to_string(), Vec::new())
@@ -2268,7 +2398,13 @@ mod tests {
         let mia_asset = assets.join("mia.png");
         std::fs::write(&mia_asset, b"png").expect("dummy image should write");
         let revision = registry
-            .start_revision(mia, "Mia on the cliff".into(), Some(1), None)
+            .start_revision(
+                mia,
+                "Mia on the cliff".into(),
+                Some(1),
+                None,
+                RevisionOrigin::Canon,
+            )
             .unwrap();
         registry
             .finish_revision(mia, revision, mia_asset.display().to_string(), Vec::new())
@@ -2511,9 +2647,15 @@ mod tests {
         // the medium and restates the artifact's own traits as invariants.
         let grounded = ground_instruction("make him smile", artifact);
         assert!(grounded.starts_with("make him smile."), "{grounded}");
-        assert!(grounded.contains("A photograph of the same person"), "{grounded}");
+        assert!(
+            grounded.contains("A photograph of the same person"),
+            "{grounded}"
+        );
         assert!(grounded.contains("black turtleneck"), "{grounded}");
-        assert!(grounded.ends_with("Keep everything else unchanged."), "{grounded}");
+        assert!(
+            grounded.ends_with("Keep everything else unchanged."),
+            "{grounded}"
+        );
 
         // A description-less artifact still gets the medium anchor, which
         // on its own recovers "a photograph" but not the likeness.
@@ -2530,6 +2672,59 @@ mod tests {
         assert_eq!(
             grounded,
             "make it brighter. A photograph of the same subject. Keep everything else unchanged."
+        );
+    }
+
+    #[test]
+    fn revision_origin_follows_the_operation() {
+        use crate::registry::Ref;
+        let target = Ref::new("c:mia");
+        // Renders the description.
+        assert_eq!(
+            RevisionOrigin::of(&Operation::Regenerate {
+                target: target.clone(),
+                prompt: None,
+                size: None,
+                steps: None,
+                loras: Vec::new(),
+            }),
+            RevisionOrigin::Canon
+        );
+        // Renders a delta against it.
+        assert_eq!(
+            RevisionOrigin::of(&Operation::Regenerate {
+                target: target.clone(),
+                prompt: Some("make it warmer".into()),
+                size: None,
+                steps: None,
+                loras: Vec::new(),
+            }),
+            RevisionOrigin::Experiment
+        );
+        assert_eq!(
+            RevisionOrigin::of(&Operation::Modify {
+                target: target.clone(),
+                description: "give her a bob cut".into(),
+                mask_prompt: None,
+                inpaint_prompt: None,
+                size: None,
+                steps: None,
+                loras: Vec::new(),
+            }),
+            RevisionOrigin::Experiment
+        );
+        // A variant's first image is canon for the artifact it creates.
+        assert_eq!(
+            RevisionOrigin::of(&Operation::Variant {
+                target,
+                description: "in oilskins".into(),
+                name: None,
+                axis: None,
+                size: None,
+                steps: None,
+                loras: Vec::new(),
+            }),
+            RevisionOrigin::Canon
         );
     }
 
@@ -2730,7 +2925,13 @@ mod tests {
             )
             .unwrap();
         let base_revision = registry
-            .start_revision(base, "Mia on the cliff".into(), Some(1), None)
+            .start_revision(
+                base,
+                "Mia on the cliff".into(),
+                Some(1),
+                None,
+                RevisionOrigin::Canon,
+            )
             .unwrap();
         registry
             .finish_revision(

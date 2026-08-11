@@ -66,12 +66,40 @@ pub struct Step {
 pub enum StepVerb {
     /// Switch screens (the rail actions).
     GoProjects,
+    GoStory,
     GoCanvas,
     GoSettings,
     /// Start a new story (same path as the Projects screen form).
     CreateProject(String),
     /// Open a recent project by its story name.
     OpenProject(String),
+    /// Create the populated sample project (`app::sample`), so a tour can
+    /// show full screens without waiting on a backend.
+    SampleProject,
+    /// Select an artifact by name — the canvas detail and inspector.
+    Open(String),
+    /// Return the canvas to the grid.
+    Back,
+    /// Narration with no action. A tour needs to be able to *say* something
+    /// without pretending to do something — repeating a navigation step to
+    /// carry a message is how a demo starts looking like it is stuck.
+    Say,
+    /// Move the writer's caret to a line, so the scope panel visibly
+    /// re-derives.
+    Caret(usize),
+    /// Move the grid's keyboard cursor onto an artifact, so the focus ring
+    /// moves the way it does under `hjkl`.
+    Cursor(String),
+    /// Show or hide the command palette.
+    Palette(bool),
+    /// Put an artifact into the rendering state, wait, then complete it
+    /// with its existing picture.
+    ///
+    /// **Demo-only.** No model runs and no new image is produced; this
+    /// exists so the in-flight UX — the dimmed tile, the badge, the busy
+    /// composer — can be seen without provisioning a backend. Never use it
+    /// in a plan that is asserting real generation.
+    SimulateRender(String),
     /// Run one slash command through the composer's exact pipeline.
     Command(String),
     /// Type into the canvas composer and submit it, like a user.
@@ -94,10 +122,20 @@ impl StepVerb {
     fn label(&self) -> String {
         match self {
             Self::GoProjects => "open Projects".to_owned(),
+            Self::GoStory => "open Story".to_owned(),
             Self::GoCanvas => "open Canvas".to_owned(),
             Self::GoSettings => "open Settings".to_owned(),
             Self::CreateProject(name) => format!("create story \"{name}\""),
             Self::OpenProject(name) => format!("open story \"{name}\""),
+            Self::SampleProject => "create the sample project".to_owned(),
+            Self::Open(name) => format!("open artifact \"{name}\""),
+            Self::Back => "back to the grid".to_owned(),
+            Self::Say => String::new(),
+            Self::Caret(line) => format!("caret to line {line}"),
+            Self::Cursor(name) => format!("cursor to \"{name}\""),
+            Self::Palette(true) => "open the palette".to_owned(),
+            Self::Palette(false) => "close the palette".to_owned(),
+            Self::SimulateRender(name) => format!("show \"{name}\" rendering"),
             Self::Command(command) => command.clone(),
             Self::Compose(text) => format!("type \"{text}\" and send"),
             Self::ExpectProject(name) => format!("story is \"{name}\""),
@@ -123,7 +161,21 @@ impl StepVerb {
         };
         Ok(match action {
             "go_projects" => Self::GoProjects,
+            "go_story" => Self::GoStory,
             "go_canvas" => Self::GoCanvas,
+            "sample_project" => Self::SampleProject,
+            "open" => Self::Open(text(&value)?),
+            "back" => Self::Back,
+            "say" => Self::Say,
+            "caret" => Self::Caret(
+                value
+                    .as_u64()
+                    .ok_or_else(|| "action caret expects a line number".to_owned())?
+                    as usize,
+            ),
+            "cursor" => Self::Cursor(text(&value)?),
+            "palette" => Self::Palette(value.as_bool().unwrap_or(true)),
+            "simulate_render" => Self::SimulateRender(text(&value)?),
             "go_settings" => Self::GoSettings,
             "create_project" => Self::CreateProject(text(&value)?),
             "open_project" => Self::OpenProject(text(&value)?),
@@ -229,8 +281,9 @@ impl<'de> Deserialize<'de> for Step {
                 }
             }
         }
-        let (action, value) =
-            action.ok_or_else(|| D::Error::custom("a step needs an action, e.g. create_project: \"name\""))?;
+        let (action, value) = action.ok_or_else(|| {
+            D::Error::custom("a step needs an action, e.g. create_project: \"name\"")
+        })?;
         let verb = StepVerb::parse(&action, value).map_err(D::Error::custom)?;
         Ok(Step {
             verb,
@@ -395,9 +448,13 @@ impl PlanLaunch {
 #[derive(Clone, Debug, PartialEq)]
 pub enum StepStatus {
     Passed,
-    Failed { reason: String },
+    Failed {
+        reason: String,
+    },
     /// A soft step that did not hold: reported, but not a plan failure.
-    Warned { reason: String },
+    Warned {
+        reason: String,
+    },
 }
 
 impl StepStatus {
@@ -423,7 +480,10 @@ impl RunReport {
     }
 
     pub fn failed(&self) -> usize {
-        self.steps.iter().filter(|(_, status)| status.is_failure()).count()
+        self.steps
+            .iter()
+            .filter(|(_, status)| status.is_failure())
+            .count()
     }
 
     /// The check-mode report: one line per step, then the verdict.
@@ -456,6 +516,11 @@ pub struct DriveContext {
     pub screen: Signal<AppScreen>,
     /// The canvas composer text — a `compose` step types into it visibly.
     pub composer: Signal<String>,
+    /// The two cursors and the palette, so a demo can show state rather
+    /// than only describe it.
+    pub writer_caret: crate::ui::WriterCaret,
+    pub grid_cursor: crate::ui::GridCursor,
+    pub palette_open: Signal<bool>,
 }
 
 /// The live state of a run, as the assistant card renders it.
@@ -512,7 +577,10 @@ pub fn run_plan(
             // autosave effect may not get a render tick in between, so the
             // final state is persisted here, before the report.
             if let Err(error) = commands::save_project(ctx.app_state) {
-                println!("warning: could not save the project before exit: {}", error.details);
+                println!(
+                    "warning: could not save the project before exit: {}",
+                    error.details
+                );
             }
             report.print();
             std::process::exit(exit_code);
@@ -586,8 +654,162 @@ async fn execute_step(
             ctx.screen.set(AppScreen::Projects);
             StepStatus::Passed
         }
+        StepVerb::GoStory => {
+            ctx.screen.set(AppScreen::Writer);
+            StepStatus::Passed
+        }
         StepVerb::GoCanvas => {
             ctx.screen.set(AppScreen::Canvas);
+            StepStatus::Passed
+        }
+        StepVerb::SampleProject => {
+            match commands::create_project(
+                &ctx.config.project_dir,
+                "Keeper of the Low Light",
+                ctx.app_state,
+            ) {
+                Ok(_) => {
+                    let (registry, story) = crate::app::sample::project(&ctx.config.asset_dir);
+                    let mut state = ctx.app_state.write();
+                    state.registry = registry;
+                    state.story_source = story;
+                    state.has_unsaved_changes = true;
+                    drop(state);
+                    ui.error_report.set(None);
+                    ctx.screen.set(AppScreen::Canvas);
+                    StepStatus::Passed
+                }
+                Err(report) => StepStatus::Failed {
+                    reason: report.details.clone(),
+                },
+            }
+        }
+        StepVerb::Open(name) => {
+            let id = ctx
+                .app_state
+                .read()
+                .registry
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.name.eq_ignore_ascii_case(name))
+                .map(|artifact| artifact.id);
+            match id {
+                Some(id) => {
+                    ctx.app_state.write().select_artifact(id);
+                    ctx.screen.set(AppScreen::Canvas);
+                    StepStatus::Passed
+                }
+                None => StepStatus::Failed {
+                    reason: format!("no artifact named {name:?}"),
+                },
+            }
+        }
+        StepVerb::Back => {
+            ctx.app_state.write().clear_selection();
+            StepStatus::Passed
+        }
+        StepVerb::Say => StepStatus::Passed,
+        StepVerb::Caret(line) => {
+            ctx.writer_caret.0.clone().set(*line);
+            ctx.screen.set(AppScreen::Writer);
+            StepStatus::Passed
+        }
+        StepVerb::Cursor(name) => {
+            let query = String::new();
+            let ids = crate::ui::gallery::ordered_ids(&ctx.app_state.read().registry, &query);
+            let target = ctx
+                .app_state
+                .read()
+                .registry
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.name.eq_ignore_ascii_case(name))
+                .map(|artifact| artifact.id);
+            match target.and_then(|id| ids.iter().position(|candidate| *candidate == id)) {
+                Some(index) => {
+                    ctx.grid_cursor.0.clone().set(index);
+                    ctx.app_state.write().clear_selection();
+                    ctx.screen.set(AppScreen::Canvas);
+                    StepStatus::Passed
+                }
+                None => StepStatus::Failed {
+                    reason: format!("no tile for {name:?}"),
+                },
+            }
+        }
+        StepVerb::Palette(open) => {
+            ctx.palette_open.clone().set(*open);
+            StepStatus::Passed
+        }
+        StepVerb::SimulateRender(name) => {
+            let id = ctx
+                .app_state
+                .read()
+                .registry
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.name.eq_ignore_ascii_case(name))
+                .map(|artifact| artifact.id);
+            let Some(id) = id else {
+                return StepStatus::Failed {
+                    reason: format!("no artifact named {name:?}"),
+                };
+            };
+            // Reuse the artifact's current picture: nothing is generated,
+            // only the states around it are shown.
+            let existing = ctx
+                .app_state
+                .read()
+                .registry
+                .latest_image(id)
+                .and_then(|revision| revision.asset_path.clone());
+            let prompt = ctx
+                .app_state
+                .read()
+                .registry
+                .artifact(id)
+                .map(|artifact| artifact.description.clone())
+                .unwrap_or_default();
+
+            let revision = {
+                let mut state = ctx.app_state.write();
+                state.registry.start_revision(
+                    id,
+                    prompt,
+                    Some(4471),
+                    Some("krea-2-turbo-q4".into()),
+                    crate::registry::RevisionOrigin::Canon,
+                )
+            };
+            let Ok(revision) = revision else {
+                return StepStatus::Failed {
+                    reason: "could not start the demonstration revision".to_owned(),
+                };
+            };
+            if let Some(artifact) = ctx.app_state.write().registry.artifact_mut(id) {
+                if let Some(entry) = artifact
+                    .revisions
+                    .iter_mut()
+                    .find(|candidate| candidate.id == revision)
+                {
+                    entry.status = crate::registry::RevisionStatus::Generating;
+                }
+            }
+            // Long enough to read the badge, short enough not to stall.
+            tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
+            match existing {
+                Some(path) => {
+                    let _ = ctx.app_state.write().registry.finish_revision(
+                        id,
+                        revision,
+                        path,
+                        Vec::new(),
+                    );
+                }
+                None => {
+                    let _ = ctx.app_state.write().registry.cancel_revision(id, revision);
+                }
+            }
             StepStatus::Passed
         }
         StepVerb::GoSettings => {
@@ -606,26 +828,25 @@ async fn execute_step(
                 },
             }
         }
-        StepVerb::OpenProject(name) => {
-            match find_project_by_name(&ctx.config.project_dir, name) {
-                Some(path) => match commands::open_project(&path, ctx.app_state) {
-                    Ok(()) => {
-                        ctx.screen.set(AppScreen::Canvas);
-                        StepStatus::Passed
-                    }
-                    Err(report) => StepStatus::Failed {
-                        reason: report.details.clone(),
-                    },
+        StepVerb::OpenProject(name) => match find_project_by_name(&ctx.config.project_dir, name) {
+            Some(path) => match commands::open_project(&path, ctx.app_state) {
+                Ok(()) => {
+                    ctx.screen.set(AppScreen::Canvas);
+                    StepStatus::Passed
+                }
+                Err(report) => StepStatus::Failed {
+                    reason: report.details.clone(),
                 },
-                None => StepStatus::Failed {
-                    reason: format!("no project named \"{name}\" in the projects directory"),
-                },
-            }
-        }
+            },
+            None => StepStatus::Failed {
+                reason: format!("no project named \"{name}\" in the projects directory"),
+            },
+        },
         StepVerb::Command(command) => {
             let backend = (ctx.backend)();
             let defaults = ctx.defaults.read().clone();
-            match commands::run_slash_command(ctx.app_state, backend, defaults, ui.clone(), command) {
+            match commands::run_slash_command(ctx.app_state, backend, defaults, ui.clone(), command)
+            {
                 Err(report) => StepStatus::Failed {
                     reason: report.details.clone(),
                 },
@@ -688,7 +909,10 @@ async fn execute_step(
                 STEP_TIMEOUT_MS,
             )
             .await;
-            status(ok, format!("expected an artifact named \"{name}\" in the registry"))
+            status(
+                ok,
+                format!("expected an artifact named \"{name}\" in the registry"),
+            )
         }
         StepVerb::ExpectArtifactCount { kind, count } => {
             let kind = *kind;
@@ -708,7 +932,10 @@ async fn execute_step(
                 STEP_TIMEOUT_MS,
             )
             .await;
-            status(ok, format!("expected exactly {count} {kind}s in the registry"))
+            status(
+                ok,
+                format!("expected exactly {count} {kind}s in the registry"),
+            )
         }
         StepVerb::ExpectImage(name) => {
             let expected = name.clone();
@@ -750,10 +977,7 @@ fn status(ok: bool, reason: String) -> StepStatus {
 /// summary on the session (the assistant card shows what the app is doing).
 /// The busy sync must not live inside a poll closure — signals need `&mut`,
 /// closures passed to polling are `Fn`.
-async fn wait_for_op(
-    mut ui: ExecutionUi,
-    mut session: Signal<Option<GuideSession>>,
-) -> StepStatus {
+async fn wait_for_op(mut ui: ExecutionUi, mut session: Signal<Option<GuideSession>>) -> StepStatus {
     let deadline = Instant::now() + Duration::from_millis(OP_TIMEOUT_MS);
     let done = loop {
         if session.read().is_none() {
@@ -839,7 +1063,9 @@ async fn wait_with_pause(session: &Signal<Option<GuideSession>>, wait_ms: u64) {
             tokio::time::sleep(Duration::from_millis(80)).await;
             continue;
         }
-        let slice = (POLL_INTERVAL_MS as u64).div_ceil(active.speed.max(1) as u64).max(20);
+        let slice = (POLL_INTERVAL_MS as u64)
+            .div_ceil(active.speed.max(1) as u64)
+            .max(20);
         tokio::time::sleep(Duration::from_millis(slice)).await;
         remaining = remaining.saturating_sub(slice);
     }
@@ -847,6 +1073,25 @@ async fn wait_with_pause(session: &Signal<Option<GuideSession>>, wait_ms: u64) {
 
 #[cfg(test)]
 mod tests {
+    /// Every shipped plan must parse — a typo in a step key is otherwise
+    /// only discovered when someone tries to run it.
+    #[test]
+    fn shipped_plans_parse() {
+        let dir = std::path::Path::new(PLANS_DIR);
+        let entries = std::fs::read_dir(dir).expect("plans directory exists");
+        let mut seen = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+                continue;
+            }
+            let raw = std::fs::read_to_string(&path).expect("plan is readable");
+            Plan::from_yaml(&raw).unwrap_or_else(|error| panic!("{path:?}: {error}"));
+            seen += 1;
+        }
+        assert!(seen > 0, "no plans found to check");
+    }
+
     use super::*;
 
     #[test]
@@ -925,7 +1170,10 @@ steps:
             plan.steps[0].verb,
             StepVerb::Compose("/create character ada a keeper".into())
         );
-        assert_eq!(plan.steps[0].message.as_deref(), Some("Watch the composer."));
+        assert_eq!(
+            plan.steps[0].message.as_deref(),
+            Some("Watch the composer.")
+        );
     }
 
     #[test]

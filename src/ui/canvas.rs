@@ -1,11 +1,11 @@
 //! The canvas — the artifact workspace (roadmap §12 item 4).
 //!
-//! Layout: an artifact sidebar grouped by kind, a detail pane for the
-//! selection (image, description, variants, revisions, children, operation
-//! log), and a slash-command composer at the bottom (`/create`, `/variant`,
-//! `/regenerate`, `/modify` — the same typed vocabulary as the `svs` CLI).
-//! Context actions (New variant, Regenerate, Modify) prefill the composer so
-//! there is exactly one input path.
+//! Two states, not a split. At rest the screen is the artifact grid
+//! (`super::gallery`); opening one replaces it with the detail pane (image,
+//! description, variants, revisions, children, operation log). The tokenized
+//! command bar (`super::cmdbar`) sits under both. Context actions (New
+//! variant, Regenerate, Modify) prefill it, so there is exactly one input
+//! path — the same typed vocabulary as the `svs` CLI.
 //!
 //! `modify` runs its pipeline on a worker thread (own tokio runtime) so the
 //! mask checkpoint can block on the user without freezing the UI: the worker
@@ -13,11 +13,7 @@
 //! task (UI thread) shows them in a modal, and the user's choice is sent back
 //! to the worker. Stored masks are listed under the active revision.
 
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    sync::mpsc,
-};
+use std::{cell::RefCell, rc::Rc, sync::mpsc};
 
 use dioxus::prelude::*;
 use uuid::Uuid;
@@ -29,30 +25,25 @@ use crate::{
     errors::{ErrorCode, ReportedError},
     registry::{
         backend::CreativeBackend,
+        completion::RefCandidate,
         ops::{self, Operation},
         pipeline::{Decision, PlannedEdit},
         slash::is_slash_command,
-        Artifact, ArtifactKind, ArtifactRegistry, ArtifactRevision, RevisionStatus, StoredMask,
+        Artifact, ArtifactRegistry, ArtifactRevision, RevisionStatus, StoredMask,
     },
     state::AppState,
 };
 
 use super::{
+    cmdbar::CommandBar,
     components::EmptyVisual,
+    gallery::Gallery,
     generated_asset_url,
     icons::{Icon, IconName},
+    inspector::Inspector,
     mask_asset_url,
+    palette::{self, Palette},
 };
-
-/// The sidebar group order (visual kinds first — the creation loop).
-const GROUP_ORDER: [ArtifactKind; 6] = [
-    ArtifactKind::Character,
-    ArtifactKind::Environment,
-    ArtifactKind::Object,
-    ArtifactKind::Scene,
-    ArtifactKind::Story,
-    ArtifactKind::Beat,
-];
 
 #[component]
 pub fn Canvas(
@@ -75,6 +66,16 @@ pub fn Canvas(
         .filter(|artifact| artifact.kind.is_visual())
         .map(|artifact| app_state.read().registry.ref_of(artifact.id));
 
+    // Every artifact is offerable as a `c:` target; the hint is its kind, so
+    // `c:` completion reads as a typed list rather than bare names.
+    let ref_candidates: Vec<RefCandidate> = app_state
+        .read()
+        .registry
+        .artifacts
+        .iter()
+        .map(|artifact| RefCandidate::new(artifact.name.clone(), artifact.kind.as_str()))
+        .collect();
+
     // The mask checkpoint handshake. `reply_slot` is the UI-side end of the
     // channel the op worker blocks on; the modal's buttons send the choice.
     // Both stay on the UI thread (signals are not cross-thread safe).
@@ -87,6 +88,76 @@ pub fn Canvas(
     let mut proposal = use_signal(|| None::<StackProposal>);
     let reviewing = proposal.read().is_some();
     let disabled = busy || reviewing;
+
+    // The inspector's controls are commands: they take the same path a
+    // typed one does, so the rail and the bar cannot diverge.
+    let reply_slot_for_rail = reply_slot.clone();
+    let run_command = move |input: String| {
+        if disabled {
+            return;
+        }
+        let ui = ExecutionUi {
+            activity,
+            pending_approval,
+            reply_slot: reply_slot_for_rail.clone(),
+            error_report,
+        };
+        if let Err(report) =
+            commands::run_slash_command(app_state, backend(), defaults.read().clone(), ui, &input)
+        {
+            error_report.set(Some(report.log()));
+        }
+    };
+
+    let palette_open = use_context::<Signal<bool>>();
+    // The grid's keyboard cursor. Kept here rather than inside Gallery so
+    // the key handler and the grid share one source of truth.
+    let mut grid_cursor = use_context::<super::GridCursor>().0;
+
+    // Keyboard navigation. The listener lives in the Workspace; this
+    // observes what it broadcasts, so the canvas gets keys whether or not
+    // it happened to mount first.
+    let viewing = selected.is_some();
+    let filter_query = filter.read().clone();
+    let last_key = use_context::<Signal<Option<super::keys::KeyEvent>>>();
+    use_effect(move || {
+        let Some((_, press)) = last_key() else {
+            return;
+        };
+        if *palette_open.peek() {
+            return;
+        }
+        let ids = super::gallery::ordered_ids(
+            &app_state.peek().registry,
+            &filter_query.to_ascii_lowercase(),
+        );
+        match press.key.as_str() {
+            "Escape" if viewing => app_state.write().clear_selection(),
+            "Enter" if !viewing => {
+                if let Some(id) = ids.get(*grid_cursor.peek()) {
+                    app_state.write().select_artifact(*id);
+                }
+            }
+            "n" if !viewing => composer.set("/create character ".to_owned()),
+            "/" => {
+                document::eval(
+                    "const el = document.getElementById(\"svs-cmdbar\");
+                     if (el) { el.focus(); }",
+                );
+            }
+            key if !viewing => {
+                let at = *grid_cursor.peek();
+                if let Some(next) = super::keys::move_cursor(key, at, ids.len(), press.columns) {
+                    grid_cursor.set(next);
+                    document::eval(
+                        "const el = document.getElementById(\"svs-focused-tile\");
+                         if (el) { el.scrollIntoView({ block: \"nearest\" }); }",
+                    );
+                }
+            }
+            _ => {}
+        }
+    });
 
     let reply_slot_for_run = reply_slot.clone();
     let submit = move |_| {
@@ -106,7 +177,9 @@ pub fn Canvas(
                 reply_slot: reply_slot_for_run.clone(),
                 error_report,
             };
-            if let Err(report) = commands::run_slash_command(app_state, backend(), defaults, ui, &input) {
+            if let Err(report) =
+                commands::run_slash_command(app_state, backend(), defaults, ui, &input)
+            {
                 error_report.set(Some(report.log()));
             }
         } else {
@@ -195,20 +268,27 @@ pub fn Canvas(
     };
 
     rsx! {
-        section { class: "grid h-full min-h-0 grid-cols-[248px_minmax(0,1fr)] grid-rows-[minmax(0,1fr)_auto]",
-            Sidebar {
-                app_state,
-                filter,
-                composer,
-                disabled,
-            }
-            Detail {
-                app_state,
-                artifact: selected,
-                composer,
-                activity,
-                disabled,
-                on_rerun: move |op: Operation| {
+        // Two states, not a split: the grid is the canvas at rest, and
+        // opening an artifact replaces it. The sidebar is gone — the picture
+        // is what you navigate by.
+        section { class: "flex h-full min-h-0 w-full flex-col",
+            if selected.is_none() {
+                Gallery {
+                    app_state,
+                    filter,
+                    cursor: grid_cursor,
+                    composer,
+                    disabled,
+                }
+            } else {
+                Detail {
+                    app_state,
+                    artifact: selected,
+                    composer,
+                    activity,
+                    disabled,
+                    onrun: run_command,
+                    on_rerun: move |op: Operation| {
                     if disabled {
                         return;
                     }
@@ -226,13 +306,36 @@ pub fn Canvas(
                         ui,
                     );
                 },
+                }
             }
             Composer {
                 value: composer,
                 activity,
                 disabled,
                 target_hint,
+                ref_candidates,
                 onsubmit: submit,
+            }
+        }
+        if palette_open() {
+            Palette {
+                app_state,
+                open: palette_open,
+                onpick: move |action| {
+                    match action {
+                        palette::Action::Compose(command) => {
+                            composer.set(command);
+                            // The palette hands the caret to the bar, so
+                            // the completion for the first argument opens
+                            // without another keystroke.
+                            document::eval(
+                                "const el = document.getElementById(\"svs-cmdbar\");
+                                 if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }",
+                            );
+                        }
+                        palette::Action::Open(id) => app_state.write().select_artifact(id),
+                    }
+                },
             }
         }
         {modal}
@@ -596,6 +699,10 @@ struct RevisionRow {
     status: RevisionStatus,
     has_asset: bool,
     meta: String,
+    /// Whether this rendered the description or an experiment against it.
+    origin: crate::registry::RevisionOrigin,
+    /// The `/describe` that would make this experiment canonical.
+    promote: String,
 }
 
 /// "Revision 3 · krea-2-turbo-q2 · Ready" — the 1-based index plus model
@@ -621,161 +728,6 @@ fn status_dot_class(status: RevisionStatus) -> &'static str {
     }
 }
 
-// ---------------------------------------------------------------- sidebar
-
-#[component]
-fn Sidebar(
-    app_state: Signal<AppState>,
-    filter: Signal<String>,
-    mut composer: Signal<String>,
-    disabled: bool,
-) -> Element {
-    let artifacts = app_state.read().registry.artifacts.clone();
-    let selected_id = app_state.read().selected_artifact_id;
-    let query = filter.read().trim().to_ascii_lowercase();
-    let registry = app_state.read().registry.clone();
-
-    let groups = GROUP_ORDER.iter().map(|kind| {
-        let mut group_artifacts: Vec<Artifact> = artifacts
-            .iter()
-            .filter(|artifact| artifact.kind == *kind)
-            .cloned()
-            .collect();
-        if !query.is_empty() {
-            group_artifacts.retain(|artifact| {
-                artifact.name.to_ascii_lowercase().contains(&query)
-                    || artifact.description.to_ascii_lowercase().contains(&query)
-            });
-        }
-        // Bases first, then their variants, alphabetically within each.
-        group_artifacts.sort_by(|a, b| {
-            let a_key = (a.variant_of.is_some(), a.name.to_ascii_lowercase());
-            let b_key = (b.variant_of.is_some(), b.name.to_ascii_lowercase());
-            a_key.cmp(&b_key)
-        });
-
-        let kind = *kind;
-        let mut group_composer = composer;
-        rsx! {
-            KindGroup {
-                kind,
-                artifacts: group_artifacts,
-                selected_id,
-                registry: registry.clone(),
-                on_select: move |id| { app_state.write().select_artifact(id); },
-                on_create: move |_event: MouseEvent| {
-                    group_composer.set(format!("/create {kind} "));
-                },
-                disabled,
-            }
-        }
-    });
-
-    rsx! {
-        aside { class: "min-h-0 overflow-y-auto border-r border-white/[0.055] bg-zinc-950/35",
-            div { class: "sticky top-0 z-10 border-b border-white/[0.05] bg-zinc-950/80 px-4 py-3 backdrop-blur-xl",
-                p { class: "mb-2.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-600", "Artifacts" }
-                input {
-                    class: "h-8 w-full rounded-lg bg-white/[0.045] px-3 text-[11px] text-zinc-200 outline-none ring-1 ring-inset ring-white/[0.06] transition placeholder:text-zinc-700 focus:ring-violet-400/40",
-                    placeholder: "Filter…",
-                    value: "{filter}",
-                    oninput: move |event| filter.set(event.value()),
-                }
-            }
-            div { class: "space-y-6 px-3 py-4",
-                {groups}
-                if app_state.read().registry.artifacts.is_empty() {
-                    div { class: "px-2 pt-2 text-[10px] leading-4 text-zinc-700",
-                        "No artifacts yet. Create one below with /create character, /create environment, or /create object."
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[component]
-fn KindGroup(
-    kind: ArtifactKind,
-    artifacts: Vec<Artifact>,
-    selected_id: Option<Uuid>,
-    registry: crate::registry::ArtifactRegistry,
-    on_select: EventHandler<Uuid>,
-    on_create: EventHandler<MouseEvent>,
-    disabled: bool,
-) -> Element {
-    if artifacts.is_empty() {
-        return rsx! { Fragment {} };
-    }
-    rsx! {
-        div {
-            div { class: "mb-1.5 flex items-center justify-between px-2",
-                p { class: "text-[9px] font-semibold uppercase tracking-[0.16em] text-zinc-600", "{kind}s" }
-                button {
-                    class: "grid size-5 place-items-center rounded-md text-zinc-700 transition hover:bg-white/[0.06] hover:text-zinc-300 disabled:opacity-35",
-                    aria_label: "Create {kind}",
-                    title: "/create {kind}",
-                    disabled,
-                    onclick: on_create,
-                    Icon { name: IconName::Add, class: "size-3" }
-                }
-            }
-            div { class: "space-y-0.5",
-                for artifact in artifacts {
-                    ArtifactRow {
-                        artifact: artifact.clone(),
-                        registry: registry.clone(),
-                        selected: selected_id == Some(artifact.id),
-                        onclick: {
-                            let id = artifact.id;
-                            move |_| on_select.call(id)
-                        },
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[component]
-fn ArtifactRow(
-    artifact: Artifact,
-    registry: crate::registry::ArtifactRegistry,
-    selected: bool,
-    onclick: EventHandler<MouseEvent>,
-) -> Element {
-    let class = if selected {
-        "flex min-w-0 items-center gap-2 rounded-lg bg-white/[0.07] px-2.5 py-2 text-left ring-1 ring-inset ring-white/[0.09]"
-    } else {
-        "flex min-w-0 items-center gap-2 rounded-lg px-2.5 py-2 text-left transition hover:bg-white/[0.04]"
-    };
-    let title = if artifact.name.trim().is_empty() {
-        registry.short_id(artifact.id)
-    } else {
-        registry.ref_of(artifact.id)
-    };
-    rsx! {
-        button { class, onclick,
-            if let Some(image) = registry.latest_image(artifact.id).and_then(|revision| revision.asset_path.as_deref()) {
-                if let Some(url) = generated_asset_url(image) {
-                    img { class: "size-7 shrink-0 rounded-md object-cover ring-1 ring-inset ring-white/[0.08]", src: "{url}", alt: "{artifact.name}" }
-                }
-            } else {
-                div { class: "grid size-7 shrink-0 place-items-center rounded-md bg-white/[0.045] text-zinc-700 ring-1 ring-inset ring-white/[0.06]",
-                    Icon { name: IconName::Layers, class: "size-3.5" }
-                }
-            }
-            div { class: "min-w-0 flex-1",
-                p { class: "truncate text-[11px] font-medium text-zinc-300", if artifact.name.trim().is_empty() { "Unnamed" } else { "{artifact.name}" } }
-                p { class: "truncate text-[9px] text-zinc-700", "{title}" }
-            }
-            if artifact.variant_of.is_some() {
-                span { class: "shrink-0 rounded bg-violet-400/10 px-1 py-0.5 text-[8px] font-medium text-violet-300", if let Some(axis) = artifact.variant_axis { "{axis}" } else { "variant" } }
-            }
-        }
-    }
-}
-
 // ---------------------------------------------------------------- detail
 
 #[component]
@@ -786,10 +738,31 @@ fn Detail(
     activity: Signal<OpActivity>,
     disabled: bool,
     on_rerun: EventHandler<Operation>,
+    /// Runs a command exactly as the command bar would.
+    onrun: EventHandler<String>,
 ) -> Element {
     let count = app_state.read().registry.artifacts.len();
+    let rail = artifact.as_ref().map(|artifact| {
+        let registry = app_state.read().registry.clone();
+        let reference = registry.ref_of(artifact.id);
+        let bound_loras: Vec<crate::registry::LoraEntry> = registry
+            .loras_bound_to(artifact.id)
+            .into_iter()
+            .cloned()
+            .collect();
+        rsx! {
+            Inspector {
+                artifact: artifact.clone(),
+                reference,
+                bound_loras,
+                disabled,
+                onrun,
+            }
+        }
+    });
     rsx! {
-        div { class: "min-h-0 overflow-y-auto",
+        div { class: "flex min-h-0 w-full flex-1",
+        div { class: "min-h-0 flex-1 overflow-y-auto",
             match artifact {
                 Some(artifact) => rsx! {
                     ArtifactDetail {
@@ -799,6 +772,7 @@ fn Detail(
                         composer,
                         activity,
                         disabled,
+                        onrun,
                         on_rerun,
                     }
                 },
@@ -807,11 +781,13 @@ fn Detail(
                         EmptyVisual {
                             icon: IconName::Layers,
                             title: if count == 0 { "Start with an artifact" } else { "Select an artifact" },
-                            description: if count == 0 { "Create your first character, environment, or object with the prompt bar below." } else { "Pick one from the sidebar, or run /create for a new one." }
+                            description: if count == 0 { "Create your first character, environment, or object with the prompt bar below." } else { "Pick one from the grid, or run /create for a new one." }
                         }
                     }
                 },
             }
+        }
+        {rail}
         }
     }
 }
@@ -824,26 +800,16 @@ fn ArtifactDetail(
     mut composer: Signal<String>,
     activity: Signal<OpActivity>,
     disabled: bool,
+    onrun: EventHandler<String>,
     on_rerun: EventHandler<Operation>,
 ) -> Element {
     let image = app_state.read().display_image(&artifact).map(str::to_owned);
     let is_visual = is_visual(&artifact);
-    // The size this artifact's images use: the explicit `--size` from
-    // creation, or the kind default.
-    let size = artifact
-        .default_size
-        .or_else(|| artifact.kind.default_size());
+    // Size and bound adapters are the inspector rail's business now.
     let variants: Vec<Artifact> = registry
         .artifacts
         .iter()
         .filter(|candidate| candidate.variant_of == Some(artifact.id))
-        .cloned()
-        .collect();
-    // Bound adapters: this artifact's entries plus the base chain's
-    // (variants inherit their base's bindings).
-    let bound_loras: Vec<crate::registry::LoraEntry> = registry
-        .loras_bound_to(artifact.id)
-        .into_iter()
         .cloned()
         .collect();
     let children: Vec<Artifact> = registry
@@ -861,6 +827,7 @@ fn ArtifactDetail(
     let regenerate_prefix = format!("/regenerate {ref_label} ");
     let modify_prefix = format!("/modify {ref_label} ");
     let attach_lora_prefix = format!("/attach-lora {ref_label} ");
+    let variant_prefix_strip = variant_prefix.clone();
     let revision_rows: Vec<RevisionRow> = artifact
         .revisions
         .iter()
@@ -872,6 +839,8 @@ fn ArtifactDetail(
             status: revision.status,
             has_asset: revision.asset_path.is_some(),
             meta: revision_meta_label(index, revision),
+            origin: revision.origin,
+            promote: format!("/describe {ref_label} {:?}", revision.prompt.trim()),
         })
         .collect();
     // The masks of the revision currently on screen (the active one).
@@ -882,22 +851,26 @@ fn ArtifactDetail(
         .unwrap_or_default();
 
     rsx! {
-        div { class: "mx-auto max-w-4xl px-10 py-8",
+        div { class: "mx-auto w-full max-w-[1100px] px-8 py-6",
+            // The way back to the grid. Opening an artifact replaces the
+            // whole screen, so without this there is no exit.
+            button {
+                class: "-ml-2 mb-5 flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-medium text-zinc-500 transition hover:bg-white/[0.04] hover:text-zinc-300",
+                onclick: move |_| app_state.write().clear_selection(),
+                span { class: "text-[13px] leading-none", "‹" }
+                "All artifacts"
+            }
             // Header: identity + provenance links.
-            div { class: "mb-7 flex flex-wrap items-start justify-between gap-4",
-                div { class: "min-w-0",
+            div { class: "mb-5 flex flex-wrap items-start gap-4",
+                div { class: "min-w-0 flex-1",
                     div { class: "mb-2 flex flex-wrap items-center gap-2",
                         span { class: "rounded-md bg-white/[0.05] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.14em] text-zinc-400 ring-1 ring-inset ring-white/[0.07]", "{artifact.kind}" }
                         span { class: "rounded-md bg-zinc-900 px-2 py-1 font-mono text-[10px] text-violet-300 ring-1 ring-inset ring-violet-400/20", "{registry.ref_of(artifact.id)}" }
-                        if let Some((width, height)) = size {
-                            span { class: "rounded-md bg-white/[0.05] px-2 py-1 text-[9px] font-medium text-zinc-500 ring-1 ring-inset ring-white/[0.07]", title: if artifact.default_size.is_some() { "Size set at creation" } else { format!("Default size for {}", artifact.kind) }, "{width}×{height}" }
-                        }
                         if let Some(axis) = artifact.variant_axis {
                             span { class: "rounded-md bg-violet-400/10 px-2 py-1 text-[9px] font-medium text-violet-300", "variant · {axis}" }
                         }
                     }
                     h2 { class: "truncate text-xl font-semibold tracking-[-0.02em] text-zinc-100", if artifact.name.trim().is_empty() { "Unnamed" } else { "{artifact.name}" } }
-                    p { class: "mt-1.5 max-w-2xl text-xs leading-5 text-zinc-500", "{artifact.description}" }
                     if let Some(base_id) = artifact.variant_of {
                         ProvenanceLink { label: "Base", registry: registry.clone(), target: base_id, on_select: move |id| app_state.write().select_artifact(id) }
                     }
@@ -906,7 +879,7 @@ fn ArtifactDetail(
                     }
                 }
                 if is_visual {
-                    div { class: "flex shrink-0 items-center gap-2",
+                    div { class: "ml-auto flex shrink-0 items-center gap-2",
                         ActionButton {
                             label: "New variant",
                             icon: IconName::Add,
@@ -943,12 +916,12 @@ fn ArtifactDetail(
                 }
             }
 
-            // Visual: the active image, or an empty state.
-            div { class: "mb-8 grid place-items-center overflow-hidden rounded-2xl bg-black/25 ring-1 ring-inset ring-white/[0.07]",
+            // The render dominates: this is what the screen is for.
+            div { class: "mb-4 grid place-items-center overflow-hidden rounded-2xl bg-black/25 ring-1 ring-inset ring-white/[0.07]",
                 match image {
                     Some(path) => rsx! {
                         if let Some(url) = generated_asset_url(&path) {
-                            img { class: "max-h-[460px] w-full object-contain", src: "{url}", alt: artifact.name }
+                            img { class: "max-h-[64vh] w-auto max-w-full object-contain", src: "{url}", alt: artifact.name }
                         }
                     },
                     None => rsx! {
@@ -994,86 +967,78 @@ fn ArtifactDetail(
                 }
             }
 
-            if !variants.is_empty() {
-                Section { title: format!("Variants ({})", variants.len()),
-                    div { class: "grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3",
-                        for variant in variants {
-                            button {
-                                class: "group min-w-0 text-left",
-                                onclick: {
-                                    let id = variant.id;
-                                    move |_| app_state.write().select_artifact(id)
-                                },
-                                div { class: "relative aspect-square overflow-hidden rounded-xl bg-white/[0.04] ring-1 ring-inset ring-white/[0.07]",
-                                    if let Some(image) = registry.latest_image(variant.id).and_then(|revision| revision.asset_path.as_deref()) {
-                                        if let Some(url) = generated_asset_url(image) { img { class: "h-full w-full object-cover", src: "{url}", alt: "{variant.name}" } }
-                                    } else {
-                                        div { class: "absolute inset-0 grid place-items-center text-zinc-700", Icon { name: IconName::Layers, class: "size-4" } }
-                                    }
-                                    if let Some(axis) = variant.variant_axis {
-                                        span { class: "absolute bottom-1.5 left-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[8px] font-medium text-violet-200 backdrop-blur", "{axis}" }
-                                    }
-                                }
-                                p { class: "mt-1.5 truncate text-[10px] text-zinc-400 group-hover:text-zinc-200", "{variant.name}" }
-                            }
-                        }
+            if is_visual {
+                div { class: "mb-8 flex items-center gap-2 overflow-x-auto pb-1",
+                    span { class: "shrink-0 pr-1 text-[9px] uppercase tracking-[0.14em] text-zinc-700",
+                        "Variants"
                     }
-                }
-            }
-
-            if !bound_loras.is_empty() {
-                Section { title: format!("LoRAs ({})", bound_loras.len()),
-                    div { class: "space-y-1",
-                        for lora in &bound_loras {
-                            div { class: "flex items-center gap-3 rounded-lg bg-white/[0.03] px-3 py-2 ring-1 ring-inset ring-white/[0.06]",
-                                span { class: "size-1.5 shrink-0 rounded-full bg-violet-400/70" }
-                                div { class: "min-w-0 flex-1",
-                                    p { class: "truncate text-[11px] text-zinc-300", "{lora.name}" }
-                                    p { class: "mt-0.5 truncate font-mono text-[9px] text-zinc-700", "{lora.path} · ×{lora.multiplier}" }
-                                }
-                                button {
-                                    class: "shrink-0 rounded-md bg-white/[0.05] px-2 py-1 text-[9px] text-zinc-500 transition hover:text-white",
-                                    title: "Adjust the weight",
-                                    onclick: {
-                                        let name = lora.name.clone();
-                                        let mut composer = composer;
-                                        move |_| composer.set(format!("/lora-scale {name} "))
-                                    },
-                                    "Scale"
-                                }
-                                button {
-                                    class: "shrink-0 rounded-md bg-white/[0.05] px-2 py-1 text-[9px] text-zinc-500 transition hover:text-rose-300",
-                                    title: "Unbind",
-                                    onclick: {
-                                        let name = lora.name.clone();
-                                        let mut composer = composer;
-                                        move |_| composer.set(format!("/lora-remove {name}"))
-                                    },
-                                    "Remove"
+                    for variant in variants {
+                        button {
+                            class: "group shrink-0",
+                            title: "{variant.name}",
+                            onclick: {
+                                let id = variant.id;
+                                move |_| app_state.write().select_artifact(id)
+                            },
+                            div { class: "relative h-16 w-12 overflow-hidden rounded-lg bg-white/[0.04] ring-1 ring-inset ring-white/[0.09] transition group-hover:ring-violet-400/50",
+                                if let Some(image) = registry.latest_image(variant.id).and_then(|revision| revision.asset_path.as_deref()) {
+                                    if let Some(url) = generated_asset_url(image) { img { class: "h-full w-full object-cover", src: "{url}", alt: "{variant.name}" } }
+                                } else {
+                                    div { class: "absolute inset-0 grid place-items-center text-zinc-700", Icon { name: IconName::Layers, class: "size-3.5" } }
                                 }
                             }
                         }
                     }
+                    button {
+                        class: "grid h-16 w-12 shrink-0 place-items-center rounded-lg text-lg font-light text-zinc-700 ring-1 ring-inset ring-white/[0.09] transition hover:text-zinc-300 disabled:opacity-40",
+                        disabled,
+                        title: "New variant",
+                        onclick: move |_| composer.set(variant_prefix_strip.clone()),
+                        "+"
+                    }
                 }
             }
-
             if !artifact.revisions.is_empty() {
                 Section { title: format!("Revisions ({})", artifact.revisions.len()),
+                    // Canon renders the description; an experiment renders a
+                    // delta against it. Because edits ground against the
+                    // description rather than the current image, experiments
+                    // never accumulate — Promote is what makes one stick.
                     div { class: "space-y-1",
                         for revision in revision_rows {
-                            button {
-                                class: if artifact.active_revision_id == Some(revision.id) { "flex w-full items-center gap-3 rounded-lg bg-white/[0.06] px-3 py-2 text-left" } else { "flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition hover:bg-white/[0.035] disabled:opacity-40" },
-                                disabled: !revision.has_asset,
-                                title: if revision.has_asset { "Show this revision" } else { "No image for this revision" },
-                                onclick: {
-                                    let artifact_id = artifact.id;
-                                    let revision_id = revision.id;
-                                    move |_| { app_state.write().activate_revision(artifact_id, revision_id); }
-                                },
+                            div {
+                                class: if artifact.active_revision_id == Some(revision.id) { "flex w-full items-center gap-3 rounded-lg bg-white/[0.06] px-3 py-2" } else { "group flex w-full items-center gap-3 rounded-lg px-3 py-2 transition hover:bg-white/[0.035]" },
                                 span { class: "{status_dot_class(revision.status)}" }
-                                div { class: "min-w-0 flex-1",
+                                button {
+                                    class: "min-w-0 flex-1 text-left disabled:opacity-40",
+                                    disabled: !revision.has_asset,
+                                    title: if revision.has_asset { "Show this revision" } else { "No image for this revision" },
+                                    onclick: {
+                                        let artifact_id = artifact.id;
+                                        let revision_id = revision.id;
+                                        move |_| { app_state.write().activate_revision(artifact_id, revision_id); }
+                                    },
                                     p { class: "truncate text-[11px] text-zinc-300", "{revision.prompt}" }
                                     p { class: "mt-0.5 text-[9px] text-zinc-700", "{revision.meta}" }
+                                }
+                                if revision.origin == crate::registry::RevisionOrigin::Experiment {
+                                    span { class: "shrink-0 rounded bg-amber-400/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.05em] text-amber-300",
+                                        "experiment"
+                                    }
+                                    button {
+                                        class: "shrink-0 rounded-md bg-amber-400/15 px-2 py-1 text-[10px] font-semibold text-amber-300 opacity-0 transition hover:bg-amber-400/25 group-hover:opacity-100 disabled:opacity-30",
+                                        disabled,
+                                        title: "Make this the artifact's description, so later edits build on it",
+                                        onclick: {
+                                            let command = revision.promote.clone();
+                                            move |_| onrun.call(command.clone())
+                                        },
+                                        "Promote"
+                                    }
+                                } else {
+                                    span { class: "shrink-0 rounded bg-violet-400/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.05em] text-violet-300",
+                                        "canon"
+                                    }
                                 }
                             }
                         }
@@ -1256,10 +1221,13 @@ fn ActionButton(
 
 #[component]
 fn Composer(
-    mut value: Signal<String>,
+    value: Signal<String>,
     activity: Signal<OpActivity>,
     disabled: bool,
     target_hint: Option<String>,
+    /// The artifacts the bar offers as `c:` targets, and the set it treats
+    /// as resolving.
+    ref_candidates: Vec<RefCandidate>,
     onsubmit: EventHandler<()>,
 ) -> Element {
     let empty = value.read().trim().is_empty();
@@ -1269,7 +1237,7 @@ fn Composer(
         _ => None,
     };
     rsx! {
-        footer { class: "col-span-2 border-t border-white/[0.055] bg-zinc-950/45 px-6 py-4",
+        footer { class: "shrink-0 border-t border-white/[0.055] bg-zinc-950/45 px-6 py-4",
             div { class: "mx-auto max-w-3xl",
                 div { class: "flex items-center gap-3 rounded-[18px] bg-zinc-900/80 p-2 pl-4 shadow-[0_18px_60px_rgba(0,0,0,.3)] ring-1 ring-inset ring-white/[0.09] backdrop-blur-xl focus-within:ring-violet-400/35",
                     if let Some(target) = target_hint {
@@ -1284,24 +1252,15 @@ fn Composer(
                             span { class: "max-w-56 truncate font-mono", "{summary}" }
                         }
                     }
-                    textarea {
-                        class: "block min-h-9 w-full resize-none bg-transparent py-1.5 text-[12px] leading-5 text-zinc-100 outline-none placeholder:text-zinc-700 disabled:opacity-40",
-                        placeholder: "/create character <desc> · /variant c:<ref> <desc> · /regenerate c:<ref> · /resize c:<ref> WxH · /modify c:<ref> <change> · /describe c:<ref> <desc> · /attach-lora c:<ref> <lora> · or describe it in plain language",
-                        value: "{value}",
+                    // The vocabulary used to live in this input's placeholder,
+                    // which is where the discovery cliff came from: nothing on
+                    // screen told you /resize or --steps existed. The bar
+                    // offers them instead.
+                    CommandBar {
+                        value,
+                        refs: ref_candidates,
                         disabled,
-                        // WebKit rewrites `--` to an em dash and straight to
-                        // curly quotes in editable text; slash syntax needs
-                        // the literal characters (the parser also normalizes
-                        // smart punctuation as a fallback).
-                        autocorrect: "off",
-                        spellcheck: "false",
-                        oninput: move |event| value.set(event.value()),
-                        onkeydown: move |event| {
-                            if event.key() == Key::Enter && !event.modifiers().contains(Modifiers::SHIFT) {
-                                event.prevent_default();
-                                onsubmit.call(());
-                            }
-                        },
+                        onsubmit: move |_| onsubmit.call(()),
                     }
                     button {
                         class: "flex h-9 shrink-0 items-center gap-2 rounded-xl bg-zinc-100 px-3.5 text-[11px] font-semibold text-zinc-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-35",
@@ -1319,7 +1278,7 @@ fn Composer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::{CreateArtifact, Ref};
+    use crate::registry::{ArtifactKind, CreateArtifact, Ref};
 
     fn registry_with(name: &str, kind: ArtifactKind) -> ArtifactRegistry {
         let mut registry = ArtifactRegistry::new();

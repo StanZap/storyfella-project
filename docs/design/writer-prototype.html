@@ -1,0 +1,766 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Storyfella — Writer screen prototype</title>
+<style>
+  :root {
+    --bg:        #0b0b0e;
+    --panel:     #101014;
+    --panel-2:   #141419;
+    --line:      rgba(255,255,255,.06);
+    --line-2:    rgba(255,255,255,.09);
+    --text:      #e4e4e7;
+    --dim:       #a1a1aa;
+    --dimmer:    #71717a;
+    --faint:     #52525b;
+    --violet:    #a78bfa;
+    --violet-bg: rgba(139,92,246,.18);
+    --amber:     #fbbf24;
+    --amber-bg:  rgba(251,191,36,.14);
+    --teal:      #5eead4;
+    --rose:      #fb7185;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body { height: 100%; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ---------------------------------------------------------------- chrome */
+
+  .topbar {
+    display: flex; align-items: center; gap: 14px;
+    height: 44px; padding: 0 14px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    flex: none;
+  }
+
+  .brand {
+    font-size: 11px; font-weight: 600; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--faint);
+  }
+
+  .doc-name { font-size: 12px; color: var(--dim); }
+  .doc-name b { color: var(--text); font-weight: 600; }
+  .doc-dirty { color: var(--violet); margin-left: 5px; }
+
+  .tabs { display: flex; gap: 2px; margin-left: auto; }
+
+  .tab {
+    font: inherit; font-size: 11px; font-weight: 500;
+    padding: 5px 11px; border-radius: 7px;
+    background: none; border: 0; color: var(--dimmer);
+    cursor: pointer; display: flex; align-items: center; gap: 6px;
+  }
+  .tab:hover { color: var(--dim); }
+  .tab.on { background: var(--violet-bg); color: var(--violet); }
+  .tab kbd { font-size: 9px; opacity: .55; }
+
+  kbd {
+    font-family: var(--mono); font-size: 10px;
+    padding: 1px 4px; border-radius: 4px;
+    background: rgba(255,255,255,.05);
+    border: 1px solid var(--line-2);
+    color: var(--dim);
+  }
+
+  /* ----------------------------------------------------------------- body */
+
+  .main { flex: 1; display: flex; min-height: 0; }
+
+  /* ---------------------------------------------------------------- editor */
+
+  .editor-pane {
+    flex: 1 1 62%; min-width: 0;
+    display: flex; flex-direction: column;
+    background: var(--bg);
+    border-right: 1px solid var(--line);
+  }
+
+  .pane-head {
+    display: flex; align-items: center; gap: 9px;
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--line);
+    flex: none;
+  }
+  .pane-title {
+    font-size: 10px; font-weight: 600; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--faint);
+  }
+  .pane-head .spacer { margin-left: auto; }
+
+  .code {
+    flex: 1; overflow-y: auto; padding: 10px 0 40vh;
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.75;
+    outline: none;
+  }
+
+  .row { display: flex; padding: 0 14px 0 0; position: relative; }
+  .row:hover { background: rgba(255,255,255,.018); }
+  .row.cur { background: rgba(139,92,246,.07); }
+  .row.cur::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0;
+    width: 2px; background: var(--violet);
+  }
+
+  .ln {
+    flex: none; width: 46px; padding-right: 14px;
+    text-align: right; color: #3f3f46;
+    user-select: none; font-size: 11px;
+  }
+  .row.cur .ln { color: var(--violet); }
+
+  .src { white-space: pre-wrap; word-break: break-word; }
+
+  /* ------------------------------------------------------------ highlighting */
+
+  .k    { color: var(--violet); font-weight: 600; }         /* story/scene/beat */
+  .decl { color: #f4f4f5; font-weight: 600; }               /* declared name */
+  .attr { color: #7dd3fc; }                                 /* location: cast: */
+  .str  { color: #86efac; }                                 /* dialogue */
+  .op   { color: var(--faint); }                            /* -> */
+  .tgt  { color: var(--teal); text-decoration: underline dotted rgba(94,234,212,.4); }
+  .cmt  { color: #3f3f46; font-style: italic; }
+  .verb { color: var(--rose); font-style: italic; }         /* think */
+
+  /* reference chips — the whole point of the writer */
+  .ref {
+    border-radius: 4px; padding: 1px 4px; margin: 0 -1px;
+    cursor: pointer; border-bottom: 1px solid transparent;
+  }
+  .ref.ok      { background: rgba(139,92,246,.13); color: #c4b5fd; }
+  .ref.pending { background: var(--amber-bg); color: var(--amber);
+                 border-bottom: 1px dashed rgba(251,191,36,.55); }
+  .ref:hover   { filter: brightness(1.25); }
+  .ref.lit     { outline: 1px solid var(--violet); outline-offset: 1px; }
+
+  /* ------------------------------------------------------------- side panel */
+
+  .side {
+    flex: 0 0 min(400px, 38%);
+    display: flex; flex-direction: column;
+    background: var(--panel);
+    min-height: 0;
+  }
+
+  .side-scroll { flex: 1; overflow-y: auto; padding: 12px; }
+
+  .ctx {
+    font-size: 11px; color: var(--dimmer);
+    padding: 0 0 10px;
+  }
+  .ctx b { color: var(--text); font-weight: 600; }
+  .ctx .sep { color: #3f3f46; margin: 0 5px; }
+
+  .group-label {
+    display: flex; align-items: center; gap: 7px;
+    font-size: 10px; font-weight: 600; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--faint);
+    margin: 14px 0 8px;
+  }
+  .group-label:first-child { margin-top: 0; }
+  .group-label .count {
+    font-weight: 500; letter-spacing: 0;
+    color: #3f3f46; text-transform: none;
+  }
+
+  .cards { display: flex; flex-direction: column; gap: 7px; }
+
+  .card {
+    display: flex; align-items: center; gap: 11px;
+    padding: 8px; border-radius: 10px;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    cursor: pointer; transition: border-color .12s, background .12s;
+  }
+  .card:hover { border-color: var(--line-2); background: #17171d; }
+  .card.lit { border-color: rgba(139,92,246,.5); background: rgba(139,92,246,.07); }
+  .card.pending { border-style: dashed; border-color: rgba(251,191,36,.28); }
+  .card.pending:hover { border-color: rgba(251,191,36,.5); }
+
+  /* thumbnail + the stack of variants behind it */
+  .thumb-wrap { position: relative; flex: none; width: 46px; height: 58px; }
+
+  .thumb {
+    position: absolute; inset: 0;
+    border-radius: 6px; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px; font-weight: 700; color: rgba(255,255,255,.75);
+    font-family: var(--sans);
+    border: 1px solid rgba(255,255,255,.12);
+  }
+  .stack-1, .stack-2 {
+    position: absolute; inset: 0; border-radius: 6px;
+    border: 1px solid rgba(255,255,255,.09);
+    background: #202028;
+  }
+  .stack-1 { transform: translate(4px, -3px) rotate(3deg); }
+  .stack-2 { transform: translate(8px, -6px) rotate(6deg); opacity: .55; }
+
+  .thumb.empty {
+    background: repeating-linear-gradient(45deg,
+      rgba(251,191,36,.055) 0 6px, transparent 6px 12px);
+    border: 1px dashed rgba(251,191,36,.35);
+    color: rgba(251,191,36,.7); font-size: 19px; font-weight: 300;
+  }
+
+  .card-body { min-width: 0; flex: 1; }
+  .card-name {
+    font-family: var(--mono); font-size: 12px; font-weight: 600;
+    color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .card.pending .card-name { color: var(--amber); }
+  .card-meta {
+    font-size: 10.5px; color: var(--dimmer); margin-top: 3px;
+    display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+  }
+  .kind {
+    text-transform: uppercase; letter-spacing: .05em;
+    font-size: 9px; font-weight: 600; color: var(--faint);
+  }
+  .dot { color: #3f3f46; }
+
+  .card-action {
+    flex: none; font-size: 10px; font-weight: 600;
+    padding: 4px 8px; border-radius: 6px;
+    background: var(--amber-bg); color: var(--amber);
+    border: 0; font-family: var(--sans); cursor: pointer;
+    opacity: 0; transition: opacity .12s;
+  }
+  .card:hover .card-action, .card.lit .card-action { opacity: 1; }
+
+  .empty-note {
+    font-size: 11px; color: var(--faint); font-style: italic;
+    padding: 6px 2px;
+  }
+
+  /* ------------------------------------------------------------ diagnostics */
+
+  .diags { border-top: 1px solid var(--line); padding: 10px 12px; flex: none; }
+  .diag {
+    display: flex; gap: 8px; align-items: baseline;
+    font-size: 11px; padding: 3px 0; cursor: pointer;
+  }
+  .diag:hover { filter: brightness(1.2); }
+  .diag .sev { font-family: var(--mono); font-size: 10px; flex: none; }
+  .diag.warn .sev { color: var(--amber); }
+  .diag .msg { color: var(--dim); }
+  .diag .msg code {
+    font-family: var(--mono); color: var(--text);
+    background: rgba(255,255,255,.05); padding: 0 3px; border-radius: 3px;
+  }
+  .diag .at { color: #3f3f46; font-family: var(--mono); font-size: 10px; margin-left: auto; flex: none; }
+
+  /* --------------------------------------------------------------- statusbar */
+
+  .status {
+    display: flex; align-items: center; gap: 12px;
+    height: 26px; padding: 0 12px; flex: none;
+    background: var(--panel);
+    border-top: 1px solid var(--line);
+    font-size: 10.5px; color: var(--dimmer);
+    font-family: var(--mono);
+  }
+  .mode {
+    font-weight: 700; letter-spacing: .08em; font-size: 10px;
+    padding: 2px 8px; border-radius: 4px;
+  }
+  .mode.normal { background: var(--violet-bg); color: var(--violet); }
+  .mode.insert { background: rgba(94,234,212,.16); color: var(--teal); }
+  .status .right { margin-left: auto; display: flex; gap: 12px; align-items: center; }
+  .status .hint { color: #3f3f46; font-family: var(--sans); }
+  .status .warncount { color: var(--amber); }
+
+  /* ------------------------------------------------------------- completion */
+
+  .ac {
+    position: absolute; z-index: 30;
+    width: 320px; border-radius: 10px; overflow: hidden;
+    background: #17171d;
+    border: 1px solid var(--line-2);
+    box-shadow: 0 24px 60px rgba(0,0,0,.6);
+    font-family: var(--sans);
+  }
+  .ac-head {
+    font-size: 9.5px; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--faint); padding: 7px 10px 5px;
+  }
+  .ac-item {
+    display: flex; align-items: center; gap: 9px;
+    padding: 6px 10px; cursor: pointer;
+  }
+  .ac-item.on { background: var(--violet-bg); }
+  .ac-ico {
+    flex: none; width: 20px; height: 20px; border-radius: 5px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 700; color: rgba(255,255,255,.8);
+  }
+  .ac-name { font-family: var(--mono); font-size: 12px; color: var(--text); }
+  .ac-desc { font-size: 10.5px; color: var(--dimmer); margin-left: auto; }
+  .ac-item.create .ac-ico { background: var(--amber-bg); color: var(--amber); }
+  .ac-item.create .ac-name { color: var(--amber); }
+
+  /* ---------------------------------------------------------------- overlay */
+
+  .veil {
+    position: fixed; inset: 0; z-index: 50;
+    background: rgba(0,0,0,.55);
+    display: flex; align-items: flex-start; justify-content: center;
+    padding-top: 14vh;
+  }
+  .veil[hidden] { display: none; }
+
+  .palette {
+    width: min(560px, 90vw);
+    background: #17171d; border: 1px solid var(--line-2);
+    border-radius: 14px; overflow: hidden;
+    box-shadow: 0 40px 100px rgba(0,0,0,.7);
+  }
+  .palette-input {
+    padding: 13px 16px; font-family: var(--mono); font-size: 13px;
+    color: var(--text); border-bottom: 1px solid var(--line);
+  }
+  .palette-input .caret {
+    display: inline-block; width: 7px; height: 15px; vertical-align: -3px;
+    background: var(--violet); animation: blink 1.1s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  .palette-list { max-height: 320px; overflow-y: auto; padding: 5px; }
+  .pal-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 11px; border-radius: 8px; cursor: pointer;
+  }
+  .pal-item.on { background: var(--violet-bg); }
+  .pal-cmd { font-family: var(--mono); font-size: 12px; color: var(--text); }
+  .pal-desc { font-size: 11px; color: var(--dimmer); margin-left: auto; }
+
+  .note {
+    padding: 9px 16px; font-size: 10.5px; color: var(--faint);
+    border-top: 1px solid var(--line); background: rgba(255,255,255,.015);
+  }
+
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-thumb { background: #26262e; border-radius: 5px; }
+  ::-webkit-scrollbar-thumb:hover { background: #35353f; }
+  ::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="brand">Storyfella</span>
+  <span class="doc-name">stories/<b>low-light.sf</b><span class="doc-dirty">●</span></span>
+  <div class="tabs">
+    <button class="tab on">Story <kbd>g s</kbd></button>
+    <button class="tab">Canvas <kbd>g c</kbd></button>
+    <button class="tab">Run <kbd>g r</kbd></button>
+  </div>
+</div>
+
+<div class="main">
+  <div class="editor-pane">
+    <div class="pane-head">
+      <span class="pane-title">Writer</span>
+      <span class="spacer"></span>
+      <span style="font-size:10.5px;color:var(--faint)">
+        <kbd>j</kbd> <kbd>k</kbd> move · <kbd>Tab</kbd> complete · <kbd>Ctrl</kbd>+<kbd>K</kbd> palette
+      </span>
+    </div>
+    <div class="code" id="code" tabindex="0"></div>
+  </div>
+
+  <aside class="side">
+    <div class="pane-head">
+      <span class="pane-title">In scope</span>
+      <span class="spacer"></span>
+      <span id="scope-hint" style="font-size:10.5px;color:var(--faint)"></span>
+    </div>
+    <div class="side-scroll" id="side"></div>
+    <div class="diags" id="diags"></div>
+  </aside>
+</div>
+
+<div class="status">
+  <span class="mode normal" id="mode">NORMAL</span>
+  <span id="pos">12:1</span>
+  <span id="ctxpath" style="color:var(--faint)"></span>
+  <div class="right">
+    <span class="warncount" id="warns">3 pending</span>
+    <span class="hint">prototype — not wired to the registry</span>
+  </div>
+</div>
+
+<div class="veil" id="veil" hidden>
+  <div class="palette">
+    <div class="palette-input">&gt; create character<span class="caret"></span></div>
+    <div class="palette-list" id="pallist"></div>
+    <div class="note">The same closed vocabulary as the slash composer and the <code>svs</code> CLI — one grammar, four surfaces.</div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------ registry
+   Stands in for the artifact registry. `status` is what the resolver would
+   report for each name the story references. */
+
+const ARTIFACTS = {
+  mara:            { kind: "character",   status: "ok",      variants: 3, hue: 268, note: "harbourmaster" },
+  tam:             { kind: "character",   status: "ok",      variants: 1, hue: 22,  note: "courier" },
+  keeper_elias:    { kind: "character",   status: "pending", variants: 0, hue: 0,   note: "" },
+  harbor_dock:     { kind: "environment", status: "ok",      variants: 2, hue: 196, note: "dawn, low tide" },
+  lighthouse_tower:{ kind: "environment", status: "pending", variants: 0, hue: 0,   note: "" },
+  brass_lantern:   { kind: "object",      status: "pending", variants: 0, hue: 0,   note: "" },
+};
+
+const KEYWORDS = new Set(["story", "scene", "beat", "choice"]);
+const ATTRS    = new Set(["style", "location", "cast", "shot", "prop", "mood"]);
+
+/* -------------------------------------------------------------------- source
+   A first-cut grammar: indentation-significant, declarations introduce a
+   name, attributes are `key: value`, speaker lines are `name: "…"` and
+   `name think: …`. */
+
+const SRC = `# The writer edits .sf directly. Everything to the right is derived.
+
+story "Keeper of the Low Light"
+  style: painterly, muted teal and amber, 35mm
+
+scene harbor
+  location: harbor_dock
+  cast: mara, tam
+
+  beat arrival
+    shot: wide, dawn
+    mara: "You're late. Tide's already turning."
+    tam think: She counts the minutes like coins.
+    tam: "The road was out past Ellery."
+
+  beat handoff
+    shot: close on mara
+    prop: brass_lantern
+    mara: "Take it up before dark. Don't stop to look at the wreck."
+    choice
+      "Take the lantern" -> lighthouse.climb
+      "Ask about the wreck" -> harbor.wreck
+
+scene lighthouse
+  location: lighthouse_tower
+  cast: tam, keeper_elias
+
+  beat climb
+    shot: low angle, spiral stair
+    tam think: Ninety-two steps. She said ninety.
+    keeper_elias: "You brought the wrong light, girl."`;
+
+const LINES = SRC.split("\n");
+
+/* ---------------------------------------------------------------- structure
+   The scene/beat each line belongs to — this is what drives the right panel.
+   A real implementation reads it off the AST by span. */
+
+const SCOPE = [];
+{
+  let scene = null, beat = null;
+  for (const raw of LINES) {
+    const s = raw.match(/^\s*scene\s+([a-z_][\w]*)/);
+    const b = raw.match(/^\s*beat\s+([a-z_][\w]*)/);
+    if (s) { scene = s[1]; beat = null; }
+    else if (b) { beat = b[1]; }
+    SCOPE.push({ scene, beat });
+  }
+}
+
+/* -------------------------------------------------------------- highlighter
+   Deliberately a tokenizer, not a regex soup — the shape the real lexer
+   wants: one pass, every token carries its span. */
+
+const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+function highlight(line, lineIdx) {
+  if (/^\s*#/.test(line)) return `<span class="cmt">${esc(line)}</span>`;
+
+  let out = "";
+  let i = 0;
+  let afterDecl = false;   // next identifier is a declaration name
+  let afterArrow = false;  // next identifier is a jump target
+
+  const TOKEN = /(\s+)|("(?:[^"\\]|\\.)*")|(->)|([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)?)|(.)/y;
+
+  while (i < line.length) {
+    TOKEN.lastIndex = i;
+    const m = TOKEN.exec(line);
+    if (!m) break;
+    const [all, ws, str, arrow, ident, other] = m;
+    i += all.length;
+
+    if (ws)         { out += esc(ws); continue; }
+    if (str)        { out += `<span class="str">${esc(str)}</span>`; continue; }
+    if (arrow)      { out += `<span class="op">-&gt;</span>`; afterArrow = true; continue; }
+    if (other)      { out += `<span class="op">${esc(other)}</span>`; continue; }
+
+    // identifier
+    if (KEYWORDS.has(ident)) {
+      out += `<span class="k">${ident}</span>`;
+      afterDecl = ident !== "story" && ident !== "choice";
+      continue;
+    }
+    if (ident === "think") { out += `<span class="verb">think</span>`; continue; }
+
+    if (afterArrow) { out += `<span class="tgt">${ident}</span>`; afterArrow = false; continue; }
+    if (afterDecl)  { out += `<span class="decl">${ident}</span>`; afterDecl = false; continue; }
+
+    const art = ARTIFACTS[ident];
+    if (art) {
+      out += `<span class="ref ${art.status}" data-ref="${ident}" data-line="${lineIdx}">${ident}</span>`;
+      continue;
+    }
+    // `key:` attributes — peek for the colon
+    if (ATTRS.has(ident) && line[i] === ":") { out += `<span class="attr">${ident}</span>`; continue; }
+
+    out += esc(ident);
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------- render */
+
+const codeEl  = document.getElementById("code");
+const sideEl  = document.getElementById("side");
+const diagsEl = document.getElementById("diags");
+
+let cursor = 11;                    // the `mara: "You're late…"` line
+let mode   = "normal";
+let lit    = null;                  // hovered/selected artifact name
+
+function renderCode() {
+  codeEl.innerHTML = LINES.map((l, n) =>
+    `<div class="row${n === cursor ? " cur" : ""}" data-line="${n}">` +
+      `<span class="ln">${n + 1}</span>` +
+      `<span class="src">${highlight(l, n) || "&nbsp;"}</span>` +
+    `</div>`
+  ).join("");
+  if (lit) codeEl.querySelectorAll(`.ref[data-ref="${lit}"]`).forEach(e => e.classList.add("lit"));
+}
+
+/* Which artifacts are in scope at the cursor: everything referenced by the
+   enclosing scene, with the current beat's own references first. */
+function inScope() {
+  const here = SCOPE[cursor] || {};
+  const scene = here.scene;
+  const beatRefs = new Set(), sceneRefs = new Set();
+
+  LINES.forEach((line, n) => {
+    const sc = SCOPE[n];
+    if (!scene || sc.scene !== scene) return;
+    for (const name of Object.keys(ARTIFACTS)) {
+      if (new RegExp(`\\b${name}\\b`).test(line)) {
+        if (here.beat && sc.beat === here.beat) beatRefs.add(name);
+        else sceneRefs.add(name);
+      }
+    }
+  });
+  for (const n of beatRefs) sceneRefs.delete(n);
+  return { scene, beat: here.beat, beatRefs: [...beatRefs], sceneRefs: [...sceneRefs] };
+}
+
+function thumb(name, art) {
+  if (art.status === "pending") {
+    return `<div class="thumb-wrap"><div class="thumb empty">+</div></div>`;
+  }
+  const stack = art.variants > 2 ? `<div class="stack-2"></div><div class="stack-1"></div>`
+              : art.variants > 1 ? `<div class="stack-1"></div>` : "";
+  const bg = `linear-gradient(150deg, hsl(${art.hue} 42% 38%), hsl(${art.hue + 26} 34% 17%))`;
+  return `<div class="thumb-wrap">${stack}` +
+         `<div class="thumb" style="background:${bg}">${name[0].toUpperCase()}</div></div>`;
+}
+
+function card(name) {
+  const art = ARTIFACTS[name];
+  const meta = art.status === "pending"
+    ? `<span class="kind">${art.kind}</span><span class="dot">·</span><span style="color:var(--amber)">not created</span>`
+    : `<span class="kind">${art.kind}</span><span class="dot">·</span>${art.variants} variant${art.variants === 1 ? "" : "s"}` +
+      (art.note ? `<span class="dot">·</span>${art.note}` : "");
+  const action = art.status === "pending" ? `<button class="card-action">Create</button>` : "";
+  return `<div class="card ${art.status}${lit === name ? " lit" : ""}" data-name="${name}">` +
+           thumb(name, art) +
+           `<div class="card-body"><div class="card-name">${name}</div>` +
+           `<div class="card-meta">${meta}</div></div>${action}</div>`;
+}
+
+function renderSide() {
+  const { scene, beat, beatRefs, sceneRefs } = inScope();
+
+  document.getElementById("scope-hint").textContent = scene ? `scene ${scene}` : "";
+  document.getElementById("ctxpath").textContent =
+    scene ? (beat ? `${scene} › ${beat}` : scene) : "—";
+  document.getElementById("pos").textContent = `${cursor + 1}:1`;
+
+  let html = `<div class="ctx">`;
+  html += scene
+    ? `Artifacts referenced in <b>${beat ? `${scene}.${beat}` : scene}</b>`
+    : `Move the cursor into a scene.`;
+  html += `</div>`;
+
+  if (beat && beatRefs.length) {
+    html += `<div class="group-label">This beat <span class="count">${beatRefs.length}</span></div>`;
+    html += `<div class="cards">${beatRefs.map(card).join("")}</div>`;
+  }
+  if (sceneRefs.length) {
+    html += `<div class="group-label">Elsewhere in the scene <span class="count">${sceneRefs.length}</span></div>`;
+    html += `<div class="cards">${sceneRefs.map(card).join("")}</div>`;
+  }
+  if (!beatRefs.length && !sceneRefs.length) {
+    html += `<div class="empty-note">Nothing referenced here yet.</div>`;
+  }
+  sideEl.innerHTML = html;
+}
+
+function renderDiags() {
+  const pending = Object.entries(ARTIFACTS).filter(([, a]) => a.status === "pending");
+  const at = (name) => {
+    const n = LINES.findIndex((l) => new RegExp(`\\b${name}\\b`).test(l));
+    return n < 0 ? "" : `${n + 1}:${LINES[n].indexOf(name) + 1}`;
+  };
+  diagsEl.innerHTML =
+    `<div class="group-label" style="margin:0 0 6px">Pending <span class="count">${pending.length}</span></div>` +
+    pending.map(([name, a]) =>
+      `<div class="diag warn" data-goto="${name}">` +
+        `<span class="sev">◆</span>` +
+        `<span class="msg"><code>${name}</code> is referenced but no ${a.kind} exists</span>` +
+        `<span class="at">${at(name)}</span>` +
+      `</div>`
+    ).join("");
+  document.getElementById("warns").textContent = `${pending.length} pending`;
+}
+
+function render() { renderCode(); renderSide(); renderDiags(); }
+
+/* --------------------------------------------------------------- completion
+   Fires on Tab. The last row is the move that makes the story drive the
+   canvas: an unknown name is an offer to create, not an error. */
+
+function completion() {
+  document.querySelector(".ac")?.remove();
+  const row = codeEl.querySelector(".row.cur");
+  if (!row) return;
+
+  const items = Object.entries(ARTIFACTS)
+    .filter(([, a]) => a.kind === "character")
+    .map(([name, a], idx) =>
+      `<div class="ac-item${idx === 0 ? " on" : ""}">` +
+        `<span class="ac-ico" style="background:hsl(${a.hue} 42% 32%)">${name[0].toUpperCase()}</span>` +
+        `<span class="ac-name">${name}</span>` +
+        `<span class="ac-desc">${a.status === "pending" ? "not created" : a.note || a.kind}</span>` +
+      `</div>`)
+    .join("");
+
+  const el = document.createElement("div");
+  el.className = "ac";
+  el.innerHTML = `<div class="ac-head">character</div>${items}` +
+    `<div class="ac-item create"><span class="ac-ico">+</span>` +
+    `<span class="ac-name">new character…</span>` +
+    `<span class="ac-desc">opens the canvas</span></div>`;
+
+  const r = row.getBoundingClientRect();
+  el.style.left = Math.min(r.left + 70, window.innerWidth - 340) + "px";
+  el.style.top = (r.bottom + 4) + "px";
+  document.body.appendChild(el);
+  el.addEventListener("click", () => el.remove());
+}
+
+/* ------------------------------------------------------------------- input */
+
+function setMode(m) {
+  mode = m;
+  const el = document.getElementById("mode");
+  el.textContent = m.toUpperCase();
+  el.className = "mode " + m;
+}
+
+function move(delta) {
+  cursor = Math.max(0, Math.min(LINES.length - 1, cursor + delta));
+  document.querySelector(".ac")?.remove();
+  render();
+  codeEl.querySelector(".row.cur")?.scrollIntoView({ block: "nearest" });
+}
+
+const veil = document.getElementById("veil");
+
+document.addEventListener("keydown", (e) => {
+  if (!veil.hidden) {
+    if (e.key === "Escape") { veil.hidden = true; e.preventDefault(); }
+    return;
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault(); veil.hidden = false; return;
+  }
+  if (e.key === "Tab")    { e.preventDefault(); completion(); return; }
+  if (e.key === "Escape") { setMode("normal"); document.querySelector(".ac")?.remove(); return; }
+  if (e.key === "i")      { setMode("insert"); return; }
+
+  if (mode === "normal") {
+    if (e.key === "j" || e.key === "ArrowDown") { e.preventDefault(); move(1); }
+    if (e.key === "k" || e.key === "ArrowUp")   { e.preventDefault(); move(-1); }
+    if (e.key === "G") { e.preventDefault(); move(LINES.length); }
+    if (e.key === "g") { e.preventDefault(); move(-LINES.length); }
+  } else {
+    if (e.key === "ArrowDown") { e.preventDefault(); move(1); }
+    if (e.key === "ArrowUp")   { e.preventDefault(); move(-1); }
+  }
+});
+
+codeEl.addEventListener("click", (e) => {
+  const row = e.target.closest(".row");
+  if (row) { cursor = +row.dataset.line; document.querySelector(".ac")?.remove(); render(); }
+});
+
+/* Hovering a reference in the text lights its card, and vice versa — the
+   bidirectional link, at the cheapest possible fidelity. */
+document.addEventListener("mouseover", (e) => {
+  const name = e.target.closest("[data-ref]")?.dataset.ref
+            || e.target.closest(".card")?.dataset.name;
+  if (name !== lit) { lit = name || null; render(); }
+});
+
+document.addEventListener("click", (e) => {
+  const d = e.target.closest("[data-goto]");
+  if (d) {
+    const n = LINES.findIndex((l) => new RegExp(`\\b${d.dataset.goto}\\b`).test(l));
+    if (n >= 0) { cursor = n; render(); codeEl.querySelector(".row.cur")?.scrollIntoView({ block: "center" }); }
+  }
+});
+
+document.getElementById("pallist").innerHTML = [
+  ["/create character &lt;name&gt;", "new artifact"],
+  ["/variant c:mara", "new look from a base"],
+  ["/modify c:mara", "instruction edit"],
+  ["/describe c:mara", "make an edit canonical"],
+  ["/resize c:mara 1024x1536", "set the artifact canvas"],
+].map(([c, d], i) =>
+  `<div class="pal-item${i === 0 ? " on" : ""}"><span class="pal-cmd">${c}</span><span class="pal-desc">${d}</span></div>`
+).join("");
+
+veil.addEventListener("click", (e) => { if (e.target === veil) veil.hidden = true; });
+
+render();
+codeEl.focus();
+</script>
+</body>
+</html>

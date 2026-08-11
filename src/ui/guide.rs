@@ -16,9 +16,30 @@ use super::icons::{Icon, IconName};
 /// The narration-speed buttons: `(rate, active class)` pairs.
 fn speed_options(current: u32) -> [(u32, &'static str); 3] {
     [
-        (1, if current == 1 { "bg-violet-500/20 text-violet-200" } else { "text-zinc-600 hover:text-zinc-300" }),
-        (2, if current == 2 { "bg-violet-500/20 text-violet-200" } else { "text-zinc-600 hover:text-zinc-300" }),
-        (4, if current == 4 { "bg-violet-500/20 text-violet-200" } else { "text-zinc-600 hover:text-zinc-300" }),
+        (
+            1,
+            if current == 1 {
+                "bg-violet-500/20 text-violet-200"
+            } else {
+                "text-zinc-600 hover:text-zinc-300"
+            },
+        ),
+        (
+            2,
+            if current == 2 {
+                "bg-violet-500/20 text-violet-200"
+            } else {
+                "text-zinc-600 hover:text-zinc-300"
+            },
+        ),
+        (
+            4,
+            if current == 4 {
+                "bg-violet-500/20 text-violet-200"
+            } else {
+                "text-zinc-600 hover:text-zinc-300"
+            },
+        ),
     ]
 }
 
@@ -114,7 +135,11 @@ pub fn GuideCard(mut session: Signal<Option<GuideSession>>) -> Element {
         GuideState::Done(report) => {
             let passed = report.passed();
             let failed = report.failed();
-            let verdict_class = if failed == 0 { "text-emerald-300" } else { "text-rose-300" };
+            let verdict_class = if failed == 0 {
+                "text-emerald-300"
+            } else {
+                "text-rose-300"
+            };
             let rows = report.steps.iter().map(|(label, status)| {
                 let (icon, icon_class, text_class) = match status {
                     StepStatus::Passed => (IconName::Check, "text-emerald-400", "text-zinc-400"),

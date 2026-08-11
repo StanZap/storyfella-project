@@ -22,6 +22,9 @@ pub struct AppState {
     pub project_path: Option<PathBuf>,
     pub has_unsaved_changes: bool,
     pub selected_artifact_id: Option<Uuid>,
+    /// The story text the Writer edits. Lives here rather than in the
+    /// registry because it is the project's prose, not an artifact.
+    pub story_source: String,
     /// Registry snapshots taken before each applied operation — undo is
     /// state restore, never pipeline re-execution.
     undo_stack: Vec<ArtifactRegistry>,
@@ -40,6 +43,7 @@ impl AppState {
         self.project_path = None;
         self.has_unsaved_changes = true;
         self.selected_artifact_id = None;
+        self.story_source = String::new();
         self.undo_stack.clear();
         self.redo_stack.clear();
     }
@@ -49,6 +53,7 @@ impl AppState {
     pub fn open_project(&mut self, stored: StoredProject, path: PathBuf) {
         self.registry = stored.registry;
         self.project_name = stored.name;
+        self.story_source = stored.story_source;
         self.project_path = Some(path);
         self.has_unsaved_changes = false;
         self.selected_artifact_id = None;
@@ -66,6 +71,11 @@ impl AppState {
         if self.registry.artifact(artifact_id).is_some() {
             self.selected_artifact_id = Some(artifact_id);
         }
+    }
+
+    /// Drops the selection, which is what returns the canvas to the grid.
+    pub fn clear_selection(&mut self) {
+        self.selected_artifact_id = None;
     }
 
     /// Snapshot the registry before an operation applies — the undo basis.
@@ -211,6 +221,7 @@ mod tests {
             id: uuid::Uuid::new_v4(),
             name: "Stored Story".to_owned(),
             registry: character_registry("stored"),
+            story_source: String::new(),
         };
         state.open_project(stored, std::path::PathBuf::from("/tmp/stored.db"));
 
@@ -301,7 +312,13 @@ mod tests {
         let mia = state.registry.artifacts[0].id;
         let queued = state
             .registry
-            .start_revision(mia, "first draft".to_owned(), None, None)
+            .start_revision(
+                mia,
+                "first draft".to_owned(),
+                None,
+                None,
+                crate::registry::RevisionOrigin::Canon,
+            )
             .expect("revision should start");
 
         assert!(
@@ -311,7 +328,13 @@ mod tests {
 
         let completed = state
             .registry
-            .start_revision(mia, "second draft".to_owned(), None, None)
+            .start_revision(
+                mia,
+                "second draft".to_owned(),
+                None,
+                None,
+                crate::registry::RevisionOrigin::Canon,
+            )
             .expect("revision should start");
         state
             .registry
@@ -334,7 +357,13 @@ mod tests {
         let mia = state.registry.artifacts[0].id;
         let first = state
             .registry
-            .start_revision(mia, "first".to_owned(), None, None)
+            .start_revision(
+                mia,
+                "first".to_owned(),
+                None,
+                None,
+                crate::registry::RevisionOrigin::Canon,
+            )
             .expect("revision should start");
         state
             .registry
@@ -347,7 +376,13 @@ mod tests {
             .expect("revision should finish");
         let second = state
             .registry
-            .start_revision(mia, "second".to_owned(), None, None)
+            .start_revision(
+                mia,
+                "second".to_owned(),
+                None,
+                None,
+                crate::registry::RevisionOrigin::Canon,
+            )
             .expect("revision should start");
         state
             .registry
