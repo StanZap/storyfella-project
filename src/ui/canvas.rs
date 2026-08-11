@@ -1391,35 +1391,40 @@ fn Composer(
     rsx! {
         footer { class: "pointer-events-none absolute inset-x-0 bottom-0 z-30 px-6 pb-5",
             div { class: "pointer-events-auto mx-auto w-full max-w-2xl",
-                // The target chip sits above the box rather than inside it,
-                // so the field keeps its full width for multiple lines.
-                div { class: "mb-1 flex items-center gap-2 pl-1",
-                    if let Some(target) = target_hint {
-                        span { class: "rounded-md bg-violet-400/10 px-1.5 py-0.5 font-mono text-[9px] text-violet-300 ring-1 ring-inset ring-violet-400/20",
-                            title: "Free-form changes apply to this artifact unless you name another",
-                            "→ {target}"
+                // One opaque box: the target chip rides inside it at the top,
+                // above the field rather than beside it, so the field still
+                // owns its full width when the text wraps.
+                div { class: "flex flex-col gap-1 rounded-lg bg-zinc-900 p-2 shadow-[0_18px_60px_rgba(0,0,0,.55)] ring-1 ring-inset ring-white/[0.09] focus-within:ring-violet-400/35",
+                    if target_hint.is_some() || summary.is_some() {
+                        div { class: "flex items-center gap-2 pl-1.5",
+                            if let Some(target) = target_hint {
+                                span { class: "rounded bg-violet-400/10 px-1.5 py-0.5 font-mono text-[9px] text-violet-300 ring-1 ring-inset ring-violet-400/20",
+                                    title: "Free-form changes apply to this artifact unless you name another",
+                                    "→ {target}"
+                                }
+                            }
+                            if let Some(summary) = summary {
+                                span { class: "flex items-center gap-1.5 text-[10px] text-zinc-400",
+                                    span { class: "size-2.5 animate-spin rounded-full border border-zinc-700 border-t-violet-300" }
+                                    span { class: "max-w-56 truncate font-mono", "{summary}" }
+                                }
+                            }
                         }
                     }
-                    if let Some(summary) = summary {
-                        span { class: "flex items-center gap-1.5 text-[10px] text-zinc-400",
-                            span { class: "size-2.5 animate-spin rounded-full border border-zinc-700 border-t-violet-300" }
-                            span { class: "max-w-56 truncate font-mono", "{summary}" }
+                    div { class: "flex items-end gap-2 pl-1.5",
+                        CommandBar {
+                            value,
+                            refs: ref_candidates,
+                            disabled,
+                            onsubmit: move |_| onsubmit.call(()),
                         }
-                    }
-                }
-                div { class: "flex items-end gap-2 rounded-2xl bg-zinc-900/90 p-2 pl-3.5 shadow-[0_18px_60px_rgba(0,0,0,.45)] ring-1 ring-inset ring-white/[0.09] backdrop-blur-xl focus-within:ring-violet-400/35",
-                    CommandBar {
-                        value,
-                        refs: ref_candidates,
-                        disabled,
-                        onsubmit: move |_| onsubmit.call(()),
-                    }
-                    button {
-                        class: "flex h-8 shrink-0 items-center gap-1.5 rounded-xl bg-zinc-100 px-3 text-[11px] font-semibold text-zinc-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-35",
-                        disabled: disabled || busy || empty,
-                        onclick: move |_| onsubmit.call(()),
-                        Icon { name: IconName::Arrow, class: "size-3" }
-                        "Run"
+                        button {
+                            class: "flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-zinc-100 px-3 text-[11px] font-semibold text-zinc-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-35",
+                            disabled: disabled || busy || empty,
+                            onclick: move |_| onsubmit.call(()),
+                            Icon { name: IconName::Arrow, class: "size-3" }
+                            "Run"
+                        }
                     }
                 }
             }
