@@ -253,8 +253,11 @@ pub fn CommandBar(
         // below its content instead of forcing the row wider.
         div { class: "relative min-w-0 flex-1",
 
-            // signature help
-            div { class: "flex min-h-[18px] items-center gap-2 px-1 pb-1 font-mono text-[10px] text-zinc-600",
+            // Signature help only while an operation is being typed; at
+            // rest the placeholder carries the invitation, so the field is
+            // not permanently shortened by a line of hint text.
+            if help.is_some() {
+            div { class: "flex items-center gap-2 px-1 pb-1 font-mono text-[10px] text-zinc-600",
                 if let Some(help) = help {
                     span { class: "font-semibold text-violet-300", "{help.op.name}" }
                     for (slot , param) in help.op.params.iter().enumerate() {
@@ -267,11 +270,8 @@ pub fn CommandBar(
                         span { class: "text-zinc-700", "{help.op.flags.join(\" \")}" }
                     }
                     span { class: "ml-auto font-sans text-[10px] text-zinc-700", "{help.op.summary}" }
-                } else {
-                    span { class: "text-zinc-700",
-                        "type / for the operations, or describe a change in plain language"
-                    }
                 }
+            }
             }
 
             // completion popup, opening upward
@@ -318,7 +318,7 @@ pub fn CommandBar(
                         id: BAR_ID,
                         class: "relative z-20 block max-h-40 w-full resize-none overflow-y-auto bg-transparent font-mono text-[12.5px] leading-5 text-transparent caret-violet-400 outline-none placeholder:text-zinc-700 disabled:opacity-40",
                         rows: "1",
-                        placeholder: "/modify c:<ref> …",
+                        placeholder: "type / for the operations, or describe a change in plain language",
                         value: "{text}",
                         disabled,
                         // WebKit rewrites `--` to an em dash and straight to

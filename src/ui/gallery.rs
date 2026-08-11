@@ -190,7 +190,7 @@ pub fn Gallery(
                     "Artifacts"
                 }
                 p { class: "text-[10px] text-zinc-700",
-                    "hjkl move · ⏎ open · n new · / command"
+                    "{super::shortcuts::hint_line(super::shortcuts::Scope::Grid)}"
                 }
                 input {
                     class: "ml-auto h-8 w-56 rounded-lg bg-white/[0.045] px-3 text-[11px] text-zinc-200 outline-none ring-1 ring-inset ring-white/[0.06] transition placeholder:text-zinc-700 focus:ring-violet-400/40",
@@ -218,7 +218,7 @@ pub fn Gallery(
                     }
                 }
             } else {
-                div { class: "space-y-8 px-6 py-6", {groups} }
+                div { class: "space-y-8 px-6 pb-28 pt-6", {groups} }
             }
         }
     }

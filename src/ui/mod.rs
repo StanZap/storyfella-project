@@ -10,6 +10,7 @@ mod palette;
 mod plans;
 mod projects;
 mod settings;
+pub mod shortcuts;
 pub mod writer;
 
 use std::{

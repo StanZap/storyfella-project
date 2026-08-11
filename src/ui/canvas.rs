@@ -43,7 +43,15 @@ use super::{
     inspector::Inspector,
     mask_asset_url,
     palette::{self, Palette},
+    shortcuts,
 };
+
+/// Collapse state for the detail panels, in context so the key handler and
+/// the pane share one source of truth.
+#[derive(Clone, Copy)]
+pub struct HistoryOpen(pub Signal<bool>);
+#[derive(Clone, Copy)]
+pub struct VariantsOpen(pub Signal<bool>);
 
 #[component]
 pub fn Canvas(
@@ -110,6 +118,13 @@ pub fn Canvas(
     };
 
     let palette_open = use_context::<Signal<bool>>();
+    // Collapse state for the detail pane's two panels. Provided here so the
+    // keyboard can toggle them; the tooltips promise `e` and `f`, and a
+    // promised key that does nothing is worse than no key.
+    let show_history = use_signal(|| false);
+    use_context_provider(|| HistoryOpen(show_history));
+    let show_variants = use_signal(|| true);
+    use_context_provider(|| VariantsOpen(show_variants));
     // The grid's keyboard cursor. Kept here rather than inside Gallery so
     // the key handler and the grid share one source of truth.
     let mut grid_cursor = use_context::<super::GridCursor>().0;
@@ -165,6 +180,36 @@ pub fn Canvas(
                 let target = family[next];
                 drop(state);
                 app_state.write().select_artifact(target);
+            }
+            "e" if viewing => {
+                let mut open = show_history;
+                let now = *open.peek();
+                open.set(!now);
+            }
+            "f" if viewing => {
+                let mut open = show_variants;
+                let now = *open.peek();
+                open.set(!now);
+            }
+            key @ ("v" | "r" | "m") if viewing => {
+                // Prefill rather than run: every one of these needs an
+                // argument, so the caret goes to the bar.
+                let reference = app_state
+                    .peek()
+                    .selected_artifact()
+                    .map(|artifact| app_state.peek().registry.ref_of(artifact.id));
+                if let Some(reference) = reference {
+                    let op = match key {
+                        "v" => "variant",
+                        "r" => "regenerate",
+                        _ => "modify",
+                    };
+                    composer.set(format!("/{op} {reference} "));
+                    document::eval(
+                        "const el = document.getElementById(\"svs-cmdbar\");
+                         if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }",
+                    );
+                }
             }
             "/" => {
                 document::eval(
@@ -830,13 +875,18 @@ fn ArtifactDetail(
     onrun: EventHandler<String>,
     on_rerun: EventHandler<Operation>,
 ) -> Element {
+    let mut show_history = use_context::<HistoryOpen>().0;
+    let mut show_variants = use_context::<VariantsOpen>().0;
     let image = app_state.read().display_image(&artifact).map(str::to_owned);
     let is_visual = is_visual(&artifact);
     // Size and bound adapters are the inspector rail's business now.
+    // Always the base's family, never the open artifact's children —
+    // otherwise opening a variant empties the strip you navigated with.
+    let base_id = artifact.variant_of.unwrap_or(artifact.id);
     let variants: Vec<Artifact> = registry
         .artifacts
         .iter()
-        .filter(|candidate| candidate.variant_of == Some(artifact.id))
+        .filter(|candidate| candidate.variant_of == Some(base_id))
         .cloned()
         .collect();
     let children: Vec<Artifact> = registry
@@ -856,7 +906,6 @@ fn ArtifactDetail(
     let variant_prefix_strip = variant_prefix.clone();
     // The strip shows the base and its variants, so it stays the same set
     // whether you opened the base or one of its variants.
-    let base_id = artifact.variant_of.unwrap_or(artifact.id);
     let base_thumb = registry
         .latest_image(base_id)
         .and_then(|revision| revision.asset_path.as_deref())
@@ -889,68 +938,83 @@ fn ArtifactDetail(
         // the history scrolls inside itself. Scrolling *past* the picture to
         // reach the revisions was the thing that made this feel like a
         // document rather than a workspace.
-        div { class: "flex h-full min-h-0 flex-col",
+        div { class: "relative flex h-full min-h-0 flex-col",
 
-            // Breadcrumb row — the identity, compressed to one line.
-            div { class: "flex shrink-0 items-center gap-2 border-b border-white/[0.05] px-5 py-2.5",
-                button {
-                    class: "-ml-2 flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-medium text-zinc-500 transition hover:bg-white/[0.04] hover:text-zinc-300",
-                    onclick: move |_| app_state.write().clear_selection(),
-                    span { class: "text-[13px] leading-none", "‹" }
-                    "All artifacts"
+            // Floats over the render: no background, no border, so the
+            // picture reads as the surface and this reads as chrome on it.
+            div { class: "pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center gap-2 px-4 py-2.5",
+                div { class: "pointer-events-auto flex min-w-0 items-center gap-1.5",
+                    button {
+                        class: "-ml-1.5 flex items-center gap-1 rounded-lg px-1.5 py-1 text-[11px] font-medium text-zinc-500 transition hover:bg-white/[0.06] hover:text-zinc-200",
+                        title: shortcuts::tooltip("All artifacts", "back"),
+                        onclick: move |_| app_state.write().clear_selection(),
+                        span { class: "text-[13px] leading-none", "‹" }
+                        "All artifacts"
+                    }
+                    span { class: "text-zinc-700", "/" }
+                    span { class: "truncate text-[12px] font-semibold text-zinc-200",
+                        if artifact.name.trim().is_empty() { "Unnamed" } else { "{artifact.name}" }
+                    }
+                    if let Some(axis) = artifact.variant_axis {
+                        span { class: "shrink-0 rounded bg-violet-400/15 px-1.5 py-0.5 text-[9px] font-medium text-violet-300", "{axis}" }
+                    }
                 }
-                span { class: "text-zinc-800", "/" }
-                span { class: "truncate text-[12px] font-semibold text-zinc-200",
-                    if artifact.name.trim().is_empty() { "Unnamed" } else { "{artifact.name}" }
-                }
-                if let Some(axis) = artifact.variant_axis {
-                    span { class: "shrink-0 rounded bg-violet-400/10 px-1.5 py-0.5 text-[9px] font-medium text-violet-300", "variant · {axis}" }
-                }
-                if let Some(base_id) = artifact.variant_of {
-                    ProvenanceLink { label: "Base", registry: registry.clone(), target: base_id, on_select: move |id| app_state.write().select_artifact(id) }
-                }
-                if let Some(parent_id) = artifact.parent_id {
-                    ProvenanceLink { label: "Parent", registry: registry.clone(), target: parent_id, on_select: move |id| app_state.write().select_artifact(id) }
-                }
-                if is_visual {
-                    div { class: "ml-auto flex shrink-0 items-center gap-1.5",
-                        ActionButton {
-                            label: "New variant",
+
+                div { class: "pointer-events-auto ml-auto flex shrink-0 items-center gap-0.5",
+                    if is_visual {
+                        IconAction {
                             icon: IconName::Add,
+                            title: shortcuts::tooltip("New variant", "new-variant"),
                             disabled,
-                            title: "Create a new version (axis: outfit, age, weather, …)",
                             onclick: move |_| composer.set(variant_prefix.clone()),
                         }
-                        ActionButton {
-                            label: "Regenerate",
+                        IconAction {
                             icon: IconName::Refresh,
+                            title: shortcuts::tooltip("Regenerate", "regenerate"),
                             disabled,
-                            title: "New revision of the active image",
                             onclick: move |_| composer.set(regenerate_prefix.clone()),
                         }
                         if image.is_some() {
-                            ActionButton {
-                                label: "Modify",
+                            IconAction {
                                 icon: IconName::Generate,
+                                title: shortcuts::tooltip("Modify", "modify"),
                                 disabled,
-                                title: "Instruction edit against the description",
                                 onclick: move |_| composer.set(modify_prefix.clone()),
                             }
                         }
+                        span { class: "mx-1 h-4 w-px bg-white/[0.08]" }
+                        IconAction {
+                            icon: IconName::Layers,
+                            title: shortcuts::tooltip(
+                                if show_variants() { "Hide variants" } else { "Show variants" },
+                                "toggle-variants",
+                            ),
+                            active: show_variants(),
+                            onclick: move |_| { let now = show_variants(); show_variants.set(!now); },
+                        }
+                    }
+                    IconAction {
+                        icon: IconName::List,
+                        title: shortcuts::tooltip(
+                            if show_history() { "Hide history" } else { "Show history" },
+                            "toggle-history",
+                        ),
+                        active: show_history(),
+                        onclick: move |_| { let now = show_history(); show_history.set(!now); },
                     }
                 }
             }
 
             // The render takes whatever the other two regions leave.
-            div { class: "grid min-h-0 flex-1 place-items-center overflow-hidden bg-black/25 p-4",
+            div { class: "relative min-h-0 flex-1 overflow-hidden bg-black/25",
                 match image {
                     Some(path) => rsx! {
                         if let Some(url) = generated_asset_url(&path) {
-                            img { class: "h-full max-h-full w-full object-contain", src: "{url}", alt: artifact.name }
+                            img { class: "absolute inset-3 h-[calc(100%-1.5rem)] w-[calc(100%-1.5rem)] object-contain", src: "{url}", alt: artifact.name }
                         }
                     },
                     None => rsx! {
-                        div { class: "py-16",
+                        div { class: "grid h-full place-items-center",
                             EmptyVisual {
                                 icon: IconName::Generate,
                                 title: if is_visual { "No image yet" } else { "Not a visual artifact" },
@@ -961,10 +1025,11 @@ fn ArtifactDetail(
                 }
             }
 
-            if is_visual {
-                // Fixed row between the render and the history — the base
-                // plus its variants, with the open one ringed.
-                div { class: "flex shrink-0 items-end justify-center gap-2 overflow-x-auto border-t border-white/[0.05] px-4 py-3",
+            if is_visual && show_variants() {
+                // Floats over the render, pinned left. Always the base plus
+                // its variants, whichever member is open.
+                div { class: "pointer-events-none absolute bottom-3 left-0 z-20 flex max-w-[60%] items-end gap-2 overflow-x-auto px-4",
+                    div { class: "pointer-events-auto flex items-end gap-2 rounded-xl bg-black/45 p-2 backdrop-blur ring-1 ring-inset ring-white/[0.07]",
                     VariantChip {
                         label: "base".to_owned(),
                         image: base_thumb.clone(),
@@ -992,11 +1057,14 @@ fn ArtifactDetail(
                         onclick: move |_| composer.set(variant_prefix_strip.clone()),
                         "+"
                     }
+                    }
                 }
             }
 
-            // The history scrolls inside itself, so the page never does.
-            div { class: "min-h-0 max-h-[32%] shrink-0 overflow-y-auto border-t border-white/[0.05] px-5 py-3",
+            // Collapsed by default: the picture is the subject, and the
+            // history is reference you open when you want it.
+            if show_history() {
+            div { class: "min-h-0 max-h-[38%] shrink-0 overflow-y-auto border-t border-white/[0.05] px-5 pb-24 pt-3",
             if !active_masks.is_empty() {
                 Section { title: format!("Masks ({})", active_masks.len()),
                     p { class: "mb-3 -mt-2 text-[9px] leading-4 text-zinc-700",
@@ -1130,6 +1198,28 @@ fn ArtifactDetail(
                 }
             }
             }
+            }
+        }
+    }
+}
+
+/// A square icon button. `title` carries the tooltip, which the callers
+/// build from [`shortcuts::tooltip`] so a key is never hardcoded twice.
+#[component]
+fn IconAction(
+    icon: IconName,
+    title: String,
+    #[props(default = false)] disabled: bool,
+    #[props(default = false)] active: bool,
+    onclick: EventHandler<()>,
+) -> Element {
+    rsx! {
+        button {
+            class: if active { "grid size-7 place-items-center rounded-lg bg-violet-400/15 text-violet-300 transition" } else { "grid size-7 place-items-center rounded-lg text-zinc-500 transition hover:bg-white/[0.07] hover:text-zinc-100 disabled:opacity-30" },
+            title,
+            disabled,
+            onclick: move |_| onclick.call(()),
+            Icon { name: icon, class: "size-3.5" }
         }
     }
 }
@@ -1299,25 +1389,25 @@ fn Composer(
         _ => None,
     };
     rsx! {
-        footer { class: "shrink-0 border-t border-white/[0.055] bg-zinc-950/45 px-6 py-4",
-            div { class: "mx-auto max-w-3xl",
-                div { class: "flex items-center gap-3 rounded-[18px] bg-zinc-900/80 p-2 pl-4 shadow-[0_18px_60px_rgba(0,0,0,.3)] ring-1 ring-inset ring-white/[0.09] backdrop-blur-xl focus-within:ring-violet-400/35",
+        footer { class: "pointer-events-none absolute inset-x-0 bottom-0 z-30 px-6 pb-5",
+            div { class: "pointer-events-auto mx-auto w-full max-w-2xl",
+                // The target chip sits above the box rather than inside it,
+                // so the field keeps its full width for multiple lines.
+                div { class: "mb-1 flex items-center gap-2 pl-1",
                     if let Some(target) = target_hint {
-                        span { class: "shrink-0 rounded-md bg-violet-400/10 px-2 py-1 font-mono text-[9px] text-violet-300 ring-1 ring-inset ring-violet-400/20",
+                        span { class: "rounded-md bg-violet-400/10 px-1.5 py-0.5 font-mono text-[9px] text-violet-300 ring-1 ring-inset ring-violet-400/20",
                             title: "Free-form changes apply to this artifact unless you name another",
                             "→ {target}"
                         }
                     }
                     if let Some(summary) = summary {
-                        div { class: "flex shrink-0 items-center gap-2 text-[10px] text-zinc-400",
-                            span { class: "size-3 animate-spin rounded-full border border-zinc-700 border-t-violet-300" }
+                        span { class: "flex items-center gap-1.5 text-[10px] text-zinc-400",
+                            span { class: "size-2.5 animate-spin rounded-full border border-zinc-700 border-t-violet-300" }
                             span { class: "max-w-56 truncate font-mono", "{summary}" }
                         }
                     }
-                    // The vocabulary used to live in this input's placeholder,
-                    // which is where the discovery cliff came from: nothing on
-                    // screen told you /resize or --steps existed. The bar
-                    // offers them instead.
+                }
+                div { class: "flex items-end gap-2 rounded-2xl bg-zinc-900/90 p-2 pl-3.5 shadow-[0_18px_60px_rgba(0,0,0,.45)] ring-1 ring-inset ring-white/[0.09] backdrop-blur-xl focus-within:ring-violet-400/35",
                     CommandBar {
                         value,
                         refs: ref_candidates,
@@ -1325,10 +1415,10 @@ fn Composer(
                         onsubmit: move |_| onsubmit.call(()),
                     }
                     button {
-                        class: "flex h-9 shrink-0 items-center gap-2 rounded-xl bg-zinc-100 px-3.5 text-[11px] font-semibold text-zinc-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-35",
+                        class: "flex h-8 shrink-0 items-center gap-1.5 rounded-xl bg-zinc-100 px-3 text-[11px] font-semibold text-zinc-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-35",
                         disabled: disabled || busy || empty,
                         onclick: move |_| onsubmit.call(()),
-                        Icon { name: IconName::Arrow, class: "size-3.5" }
+                        Icon { name: IconName::Arrow, class: "size-3" }
                         "Run"
                     }
                 }
