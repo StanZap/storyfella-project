@@ -53,6 +53,15 @@ use super::{
 #[derive(Clone, Copy)]
 pub struct ActiveTool(pub Signal<super::tools::Tool>);
 
+/// The strokes painted on the open image, in its own pixel coordinates.
+///
+/// In context alongside [`ActiveTool`] so the automation driver can paint a
+/// demonstration the same way a hand does — through the state the rail and
+/// the overlay already read, rather than through a second path that could
+/// diverge from the real one.
+#[derive(Clone, Copy)]
+pub struct PaintedStrokes(pub Signal<Vec<crate::registry::pipeline::Stroke>>);
+
 /// The flag that stands in for the canvas brush's output until the command
 /// leaves the UI.
 const PAINTED_MASK_FLAG: &str = "--mask painted";
@@ -165,6 +174,8 @@ pub fn Canvas(
     use_context_provider(|| VariantsOpen(show_variants));
     let active_tool = use_signal(super::tools::Tool::default);
     use_context_provider(|| ActiveTool(active_tool));
+    let painted_strokes = use_signal(Vec::<crate::registry::pipeline::Stroke>::new);
+    use_context_provider(|| PaintedStrokes(painted_strokes));
     // The grid's keyboard cursor. Kept here rather than inside Gallery so
     // the key handler and the grid share one source of truth.
     let mut grid_cursor = use_context::<super::GridCursor>().0;
@@ -935,7 +946,7 @@ fn ArtifactDetail(
     // The active canvas tool. Pointer is the resting state, so opening an
     // artifact never lands you in a mode you did not ask for.
     let tool = use_context::<ActiveTool>().0;
-    let mut strokes = use_signal(Vec::<crate::registry::pipeline::Stroke>::new);
+    let mut strokes = use_context::<PaintedStrokes>().0;
     let mut painting = use_signal(|| false);
     // In pane pixels, so the brush stays the size it looks.
     let brush_radius = use_signal(|| 24.0f64);

@@ -1,0 +1,74 @@
+# Masked editing: paint a region by hand, then change only that region.
+#
+# The other edit plan (edit.yaml) shows the instruction path — no mask, no
+# region, the model preserves what the instruction did not mention. That is
+# the right tool for most edits and this plan does not compete with it.
+#
+# This is the other half: the edits an instruction cannot express, because
+# there is nothing to *name*. Filling a hole, removing an object, extending
+# a canvas. For those the region has to be pointed at, and there are two
+# ways to point — paint it, or describe it and let segmentation find it.
+# Both end up as the same mask, and everything after that is identical.
+#
+# Needs the generation backend. Paint dabs are fractions of the image, so
+# the plan holds at any window size.
+name: "Masked editing"
+description: "Paint a mask on the canvas, run an edit through it, then do the same by describing the region instead."
+speed_ms: 2200
+steps:
+  - create_project: "Masked Editing"
+    message: "A fresh story. The subject this time is the mask itself — where an edit is allowed to touch."
+  - go_canvas: true
+    wait_ms: 400
+
+  - compose: "/create character --name iris Iris, a woman in her thirties with short dark hair, wearing a plain grey t-shirt, against a plain pale wall, natural daylight photograph"
+    message: "One portrait to work on. The description is deliberately plain: it doubles as the list of things an edit has to leave alone."
+  - expect_artifact: { name: "iris", kind: character }
+  - expect_image: "iris"
+    soft: true
+    wait_ms: 2500
+    message: "There she is. Everything from here is about changing part of this picture and nothing else."
+
+  - open: "iris"
+    wait_ms: 600
+    message: "Open her, and the canvas gains a tool rail — top left, over the picture."
+
+  - select_tool: "brush"
+    wait_ms: 900
+    message: "The brush. Press b for it, p to put it away, x for the eraser. Crop, scale and colour are listed too, dimmed: they are coming, and a tool that appears only once it works looks like one that was never planned."
+
+  # Fractions of the image, not pixels: a plan describes where on the
+  # picture, which survives any window size.
+  - paint:
+      - { x: 0.50, y: 0.16, r: 0.13 }
+      - { x: 0.38, y: 0.20, r: 0.11 }
+      - { x: 0.62, y: 0.20, r: 0.11 }
+      - { x: 0.34, y: 0.30, r: 0.09 }
+      - { x: 0.66, y: 0.30, r: 0.09 }
+    wait_ms: 1200
+    message: "Painting over her hair. The violet dabs are the mask — drawn in the picture's own coordinates, so what you see and what gets masked are one shape, not two calculations that agree."
+
+  - compose: "/modify c:iris change her hair --mask painted --inpaint a mane of long copper curls"
+    message: "`--mask painted` stands in for what the brush drew. It is swapped for the mask file on the way through, so the operation layer only ever sees an ordinary mask — the same kind segmentation produces."
+  - expect_image: "iris"
+    soft: true
+    wait_ms: 3000
+    message: "Only the painted region was re-rendered. The mask is grown a little before generating — a hand-drawn edge stops where the hand stopped, and hair does not — then grown again for the blend, so the seam does not trace the outline you drew."
+
+  - clear_mask: true
+    wait_ms: 700
+    message: "Throw the mask away. It belongs to the moment, not to the artifact — the next edit gets its own."
+
+  - select_tool: "pointer"
+    wait_ms: 600
+    message: "And the other way to point at a region: describe it, and let segmentation find it."
+
+  - compose: "/modify c:iris change her t-shirt --mask auto --inpaint a dark green corduroy jacket"
+    message: "`--mask auto` hands the description to the planner, which splits it into a region to select and a look to paint into it. You never name the mask; you say what you want changed."
+  - expect_image: "iris"
+    soft: true
+    wait_ms: 3000
+    message: "Same pipeline, different way of pointing. Painted, described, or a mask file on disk — all three become one mask, and nothing downstream can tell them apart."
+
+  - say: true
+    message: "That is the mask path. Worth knowing when *not* to use it: an instruction edit — /modify with no mask at all — keeps the whole photograph and is better for anything you can simply ask for. Masks are for what you cannot say."

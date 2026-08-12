@@ -1,4 +1,4 @@
-mod canvas;
+pub mod canvas;
 mod cmdbar;
 mod components;
 pub mod gallery;
@@ -125,6 +125,8 @@ fn start_plan(
         writer_caret,
         grid_cursor,
         palette_open,
+        active_tool: use_context::<canvas::ActiveTool>(),
+        painted_strokes: use_context::<canvas::PaintedStrokes>(),
     };
     driver::run_plan(ctx, driver_ui, plan, mode, session, exit_on_done);
 }

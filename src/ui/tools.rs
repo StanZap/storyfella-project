@@ -97,6 +97,14 @@ impl Tool {
         }
     }
 
+    /// The tool a plan names, by its lowercase label.
+    pub fn parse(name: &str) -> Option<Tool> {
+        Tool::ALL
+            .iter()
+            .copied()
+            .find(|tool| tool.label().eq_ignore_ascii_case(name))
+    }
+
     /// The tool a key selects, if it selects one and that tool works.
     pub fn from_key(key: char) -> Option<Tool> {
         Tool::ALL
