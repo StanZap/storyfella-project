@@ -77,6 +77,24 @@ pub const MASKED_INIT_FILL: [u8; 3] = [128, 128, 128];
 /// is the only place that can fix it — a composite cannot remove content the
 /// model was never allowed to re-render.
 pub const MASK_GENERATION_GROW: u32 = 12;
+/// How strongly `inpaint`'s composite pulls the re-rendered region's colour
+/// statistics toward the surrounding photograph.
+///
+/// A masked re-render invents its own exposure and white balance, and at
+/// large mask coverage that drifts visibly — the mint cast measured
+/// 2026-08-11 over a cream wall. INPAINTKREA's restore nodes correct this
+/// downstream rather than steering the generation, at 0.20 (identity edit)
+/// and 0.25 (outpaint); this sits between them.
+///
+/// **It does not fix that mint cast**, measured the same day: the vacated
+/// region moved 186 -> 189 at 0.22 and 186 -> 189 at 0.50, against a wall at
+/// 228. The correction is a global affine transfer derived from a ring at
+/// the mask boundary, and at the boundary the re-render already agrees with
+/// the photograph — so the transfer is near-identity while the drift sits in
+/// the region's interior, out of the ring's reach. Kept because outpainting
+/// is the case it was written for: there the new region hugs the boundary
+/// everywhere, so ring statistics do describe it. That is untested here.
+pub const COMPOSITE_COLOUR_MATCH: f32 = 0.22;
 
 /// Generation parameters shared by every `Generate` step in a pipeline.
 #[derive(Clone, Debug, PartialEq)]
@@ -262,6 +280,9 @@ pub enum Step {
         /// erode-and-clamp behaviour and its bit-identical-outside
         /// guarantee; see [`crate::registry::image_ops::composite`].
         mask_grow: u32,
+        /// How strongly the replacement's colour statistics are pulled
+        /// toward the original's. `0.0` disables it.
+        colour_match: f32,
     },
     Invert {
         mask: SelectedMaskHandle,
@@ -660,6 +681,7 @@ impl Pipeline {
                     replacement,
                     feather_radius,
                     mask_grow,
+                    colour_match,
                 } => {
                     let original_path = value_image(values.get(original.step), index)?;
                     let mask_path = value_selected_mask(values.get(mask.step), index)?;
@@ -673,6 +695,7 @@ impl Pipeline {
                         &replacement_path,
                         *feather_radius,
                         *mask_grow,
+                        *colour_match,
                         &output,
                     )?;
                     StepValue::Image(output)
@@ -1497,6 +1520,7 @@ impl PipelineBuilder {
             replacement: generated,
             feather_radius: COMPOSITE_FEATHER_RADIUS,
             mask_grow: COMPOSITE_MASK_GROW,
+            colour_match: COMPOSITE_COLOUR_MATCH,
         });
         ImageHandle { step }
     }
@@ -1510,6 +1534,7 @@ impl PipelineBuilder {
         replacement: ImageHandle,
         feather_radius: u32,
         mask_grow: u32,
+        colour_match: f32,
     ) -> ImageHandle {
         let step = self.steps.len();
         self.steps.push(Step::Composite {
@@ -1518,6 +1543,7 @@ impl PipelineBuilder {
             replacement,
             feather_radius,
             mask_grow,
+            colour_match,
         });
         ImageHandle { step }
     }

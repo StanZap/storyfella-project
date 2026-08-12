@@ -78,6 +78,7 @@ pub fn composite(
     replacement: &Path,
     feather_radius: u32,
     grow: u32,
+    colour_match: f32,
     output: &Path,
 ) -> Result<(), ImageOpsError> {
     let original_image = open_rgba(original)?;
@@ -147,6 +148,17 @@ pub fn composite(
     let mut output_image = original_image.clone();
     let original_raw = original_image.as_raw();
     let replacement_raw = replacement_image.as_raw();
+    // Per-channel (scale, offset) mapping the replacement's statistics onto
+    // the original's, measured in a ring straddling the mask boundary.
+    let correction = colour_correction(
+        original_raw,
+        replacement_raw,
+        hard,
+        width,
+        height,
+        grow.max(1),
+        colour_match,
+    );
     let output_raw = output_image.as_mut();
 
     for y in 0..height {
@@ -159,7 +171,13 @@ pub fn composite(
             for channel in 0..4 {
                 let offset = index * 4 + channel;
                 let original_value = original_raw[offset] as u32;
-                let replacement_value = replacement_raw[offset] as u32;
+                // Alpha has no correction entry and takes none.
+                let replacement_value = match correction.get(channel) {
+                    Some(&(scale, shift)) => {
+                        ((replacement_raw[offset] as f32) * scale + shift).clamp(0.0, 255.0) as u32
+                    }
+                    None => replacement_raw[offset] as u32,
+                };
                 output_raw[offset] =
                     ((original_value * (255 - alpha) + replacement_value * alpha + 127) / 255)
                         as u8;
@@ -173,6 +191,73 @@ pub fn composite(
             path: output.to_path_buf(),
             source,
         })
+}
+
+/// Per-channel `(scale, shift)` mapping the replacement's colour statistics
+/// onto the original's, measured in a ring straddling the mask boundary.
+///
+/// A masked re-render invents its own exposure and white balance for the
+/// region it fills, and at large mask coverage that drifts visibly from the
+/// surrounding photograph — measured 2026-08-11, a vacated wall came back at
+/// (193,198,192) against a real (228,232,231), reading as a mint cast over a
+/// cream wall. The ring is the one place where both images describe the
+/// *same* content, so it is where the discrepancy can be measured.
+///
+/// `strength` interpolates between no correction and full statistical
+/// transfer; INPAINTKREA's restore nodes use 0.20–0.25. Returns an identity
+/// mapping when the ring is too small to measure or the replacement is flat
+/// (a zero standard deviation would divide through).
+fn colour_correction(
+    original: &[u8],
+    replacement: &[u8],
+    mask: &[u8],
+    width: u32,
+    height: u32,
+    radius: u32,
+    strength: f32,
+) -> [(f32, f32); 3] {
+    const IDENTITY: [(f32, f32); 3] = [(1.0, 0.0); 3];
+    if strength <= 0.0 {
+        return IDENTITY;
+    }
+    // The ring: within `radius` of the boundary, on the unmasked side. Those
+    // pixels are real photograph in the original and re-rendered content in
+    // the replacement, so their statistics are directly comparable.
+    let grown = dilate_mask(mask, width, height, radius);
+    let ring: Vec<usize> = (0..(width * height) as usize)
+        .filter(|&index| grown[index] > 0 && mask[index] < 128)
+        .collect();
+    if ring.len() < 64 {
+        return IDENTITY;
+    }
+
+    let mut correction = IDENTITY;
+    for channel in 0..3 {
+        let sample = |source: &[u8]| -> (f32, f32) {
+            let values: Vec<f32> = ring
+                .iter()
+                .map(|&index| source[index * 4 + channel] as f32)
+                .collect();
+            let mean = values.iter().sum::<f32>() / values.len() as f32;
+            let variance = values
+                .iter()
+                .map(|value| (value - mean).powi(2))
+                .sum::<f32>()
+                / values.len() as f32;
+            (mean, variance.sqrt())
+        };
+        let (original_mean, original_deviation) = sample(original);
+        let (replacement_mean, replacement_deviation) = sample(replacement);
+        if replacement_deviation < 1.0 {
+            continue;
+        }
+        // value -> (value - mean_r) * (dev_o / dev_r) + mean_o, expressed as
+        // scale/shift so the hot loop stays a multiply-add.
+        let scale = original_deviation / replacement_deviation;
+        let shift = original_mean - replacement_mean * scale;
+        correction[channel] = (1.0 + (scale - 1.0) * strength, shift * strength);
+    }
+    correction
 }
 
 /// Replaces the masked region with a flat neutral colour.
@@ -511,7 +596,7 @@ mod tests {
         write_half_mask(&mask, 64, 48);
         write_rgba(&replacement, 64, 48, [40, 40, 200, 255]);
 
-        composite(&original, &mask, &replacement, 0, 0, &output).unwrap();
+        composite(&original, &mask, &replacement, 0, 0, 0.0, &output).unwrap();
 
         let result = image::open(&output).unwrap().to_rgba8();
         let reference = image::open(&original).unwrap().to_rgba8();
@@ -547,7 +632,7 @@ mod tests {
         write_half_mask(&mask, 64, 48);
         write_rgba(&replacement, 64, 48, [40, 40, 200, 255]);
 
-        composite(&original, &mask, &replacement, 8, 0, &output).unwrap();
+        composite(&original, &mask, &replacement, 8, 0, 0.0, &output).unwrap();
 
         let result = image::open(&output).unwrap().to_rgba8();
         let reference = image::open(&original).unwrap().to_rgba8();
@@ -582,8 +667,8 @@ mod tests {
         write_half_mask(&mask, 64, 48);
         write_rgba(&replacement, 64, 48, [40, 40, 200, 255]);
 
-        composite(&original, &mask, &replacement, 0, 6, &grown).unwrap();
-        composite(&original, &mask, &replacement, 0, 0, &strict).unwrap();
+        composite(&original, &mask, &replacement, 0, 6, 0.0, &grown).unwrap();
+        composite(&original, &mask, &replacement, 0, 0, 0.0, &strict).unwrap();
 
         let grown_image = image::open(&grown).unwrap().to_rgba8();
         let strict_image = image::open(&strict).unwrap().to_rgba8();
@@ -646,7 +731,7 @@ mod tests {
         write_luma(&mask, 64, 48, 255);
         write_rgba(&replacement, 32, 48, [40, 40, 200, 255]);
 
-        composite(&original, &mask, &replacement, 0, 0, &output).unwrap();
+        composite(&original, &mask, &replacement, 0, 0, 0.0, &output).unwrap();
 
         // The output follows the replacement canvas, with the original's
         // content resized into it (fully masked here, so it is the
