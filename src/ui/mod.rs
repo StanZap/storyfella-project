@@ -264,19 +264,32 @@ pub fn Workspace(
     // Cmd/Ctrl+S always saves, whatever the autosave mode.
     let shortcut_app_state = app_state;
     let shortcut_error_report = error_report;
-    dioxus::desktop::use_global_shortcut("CmdOrCtrl+S", move |_| {
+    // These are *global* hotkeys, so registration fails when another
+    // instance already holds them — a foreseeable condition, not a bug in
+    // this process. Panicking took the whole UI down with it; the in-app
+    // Save and palette controls work regardless, so a warning is the honest
+    // response.
+    if let Err(error) = dioxus::desktop::use_global_shortcut("CmdOrCtrl+S", move |_| {
         persist_state(shortcut_app_state, shortcut_error_report);
-    })
-    .expect("shortcut registration should succeed");
+    }) {
+        tracing::warn!(
+            ?error,
+            "Ctrl+S is held by another process; use the Save control"
+        );
+    }
 
     // The palette is opened from here rather than from the canvas so the
     // shortcut registers once for the app, not once per screen mount.
     let mut palette_open = use_context::<Signal<bool>>();
-    dioxus::desktop::use_global_shortcut("CmdOrCtrl+K", move |_| {
+    if let Err(error) = dioxus::desktop::use_global_shortcut("CmdOrCtrl+K", move |_| {
         let showing = *palette_open.peek();
         palette_open.set(!showing);
-    })
-    .expect("shortcut registration should succeed");
+    }) {
+        tracing::warn!(
+            ?error,
+            "Ctrl+K is held by another process; use the palette control"
+        );
+    }
 
     let project_name = app_state.read().project_name.clone();
     let dirty = app_state.read().has_unsaved_changes;

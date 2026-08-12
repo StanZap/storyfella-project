@@ -46,6 +46,26 @@ use super::{
     shortcuts,
 };
 
+/// The active canvas tool, in context for the same reason the panel toggles
+/// are: the key handler lives in the workspace and the rail lives in the
+/// detail pane, and a shortcut that does not reach the rail is a shortcut
+/// the tooltip lies about.
+#[derive(Clone, Copy)]
+pub struct ActiveTool(pub Signal<super::tools::Tool>);
+
+/// The flag that stands in for the canvas brush's output until the command
+/// leaves the UI.
+const PAINTED_MASK_FLAG: &str = "--mask painted";
+
+/// The mask most recently painted on the canvas, as a file on disk.
+///
+/// In context because the brush lives in the detail pane while commands are
+/// submitted at the top: `--mask painted` is substituted for `--mask-file
+/// <path>` on the way through, so a painted mask reaches the operation layer
+/// as an ordinary mask file and nothing below the UI learns a new concept.
+#[derive(Clone, Copy)]
+pub struct PaintedMask(pub Signal<Option<String>>);
+
 /// Collapse state for the detail panels, in context so the key handler and
 /// the pane share one source of truth.
 #[derive(Clone, Copy)]
@@ -100,10 +120,28 @@ pub fn Canvas(
     // The inspector's controls are commands: they take the same path a
     // typed one does, so the rail and the bar cannot diverge.
     let reply_slot_for_rail = reply_slot.clone();
+    let painted_mask = use_context_provider(|| PaintedMask(Signal::new(None)));
     let run_command = move |input: String| {
         if disabled {
             return;
         }
+        // `--mask painted` names the canvas brush's output. Resolving it
+        // here keeps the slash grammar honest — the parser only ever sees a
+        // real path — and keeps the brush from needing its own run path.
+        let input = match (input.contains(PAINTED_MASK_FLAG), (painted_mask.0)()) {
+            (true, Some(path)) => input.replace(PAINTED_MASK_FLAG, &format!("--mask-file {path}")),
+            (true, None) => {
+                error_report.set(Some(
+                    ReportedError::plain(
+                        ErrorCode::OpIncompleteModify,
+                        "Nothing is painted on the canvas yet. Pick the brush (b) and paint the region to edit, then run this again.",
+                    )
+                    .log(),
+                ));
+                return;
+            }
+            (false, _) => input,
+        };
         let ui = ExecutionUi {
             activity,
             pending_approval,
@@ -125,6 +163,8 @@ pub fn Canvas(
     use_context_provider(|| HistoryOpen(show_history));
     let show_variants = use_signal(|| true);
     use_context_provider(|| VariantsOpen(show_variants));
+    let active_tool = use_signal(super::tools::Tool::default);
+    use_context_provider(|| ActiveTool(active_tool));
     // The grid's keyboard cursor. Kept here rather than inside Gallery so
     // the key handler and the grid share one source of truth.
     let mut grid_cursor = use_context::<super::GridCursor>().0;
@@ -180,6 +220,19 @@ pub fn Canvas(
                 let target = family[next];
                 drop(state);
                 app_state.write().select_artifact(target);
+            }
+            // Tool keys. `from_key` refuses the ones that are listed but
+            // not implemented, so a dimmed rail button and a dead key agree.
+            key if viewing
+                && key.chars().count() == 1
+                && super::tools::Tool::from_key(key.chars().next().unwrap_or(' ')).is_some() =>
+            {
+                let Some(tool) = super::tools::Tool::from_key(key.chars().next().unwrap_or(' '))
+                else {
+                    return;
+                };
+                let mut active = active_tool;
+                active.set(tool);
             }
             "e" if viewing => {
                 let mut open = show_history;
@@ -877,11 +930,48 @@ fn ArtifactDetail(
 ) -> Element {
     let mut show_history = use_context::<HistoryOpen>().0;
     let mut show_variants = use_context::<VariantsOpen>().0;
-    // The active canvas tool. Pointer is the resting state, so opening an
-    // artifact never lands you in a mode you did not ask for.
-    let tool = use_signal(super::tools::Tool::default);
     let image = app_state.read().display_image(&artifact).map(str::to_owned);
     let is_visual = is_visual(&artifact);
+    // The active canvas tool. Pointer is the resting state, so opening an
+    // artifact never lands you in a mode you did not ask for.
+    let tool = use_context::<ActiveTool>().0;
+    let mut strokes = use_signal(Vec::<crate::registry::pipeline::Stroke>::new);
+    let mut painting = use_signal(|| false);
+    // In pane pixels, so the brush stays the size it looks.
+    let brush_radius = use_signal(|| 24.0f64);
+    // The render pane's size, measured once it exists. Until then there is
+    // no mapping from pointer to pixel, so painting is inert rather than
+    // wrong.
+    let mut pane = use_signal(|| None::<(f64, f64)>);
+    // The image's own pixel dimensions, which the mapping needs and the
+    // artifact's default size only guesses at.
+    let image_for_size: Option<String> = image.clone();
+    let image_size = use_memo(move || {
+        image_for_size
+            .as_deref()
+            .map(std::path::Path::new)
+            .and_then(|path| crate::registry::image_ops::dimensions(path).ok())
+    })();
+    // Painting is only ever a mask, so the file is rewritten whenever the
+    // strokes change and `--mask painted` resolves to whatever is current.
+    let painted = use_context::<PaintedMask>();
+    use_effect(move || {
+        let strokes = strokes.read().clone();
+        let mut painted = painted.0;
+        match (strokes.is_empty(), image_size) {
+            (false, Some((width, height))) => {
+                let output =
+                    std::env::temp_dir().join(format!("svs-painted-{}.png", Uuid::new_v4()));
+                match crate::registry::image_ops::strokes_to_mask(width, height, &strokes, &output)
+                {
+                    Ok(()) => painted.set(Some(output.display().to_string())),
+                    Err(error) => tracing::warn!(%error, "could not write the painted mask"),
+                }
+            }
+            _ => painted.set(None),
+        }
+    });
+
     // Size and bound adapters are the inspector rail's business now.
     // Always the base's family, never the open artifact's children —
     // otherwise opening a variant empties the strip you navigated with.
@@ -1011,12 +1101,48 @@ fn ArtifactDetail(
             // The render takes whatever the other two regions leave.
             div { class: "relative min-h-0 flex-1 overflow-hidden bg-black/25",
                 if is_visual && image.is_some() {
-                    ToolRail { tool, disabled }
+                    ToolRail {
+                        tool,
+                        disabled,
+                        brush_radius,
+                        painted: !strokes.read().is_empty(),
+                        on_clear: move |_| strokes.write().clear(),
+                    }
                 }
                 match image {
                     Some(path) => rsx! {
                         if let Some(url) = generated_asset_url(&path) {
-                            img { class: "absolute inset-3 h-[calc(100%-1.5rem)] w-[calc(100%-1.5rem)] object-contain", src: "{url}", alt: artifact.name }
+                            // The picture and the painting surface are the
+                            // same box: `Fitted` maps pointer positions in it
+                            // to image pixels, so both must measure the same
+                            // element.
+                            div {
+                                class: if tool().paints() { "absolute inset-3 cursor-crosshair" } else { "absolute inset-3" },
+                                onmounted: move |event| async move {
+                                    if let Ok(rect) = event.get_client_rect().await {
+                                        pane.set(Some((rect.size.width, rect.size.height)));
+                                    }
+                                },
+                                onmousedown: move |event| {
+                                    if tool().paints() {
+                                        painting.set(true);
+                                        let at = event.element_coordinates();
+                                        paint_at((at.x, at.y), pane(), image_size, brush_radius, tool(), strokes);
+                                    }
+                                },
+                                onmousemove: move |event| {
+                                    if painting() && tool().paints() {
+                                        let at = event.element_coordinates();
+                                        paint_at((at.x, at.y), pane(), image_size, brush_radius, tool(), strokes);
+                                    }
+                                },
+                                onmouseup: move |_| painting.set(false),
+                                onmouseleave: move |_| painting.set(false),
+                                img { class: "pointer-events-none h-full w-full object-contain", src: "{url}", alt: artifact.name }
+                                if !strokes.read().is_empty() {
+                                    MaskOverlay { strokes, pane: pane(), image_size }
+                                }
+                            }
                         }
                     },
                     None => rsx! {
@@ -1560,10 +1686,17 @@ mod tests {
 /// hidden — the shape of the toolset is information, and a tool that appears
 /// only once it works looks like a tool that was never going to exist.
 #[component]
-fn ToolRail(tool: Signal<super::tools::Tool>, disabled: bool) -> Element {
+fn ToolRail(
+    mut tool: Signal<super::tools::Tool>,
+    disabled: bool,
+    mut brush_radius: Signal<f64>,
+    /// Whether anything is painted, which is what makes clearing meaningful.
+    painted: bool,
+    on_clear: EventHandler<()>,
+) -> Element {
     use super::tools::Tool;
     rsx! {
-        div { class: "pointer-events-none absolute left-3 top-3 z-20 flex flex-col gap-0.5 rounded-xl bg-black/45 p-1 backdrop-blur ring-1 ring-inset ring-white/[0.07]",
+        div { class: "pointer-events-none absolute left-3 top-3 z-20 flex flex-col gap-1 rounded-xl bg-black/45 p-1 backdrop-blur ring-1 ring-inset ring-white/[0.07]",
             div { class: "pointer-events-auto flex flex-col gap-0.5",
                 for item in Tool::ALL {
                     IconAction {
@@ -1580,6 +1713,124 @@ fn ToolRail(tool: Signal<super::tools::Tool>, disabled: bool) -> Element {
                     }
                 }
             }
+            // Brush settings and the mask's own controls appear only while a
+            // painting tool is held, so the rail stays a rail.
+            if tool().paints() {
+                div { class: "pointer-events-auto flex flex-col items-center gap-1 border-t border-white/[0.08] pt-1",
+                    input {
+                        r#type: "range",
+                        class: "h-16 w-6 cursor-pointer accent-violet-400",
+                        style: "writing-mode: vertical-lr; direction: rtl;",
+                        min: "4",
+                        max: "96",
+                        value: "{brush_radius()}",
+                        title: "Brush size",
+                        oninput: move |event| {
+                            if let Ok(value) = event.value().parse::<f64>() {
+                                brush_radius.set(value);
+                            }
+                        },
+                    }
+                    IconAction {
+                        icon: IconName::Close,
+                        title: "Clear the painted mask".to_owned(),
+                        disabled: !painted,
+                        onclick: move |_| on_clear.call(()),
+                    }
+                }
+            }
         }
+    }
+}
+
+/// Draws the painted mask over the picture, in the picture's own box.
+#[component]
+fn MaskOverlay(
+    strokes: Signal<Vec<crate::registry::pipeline::Stroke>>,
+    pane: Option<(f64, f64)>,
+    image_size: Option<(u32, u32)>,
+) -> Element {
+    let (Some(pane), Some(image_size)) = (pane, image_size) else {
+        return rsx! {};
+    };
+    let Some(fitted) = super::tools::Fitted::contain(pane, image_size) else {
+        return rsx! {};
+    };
+    // The overlay is drawn in image coordinates and scaled by the same fit
+    // the pointer mapping uses, so what is drawn and what is masked are the
+    // same shape by construction rather than by two agreeing calculations.
+    let dabs: Vec<(f64, f64, f64, f64)> = strokes
+        .read()
+        .iter()
+        .map(|stroke| {
+            (
+                stroke.center_x,
+                stroke.center_y,
+                stroke.radius_x,
+                stroke.radius_y,
+            )
+        })
+        .collect();
+    rsx! {
+        svg {
+            class: "pointer-events-none absolute",
+            style: "left: {fitted.left}px; top: {fitted.top}px; width: {fitted.width}px; height: {fitted.height}px;",
+            view_box: "0 0 {image_size.0} {image_size.1}",
+            preserve_aspect_ratio: "none",
+            for (index, (x, y, rx, ry)) in dabs.into_iter().enumerate() {
+                ellipse {
+                    key: "{index}",
+                    cx: "{x}",
+                    cy: "{y}",
+                    rx: "{rx}",
+                    ry: "{ry}",
+                    fill: "rgb(167 139 250)",
+                    fill_opacity: "0.45",
+                }
+            }
+        }
+    }
+}
+
+/// Adds one brush dab at a pointer position, or removes what it touches.
+///
+/// Inert until the pane has been measured: without a fit there is no
+/// mapping from pointer to pixel, and a guessed one paints somewhere other
+/// than where the cursor is.
+fn paint_at(
+    at: (f64, f64),
+    pane: Option<(f64, f64)>,
+    image_size: Option<(u32, u32)>,
+    brush_radius: Signal<f64>,
+    tool: super::tools::Tool,
+    mut strokes: Signal<Vec<crate::registry::pipeline::Stroke>>,
+) {
+    let (Some(pane), Some(image_size)) = (pane, image_size) else {
+        return;
+    };
+    let Some(fitted) = super::tools::Fitted::contain(pane, image_size) else {
+        return;
+    };
+    let Some((x, y)) = fitted.to_image(at.0, at.1, image_size) else {
+        return; // in the letterbox, not on the picture
+    };
+    let radius = fitted.radius_to_image(brush_radius(), image_size);
+    match tool {
+        super::tools::Tool::Eraser => {
+            // Erasing drops whole dabs rather than subtracting shapes: the
+            // mask is a list of strokes, and a stroke is the unit a person
+            // painted.
+            strokes.write().retain(|stroke| {
+                let dx = stroke.center_x - x;
+                let dy = stroke.center_y - y;
+                (dx * dx + dy * dy).sqrt() > radius
+            });
+        }
+        _ => strokes.write().push(crate::registry::pipeline::Stroke {
+            center_x: x,
+            center_y: y,
+            radius_x: radius,
+            radius_y: radius,
+        }),
     }
 }
