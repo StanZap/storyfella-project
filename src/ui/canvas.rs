@@ -877,6 +877,9 @@ fn ArtifactDetail(
 ) -> Element {
     let mut show_history = use_context::<HistoryOpen>().0;
     let mut show_variants = use_context::<VariantsOpen>().0;
+    // The active canvas tool. Pointer is the resting state, so opening an
+    // artifact never lands you in a mode you did not ask for.
+    let tool = use_signal(super::tools::Tool::default);
     let image = app_state.read().display_image(&artifact).map(str::to_owned);
     let is_visual = is_visual(&artifact);
     // Size and bound adapters are the inspector rail's business now.
@@ -1007,6 +1010,9 @@ fn ArtifactDetail(
 
             // The render takes whatever the other two regions leave.
             div { class: "relative min-h-0 flex-1 overflow-hidden bg-black/25",
+                if is_visual && image.is_some() {
+                    ToolRail { tool, disabled }
+                }
                 match image {
                     Some(path) => rsx! {
                         if let Some(url) = generated_asset_url(&path) {
@@ -1545,5 +1551,35 @@ mod tests {
             ops[4].note.is_none(),
             "a draft on a text artifact is a legitimate request"
         );
+    }
+}
+
+/// The canvas tool rail: one icon per tool, floating over the render.
+///
+/// Tools that are planned but unimplemented are shown disabled rather than
+/// hidden — the shape of the toolset is information, and a tool that appears
+/// only once it works looks like a tool that was never going to exist.
+#[component]
+fn ToolRail(tool: Signal<super::tools::Tool>, disabled: bool) -> Element {
+    use super::tools::Tool;
+    rsx! {
+        div { class: "pointer-events-none absolute left-3 top-3 z-20 flex flex-col gap-0.5 rounded-xl bg-black/45 p-1 backdrop-blur ring-1 ring-inset ring-white/[0.07]",
+            div { class: "pointer-events-auto flex flex-col gap-0.5",
+                for item in Tool::ALL {
+                    IconAction {
+                        key: "{item.action()}",
+                        icon: item.icon(),
+                        title: if item.available() {
+                            shortcuts::tooltip(item.label(), item.action())
+                        } else {
+                            format!("{} — not yet implemented", item.label())
+                        },
+                        disabled: disabled || !item.available(),
+                        active: tool() == item,
+                        onclick: move |_| tool.set(item),
+                    }
+                }
+            }
+        }
     }
 }

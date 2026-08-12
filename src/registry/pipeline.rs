@@ -735,11 +735,14 @@ impl Pipeline {
                     image_ops::union(&paths, &output)?;
                     StepValue::MaskConfirmed(output)
                 }
-                Step::PaintStrokes { .. } => {
-                    return Err(PipelineError::Step {
-                        step: index,
-                        message: "paint strokes are not executable in slice 1".to_owned(),
-                    })
+                Step::PaintStrokes { image, strokes } => {
+                    let image_path = value_image(values.get(image.step), index)?;
+                    let (width, height) = image_ops::dimensions(&image_path)?;
+                    let output = options
+                        .work_dir
+                        .join(format!("painted-{}.png", Uuid::new_v4()));
+                    image_ops::strokes_to_mask(width, height, strokes, &output)?;
+                    StepValue::MaskConfirmed(output)
                 }
                 Step::Llm { kind } => match kind {
                     LlmStepKind::Draft { request } => {

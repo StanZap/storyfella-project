@@ -11,6 +11,7 @@ use image::{GrayImage, RgbaImage};
 use thiserror::Error;
 
 use crate::errors::{CodedError, ErrorCode};
+use crate::registry::pipeline::Stroke;
 
 #[derive(Debug, Error)]
 pub enum ImageOpsError {
@@ -331,6 +332,43 @@ pub fn invert(mask: &Path, output: &Path) -> Result<(), ImageOpsError> {
 }
 
 /// Blurs a binary mask into a soft-edged mask.
+/// Rasterises painted ellipse strokes into a hard mask.
+///
+/// The brush's counterpart to segmentation: same output, same downstream
+/// path. Strokes are in *image* pixel coordinates — the canvas scales the
+/// image to fit its pane, so mapping display coordinates back to these is
+/// the caller's job and getting it wrong yields a mask silently offset from
+/// what was drawn.
+pub fn strokes_to_mask(
+    width: u32,
+    height: u32,
+    strokes: &[Stroke],
+    output: &Path,
+) -> Result<(), ImageOpsError> {
+    let mut mask = GrayImage::new(width, height);
+    for stroke in strokes {
+        // Only the stroke's own bounding box is visited: a brush dab is
+        // small against the canvas, and a full-frame scan per dab makes a
+        // long drag quadratic.
+        let radius_x = stroke.radius_x.max(0.5);
+        let radius_y = stroke.radius_y.max(0.5);
+        let min_x = ((stroke.center_x - radius_x).floor().max(0.0)) as u32;
+        let min_y = ((stroke.center_y - radius_y).floor().max(0.0)) as u32;
+        let max_x = ((stroke.center_x + radius_x).ceil().max(0.0) as u32).min(width - 1);
+        let max_y = ((stroke.center_y + radius_y).ceil().max(0.0) as u32).min(height - 1);
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                let dx = (x as f64 + 0.5 - stroke.center_x) / radius_x;
+                let dy = (y as f64 + 0.5 - stroke.center_y) / radius_y;
+                if dx * dx + dy * dy <= 1.0 {
+                    mask.put_pixel(x, y, image::Luma([255]));
+                }
+            }
+        }
+    }
+    save_luma(&mask, output)
+}
+
 /// Grows a hard mask by `radius` pixels, keeping it hard-edged.
 ///
 /// Distinct from the composite's own `grow`, which widens the *blend* only.
@@ -402,6 +440,11 @@ fn open_rgba(path: &Path) -> Result<RgbaImage, ImageOpsError> {
             source,
         })?
         .to_rgba8())
+}
+
+/// The pixel dimensions of an image on disk.
+pub fn dimensions(path: &Path) -> Result<(u32, u32), ImageOpsError> {
+    Ok(open_rgba(path)?.dimensions())
 }
 
 fn open_luma(path: &Path) -> Result<GrayImage, ImageOpsError> {
@@ -717,6 +760,47 @@ mod tests {
         assert_eq!(filled.get_pixel(31, 0), &Rgba([0, 177, 64, 255]));
         // Outside the mask nothing moves.
         assert_eq!(filled.get_pixel(50, 24), &Rgba([228, 232, 231, 255]));
+    }
+
+    /// The brush's output has to be the same kind of thing segmentation
+    /// produces: a hard mask, lit inside the painted shape and nowhere else.
+    #[test]
+    fn strokes_rasterise_to_a_hard_mask() {
+        let dir = test_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let output = dir.join("painted.png");
+        let strokes = vec![
+            Stroke {
+                center_x: 20.0,
+                center_y: 24.0,
+                radius_x: 10.0,
+                radius_y: 10.0,
+            },
+            // Deliberately overhanging the right edge: a drag off-canvas
+            // must clip rather than panic.
+            Stroke {
+                center_x: 62.0,
+                center_y: 10.0,
+                radius_x: 8.0,
+                radius_y: 8.0,
+            },
+        ];
+        strokes_to_mask(64, 48, &strokes, &output).unwrap();
+        let mask = image::open(&output).unwrap().to_luma8();
+
+        assert_eq!(mask.get_pixel(20, 24), &image::Luma([255]), "centre lit");
+        assert_eq!(
+            mask.get_pixel(29, 24),
+            &image::Luma([255]),
+            "just inside the radius"
+        );
+        assert_eq!(
+            mask.get_pixel(32, 24),
+            &image::Luma([0]),
+            "outside the radius stays unlit"
+        );
+        assert_eq!(mask.get_pixel(63, 10), &image::Luma([255]), "clipped edge");
+        assert_eq!(mask.get_pixel(20, 47), &image::Luma([0]), "untouched");
     }
 
     #[test]

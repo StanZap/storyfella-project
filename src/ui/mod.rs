@@ -11,6 +11,7 @@ mod plans;
 mod projects;
 mod settings;
 pub mod shortcuts;
+pub mod tools;
 pub mod writer;
 
 use std::{
