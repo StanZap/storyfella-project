@@ -103,6 +103,10 @@ pub enum StepVerb {
     Paint(Vec<PaintDab>),
     /// Throw the painted mask away.
     ClearMask,
+    /// Assert whether a painted mask exists — the thing `--mask painted`
+    /// resolves to, so a plan can check the brush reached the operation
+    /// layer without generating anything.
+    ExpectPaintedMask(bool),
     /// Put an artifact into the rendering state, wait, then complete it
     /// with its existing picture.
     ///
@@ -146,6 +150,13 @@ impl StepVerb {
             Self::SelectTool(tool) => format!("pick the {} tool", tool.label().to_lowercase()),
             Self::Paint(dabs) => format!("paint {} dabs of mask", dabs.len()),
             Self::ClearMask => "clear the painted mask".to_owned(),
+            Self::ExpectPaintedMask(present) => {
+                if *present {
+                    "a painted mask exists".to_owned()
+                } else {
+                    "no painted mask".to_owned()
+                }
+            }
             Self::Cursor(name) => format!("cursor to \"{name}\""),
             Self::Palette(true) => "open the palette".to_owned(),
             Self::Palette(false) => "close the palette".to_owned(),
@@ -197,6 +208,7 @@ impl StepVerb {
                 )
             }
             "clear_mask" => Self::ClearMask,
+            "expect_painted_mask" => Self::ExpectPaintedMask(value.as_bool().unwrap_or(true)),
             "paint" => {
                 let serde_yaml::Value::Sequence(dabs) = &value else {
                     return Err("paint takes a list of {x, y, r} dabs".to_owned());
@@ -548,6 +560,26 @@ impl RunReport {
     }
 }
 
+/// Resolves a revision's stored image reference to a file on disk.
+///
+/// Revisions store a bare asset filename and the UI serves it through the
+/// asset handler; a plan step that has to *read* the image needs the real
+/// path. An absolute path is taken as-is, so fixtures outside the asset
+/// directory still work.
+fn resolve_asset(config: &AppConfig, stored: &str) -> PathBuf {
+    let raw = Path::new(stored);
+    if raw.is_absolute() && raw.exists() {
+        return raw.to_path_buf();
+    }
+    let filename = raw.file_name().unwrap_or(raw.as_os_str());
+    let generated = config.asset_dir.join("generated").join(filename);
+    if generated.exists() {
+        generated
+    } else {
+        raw.to_path_buf()
+    }
+}
+
 /// One brush dab in a plan, in fractions of the image: `x` and `y` of its
 /// width and height, `r` of its width.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -804,7 +836,24 @@ async fn execute_step(
         }
         StepVerb::ClearMask => {
             ctx.painted_strokes.0.clone().write().clear();
+            crate::ui::canvas::write_painted_mask(ctx.app_state, &[], None);
             StepStatus::Passed
+        }
+        StepVerb::ExpectPaintedMask(present) => {
+            let mask = ctx.app_state.read().painted_mask.clone();
+            match (present, mask) {
+                (true, Some(path)) if std::path::Path::new(&path).exists() => StepStatus::Passed,
+                (true, Some(path)) => StepStatus::Failed {
+                    reason: format!("the painted mask {path} was not written"),
+                },
+                (true, None) => StepStatus::Failed {
+                    reason: "nothing is painted".to_owned(),
+                },
+                (false, None) => StepStatus::Passed,
+                (false, Some(path)) => StepStatus::Failed {
+                    reason: format!("expected no painted mask, found {path}"),
+                },
+            }
         }
         StepVerb::Paint(dabs) => {
             // Fractions are of the open image, so the plan needs it open and
@@ -825,10 +874,13 @@ async fn execute_step(
                     reason: "paint needs an artifact with an image open".to_owned(),
                 };
             };
-            let size = crate::registry::image_ops::dimensions(std::path::Path::new(&image));
-            let Ok((width, height)) = size else {
+            // A revision stores a bare asset filename, which the UI resolves
+            // through the asset handler; the driver has to resolve it on
+            // disk instead.
+            let on_disk = resolve_asset(&ctx.config, &image);
+            let Ok((width, height)) = crate::registry::image_ops::dimensions(&on_disk) else {
                 return StepStatus::Failed {
-                    reason: format!("could not read the size of {image}"),
+                    reason: format!("could not read the size of {}", on_disk.display()),
                 };
             };
             let mut strokes = ctx.painted_strokes.0;
@@ -841,6 +893,10 @@ async fn execute_step(
                     radius_y: radius,
                 });
             }
+            // Write the mask now rather than waiting for the canvas to
+            // re-render: the very next step may be the command that uses it.
+            let painted = strokes.read().clone();
+            crate::ui::canvas::write_painted_mask(ctx.app_state, &painted, Some((width, height)));
             StepStatus::Passed
         }
         StepVerb::SimulateRender(name) => {

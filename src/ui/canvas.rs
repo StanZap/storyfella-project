@@ -62,19 +62,6 @@ pub struct ActiveTool(pub Signal<super::tools::Tool>);
 #[derive(Clone, Copy)]
 pub struct PaintedStrokes(pub Signal<Vec<crate::registry::pipeline::Stroke>>);
 
-/// The flag that stands in for the canvas brush's output until the command
-/// leaves the UI.
-const PAINTED_MASK_FLAG: &str = "--mask painted";
-
-/// The mask most recently painted on the canvas, as a file on disk.
-///
-/// In context because the brush lives in the detail pane while commands are
-/// submitted at the top: `--mask painted` is substituted for `--mask-file
-/// <path>` on the way through, so a painted mask reaches the operation layer
-/// as an ordinary mask file and nothing below the UI learns a new concept.
-#[derive(Clone, Copy)]
-pub struct PaintedMask(pub Signal<Option<String>>);
-
 /// Collapse state for the detail panels, in context so the key handler and
 /// the pane share one source of truth.
 #[derive(Clone, Copy)]
@@ -129,28 +116,10 @@ pub fn Canvas(
     // The inspector's controls are commands: they take the same path a
     // typed one does, so the rail and the bar cannot diverge.
     let reply_slot_for_rail = reply_slot.clone();
-    let painted_mask = use_context_provider(|| PaintedMask(Signal::new(None)));
     let run_command = move |input: String| {
         if disabled {
             return;
         }
-        // `--mask painted` names the canvas brush's output. Resolving it
-        // here keeps the slash grammar honest — the parser only ever sees a
-        // real path — and keeps the brush from needing its own run path.
-        let input = match (input.contains(PAINTED_MASK_FLAG), (painted_mask.0)()) {
-            (true, Some(path)) => input.replace(PAINTED_MASK_FLAG, &format!("--mask-file {path}")),
-            (true, None) => {
-                error_report.set(Some(
-                    ReportedError::plain(
-                        ErrorCode::OpIncompleteModify,
-                        "Nothing is painted on the canvas yet. Pick the brush (b) and paint the region to edit, then run this again.",
-                    )
-                    .log(),
-                ));
-                return;
-            }
-            (false, _) => input,
-        };
         let ui = ExecutionUi {
             activity,
             pending_approval,
@@ -172,10 +141,7 @@ pub fn Canvas(
     use_context_provider(|| HistoryOpen(show_history));
     let show_variants = use_signal(|| true);
     use_context_provider(|| VariantsOpen(show_variants));
-    let active_tool = use_signal(super::tools::Tool::default);
-    use_context_provider(|| ActiveTool(active_tool));
-    let painted_strokes = use_signal(Vec::<crate::registry::pipeline::Stroke>::new);
-    use_context_provider(|| PaintedStrokes(painted_strokes));
+    let active_tool = use_context::<ActiveTool>().0;
     // The grid's keyboard cursor. Kept here rather than inside Gallery so
     // the key handler and the grid share one source of truth.
     let mut grid_cursor = use_context::<super::GridCursor>().0;
@@ -963,25 +929,12 @@ fn ArtifactDetail(
             .map(std::path::Path::new)
             .and_then(|path| crate::registry::image_ops::dimensions(path).ok())
     })();
-    // Painting is only ever a mask, so the file is rewritten whenever the
-    // strokes change and `--mask painted` resolves to whatever is current.
-    let painted = use_context::<PaintedMask>();
-    use_effect(move || {
-        let strokes = strokes.read().clone();
-        let mut painted = painted.0;
-        match (strokes.is_empty(), image_size) {
-            (false, Some((width, height))) => {
-                let output =
-                    std::env::temp_dir().join(format!("svs-painted-{}.png", Uuid::new_v4()));
-                match crate::registry::image_ops::strokes_to_mask(width, height, &strokes, &output)
-                {
-                    Ok(()) => painted.set(Some(output.display().to_string())),
-                    Err(error) => tracing::warn!(%error, "could not write the painted mask"),
-                }
-            }
-            _ => painted.set(None),
-        }
-    });
+    // The mask file is written by whatever changed the strokes — the
+    // pointer handler here, or the driver's paint step — never by a
+    // reactive echo of them. An effect would re-fire on any re-render and
+    // rewrite the file against whatever `image_size` had resolved to by
+    // then, which is how a plan ended up editing through a mask sized for
+    // the artifact it had open a moment earlier.
 
     // Size and bound adapters are the inspector rail's business now.
     // Always the base's family, never the open artifact's children —
@@ -1117,7 +1070,10 @@ fn ArtifactDetail(
                         disabled,
                         brush_radius,
                         painted: !strokes.read().is_empty(),
-                        on_clear: move |_| strokes.write().clear(),
+                        on_clear: move |_| {
+                            strokes.write().clear();
+                            write_painted_mask(app_state, &[], None);
+                        },
                     }
                 }
                 match image {
@@ -1138,13 +1094,13 @@ fn ArtifactDetail(
                                     if tool().paints() {
                                         painting.set(true);
                                         let at = event.element_coordinates();
-                                        paint_at((at.x, at.y), pane(), image_size, brush_radius, tool(), strokes);
+                                        paint_at((at.x, at.y), pane(), image_size, brush_radius, tool(), strokes, app_state);
                                     }
                                 },
                                 onmousemove: move |event| {
                                     if painting() && tool().paints() {
                                         let at = event.element_coordinates();
-                                        paint_at((at.x, at.y), pane(), image_size, brush_radius, tool(), strokes);
+                                        paint_at((at.x, at.y), pane(), image_size, brush_radius, tool(), strokes, app_state);
                                     }
                                 },
                                 onmouseup: move |_| painting.set(false),
@@ -1754,6 +1710,30 @@ fn ToolRail(
     }
 }
 
+/// Rasterises the painted strokes and records the file on the app state.
+///
+/// Both surfaces that can paint call this — the brush's pointer handler and
+/// the automation driver's `paint` step — because the mask has to exist by
+/// the time a command runs, and a component effect only fires when that
+/// component re-renders. Tying the file to a render is how a plan can paint
+/// and then find nothing painted.
+pub fn write_painted_mask(
+    mut app_state: Signal<AppState>,
+    strokes: &[crate::registry::pipeline::Stroke],
+    image_size: Option<(u32, u32)>,
+) {
+    match (strokes.is_empty(), image_size) {
+        (false, Some((width, height))) => {
+            let output = std::env::temp_dir().join(format!("svs-painted-{}.png", Uuid::new_v4()));
+            match crate::registry::image_ops::strokes_to_mask(width, height, strokes, &output) {
+                Ok(()) => app_state.write().painted_mask = Some(output.display().to_string()),
+                Err(error) => tracing::warn!(%error, "could not write the painted mask"),
+            }
+        }
+        _ => app_state.write().painted_mask = None,
+    }
+}
+
 /// Draws the painted mask over the picture, in the picture's own box.
 #[component]
 fn MaskOverlay(
@@ -1815,6 +1795,7 @@ fn paint_at(
     brush_radius: Signal<f64>,
     tool: super::tools::Tool,
     mut strokes: Signal<Vec<crate::registry::pipeline::Stroke>>,
+    app_state: Signal<AppState>,
 ) {
     let (Some(pane), Some(image_size)) = (pane, image_size) else {
         return;
@@ -1844,4 +1825,6 @@ fn paint_at(
             radius_y: radius,
         }),
     }
+    let painted = strokes.read().clone();
+    write_painted_mask(app_state, &painted, Some(image_size));
 }

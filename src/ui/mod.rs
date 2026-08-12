@@ -106,6 +106,8 @@ fn start_plan(
     writer_caret: WriterCaret,
     grid_cursor: GridCursor,
     palette_open: Signal<bool>,
+    active_tool: canvas::ActiveTool,
+    painted_strokes: canvas::PaintedStrokes,
     driver_ui: ExecutionUi,
     session: Signal<Option<GuideSession>>,
     plan: Plan,
@@ -125,8 +127,8 @@ fn start_plan(
         writer_caret,
         grid_cursor,
         palette_open,
-        active_tool: use_context::<canvas::ActiveTool>(),
-        painted_strokes: use_context::<canvas::PaintedStrokes>(),
+        active_tool,
+        painted_strokes,
     };
     driver::run_plan(ctx, driver_ui, plan, mode, session, exit_on_done);
 }
@@ -184,6 +186,14 @@ pub fn Workspace(
     use_context_provider(|| writer_caret);
     let grid_cursor = GridCursor(use_signal(|| 0usize));
     use_context_provider(|| grid_cursor);
+    // The canvas tool and its painted mask are provided here, beside the
+    // other cursors, rather than in the canvas: the driver context is built
+    // at this level, and a plan that drives the brush has to reach the same
+    // signals the rail does.
+    let active_tool = canvas::ActiveTool(use_signal(tools::Tool::default));
+    use_context_provider(|| active_tool);
+    let painted_strokes = canvas::PaintedStrokes(use_signal(Vec::new));
+    use_context_provider(|| painted_strokes);
 
     // The automation driver: its own execution surface (the assistant card
     // and the runner observe it; the global toast stays untouched) and the
@@ -227,6 +237,8 @@ pub fn Workspace(
                 writer_caret,
                 grid_cursor,
                 palette_open,
+                active_tool,
+                painted_strokes,
                 hook_driver_ui,
                 session,
                 plan,
@@ -346,6 +358,8 @@ pub fn Workspace(
                 writer_caret,
                 grid_cursor,
                 palette_open,
+                active_tool,
+                painted_strokes,
                 plans_driver_ui.clone(),
                 session,
                 plan,

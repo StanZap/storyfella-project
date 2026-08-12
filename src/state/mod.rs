@@ -22,6 +22,13 @@ pub struct AppState {
     pub project_path: Option<PathBuf>,
     pub has_unsaved_changes: bool,
     pub selected_artifact_id: Option<Uuid>,
+    /// The mask most recently painted on the canvas, as a file on disk.
+    ///
+    /// Here rather than in a canvas context because two surfaces submit
+    /// commands — the composer and the automation driver — and `--mask
+    /// painted` has to resolve identically for both. It is deliberately not
+    /// persisted: a painted mask belongs to the moment, not to the project.
+    pub painted_mask: Option<String>,
     /// The story text the Writer edits. Lives here rather than in the
     /// registry because it is the project's prose, not an artifact.
     pub story_source: String,

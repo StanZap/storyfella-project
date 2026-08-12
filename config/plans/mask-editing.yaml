@@ -21,8 +21,8 @@ steps:
   - go_canvas: true
     wait_ms: 400
 
-  - compose: "/create character --name iris Iris, a woman in her thirties with short dark hair, wearing a plain grey t-shirt, against a plain pale wall, natural daylight photograph"
-    message: "One portrait to work on. The description is deliberately plain: it doubles as the list of things an edit has to leave alone."
+  - compose: "/create character --name iris Iris, a woman in her thirties wearing a plain grey t-shirt, against a plain pale wall, natural daylight photograph"
+    message: "One portrait to work on. Note what the description does *not* say: nothing about her hair. The mask path splices this description into the inpaint prompt verbatim, so a trait named here fights any edit that tries to change it — describe what must be preserved, not what you are about to replace."
   - expect_artifact: { name: "iris", kind: character }
   - expect_image: "iris"
     soft: true
@@ -40,15 +40,17 @@ steps:
   # Fractions of the image, not pixels: a plan describes where on the
   # picture, which survives any window size.
   - paint:
-      - { x: 0.50, y: 0.16, r: 0.13 }
-      - { x: 0.38, y: 0.20, r: 0.11 }
-      - { x: 0.62, y: 0.20, r: 0.11 }
-      - { x: 0.34, y: 0.30, r: 0.09 }
-      - { x: 0.66, y: 0.30, r: 0.09 }
+      - { x: 0.50, y: 0.15, r: 0.15 }
+      - { x: 0.33, y: 0.24, r: 0.13 }
+      - { x: 0.67, y: 0.24, r: 0.13 }
+      - { x: 0.29, y: 0.38, r: 0.13 }
+      - { x: 0.71, y: 0.38, r: 0.13 }
+      - { x: 0.30, y: 0.50, r: 0.11 }
+      - { x: 0.70, y: 0.50, r: 0.11 }
     wait_ms: 1200
-    message: "Painting over her hair. The violet dabs are the mask — drawn in the picture's own coordinates, so what you see and what gets masked are one shape, not two calculations that agree."
+    message: "Painting where the new hair goes — over her head and down past the shoulders, into the wall. A mask is the region the model may re-render, so it has to cover where the result will be, not only where the old thing is."
 
-  - compose: "/modify c:iris change her hair --mask painted --inpaint a mane of long copper curls"
+  - compose: "/modify c:iris change her hair --mask painted --inpaint long copper curls falling well past her shoulders"
     message: "`--mask painted` stands in for what the brush drew. It is swapped for the mask file on the way through, so the operation layer only ever sees an ordinary mask — the same kind segmentation produces."
   - expect_image: "iris"
     soft: true

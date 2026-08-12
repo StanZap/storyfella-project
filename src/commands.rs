@@ -173,6 +173,10 @@ pub fn parse_command(
 /// run through [`run_operations`]. Parse/validation failures are returned
 /// (the caller decides how to surface them); execution is fire-and-forget —
 /// completion is observed through `ui.activity`.
+/// The flag that stands in for the canvas brush's output until a command
+/// leaves the UI.
+pub const PAINTED_MASK_FLAG: &str = "--mask painted";
+
 pub fn run_slash_command(
     app_state: Signal<AppState>,
     backend: CreativeBackend,
@@ -180,7 +184,24 @@ pub fn run_slash_command(
     ui: ExecutionUi,
     input: &str,
 ) -> Result<(), ReportedError> {
-    let operation = parse_command(input, &app_state.read().registry, &defaults)?;
+    // `--mask painted` names the canvas brush's output. Resolved here, in
+    // the one place every surface funnels through, so the composer and the
+    // automation driver cannot disagree about what it means — and so the
+    // slash parser only ever sees a real path.
+    let input = match (
+        input.contains(PAINTED_MASK_FLAG),
+        app_state.read().painted_mask.clone(),
+    ) {
+        (true, Some(path)) => input.replace(PAINTED_MASK_FLAG, &format!("--mask-file {path}")),
+        (true, None) => {
+            return Err(ReportedError::plain(
+                ErrorCode::OpIncompleteModify,
+                "Nothing is painted on the canvas. Pick the brush (b), paint the region to edit, then run this again.",
+            ))
+        }
+        (false, _) => input.to_owned(),
+    };
+    let operation = parse_command(&input, &app_state.read().registry, &defaults)?;
     run_operations(app_state, backend, vec![operation], defaults, ui);
     Ok(())
 }
