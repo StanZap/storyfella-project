@@ -233,6 +233,8 @@ enum OpCommand {
     Modify {
         target: Ref,
         description: String,
+        /// The region to segment ("her hair"), or `auto` to let the planner
+        /// name it from the description.
         #[arg(long = "mask-prompt", conflicts_with = "mask_file")]
         mask_prompt: Option<String>,
         /// A mask PNG on disk (e.g. one `svs segment` wrote), used instead of
@@ -1063,7 +1065,12 @@ fn build_operation(op: OpCommand) -> Result<(Operation, CliRunOptions)> {
             Operation::Modify {
                 target,
                 description,
-                mask_prompt,
+                // `--mask-prompt auto` selects the planned source; a literal
+                // region stays a literal region.
+                plan: mask_prompt
+                    .as_deref()
+                    .is_some_and(|value| value.eq_ignore_ascii_case("auto")),
+                mask_prompt: mask_prompt.filter(|value| !value.eq_ignore_ascii_case("auto")),
                 mask_file,
                 inpaint_prompt,
                 size: None,

@@ -372,17 +372,25 @@ fn parse_modify(tokens: &[Token]) -> Result<Operation, SlashError> {
     if description.trim().is_empty() {
         return Err(SlashError("modify needs a description".to_owned()));
     }
-    let mask_prompt = flag_value(&flags, "--mask").map(str::to_owned);
+    // `--mask auto` is the third source: the LLM names the region from the
+    // description. A literal region ("her hair") stays a literal region.
+    let raw_mask = flag_value(&flags, "--mask");
+    let plan = raw_mask.is_some_and(|value| value.eq_ignore_ascii_case("auto"));
+    let mask_prompt = raw_mask.filter(|_| !plan).map(str::to_owned);
     let mask_file = flag_value(&flags, "--mask-file").map(PathBuf::from);
     let inpaint_prompt = flag_value(&flags, "--inpaint").map(str::to_owned);
-    if mask_prompt.is_some() && mask_file.is_some() {
+    if mask_prompt.is_some() && mask_file.is_some() || plan && mask_file.is_some() {
         return Err(SlashError(
-            "modify takes one mask source: --mask segments it, --mask-file \
-             loads one already on disk."
+            "modify takes one mask source: --mask segments it, --mask auto \
+             lets the planner name the region, --mask-file loads one already \
+             on disk."
                 .to_owned(),
         ));
     }
-    if (mask_prompt.is_some() || mask_file.is_some()) != inpaint_prompt.is_some() {
+    // `--mask auto` supplies the look too, so it is the one source that does
+    // not need --inpaint (though it accepts one).
+    let has_mask = mask_prompt.is_some() || mask_file.is_some();
+    if has_mask != inpaint_prompt.is_some() && !plan {
         return Err(SlashError(
             "modify takes a mask source (--mask or --mask-file) together with \
              --inpaint, or neither. Neither is the normal case: the edit is \
@@ -407,6 +415,7 @@ fn parse_modify(tokens: &[Token]) -> Result<Operation, SlashError> {
         description,
         mask_prompt,
         mask_file,
+        plan,
         inpaint_prompt,
         size,
         steps,
@@ -989,6 +998,7 @@ mod tests {
                 description: "change her hair".to_owned(),
                 mask_prompt: Some("her hair".to_owned()),
                 mask_file: None,
+                plan: false,
                 inpaint_prompt: Some("a bob cut".to_owned()),
                 size: None,
                 steps: None,
@@ -1010,6 +1020,7 @@ mod tests {
                 description: "change her hair".to_owned(),
                 mask_prompt: None,
                 mask_file: Some(PathBuf::from("masks/mia-hair-0.png")),
+                plan: false,
                 inpaint_prompt: Some("a bob cut".to_owned()),
                 size: None,
                 steps: None,

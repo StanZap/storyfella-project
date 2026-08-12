@@ -198,7 +198,11 @@ impl CreativeBackend {
          JSON only, exactly this shape: {\"mask_prompt\": \"...\", \
          \"inpaint_prompt\": \"...\"}. The mask_prompt names the region to \
          select (e.g. \"her hair\"). The inpaint_prompt describes the new \
-         look (e.g. \"a short bob cut\")."
+         look (e.g. \"a short bob cut\"). Name the smallest region the edit \
+         actually changes: a mask that covers a large share of the frame \
+         forces the model to invent that much new background, which it does \
+         poorly. Prefer a region that stops at the subject's body rather \
+         than one running off the edge of the picture."
     }
 
     /// The shared op vocabulary + intent rules block of the planner prompt
@@ -226,9 +230,14 @@ impl CreativeBackend {
          - resize: change the image canvas — set the artifact's default size \
          and regenerate at it. Only when the user asks for a size.\n\
          - modify: a localized change to one region of an existing image (add \
-         glasses, change the hair, change the sky). It plans a mask region and \
-         the new look. A change to what an image shows is modify, not \
-         regenerate.\n\
+         glasses, change the hair, change the sky). A change to what an image \
+         shows is modify, not regenerate. Give it a plain-language \
+         instruction and leave mask_prompt and inpaint_prompt out: the edit \
+         model preserves whatever the instruction does not mention, and that \
+         path is measurably better. Only fill them in when the change cannot \
+         be *said* — filling a hole, removing an object with no name, or \
+         extending the canvas — because a masked edit must invent everything \
+         inside the mask, and does that poorly over large areas.\n\
          - compose: assemble a scene from existing artifacts (background plus \
          layered characters).\n\
          - draft: ONLY a text note or idea attached to an artifact. It never \

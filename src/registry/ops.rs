@@ -26,6 +26,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::errors::{CodedError, ErrorCode, ReportedError};
+use crate::registry::pipeline::PlanPart;
 use crate::vision::LoraSelection;
 
 use super::{
@@ -147,6 +148,11 @@ pub enum Operation {
         /// existed still deserialize.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mask_file: Option<PathBuf>,
+        /// The third mask source: let the LLM name the region from the edit
+        /// description ("change her hair to a bob" -> mask "her hair").
+        /// Spelled `--mask auto`. Mutually exclusive with the other two.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        plan: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         inpaint_prompt: Option<String>,
         /// Per-run canvas override (user-requested only).
@@ -534,6 +540,10 @@ enum MaskSource {
     Segment(String),
     /// A mask PNG already on disk — no segmentation, no checkpoint.
     File(PathBuf),
+    /// Ask the LLM to name the region, then segment for it. A soft
+    /// dependency like every other LLM step: with no LLM configured the
+    /// pipeline blocks for the two prompts by hand rather than failing.
+    Plan,
 }
 
 pub fn compile(
@@ -903,6 +913,7 @@ pub fn compile(
             description,
             mask_prompt,
             mask_file,
+            plan,
             inpaint_prompt,
             size,
             steps,
@@ -977,13 +988,17 @@ pub fn compile(
                 };
                 builder.lora(registered, lora.multiplier);
             }
-            // One mask, two possible sources; naming both is a mistake worth
-            // reporting rather than silently preferring one.
-            let mask_source = match (mask_prompt.as_ref(), mask_file.as_ref()) {
-                (Some(_), Some(_)) => return Err(CompileError::ConflictingMaskSource),
-                (Some(prompt), None) => Some(MaskSource::Segment(prompt.clone())),
-                (None, Some(path)) => Some(MaskSource::File(path.clone())),
-                (None, None) => None,
+            // One mask, three possible sources; naming more than one is a
+            // mistake worth reporting rather than silently preferring one.
+            let named = [mask_prompt.is_some(), mask_file.is_some(), *plan];
+            if named.iter().filter(|named| **named).count() > 1 {
+                return Err(CompileError::ConflictingMaskSource);
+            }
+            let mask_source = match (mask_prompt.as_ref(), mask_file.as_ref(), *plan) {
+                (Some(prompt), _, _) => Some(MaskSource::Segment(prompt.clone())),
+                (_, Some(path), _) => Some(MaskSource::File(path.clone())),
+                (_, _, true) => Some(MaskSource::Plan),
+                (None, None, false) => None,
             };
             let image = builder.reference_image(asset);
             match (mask_source, inpaint_prompt) {
@@ -1023,24 +1038,58 @@ pub fn compile(
                 // where the mask runs tighter than the thing it masks, the
                 // pixels it misses survive as a rim of the old content. See
                 // .svs-e2e/logs/2026-08-11-inpaintkrea-sources.md.
-                (Some(source), Some(inpaint)) => {
-                    let composed_inpaint = if artifact.description.trim().is_empty() {
-                        inpaint.clone()
-                    } else {
-                        format!("{}, {}", artifact.description.trim(), inpaint)
-                    };
+                (Some(source), inpaint) => {
+                    // Only the planned source can supply the look itself;
+                    // the other two need it spelled out.
+                    if inpaint.is_none() && !matches!(source, MaskSource::Plan) {
+                        return Err(CompileError::IncompleteModify);
+                    }
+                    // The plan step runs first so both of its halves are
+                    // available as typed references below. `--mask auto`
+                    // with an explicit --inpaint-prompt is allowed: the LLM
+                    // picks the region, the caller keeps the look.
+                    let plan = matches!(source, MaskSource::Plan).then(|| {
+                        builder.llm_plan(format!(
+                            "Edit: {description}\nDescription of the image: {}",
+                            artifact.description
+                        ))
+                    });
                     let confirmed = match source {
                         MaskSource::Segment(prompt) => {
                             let candidates = builder.segment(image, PromptSource::Text(prompt));
                             builder.confirm_mask(candidates)
                         }
                         MaskSource::File(path) => builder.load_mask(path),
+                        MaskSource::Plan => {
+                            let plan = plan.expect("the planned source builds a plan step");
+                            let candidates = builder
+                                .segment(image, PromptSource::PlanPart(plan, PlanPart::MaskPrompt));
+                            builder.confirm_mask(candidates)
+                        }
+                    };
+                    // An explicit inpaint prompt composes the artifact
+                    // description in verbatim so the re-render keeps the
+                    // scene's lighting and colour; a planned one already saw
+                    // the description and is left alone.
+                    let inpaint_source = match inpaint {
+                        Some(inpaint) => {
+                            let composed = if artifact.description.trim().is_empty() {
+                                inpaint.clone()
+                            } else {
+                                format!("{}, {}", artifact.description.trim(), inpaint)
+                            };
+                            PromptSource::Text(composed)
+                        }
+                        None => PromptSource::PlanPart(
+                            plan.expect("only the planned source omits the inpaint prompt"),
+                            PlanPart::InpaintPrompt,
+                        ),
                     };
                     builder.reference_strength(REFERENCE_INPAINT);
                     builder.denoise_strength(super::pipeline::MASKED_LATENT_DENOISE);
-                    builder.inpaint(PromptSource::Text(composed_inpaint), image, confirmed);
+                    builder.inpaint(inpaint_source, image, confirmed);
                 }
-                _ => return Err(CompileError::IncompleteModify),
+                (None, Some(_)) => return Err(CompileError::IncompleteModify),
             }
             Ok(CompiledOp::Pipeline(builder.build()?))
         }
@@ -1858,6 +1907,7 @@ mod tests {
             Operation::Modify {
                 mask_prompt: Some(_),
                 mask_file: None,
+                plan: false,
                 inpaint_prompt: Some(_),
                 ..
             }
@@ -1914,6 +1964,7 @@ mod tests {
             description: "change it".into(),
             mask_prompt: Some("everything".into()),
             mask_file: None,
+            plan: false,
             inpaint_prompt: Some("different".into()),
             size: None,
             steps: None,
@@ -2530,6 +2581,7 @@ mod tests {
             description: "change her hair".into(),
             mask_prompt: Some("her hair".into()),
             mask_file: None,
+            plan: false,
             inpaint_prompt: Some("a bob cut".into()),
             size: None,
             steps: None,
@@ -2567,6 +2619,7 @@ mod tests {
             description: "change her hair".into(),
             mask_prompt: None,
             mask_file: Some(PathBuf::from("/fixtures/mia-hair-0.png")),
+            plan: false,
             inpaint_prompt: Some("a bob cut".into()),
             size: None,
             steps: None,
@@ -2608,6 +2661,87 @@ mod tests {
             "the mask path carries the inpaint adapter whichever source fed it"
         );
 
+        // `--mask auto`: the LLM names the region and the look, so neither
+        // is spelled out here. Both halves reach the pipeline as typed
+        // references to the plan step rather than as text.
+        let planned = Operation::Modify {
+            target: Ref::new(registry.short_id(mia)),
+            description: "change her hair to a bob".into(),
+            mask_prompt: None,
+            mask_file: None,
+            plan: true,
+            inpaint_prompt: None,
+            size: None,
+            steps: None,
+            loras: Vec::new(),
+        };
+        let CompiledOp::Pipeline(planned_pipeline) =
+            compile(&registry, &planned, &defaults).unwrap()
+        else {
+            panic!("modify must compile to a pipeline");
+        };
+        let steps = planned_pipeline.steps();
+        let plan_step = steps
+            .iter()
+            .position(|step| {
+                matches!(
+                    step,
+                    super::super::pipeline::Step::Llm {
+                        kind: super::super::pipeline::LlmStepKind::Plan { .. }
+                    }
+                )
+            })
+            .expect("the planned source builds a plan step");
+        assert!(
+            steps.iter().any(|step| matches!(
+                step,
+                super::super::pipeline::Step::Segment {
+                    prompt: PromptSource::PlanPart(handle, PlanPart::MaskPrompt),
+                    ..
+                } if handle.step == plan_step
+            )),
+            "the plan's mask half grounds the segmentation"
+        );
+        assert!(
+            steps.iter().any(|step| matches!(
+                step,
+                super::super::pipeline::Step::Generate {
+                    prompt: PromptSource::PlanPart(handle, PlanPart::InpaintPrompt),
+                    ..
+                } if handle.step == plan_step
+            )),
+            "the plan's inpaint half becomes the generation prompt"
+        );
+
+        // An explicit look with a planned region: the LLM picks where, the
+        // caller keeps what.
+        let planned_region_only = Operation::Modify {
+            target: Ref::new(registry.short_id(mia)),
+            description: "change her hair".into(),
+            mask_prompt: None,
+            mask_file: None,
+            plan: true,
+            inpaint_prompt: Some("a bob cut".into()),
+            size: None,
+            steps: None,
+            loras: Vec::new(),
+        };
+        let CompiledOp::Pipeline(mixed) =
+            compile(&registry, &planned_region_only, &defaults).unwrap()
+        else {
+            panic!("modify must compile to a pipeline");
+        };
+        assert!(
+            mixed.steps().iter().any(|step| matches!(
+                step,
+                super::super::pipeline::Step::Generate {
+                    prompt: PromptSource::Text(text),
+                    ..
+                } if text.contains("a bob cut")
+            )),
+            "an explicit inpaint prompt wins over the plan's"
+        );
+
         // Two mask sources is a mistake worth reporting, not one to resolve
         // by silently preferring either.
         let both = Operation::Modify {
@@ -2615,6 +2749,7 @@ mod tests {
             description: "change her hair".into(),
             mask_prompt: Some("her hair".into()),
             mask_file: Some(PathBuf::from("/fixtures/mia-hair-0.png")),
+            plan: false,
             inpaint_prompt: Some("a bob cut".into()),
             size: None,
             steps: None,
@@ -2631,6 +2766,7 @@ mod tests {
             description: "change her hair".into(),
             mask_prompt: None,
             mask_file: Some(PathBuf::from("/fixtures/mia-hair-0.png")),
+            plan: false,
             inpaint_prompt: None,
             size: None,
             steps: None,
@@ -2648,6 +2784,7 @@ mod tests {
             description: "change her hair".into(),
             mask_prompt: None,
             mask_file: None,
+            plan: false,
             inpaint_prompt: None,
             size: None,
             steps: None,
@@ -2828,6 +2965,7 @@ mod tests {
                 description: "give her a bob cut".into(),
                 mask_prompt: None,
                 mask_file: None,
+                plan: false,
                 inpaint_prompt: None,
                 size: None,
                 steps: None,
