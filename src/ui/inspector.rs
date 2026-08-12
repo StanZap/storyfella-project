@@ -24,6 +24,56 @@ const SIZE_PRESETS: [(u32, u32); 4] = [(384, 576), (512, 768), (768, 1152), (102
 /// Steps the slider snaps to, cheapest first.
 const STEP_STOPS: [u32; 6] = [4, 6, 8, 12, 16, 24];
 
+/// How much one press moves an adapter's weight. Small enough that the
+/// visible effect of a step is a nudge rather than a different image.
+const ADAPTER_WEIGHT_STEP: f32 = 0.05;
+
+/// One bound adapter, with the commands its controls emit.
+#[derive(Clone, PartialEq)]
+struct AdapterRow {
+    id: uuid::Uuid,
+    name: String,
+    multiplier: f32,
+    /// Bound to a base artifact rather than this one.
+    inherited: bool,
+    weaker: String,
+    stronger: String,
+    remove: String,
+}
+
+/// Builds the adapter rows for `artifact_id` from its bound entries.
+///
+/// Separated from the component so the commands the controls emit are
+/// assertable: every one of them has to survive `parse_slash` and the
+/// operation's own validation, and a control that emits a rejected command
+/// is a dead button.
+fn adapter_rows(artifact_id: uuid::Uuid, bound: &[LoraEntry]) -> Vec<AdapterRow> {
+    bound
+        .iter()
+        .map(|lora| {
+            let step = |delta: f32| {
+                // The same bounds the operation validates against, so a
+                // control can never emit a command the compiler rejects.
+                let next = (lora.multiplier + delta).clamp(-2.0, 2.0);
+                format!("/lora-scale {} {next:.2}", lora.name)
+            };
+            AdapterRow {
+                id: lora.id,
+                name: lora.name.clone(),
+                multiplier: lora.multiplier,
+                // Bindings are inherited down the variant chain, so a variant
+                // lists its base's adapters too. Saying which is which
+                // matters: detaching one here removes it from the base, and
+                // from every other variant of that base with it.
+                inherited: lora.artifact_id != Some(artifact_id),
+                weaker: step(-ADAPTER_WEIGHT_STEP),
+                stronger: step(ADAPTER_WEIGHT_STEP),
+                remove: format!("/lora-remove {}", lora.name),
+            }
+        })
+        .collect()
+}
+
 #[component]
 pub fn Inspector(
     artifact: Artifact,
@@ -80,6 +130,11 @@ pub fn Inspector(
         // releasing hands it back to the sampler.
         format!("/set {reference} --seed {}", fresh_seed())
     };
+    // One owned row per adapter, commands included: a closure inside an rsx
+    // `for` cannot borrow from the iterator, and each control is a command
+    // like every other in this rail.
+    let adapters = adapter_rows(artifact.id, &bound_loras);
+
     let describe_ref = reference.clone();
     // `/attach-lora` needs an adapter name, so this hands the caret to the
     // bar rather than running anything.
@@ -221,29 +276,65 @@ pub fn Inspector(
                         p { class: "mb-2 text-[10px] font-semibold uppercase tracking-[0.07em] text-zinc-600",
                             "Adapters"
                         }
-                        if bound_loras.is_empty() {
+                        if adapters.is_empty() {
                             p { class: "text-[10px] italic text-zinc-700", "None bound." }
-                            button {
-                                class: "mt-2 w-full rounded-md bg-white/[0.05] py-1.5 text-[10px] font-semibold text-zinc-400 transition hover:bg-white/[0.09] hover:text-zinc-200 disabled:opacity-30",
-                                disabled,
-                                title: "Prefill the command bar — the adapter name comes next",
-                                onclick: move |_| composer.set(attach_prefix.clone()),
-                                "Attach an adapter"
-                            }
                         } else {
                             div { class: "space-y-1.5",
-                                for lora in bound_loras.iter() {
-                                    div { key: "{lora.id}",
-                                        class: "flex items-center gap-2 rounded-[7px] bg-white/[0.03] px-2 py-1.5 ring-1 ring-inset ring-white/[0.05]",
+                                for adapter in adapters.iter().cloned() {
+                                    div { key: "{adapter.id}",
+                                        class: "flex items-center gap-1.5 rounded-[7px] bg-white/[0.03] px-2 py-1.5 ring-1 ring-inset ring-white/[0.05]",
                                         span { class: "min-w-0 flex-1 truncate font-mono text-[11px] text-violet-200",
-                                            "{lora.name}"
+                                            title: if adapter.inherited { "Bound to the base artifact — every variant of it carries this" } else { "Bound to this artifact" },
+                                            "{adapter.name}"
                                         }
-                                        span { class: "font-mono text-[10px] text-zinc-500",
-                                            "{lora.multiplier:.2}"
+                                        if adapter.inherited {
+                                            span { class: "rounded bg-white/[0.06] px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider text-zinc-500",
+                                                "base"
+                                            }
+                                        }
+                                        button {
+                                            class: "rounded px-1 font-mono text-[11px] leading-none text-zinc-500 transition hover:bg-white/[0.07] hover:text-zinc-200 disabled:opacity-30",
+                                            disabled,
+                                            title: "Weaker",
+                                            onclick: {
+                                                let command = adapter.weaker.clone();
+                                                move |_| onrun.call(command.clone())
+                                            },
+                                            "−"
+                                        }
+                                        span { class: "w-8 text-center font-mono text-[10px] text-zinc-400",
+                                            "{adapter.multiplier:.2}"
+                                        }
+                                        button {
+                                            class: "rounded px-1 font-mono text-[11px] leading-none text-zinc-500 transition hover:bg-white/[0.07] hover:text-zinc-200 disabled:opacity-30",
+                                            disabled,
+                                            title: "Stronger",
+                                            onclick: {
+                                                let command = adapter.stronger.clone();
+                                                move |_| onrun.call(command.clone())
+                                            },
+                                            "+"
+                                        }
+                                        button {
+                                            class: "rounded px-1 font-mono text-[11px] leading-none text-zinc-600 transition hover:bg-rose-400/15 hover:text-rose-300 disabled:opacity-30",
+                                            disabled,
+                                            title: "Detach this adapter",
+                                            onclick: {
+                                                let command = adapter.remove.clone();
+                                                move |_| onrun.call(command.clone())
+                                            },
+                                            "×"
                                         }
                                     }
                                 }
                             }
+                        }
+                        button {
+                            class: "mt-2 w-full rounded-md bg-white/[0.05] py-1.5 text-[10px] font-semibold text-zinc-400 transition hover:bg-white/[0.09] hover:text-zinc-200 disabled:opacity-30",
+                            disabled,
+                            title: "Prefill the command bar — the adapter name comes next",
+                            onclick: move |_| composer.set(attach_prefix.clone()),
+                            "Attach an adapter"
                         }
                     }
                 }
@@ -336,6 +427,48 @@ mod tests {
                 "{width}x{height} is not a valid canvas"
             );
         }
+    }
+
+    /// The adapter controls are commands like everything else in the rail,
+    /// so they must parse — and the weight steps must stay inside the range
+    /// `/lora-scale` validates, or a button at the end of the range emits a
+    /// command that is rejected.
+    #[test]
+    fn adapter_controls_emit_commands_that_parse_and_stay_in_range() {
+        use crate::registry::slash::parse_slash;
+        let mine = uuid::Uuid::new_v4();
+        let base = uuid::Uuid::new_v4();
+        let entry = |name: &str, multiplier: f32, owner: uuid::Uuid| LoraEntry {
+            id: uuid::Uuid::new_v4(),
+            name: name.to_owned(),
+            path: format!("{name}.safetensors"),
+            base_model: None,
+            multiplier,
+            artifact_id: Some(owner),
+        };
+        let bound = vec![
+            entry("facial-krea", 0.8, mine),
+            // At the ceiling: stepping up must clamp, not overshoot.
+            entry("inherited-style", 2.0, base),
+        ];
+        let rows = adapter_rows(mine, &bound);
+
+        assert!(!rows[0].inherited, "bound to this artifact");
+        assert!(rows[1].inherited, "bound to the base, shown as inherited");
+
+        for row in &rows {
+            for command in [&row.weaker, &row.stronger, &row.remove] {
+                parse_slash(command).unwrap_or_else(|error| {
+                    panic!("the rail emitted {command:?}, which does not parse: {error}")
+                });
+            }
+        }
+        assert_eq!(rows[0].weaker, "/lora-scale facial-krea 0.75");
+        assert_eq!(rows[0].stronger, "/lora-scale facial-krea 0.85");
+        assert_eq!(
+            rows[1].stronger, "/lora-scale inherited-style 2.00",
+            "stepping past the ceiling clamps to it"
+        );
     }
 
     #[test]
