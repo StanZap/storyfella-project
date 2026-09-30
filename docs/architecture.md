@@ -9,7 +9,7 @@ between product code and machine-learning code:
 - **Python** owns every ML framework and vision implementation detail. Rust
   never imports or knows about PyTorch, Transformers, or SAM.
 - **HTTP** is the only boundary between them, and the Python side is a normal
-  FastAPI service with stable contracts (`python/models/schemas.py`).
+  FastAPI service with stable contracts (`apps/vision/models/schemas.py`).
 - **stable-diffusion.cpp** (`sd-server`) is a separate native process owned by
   Rust that keeps the Krea 2 diffusion model resident.
 - **LM Studio** is an external OpenAI-compatible service accessed directly from
@@ -20,25 +20,28 @@ between product code and machine-learning code:
 ```text
 ┌────────────────────────────── Rust (Dioxus desktop) ──────────────────────────────┐
 │                                                                                    │
-│  src/ui/          Workspace shell, Canvas (artifact workspace), Settings             │
-│  src/state/       AppState: registry, selection, undo/redo stacks                   │
-│  src/registry/    Artifact model, typed ops + pipelines, slash parser,               │
-│                   CreativeBackend (live backend)                                    │
-│  src/persistence/ ProjectDb (SQLite, versioned migrations)                          │
-│  src/llm/         LmStudioClient (OpenAI-compatible chat completions)               │
-│  src/vision/      VisionClient (typed HTTP client for the Python runtime)           │
-│  src/runtime/     CreativeRuntime facade + PythonRuntime + GenerationRuntime +      │
-│                   ModelStore (download, resume, checksum verify)                    │
-│  src/assets/      AssetCatalog (import/index boundary; currently minimal)           │
+│  crates/core/src/  — the domain layer (no GUI dependency)                          │
+│    registry/      Artifact model, typed ops + pipelines, slash parser,             │
+│                   CreativeBackend (live backend)                                   │
+│    persistence/   ProjectDb (SQLite, versioned migrations)                         │
+│    llm/           LmStudioClient (OpenAI-compatible chat completions)              │
+│    vision/        VisionClient (typed HTTP client for the Python runtime)          │
+│    runtime/       CreativeRuntime facade + PythonRuntime + GenerationRuntime +     │
+│                   ModelStore (download, resume, checksum verify)                   │
+│    assets/        AssetCatalog (import/index boundary; currently minimal)          │
+│                                                                                    │
+│  apps/desktop/src/  — the Dioxus application                                       │
+│    ui/            Workspace shell, Canvas (artifact workspace), Settings           │
+│    state/         AppState: registry, selection, undo/redo stacks                  │
 │                                                                                    │
 │  spawns and supervises:                                                            │
 │   ┌─────────────────────┐        ┌──────────────────────────────────────────────┐  │
-│   │ python/main.py      │  HTTP  │ sd-server (stable-diffusion.cpp)             │  │
+│   │ apps/vision/main.py │  HTTP  │ sd-server (stable-diffusion.cpp)             │  │
 │   │ FastAPI on :8765    │ ─────▶ │ resident Krea 2 + Qwen3-VL + VAE on :7861    │  │
 │   └─────────────────────┘        └──────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────────────────────────┘
   │
-  │ OpenAI-compatible HTTP (src/llm/)
+  │ OpenAI-compatible HTTP (crates/core/src/llm/)
   ▼
 ┌──────────────────────────────┐
 │ LM Studio (external, user)   │
@@ -55,7 +58,7 @@ The Canvas is the primary workspace. Commands reach it from four places that
 share one vocabulary: the `svs` CLI, the tokenized command bar, the `Ctrl+K`
 palette, and the inspector rail — every control in the rail emits the command
 a person would have typed, so the two cannot diverge. All of them parse
-through `src/registry/slash.rs`; model-only operations
+through `crates/core/src/registry/slash.rs`; model-only operations
 (`compose`, `create` of text-only kinds) apply instantly, while visual
 `create`/`variant` (first image), `regenerate`, and `modify` run their
 pipeline against `CreativeBackend` in a spawned task.
@@ -64,14 +67,14 @@ pipeline against `CreativeBackend` in a spawned task.
 Composer: /create character Mia…  /variant c:mia …  /regenerate c:mia …
     │  slash::parse_slash → Operation (compile validates against the registry)
     ▼
-ops::execute (src/registry/ops.rs)
+ops::execute (crates/core/src/registry/ops.rs)
     ├─ Direct (compose / text-only create): registry mutation + log entry
     ├─ Create/Variant (visual): artifact + first-image pipeline (variants
     │    reference the base's active image)
     └─ Pipeline (regenerate/modify):
          │  AppState::snapshot_for_undo (registry snapshot — undo basis)
          ▼
-       CreativeBackend::generate (src/registry/backend.rs)
+       CreativeBackend::generate (crates/core/src/registry/backend.rs)
          │  CreativeRuntime::ensure_profile_ready (cold start: sd-server + python)
          │  VisionClient::submit_generation(POST /generation/jobs)
          ▼
@@ -96,7 +99,7 @@ masked or composited, and the op runs unattended — there is no checkpoint.
 The `Ground` step is why it holds together. A terse instruction
 under-specifies the render and it collapses toward base-model priors, so the
 instruction is rewritten to name the medium and re-state the artifact's own
-description as the traits to keep. `ground_instruction` (`registry/ops.rs`)
+description as the traits to keep. `ground_instruction` (`crates/core/src/registry/ops.rs`)
 does that deterministically; when LM Studio is configured, `llm_ground`
 refines it by dropping the traits the edit overrides. The LLM is a soft
 dependency — it never blocks, and a missing one falls back to the template.
@@ -135,7 +138,7 @@ iteration speed on slower hardware.
 | Process | Owner | Lifetime | Purpose |
 | --- | --- | --- | --- |
 | Dioxus desktop app | Rust | Application session | UI, state, orchestration |
-| `python/main.py` (uvicorn) | Rust (`PythonRuntime`) | On demand, resident after first generation | HTTP adapter, result store, segmentation, Diffusers POC |
+| `apps/vision/main.py` (uvicorn) | Rust (`PythonRuntime`) | On demand, resident after first generation | HTTP adapter, result store, segmentation, Diffusers POC |
 | `sd-server` | Rust (`GenerationRuntime`) | On demand, resident | Persistent Krea 2 inference |
 | LM Studio | User (external) | External | LLM planning/VLM (future) |
 
@@ -146,17 +149,21 @@ it is started manually from the Settings Status section
 
 ## Directory resolution
 
-Runtime, model, cache, and asset paths resolve through the `directories` crate
-(`ProjectDirs::from("dev", "Smart Visual Sequencer", "Smart Visual Sequencer")`)
-and can be overridden in [`config/app.toml`](../config/app.toml). The checked-in
-config points everything at the repository (`models/`, `cache/`, `assets/`) for
-development.
+Runtime, model, cache, and asset paths resolve against the **project root**
+(`crates/core/src/paths.rs`): `$SVS_HOME` if set, otherwise the nearest
+ancestor of the working directory (then of the executable) holding
+`config/app.toml`. Relative paths in [`config/app.toml`](../config/app.toml)
+resolve against that root, and unset values fall back to platform-appropriate
+application directories via the `directories` crate
+(`ProjectDirs::from("dev", "Smart Visual Sequencer", "Smart Visual Sequencer")`).
+The checked-in config points everything at the repository (`models/`, `cache/`,
+`assets/`) for development.
 
 ## What is deliberately absent
 
-- **The planner lives in `src/registry/`.** The typed operation set, the
+- **The planner lives in `crates/core/src/registry/`.** The typed operation set, the
   pipeline layer, the slash parser, and the `svs` CLI (see
-  `docs/api-slice-1.md`) are implemented; `src/llm/` is the client only,
+  `docs/api-slice-1.md`) are implemented; `crates/core/src/llm/` is the client only,
   driven through `CreativeBackend`. The Canvas free-form composer messages
   are proposed as operation stacks (LLM → closed-vocabulary JSON → approval
   modal → executed through the same worker machinery as slash commands).

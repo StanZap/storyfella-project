@@ -10,8 +10,17 @@
 # ways to point — paint it, or describe it and let segmentation find it.
 # Both end up as the same mask, and everything after that is identical.
 #
-# Needs the generation backend. Paint dabs are fractions of the image, so
-# the plan holds at any window size.
+# Needs the generation backend, and the planner for the last step.
+#
+# Deliberately a small canvas. This plan is the one that wants all three
+# models at once — sd-server, SAM, and the LM Studio planner — and on a
+# 24GiB card they come to ~23GiB before a single compute buffer is
+# allocated (measured 2026-08-12: 13.5 + 2.5 + 7.0). At 1024x1536 the
+# diffusion buffer alone needs ~3.3GiB and the generation fails. Nothing
+# here is about resolution, so it runs at 512x768 and fits.
+#
+# Paint dabs are fractions of the image, so the plan holds at any window
+# size and at any canvas.
 name: "Masked editing"
 description: "Paint a mask on the canvas, run an edit through it, then do the same by describing the region instead."
 speed_ms: 2200
@@ -21,7 +30,7 @@ steps:
   - go_canvas: true
     wait_ms: 400
 
-  - compose: "/create character --name iris Iris, a woman in her thirties wearing a plain grey t-shirt, against a plain pale wall, natural daylight photograph"
+  - compose: "/create character --name iris --size 512x768 Iris, a woman in her thirties wearing a plain grey t-shirt, against a plain pale wall, natural daylight photograph"
     message: "One portrait to work on. Note what the description does *not* say: nothing about her hair. The mask path splices this description into the inpaint prompt verbatim, so a trait named here fights any edit that tries to change it — describe what must be preserved, not what you are about to replace."
   - expect_artifact: { name: "iris", kind: character }
   - expect_image: "iris"

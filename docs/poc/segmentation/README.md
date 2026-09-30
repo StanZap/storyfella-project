@@ -18,10 +18,10 @@ Primary references:
 ## Setup and probe
 
 ```sh
-uv sync --project python --extra segmentation
-cd python
-HF_HOME=../models/huggingface uv run python -m scripts.segmentation_probe \
-  ../docs/poc/image-generation/latest/lighthouse-seed-42.png \
+uv sync --project apps/vision --extra segmentation
+cd apps/vision
+HF_HOME=../../models/huggingface uv run python -m scripts.segmentation_probe \
+  ../../docs/poc/image-generation/latest/lighthouse-seed-42.png \
   --box 430 70 600 620 --device auto
 ```
 

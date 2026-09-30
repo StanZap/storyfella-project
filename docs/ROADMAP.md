@@ -102,8 +102,8 @@ Consequences:
 
 - **LoRA registry.** Existing plumbing: `--lora-model-dir` on sd-server, up to
   eight `LoraSelection { path, multiplier }` per generation request in the
-  Rust contract (`src/vision/mod.rs`) and the Python contract
-  (`python/models/schemas.py`). Missing: a project-level registry (name, file,
+  Rust contract (`crates/core/src/vision/mod.rs`) and the Python contract
+  (`apps/vision/models/schemas.py`). Missing: a project-level registry (name, file,
   base model, tags), binding a LoRA to an artifact, and auto-injection into
   every generation referencing that artifact. *(Confirmed as desired; the
   registry is new work.)*
@@ -336,7 +336,7 @@ is for provenance, not replay.
    `VisionClient`; assert request bodies (prompt, mask, LoRA, size) and
    revision state transitions. The VLLM step is injectable the same way.
 3. **Contract tests (Python):** the existing fake-based pattern in
-   `python/tests` keeps both sides of the wire in sync.
+   `apps/vision/tests` keeps both sides of the wire in sync.
 4. **Manual golden runs:** a scripted harness executes one pipeline against
    the real backend and drops outputs (image, mask, composite) into a folder
    for human review — "is this mask the hair?", "did only the shirt change?".
@@ -364,10 +364,10 @@ pipeline → executes — one code path shared with the UI and the VLLM.
   composite) into a folder for human review — the manual validation tier.
 - `svs log <ref>` — show an artifact's operation log.
 
-The CLI is a second binary in the same crate sharing the library modules
-(config, models, vision client, runtime, operations/pipelines) without the
-Dioxus UI: the crate gains a `src/lib.rs` with the shared modules; `main.rs`
-(UI) and `src/bin/svs.rs` (CLI) both build on it.
+The CLI is a separate binary crate sharing the domain modules
+(config, vision client, runtime, operations/pipelines) without the
+Dioxus UI: `crates/core` holds the shared modules; `apps/desktop/src/main.rs`
+(UI) and `apps/cli/src/bin/svs.rs` (CLI) both build on it.
 
 ## 8. Story text pipeline
 
@@ -521,7 +521,7 @@ CREATE TABLE operation_log (
 
 Implementation notes: **resolved** — `rusqlite` (bundled, synchronous) with a
 single writer connection behind a `parking_lot` mutex and WAL mode, in
-`src/persistence/` (`ProjectDb`). Deliberate deviations from the sketch
+`crates/core/src/persistence/` (`ProjectDb`). Deliberate deviations from the sketch
 above: timestamps are unix epoch integers (no chrono dependency),
 `operation_log.id` is TEXT (the model uses `Uuid`), `op` holds the serde tag
 name with the full `Operation` JSON in `args`, `artifacts.composition_mode`
@@ -543,7 +543,7 @@ reference).
 6. **Krea mask input:** validate whether the native backend accepts a mask
    directly or the adapter composites the inpaint region.
 7. **SQLite crate** — **resolved:** `rusqlite` (bundled), one writer
-   connection + WAL (`src/persistence/`). The TOML `ProjectStore` and the
+   connection + WAL (`crates/core/src/persistence/`). The TOML `ProjectStore` and the
    stopgap JSON registry were removed with their imports; formats evolve
    via SQLite migrations.
 
@@ -561,7 +561,7 @@ plan to ship, with its status; update it when work lands.
    validation of `modify`/`stack propose` on Linux/CUDA pending
 2. **The CLI (`svs`):** ops, `stack run`/`propose`, `--out` golden runs —
    drives and validates the API without the UI. — **✅ implemented**
-3. **SQLite foundation:** schema + storage layer (§10) — `src/persistence/`
+3. **SQLite foundation:** schema + storage layer (§10) — `crates/core/src/persistence/`
    (`ProjectDb`: versioned migrations via `schema_meta` (v1 §10 tables, v2
    `project_json` for the storyboard), WAL, full-replace snapshot writes,
    lossless round-trip); the CLI persists to `.svs-project.db`; the GUI
@@ -616,7 +616,7 @@ plan to ship, with its status; update it when work lands.
    every generation (artifact-bound first, then kind default, then the
    inpaint adapter on `modify`; per-run `--lora <file>@<mult>` flags on
    the CLI). — **✅ implemented**
- 7. **Error codes and reporting:** a central registry (`src/errors.rs` —
+ 7. **Error codes and reporting:** a central registry (`crates/core/src/errors.rs` —
     `ErrorCode`, one stable `SVS-<DOMAIN>-<NNN>` per failure, with a short
     message and a remediation hint) that every `thiserror` type implements
     via `CodedError` (transparent variants delegate to the inner code).
@@ -642,10 +642,10 @@ plan to ship, with its status; update it when work lands.
    CLI); DSL asset references + validation; round-trip to canvas.
    — **⏳ planned.** The *surface* exists ahead of it: the Writer screen
    edits `.sf` text with references resolved against the registry and
-   pending ones offered for creation, and `registry/completion.rs` is the
+   pending ones offered for creation, and `crates/core/src/registry/completion.rs` is the
    same discipline at small scale (spans on every token, one tokenizer,
    `complete(input, cursor)`, `signature`). What is missing is the language:
-   `ui/writer.rs` reads line by line, and its `outline`/`highlight` are the
+   `apps/desktop/src/ui/writer.rs` reads line by line, and its `outline`/`highlight` are the
    seam a real lexer replaces. Story text currently lives in the project
    database (schema v7), not in `.sf` files on disk.
 10. **LSP-style tooling** as the DSL matures (go-to-definition, refactor,
@@ -666,7 +666,18 @@ plan to ship, with its status; update it when work lands.
    any bundle (multi-GiB, licensed) and keep provisioning through
    `model_setup`. Explicitly out: embedding sd.cpp into the Rust process —
    the C API exists, but in-process inference would rework the entire
-   runtime-lifecycle machinery for no user-facing gain. — **⏳ planned**
+   runtime-lifecycle machinery for no user-facing gain. **Bundling mechanism
+   (verified 2026-09-30):** the CLI itself bundles Linux AppImages —
+   `dx bundle --platform desktop --package-types appimage` (run from
+   `apps/desktop`) — so no extra crate is needed; it lays out an `.AppDir` and
+   drives `linuxdeploy`, which it downloads into `~/.local/share/.dx/tools`
+   (the only networked step, run with `APPIMAGE_EXTRACT_AND_RUN=1` so FUSE is
+   not required). `Dioxus.toml` now
+   carries the bundle identity (`[application] name`, `[bundle] identifier`/
+   `publisher`/`category`/descriptions); `[bundle] external_bin` and
+   `[bundle] resources` are the hooks for the `sd-server`/`vision-server`
+   payloads. Still missing for a shippable bundle: an icon (PNG) and those two
+   payloads, plus resolving them relative to the bundle root. — **⏳ planned**
 
 ## 13. Implementation handoff
 
@@ -680,18 +691,18 @@ registry, and UX fixes.
 
 ### Entry points (existing code)
 
-- `src/registry/` — artifact kinds, variants, scenes/beats, revisions +
+- `crates/core/src/registry/` — artifact kinds, variants, scenes/beats, revisions +
   masks, drafts; the typed operation set + pipeline builder; the slash
   parser (`slash.rs`) the canvas composer uses; `CreativeBackend` (live
   backend shared by the CLI, the canvas, and Settings).
-- `src/state/mod.rs` — AppState: registry, selection, undo/redo stacks.
-- `src/persistence/mod.rs` — `ProjectDb` (§10 schema, v3 drops the legacy
+- `apps/desktop/src/state/mod.rs` — AppState: registry, selection, undo/redo stacks.
+- `crates/core/src/persistence/mod.rs` — `ProjectDb` (§10 schema, v3 drops the legacy
   `project_json` column).
-- `src/vision/mod.rs` ↔ `python/models/schemas.py` — Rust/Python HTTP
+- `crates/core/src/vision/mod.rs` ↔ `apps/vision/models/schemas.py` — Rust/Python HTTP
   contracts; `mask_path` is in `GenerateRequest`.
-- `src/runtime/creative_runtime.rs`, `src/runtime/generation_runtime.rs` —
+- `crates/core/src/runtime/creative_runtime.rs`, `crates/core/src/runtime/generation_runtime.rs` —
   process lifecycle + job orchestration the pipeline builder wraps.
-- `src/llm/` — LM Studio client; the operation registry is the planner
+- `crates/core/src/llm/` — LM Studio client; the operation registry is the planner
   business logic it will serve.
 
 ### Open decisions to settle first (with the user)

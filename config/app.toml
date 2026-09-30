@@ -45,7 +45,7 @@ profile = "krea-2-turbo-q4"
 # multiplier = 1.0                           # weight for the bindings above
 
 [paths]
-python_runtime = "python"
+python_runtime = "apps/vision"
 # Development uses the model artifacts already provisioned in this checkout.
 # Packaged builds may omit these overrides to use platform application directories.
 model_dir = "models"

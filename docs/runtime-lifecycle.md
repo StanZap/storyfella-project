@@ -4,8 +4,8 @@ Rust supervises two child processes and one external service:
 
 | Process | Rust owner | Port | Started when |
 | --- | --- | --- | --- |
-| `python/main.py` (uvicorn) | `PythonRuntime` (`src/runtime/mod.rs`) | `127.0.0.1:8765` | First generation request, or manually from Settings |
-| `sd-server` (stable-diffusion.cpp) | `GenerationRuntime` (`src/runtime/generation_runtime.rs`) | `127.0.0.1:7861` | First generation request, or manually from Settings |
+| `apps/vision/main.py` (uvicorn) | `PythonRuntime` (`crates/core/src/runtime/mod.rs`) | `127.0.0.1:8765` | First generation request, or manually from Settings |
+| `sd-server` (stable-diffusion.cpp) | `GenerationRuntime` (`crates/core/src/runtime/generation_runtime.rs`) | `127.0.0.1:7861` | First generation request, or manually from Settings |
 | LM Studio | external, user-run | user-configured (`config/app.toml`) | external |
 
 The desktop app does **not** start either child at launch. The shell reports
@@ -15,7 +15,7 @@ multi-GiB model loads until they are needed.
 
 ## `CreativeRuntime` facade
 
-`CreativeRuntime` (`src/runtime/creative_runtime.rs`) is the single entry point
+`CreativeRuntime` (`crates/core/src/runtime/creative_runtime.rs`) is the single entry point
 used by the UI. It owns:
 
 - a `VisionClient` for the Python runtime,
@@ -69,10 +69,11 @@ python main.py --host 127.0.0.1 --port 8765
 ```
 
 The runtime directory is absolutized at spawn time, so relative config paths
-(like `paths.python_runtime = "python"`) work regardless of the process working
-directory. Without this, a relative executable path would be resolved against
-the child's *changed* working directory and fail with `ENOENT` even though the
-venv exists.
+(like `paths.python_runtime = "apps/vision"`) work regardless of the process
+working directory (they resolve against the project root — see
+`crates/core/src/paths.rs`). Without this, a relative executable path would be
+resolved against the child's *changed* working directory and fail with `ENOENT`
+even though the venv exists.
 
 Details:
 
@@ -130,12 +131,12 @@ Profiles:
 
 Both share the Qwen3-VL 4B Q4_K_M encoder and `wan_2.1_vae.safetensors`.
 Manifests are pinned with repository, revision, exact size, and SHA-256 in both
-`src/runtime/generation_runtime.rs` (Rust) and `python/runtime/model_manifest.py`
+`crates/core/src/runtime/generation_runtime.rs` (Rust) and `apps/vision/runtime/model_manifest.py`
 (Python), so the two sides cannot silently diverge.
 
 ## `ModelStore` — provisioning
 
-`ModelStore` (`src/runtime/model_store.rs`) downloads and verifies the profile
+`ModelStore` (`crates/core/src/runtime/model_store.rs`) downloads and verifies the profile
 artifacts from Hugging Face:
 
 - Resumable: an existing `<file>.part` continues with a `Range` request.
@@ -148,7 +149,7 @@ artifacts from Hugging Face:
 The `model_setup` binary drives it:
 
 ```bash
-cargo run --bin model_setup -- --profile q2 --accept-krea-license
+cargo run -p svs-cli --bin model_setup -- --profile q2 --accept-krea-license
 ```
 
 Expected layout below the configured model directory:
@@ -169,7 +170,7 @@ paths and parent traversal are rejected (see [`http-api.md`](http-api.md)).
 ## Health status checks
 
 The Settings **Status** section probes every service the application depends on
-(`src/runtime/health.rs`, triggered by `Settings` in `src/ui/settings.rs`). The
+(`crates/core/src/runtime/health.rs`, triggered by `Settings` in `apps/desktop/src/ui/settings.rs`). The
 checks are read-only: they never start or stop a process and never download
 anything. Each probe runs with a short timeout and reports one of four states:
 
@@ -199,7 +200,7 @@ when it is reachable.
 
 ### On-demand start and stop
 
-The Status section also controls the two local runtimes (`src/ui/settings.rs`,
+The Status section also controls the two local runtimes (`apps/desktop/src/ui/settings.rs`,
 `operate_service`):
 
 - **Vision runtime** — `Start` launches the Python service and waits up to 30 s

@@ -14,5 +14,5 @@ surface. For how the pieces fit together today, start at
 | [`segmentation/README.md`](segmentation/README.md) | SAM 2.1 Tiny behind the Python `/segment` contract | Point/box prompting on MPS; SAM decision rationale |
 | [`grounded-segmentation/README.md`](grounded-segmentation/README.md) | Text grounding with Grounding DINO feeding SAM | Connected pipeline result and scoring |
 
-The current product wiring lives in `src/` (Rust) and `python/` (FastAPI); see
+The current product wiring lives in `crates/core` and `apps/desktop` (Rust) and `apps/vision` (FastAPI); see
 [`architecture.md`](../architecture.md) for the boundary between them.

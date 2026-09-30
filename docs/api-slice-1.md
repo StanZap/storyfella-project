@@ -58,14 +58,14 @@ surfaces the artifact registry in the GUI.
 
 | Module | Contents |
 | --- | --- |
-| `src/registry/mod.rs` | Artifact model (kinds, variants, scenes, beats, layers, revisions, masks, drafts), one id space, `c:` ref resolution, parent/kind invariants, snapshot/restore undo |
-| `src/registry/ops.rs` | Typed operation set (slice 1: create, variant, regenerate, compose, draft, modify), closed JSON vocabulary (`op`-tagged), compiler (`compile`), executor (`execute`), operation log |
-| `src/registry/pipeline.rs` | Linear fail-fast pipeline builder: closed `Step` vocabulary, typed handles (`ImageHandle`, `MaskHandle` → `SelectedMaskHandle`, `PromptHandle`, `PlanHandle`, …), static validation at `build()`, `GenerationBackend` trait, checkpoints, approval policies, `RunOptions` |
-| `src/registry/backend.rs` | `CreativeBackend` — the live backend (`CreativeRuntime` + `LmStudioClient`); LLM steps are soft dependencies that degrade to manual input |
-| `src/registry/image_ops.rs` | Pure image primitives: composite (masked blend), invert, feather, union — deterministic, property-tested |
-| `src/bin/svs.rs` | The `svs` CLI (clap, second binary on `src/lib.rs`) |
-| `src/persistence/mod.rs` | SQLite project store (`ProjectDb`): §10 schema, versioned migrations, WAL, snapshot save/load of the registry |
-| `src/vision/mod.rs` ↔ `python/models/schemas.py` | `mask_path` added to `GenerateRequest` on both sides |
+| `crates/core/src/registry/mod.rs` | Artifact model (kinds, variants, scenes, beats, layers, revisions, masks, drafts), one id space, `c:` ref resolution, parent/kind invariants, snapshot/restore undo |
+| `crates/core/src/registry/ops.rs` | Typed operation set (slice 1: create, variant, regenerate, compose, draft, modify), closed JSON vocabulary (`op`-tagged), compiler (`compile`), executor (`execute`), operation log |
+| `crates/core/src/registry/pipeline.rs` | Linear fail-fast pipeline builder: closed `Step` vocabulary, typed handles (`ImageHandle`, `MaskHandle` → `SelectedMaskHandle`, `PromptHandle`, `PlanHandle`, …), static validation at `build()`, `GenerationBackend` trait, checkpoints, approval policies, `RunOptions` |
+| `crates/core/src/registry/backend.rs` | `CreativeBackend` — the live backend (`CreativeRuntime` + `LmStudioClient`); LLM steps are soft dependencies that degrade to manual input |
+| `crates/core/src/registry/image_ops.rs` | Pure image primitives: composite (masked blend), invert, feather, union — deterministic, property-tested |
+| `apps/cli/src/bin/svs.rs` | The `svs` CLI (clap, a binary of the `svs-cli` package) |
+| `crates/core/src/persistence/mod.rs` | SQLite project store (`ProjectDb`): §10 schema, versioned migrations, WAL, snapshot save/load of the registry |
+| `crates/core/src/vision/mod.rs` ↔ `apps/vision/models/schemas.py` | `mask_path` added to `GenerateRequest` on both sides |
 
 ## Pipeline rules (as implemented)
 
@@ -184,10 +184,10 @@ config points at the gemma model used on the dev machine.
 
 - **The legacy storyboard model is gone.** The canvas (roadmap item 4)
   replaced `Project`/`StoryboardFrame`/`Timeline`; the GUI is the artifact
-  registry (`AppState` in `src/state/`). Schema v3 drops `project_json`
+  registry (`AppState` in `apps/desktop/src/state/`). Schema v3 drops `project_json`
   from the `projects` row — the sanctioned one-time loss, no legacy
   formats are parsed.
-- **Canvas slice 1** (`src/ui/canvas.rs`): sidebar grouped by kind, detail
+- **Canvas slice 1** (`apps/desktop/src/ui/canvas.rs`): sidebar grouped by kind, detail
   pane (image, description, variants, revisions, children, operation log),
   slash-command composer (`/create`, `/variant`, `/regenerate`,
   `/modify`), undo/redo via registry snapshots. The mask checkpoint of
@@ -263,9 +263,9 @@ config points at the gemma model used on the dev machine.
 
 ## First CI surface
 
-- Builder validation tests (`src/registry/pipeline.rs`): empty stacks,
+- Builder validation tests (`crates/core/src/registry/pipeline.rs`): empty stacks,
   bounds, ordering, mask-without-reference.
-- Composite property tests (`src/registry/image_ops.rs`): pixels outside
+- Composite property tests (`crates/core/src/registry/image_ops.rs`): pixels outside
   the mask are bit-identical with and without feathering.
 - Execution tests with a fake backend: request bodies (prompt, reference,
   mask, LoRA, size, seed), revision state transitions, checkpoint

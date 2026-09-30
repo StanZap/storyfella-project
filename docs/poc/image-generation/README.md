@@ -13,9 +13,9 @@ The adapter chooses CUDA on Linux, MPS on Apple Silicon, and CPU only as a fallb
 From the repository root:
 
 ```sh
-uv sync --project python --extra image-generation
-cd python
-HF_HOME=../models/huggingface uv run python -m scripts.image_generation_probe \
+uv sync --project apps/vision --extra image-generation
+cd apps/vision
+HF_HOME=../../models/huggingface uv run python -m scripts.image_generation_probe \
   "A cinematic storyboard frame of a red lighthouse above a stormy sea, no text" \
   --device auto --steps 2 --seed 42
 ```

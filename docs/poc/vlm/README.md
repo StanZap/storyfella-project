@@ -5,19 +5,19 @@ This probe exercises image understanding through LM Studio's OpenAI-compatible A
 Generate the deterministic fixtures:
 
 ```bash
-cargo run --example generate_vlm_fixtures
+cargo run -p svs-cli --example generate_vlm_fixtures
 ```
 
 List models visible through LM Studio:
 
 ```bash
-cargo run --bin vlm_probe -- --list-models
+cargo run -p svs-cli --bin vlm_probe -- --list-models
 ```
 
 Run one or more vision-capable models sequentially:
 
 ```bash
-cargo run --bin vlm_probe -- \
+cargo run -p svs-cli --bin vlm_probe -- \
   --model google/gemma-4-e4b \
   --model gemma-4-12b-it-uncensored
 ```

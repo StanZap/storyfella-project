@@ -25,7 +25,7 @@ current product code.
 1. Start with [`architecture.md`](architecture.md) to see the moving parts and
    the explicit Rust/Python/HTTP boundary.
 2. Follow the endpoint walkthrough in [`http-api.md`](http-api.md) while
-   reading `python/runtime/service.py`.
+   reading `apps/vision/runtime/service.py`.
 3. Read [`runtime-lifecycle.md`](runtime-lifecycle.md) to understand cold
    startup and residency guarantees.
 4. Use [`development.md`](development.md) whenever you set up a machine or need

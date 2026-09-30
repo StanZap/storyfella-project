@@ -11,7 +11,7 @@ This is intentionally a desktop-only application. Web, mobile, and WASM targets 
 - **Rust** owns the Dioxus UI, application state, the artifact registry, project persistence boundary, model-download boundary, directory resolution, process lifecycle, LM Studio integration, and Python runtime client.
 - **Python** owns all future model framework and vision implementation details. Rust must not depend on or know about PyTorch. Krea 2 generation uses a separate native `stable-diffusion.cpp` process owned by Rust; it is not ComfyUI.
 - **HTTP** is the explicit boundary between them. The local FastAPI runtime exposes `GET /health`, `GET /capabilities`, `POST /segment`, `/generate`, and `/caption`, plus asynchronous generation-job endpoints. Generation and geometric-prompt segmentation have working POC backends; captioning remains a placeholder.
-- **LM Studio** is accessed directly from Rust through its OpenAI-compatible `/v1/chat/completions` endpoint. The typed planner vocabulary (operations + pipelines) lives in `src/registry/`; `src/llm/` is the client only.
+- **LM Studio** is accessed directly from Rust through its OpenAI-compatible `/v1/chat/completions` endpoint. The typed planner vocabulary (operations + pipelines) lives in `crates/core/src/registry/`; `crates/core/src/llm/` is the client only.
 
 ## Product surface
 
@@ -36,8 +36,9 @@ This is intentionally a desktop-only application. Web, mobile, and WASM targets 
   Studio, the vision runtime, and the native generation backend on demand,
   reports readiness, model residency, and provisioning gaps, and can start,
   stop, or restart the two local runtimes. The Intelligence section
-  discovers LM Studio's model list into a planner dropdown (selection
-  applies for the session; `config/app.toml` holds the default).
+  discovers LM Studio's model list into a searchable planner picker
+  (`SearchSelect` — filter, arrows, Enter; selection applies immediately and
+  `config/app.toml` holds the default).
 
 The shell deliberately uses a small reusable component vocabulary, low-contrast boundaries, and progressive disclosure instead of a dense card dashboard. Styling is primarily Tailwind CSS 4 utility classes in RSX, with a small shared CSS layer for global browser behavior and form controls.
 
@@ -59,30 +60,38 @@ The interactive draft profile currently requests a 768×448 image at four steps 
 ## Project layout
 
 ```text
-src/
-  app/          Dioxus root and configuration loading
-  ui/           Desktop UI components (canvas, projects, settings)
-  state/        AppState: registry, selection, undo/redo
-  llm/          LM Studio OpenAI-compatible client
-  vision/       Typed Python runtime HTTP client
-  registry/     Artifact registry, typed ops + pipelines, slash parser,
-                CreativeBackend, image ops
-  runtime/      Python process lifecycle and model storage/download boundary
-  persistence/  SQLite project store (versioned migrations)
-  assets/       Asset catalog boundary
-  bin/svs.rs    Operation CLI (see docs/api-slice-1.md)
-python/
-  api/           FastAPI construction and routes
-  models/        Pydantic request/response contracts
-  runtime/       Device discovery and model adapters
-  main.py        Runtime entry point
-models/          Optional project-local model storage
-assets/          Dioxus/static and project assets
-cache/           Optional project-local cache
-config/app.toml  Runtime and path configuration
+Cargo.toml            Virtual workspace manifest ([workspace] members only)
+.cargo/config.toml    target-dir redirect to /tmp/smart-visual-sequencer-target
+crates/core/          svs-core — the domain layer (no GUI dependency):
+  src/registry/         Artifact registry, typed ops + pipelines, slash parser,
+                        CreativeBackend, image ops
+  src/persistence/      SQLite project store (versioned migrations)
+  src/vision/           Typed Python runtime HTTP client
+  src/llm/              LM Studio OpenAI-compatible client
+  src/runtime/          Python/sd-server lifecycle and model storage/download
+  src/assets/           Asset catalog boundary
+  src/errors.rs         Error-code registry
+  src/config.rs         Configuration loading
+  src/paths.rs          Project-root path resolution
+apps/desktop/         smart-visual-sequencer — the Dioxus application:
+  src/app/              Dioxus root
+  src/ui/               Desktop UI components (canvas, writer, projects, settings)
+  src/state/            AppState: registry, selection, undo/redo
+  src/commands.rs       Shared action language (slash parse → execute)
+  src/driver/           YAML plan driver (Guide/Check modes)
+  Dioxus.toml, tailwind.css, assets/, package.json
+apps/cli/             svs-cli — src/bin/{svs,model_setup,vlm_probe}.rs
+apps/vision/          Python vision runtime (FastAPI): main.py, api/, models/,
+                      runtime/, tests/
+config/               app.toml + plans/*.yaml (data, at the workspace root)
+assets/generated/     Dev runtime data written by generations; project databases
+                      store absolute asset paths, so this stays at the root
+docs/ models/ cache/ stable-diffusion.cpp/ .svs-e2e/
 ```
 
-By default, generated model, cache, and asset data resolve through platform-appropriate application directories using the Rust `directories` crate. Paths can be overridden in `config/app.toml`.
+`crates/core` never depends on the GUI; `apps/desktop` and `apps/cli` both depend on `svs-core`, and the desktop crate names `svs_core::…` explicitly rather than re-exporting it.
+
+Self-resolved paths anchor to a **project root** instead of the working directory (see `crates/core/src/paths.rs`): `$SVS_HOME` wins, otherwise the nearest ancestor of the working directory (then of the executable) holding `config/app.toml`. Relative paths in `config/app.toml` resolve against that root, and unset values fall back to platform-appropriate application directories via the Rust `directories` crate.
 
 ## Documentation
 
@@ -102,22 +111,22 @@ In-depth material lives in [`docs/`](docs/README.md): a system [architecture ove
 From the repository root:
 
 ```bash
-uv sync --project python
+uv sync --project apps/vision
 ```
 
-This creates `python/.venv` and installs FastAPI, Uvicorn, Pydantic, Pillow, and NumPy. ML frameworks are intentionally absent from the base environment.
+This creates `apps/vision/.venv` and installs FastAPI, Uvicorn, Pydantic, Pillow, and NumPy. ML frameworks are intentionally absent from the base environment.
 
 To install optional POC dependencies:
 
 ```bash
-uv sync --project python --extra image-generation
-uv sync --project python --extra segmentation
+uv sync --project apps/vision --extra image-generation
+uv sync --project apps/vision --extra segmentation
 ```
 
 For development, start the service directly:
 
 ```bash
-cd python
+cd apps/vision
 .venv/bin/python main.py --host 127.0.0.1 --port 8765
 ```
 
@@ -125,22 +134,23 @@ Then verify it with `curl http://127.0.0.1:8765/health`.
 
 ## Run the desktop application
 
-Install the frontend toolchain once:
+Install the frontend toolchain once (from `apps/desktop`, which holds `package.json`):
 
 ```bash
+cd apps/desktop
 npm install
 ```
 
-The root `tailwind.css` file selects Tailwind CSS 4 and lets `dx` automatically compile `assets/tailwind.css`. Most component styling is expressed as Tailwind utility classes in RSX. To build or watch CSS independently, use `npm run css:build` or `npm run css:watch`.
+The `tailwind.css` file in `apps/desktop` selects Tailwind CSS 4 and lets `dx` automatically compile `assets/tailwind.css`. Most component styling is expressed as Tailwind utility classes in RSX. To build or watch CSS independently, use `npm run css:build` or `npm run css:watch`.
 
 ```bash
-dx serve --platform desktop
+cd apps/desktop && dx serve --platform desktop
 ```
 
 For a compile-only check:
 
 ```bash
-cargo check --features desktop
+cargo check --workspace --all-targets
 ```
 
 This checkout includes `.cargo/config.toml` because its current parent directory contains a literal `:`. On macOS and Linux that character conflicts with dynamic-library path lists, so build artifacts are placed under `/tmp/smart-visual-sequencer-target`.
@@ -149,7 +159,7 @@ Configuration lives in `config/app.toml`. The default LM Studio URL is `http://l
 
 ## How Rust starts Python
 
-`runtime::PythonRuntime` resolves the interpreter inside `python/.venv`, launches `python/main.py` with an explicit host and port, inherits logs, and retains the child handle for shutdown. The UI does not start it automatically yet; lifecycle wiring will be added with project/session management. Until then the shell reports the runtime as idle. Readiness must be determined through `/health`, not merely by successful process creation.
+`runtime::PythonRuntime` resolves the interpreter inside `apps/vision/.venv`, launches `apps/vision/main.py` with an explicit host and port, inherits logs, and retains the child handle for shutdown. The UI does not start it automatically yet; lifecycle wiring will be added with project/session management. Until then the shell reports the runtime as idle. Readiness must be determined through `/health`, not merely by successful process creation.
 
 ## Intended pipeline (documentation only)
 

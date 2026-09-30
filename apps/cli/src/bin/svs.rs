@@ -1,0 +1,1640 @@
+//! `svs` — the Smart Visual Sequencer operation CLI.
+//!
+//! Drives the artifact registry + pipeline API without the Dioxus UI:
+//! typed operations (`svs op …`), serialized operation stacks (`svs stack
+//! run` — the VLLM contract test bed), LLM stack proposals (`svs stack
+//! propose`), and the operation log. `--out <dir>` drops every intermediate
+//! (image, mask, composite) into a folder for the manual golden-run tier
+//! (`docs/ROADMAP.md` §7).
+//!
+//! The project is a SQLite database (`.svs-project.db` by default, see
+//! `src/persistence/` and `docs/ROADMAP.md` §10).
+
+use std::{
+    io::{self, BufRead, Write},
+    path::{Path, PathBuf},
+};
+
+use anyhow::{anyhow, bail, Context, Result};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use uuid::Uuid;
+
+use svs_core::config::AppConfig;
+use svs_core::errors::{CodedError, ErrorCode, ReportedError};
+use svs_core::llm::{ChatMessage, ChatOptions, LmStudioClient};
+use svs_core::persistence::ProjectDb;
+use svs_core::registry::backend::CreativeBackend;
+use svs_core::registry::ops::{
+    self, ComposeLayer, ExecuteOptions, OpOrigin, OpStatus, Operation, OperationStack,
+};
+use svs_core::registry::pipeline::{
+    ApprovalPolicy, BlockedOn, Decision, GenerationBackend, GenerationOverrides, InputPurpose,
+    OutputKind, PipelineRun, RunOptions,
+};
+use svs_core::registry::{ArtifactKind, ArtifactRegistry, GenerationDefaults, Ref, VariantAxis};
+use svs_core::runtime::KreaQuantization;
+use svs_core::vision::{LoraSelection, SegmentBox, SegmentRequest};
+
+#[derive(Parser)]
+#[command(
+    name = "svs",
+    version,
+    about = "Drive Smart Visual Sequencer operations from the command line"
+)]
+struct Cli {
+    /// SQLite project database (created on first use).
+    #[arg(long, global = true, default_value = ".svs-project.db")]
+    project: PathBuf,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Open (load or create) the project database.
+    Project { path: PathBuf },
+    /// Apply a typed operation.
+    Op {
+        #[command(subcommand)]
+        op: OpCommand,
+    },
+    /// Execute a serialized operation stack (the VLLM contract test bed).
+    Stack {
+        #[command(subcommand)]
+        stack: StackCommand,
+    },
+    /// Manage the resident generation server.
+    Runtime {
+        #[command(subcommand)]
+        runtime: RuntimeCommand,
+    },
+    /// Ask the local vision model (LM Studio) to judge images — the
+    /// automated reviewer's eyes for evaluating generations, edits, and
+    /// regressions. Attach images, ask questions, and optionally gate an
+    /// exit code on the answer.
+    Eval {
+        #[command(flatten)]
+        eval: EvalArgs,
+    },
+    /// Segment an image and write every candidate mask to a folder.
+    ///
+    /// The mask-fixture builder: it stops before generating, so masks can be
+    /// authored once against real images and then replayed into
+    /// `op modify --mask-file` as often as an investigation needs. Keeping
+    /// the two apart also keeps SAM's weights out of the generating process
+    /// — the Python runtime only loads them once a segmentation has run.
+    Segment(SegmentArgs),
+    /// Show the operation log (all entries, or one artifact's).
+    Log {
+        /// Filter to one artifact's entries.
+        target: Option<Ref>,
+    },
+}
+
+/// Standalone segmentation — the mask-fixture builder.
+#[derive(Args)]
+struct SegmentArgs {
+    /// The image to segment. Any file on disk; it need not be in a project.
+    image: PathBuf,
+    /// What to segment ("her hair", "the bird"). Omit when passing --box.
+    prompt: Option<String>,
+    /// Where to write the masks and their sidecar (created if absent).
+    #[arg(long, short = 'o')]
+    out: PathBuf,
+    /// Geometry prompt instead of text: `x1,y1,x2,y2` in pixels. Geometry
+    /// runs on SAM 2.1 rather than SAM 3 — see python/runtime/segmenter.py.
+    #[arg(long = "box", value_parser = parse_segment_box)]
+    boxes: Vec<SegmentBox>,
+    /// Override the segmentation model id.
+    #[arg(long)]
+    model: Option<String>,
+}
+
+/// The image-evaluation workflow against the local LM Studio vision model.
+#[derive(Args)]
+struct EvalArgs {
+    /// Image paths to attach (repeatable; the model sees them in order and
+    /// refers to them as image 1, image 2, …).
+    #[arg(long = "image", short = 'i', required = true)]
+    images: Vec<PathBuf>,
+    /// Question(s) to ask (repeatable — one round per question).
+    #[arg(
+        long = "prompt",
+        short = 'p',
+        default_value = "Describe these images concisely, then note any visual defects, artifacts, or inconsistencies."
+    )]
+    prompts: Vec<String>,
+    /// The LM Studio model id (defaults to the configured planner model,
+    /// which must have vision support).
+    #[arg(long = "model")]
+    model: Option<String>,
+    #[arg(long = "max-tokens", default_value_t = 2048)]
+    max_tokens: u32,
+    /// Check mode: exit 1 unless the answer contains this text
+    /// (case-insensitive substring).
+    #[arg(long = "expect")]
+    expect: Option<String>,
+    /// Check mode: exit 1 when the answer contains this text
+    /// (case-insensitive substring).
+    #[arg(long = "expect-not")]
+    expect_not: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum OpCommand {
+    /// /create <kind> <description> — new artifact (visual kinds generate
+    /// their first image as part of the create).
+    Create {
+        kind: String,
+        description: String,
+        #[arg(long)]
+        name: Option<String>,
+        /// Default generation size for this artifact's images (kind
+        /// defaults apply when omitted).
+        #[arg(long, value_parser = parse_size)]
+        size: Option<(u32, u32)>,
+        /// Adapter to apply to this generation: `<file>@<multiplier>`
+        /// (repeatable; files resolve against the configured lora dir).
+        #[arg(long = "lora", value_parser = parse_lora)]
+        loras: Vec<LoraSelection>,
+    },
+    /// /variant <ref> <description> [axis] — new visual variant (its first
+    /// image is an edit of the base).
+    Variant {
+        target: Ref,
+        description: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        axis: Option<String>,
+        #[arg(long = "lora", value_parser = parse_lora)]
+        loras: Vec<LoraSelection>,
+    },
+    /// /regenerate <ref> [prompt] — new revision of the active image.
+    Regenerate {
+        target: Ref,
+        prompt: Option<String>,
+        #[arg(long)]
+        seed: Option<u64>,
+        #[arg(long)]
+        steps: Option<u32>,
+        #[arg(long, value_parser = parse_size)]
+        size: Option<(u32, u32)>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long = "lora", value_parser = parse_lora)]
+        loras: Vec<LoraSelection>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long, value_enum, default_value = "interactive")]
+        approve: ApprovalArg,
+    },
+    /// /resize <ref> <WxH> — set the artifact's default size and
+    /// regenerate its image at it.
+    Resize {
+        target: Ref,
+        #[arg(value_parser = parse_size)]
+        size: (u32, u32),
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long, value_enum, default_value = "interactive")]
+        approve: ApprovalArg,
+    },
+    /// /compose <scene> <description> [layer refs…] — new beat in a scene.
+    Compose {
+        scene: Ref,
+        description: String,
+        #[arg(long = "background")]
+        background: Option<Ref>,
+        #[arg(long = "layer")]
+        layers: Vec<Ref>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long, value_enum, default_value = "interactive")]
+        approve: ApprovalArg,
+    },
+    /// /draft <ref> <request> — LLM proposes story text; user approves.
+    Draft {
+        target: Ref,
+        request: String,
+        /// Manual text; bypasses the LLM and the approval checkpoint.
+        #[arg(long)]
+        text: Option<String>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long, value_enum, default_value = "interactive")]
+        approve: ApprovalArg,
+    },
+    /// /modify <ref> <description> — edit the image from a plain-language
+    /// instruction ("give her a bob cut"). Pass --inpaint-prompt with a mask
+    /// source (--mask-prompt or --mask-file) to opt into the mask path.
+    Modify {
+        target: Ref,
+        description: String,
+        /// The region to segment ("her hair"), or `auto` to let the planner
+        /// name it from the description.
+        #[arg(long = "mask-prompt", conflicts_with = "mask_file")]
+        mask_prompt: Option<String>,
+        /// A mask PNG on disk (e.g. one `svs segment` wrote), used instead of
+        /// segmenting. Keeps the mask fixed across runs, and keeps the SAM
+        /// weights out of the generating process.
+        #[arg(long = "mask-file")]
+        mask_file: Option<PathBuf>,
+        #[arg(long = "inpaint-prompt")]
+        inpaint_prompt: Option<String>,
+        #[arg(long)]
+        seed: Option<u64>,
+        #[arg(long)]
+        steps: Option<u32>,
+        #[arg(long, value_parser = parse_size)]
+        size: Option<(u32, u32)>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long = "lora", value_parser = parse_lora)]
+        loras: Vec<LoraSelection>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long, value_enum, default_value = "interactive")]
+        approve: ApprovalArg,
+    },
+    /// /attach-lora <ref> <lora> [--multiplier] — bind a registry LoRA to
+    /// an artifact; auto-injected into its generations.
+    AttachLora {
+        target: Ref,
+        /// Adapter file in the lora dir, or an existing registry entry.
+        lora: String,
+        #[arg(long)]
+        multiplier: Option<f32>,
+    },
+    /// /lora-scale <lora> <multiplier> — adjust a bound adapter's weight.
+    LoraScale { lora: String, multiplier: f32 },
+    /// /lora-remove <lora> — unbind an adapter from the registry.
+    LoraRemove { lora: String },
+    /// /describe <ref> <description> — replace the artifact's canonical
+    /// look. Edits re-anchor to this, so writing a change back here is how
+    /// it survives the next `modify`.
+    Describe { target: Ref, description: String },
+}
+
+#[derive(Subcommand)]
+enum StackCommand {
+    /// Execute a serialized operation stack.
+    Run {
+        path: PathBuf,
+        #[arg(long, value_enum, default_value = "llm")]
+        origin: OriginArg,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long, value_enum, default_value = "interactive")]
+        approve: ApprovalArg,
+    },
+    /// Drive LM Studio to produce an operation stack from free text.
+    Propose {
+        message: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum RuntimeCommand {
+    /// Start (or restart) the native generation server with a Krea profile
+    /// and keep it resident in this terminal; ops in other terminals reuse
+    /// it. Ctrl-C stops it.
+    Serve {
+        #[arg(long, default_value = "krea-2-turbo-q4", value_parser = parse_model)]
+        model: KreaQuantization,
+        /// Kill stale sd-server processes holding the port first (leftovers
+        /// from interrupted sessions cannot be restarted by the runtime).
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ApprovalArg {
+    /// Non-interactive: best mask candidate, accept text.
+    Auto,
+    /// Ask at every checkpoint.
+    Interactive,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum OriginArg {
+    User,
+    Llm,
+}
+
+impl From<OriginArg> for OpOrigin {
+    fn from(origin: OriginArg) -> Self {
+        match origin {
+            OriginArg::User => OpOrigin::User,
+            OriginArg::Llm => OpOrigin::Llm,
+        }
+    }
+}
+
+fn parse_kind(value: &str) -> Result<ArtifactKind, String> {
+    match value {
+        "story" => Ok(ArtifactKind::Story),
+        "scene" => Ok(ArtifactKind::Scene),
+        "beat" => Ok(ArtifactKind::Beat),
+        "character" => Ok(ArtifactKind::Character),
+        "environment" => Ok(ArtifactKind::Environment),
+        "object" => Ok(ArtifactKind::Object),
+        other => Err(format!(
+            "unknown artifact kind {other:?}; expected story|scene|beat|character|environment|object"
+        )),
+    }
+}
+
+fn parse_axis(value: &str) -> Result<VariantAxis, String> {
+    match value {
+        "outfit" => Ok(VariantAxis::Outfit),
+        "age" => Ok(VariantAxis::Age),
+        "body" => Ok(VariantAxis::Body),
+        "hair" => Ok(VariantAxis::Hair),
+        "expression" => Ok(VariantAxis::Expression),
+        "time-of-day" => Ok(VariantAxis::TimeOfDay),
+        "weather" => Ok(VariantAxis::Weather),
+        "season" => Ok(VariantAxis::Season),
+        "mood" => Ok(VariantAxis::Mood),
+        other => Err(format!(
+            "unknown variant axis {other:?}; expected outfit|age|body|hair|expression|time-of-day|weather|season|mood"
+        )),
+    }
+}
+
+fn parse_size(value: &str) -> Result<(u32, u32), String> {
+    let (width, height) = value
+        .split_once('x')
+        .ok_or_else(|| format!("expected WxH (e.g. 768x448), got {value:?}"))?;
+    let width = width
+        .parse::<u32>()
+        .map_err(|_| format!("invalid width {width:?}"))?;
+    let height = height
+        .parse::<u32>()
+        .map_err(|_| format!("invalid height {height:?}"))?;
+    Ok((width, height))
+}
+
+/// Parses `<file>@<multiplier>` for `--lora` (multiplier optional, 1.0).
+fn parse_lora(value: &str) -> Result<LoraSelection, String> {
+    let (path, multiplier) = match value.rsplit_once('@') {
+        Some((path, multiplier)) => (
+            path.to_owned(),
+            multiplier
+                .parse::<f32>()
+                .map_err(|_| format!("invalid lora multiplier {multiplier:?}"))?,
+        ),
+        None => (value.to_owned(), 1.0),
+    };
+    if !(-2.0..=2.0).contains(&multiplier) {
+        return Err(format!(
+            "lora multiplier {multiplier} must be within -2..=2"
+        ));
+    }
+    if path.is_empty() {
+        return Err("--lora needs an adapter file: --lora <file>@<multiplier>".to_owned());
+    }
+    Ok(LoraSelection { path, multiplier })
+}
+
+fn parse_model(value: &str) -> Result<KreaQuantization, String> {
+    match value {
+        "krea-2-turbo-q2" => Ok(KreaQuantization::Q2),
+        "krea-2-turbo-q4" => Ok(KreaQuantization::Q4),
+        other => Err(format!(
+            "unknown generation profile {other:?}; expected krea-2-turbo-q2 or krea-2-turbo-q4"
+        )),
+    }
+}
+
+fn random_seed() -> u64 {
+    let id = Uuid::new_v4();
+    u64::from_be_bytes(id.as_bytes()[..8].try_into().expect("eight bytes"))
+}
+
+fn main() -> Result<()> {
+    // Errors surface through `CodedError::report`, which logs with the
+    // error code; without a subscriber those lines would be dropped.
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .compact()
+        .init();
+    let cli = Cli::parse();
+    let runtime = tokio::runtime::Runtime::new().context("failed to start the async runtime")?;
+    runtime.block_on(run(cli))
+}
+
+async fn run(cli: Cli) -> Result<()> {
+    match cli.command {
+        Command::Project { path } => {
+            let registry = load_project(&path)?;
+            println!(
+                "project {} ready ({} artifacts, {} log entries)",
+                path.display(),
+                registry.artifacts.len(),
+                registry.log.len()
+            );
+            Ok(())
+        }
+        Command::Op { op } => {
+            let mut registry = load_project(&cli.project)?;
+            let (operation, cli_options) = build_operation(op)?;
+            // The config is always loaded: the LoRA ops resolve the
+            // `lora_dir` through the generation defaults.
+            let config = AppConfig::load().context("could not load config/app.toml")?;
+            let needs_backend =
+                operation_needs_backend(&operation, cli_options.manual_text.as_deref());
+            let backend = if needs_backend {
+                Some(CreativeBackend::new(&config))
+            } else {
+                None
+            };
+            // Save even on failure: a visual op that fails its pipeline keeps
+            // the artifact and a failed revision (fail-fast, intermediates
+            // preserved), like `stack run`.
+            let result = execute_one(
+                &mut registry,
+                &operation,
+                backend.as_ref().map(|b| b as &dyn GenerationBackend),
+                &cli_options,
+                &config.generation_defaults,
+                OpOrigin::User,
+            )
+            .await;
+            if let Ok(outcome) = &result {
+                print_outcome(&registry, &operation, outcome);
+            }
+            let saved = save_project(&cli.project, &registry);
+            result?;
+            saved
+        }
+        Command::Stack { stack } => match stack {
+            StackCommand::Run {
+                path,
+                origin,
+                out,
+                approve,
+            } => {
+                let mut registry = load_project(&cli.project)?;
+                // Save even on failure: a stack that fails partway keeps the
+                // ops already applied (fail-fast, intermediates preserved).
+                let result = run_stack(&mut registry, &path, origin.into(), out, approve).await;
+                save_project(&cli.project, &registry)?;
+                result
+            }
+            StackCommand::Propose { message, out } => {
+                propose_stack(&cli.project, &message, out).await
+            }
+        },
+        Command::Log { target } => {
+            let registry = load_project(&cli.project)?;
+            print_log(&registry, target.as_ref());
+            Ok(())
+        }
+        Command::Segment(args) => run_segment(args).await,
+        Command::Eval { eval } => run_eval(eval).await,
+        Command::Runtime { runtime } => match runtime {
+            RuntimeCommand::Serve {
+                model: profile,
+                force,
+            } => {
+                if force {
+                    kill_resident_generation_servers()?;
+                }
+                let config = AppConfig::load().context("could not load config/app.toml")?;
+                let backend = CreativeBackend::with_profile(&config, profile);
+                backend
+                    .ensure_profile_ready(profile)
+                    .await
+                    .map_err(|error| anyhow!(error.report().log()))?;
+                println!(
+                    "generation runtime ready with {}; Ctrl-C to stop",
+                    profile.profile_id()
+                );
+                let _ = tokio::signal::ctrl_c().await;
+                backend
+                    .stop_generation()
+                    .await
+                    .map_err(|error| anyhow!(error.report().log()))?;
+                println!("generation runtime stopped");
+                Ok(())
+            }
+        },
+    }
+}
+
+/// `--box x1,y1,x2,y2` — a geometry prompt in pixel coordinates.
+fn parse_segment_box(value: &str) -> Result<SegmentBox, String> {
+    let parts: Vec<&str> = value.split(',').map(str::trim).collect();
+    let [x1, y1, x2, y2] = parts.as_slice() else {
+        return Err(format!("expected x1,y1,x2,y2 — got {value:?}"));
+    };
+    let coord = |name: &str, raw: &str| -> Result<f64, String> {
+        raw.parse::<f64>()
+            .map_err(|_| format!("{name} must be a number — got {raw:?}"))
+    };
+    Ok(SegmentBox {
+        x_min: coord("x1", x1)?,
+        y_min: coord("y1", y1)?,
+        x_max: coord("x2", x2)?,
+        y_max: coord("y2", y2)?,
+    })
+}
+
+/// Segments one image and writes every candidate to `--out`, highest score
+/// first, beside a JSON sidecar.
+///
+/// The sidecar records which model produced the masks. A fixture corpus
+/// outlives the segmenter that built it — text prompts currently run a
+/// community SAM 3 conversion, not `facebook/sam3.1` — and masks compared
+/// across two different segmenters are not a comparison at all.
+async fn run_segment(args: SegmentArgs) -> Result<()> {
+    if !args.image.exists() {
+        bail!("image {} does not exist", args.image.display());
+    }
+    if args.prompt.is_none() && args.boxes.is_empty() {
+        bail!("segment needs a text prompt or at least one --box");
+    }
+    // The Python runtime is a separate process with its own working
+    // directory, so it can only open an absolute path — a relative one it
+    // reports back as "image does not exist", naming a file that plainly
+    // does exist from here.
+    let image = args
+        .image
+        .canonicalize()
+        .with_context(|| format!("could not resolve {}", args.image.display()))?;
+    let config = AppConfig::load().context("could not load config/app.toml")?;
+    let backend = CreativeBackend::new(&config);
+
+    let mut request = SegmentRequest::new(image.to_string_lossy().to_string());
+    request.prompt = args.prompt.clone();
+    request.boxes = args.boxes.clone();
+    request.model = args.model.clone();
+
+    let response = backend
+        .segment(&request)
+        .await
+        .map_err(|error| anyhow!(error.report().log()))?;
+    if response.masks.is_empty() {
+        bail!(
+            "no masks returned for {:?} ({})",
+            args.prompt.as_deref().unwrap_or("<geometry>"),
+            response.error.as_deref().unwrap_or("no error reported")
+        );
+    }
+
+    std::fs::create_dir_all(&args.out)
+        .with_context(|| format!("could not create {}", args.out.display()))?;
+    let stem = args
+        .image
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_else(|| "image".to_owned());
+    let slug = args
+        .prompt
+        .as_deref()
+        .map(slugify)
+        .unwrap_or_else(|| "box".to_owned());
+
+    let mut masks = response.masks.clone();
+    // Highest score first, so `<stem>-<slug>-0.png` is the candidate the
+    // interactive picker would have offered by default.
+    masks.sort_by(|a, b| b.score.total_cmp(&a.score));
+
+    let mut entries = Vec::new();
+    for (index, mask) in masks.iter().enumerate() {
+        let name = format!("{stem}-{slug}-{index}.png");
+        let destination = args.out.join(&name);
+        std::fs::copy(&mask.path, &destination).with_context(|| {
+            format!("could not copy {} to {}", mask.path, destination.display())
+        })?;
+        println!(
+            "{}  score {:.3}  {} px",
+            destination.display(),
+            mask.score,
+            mask.area_pixels
+        );
+        entries.push(serde_json::json!({
+            "file": name,
+            "score": mask.score,
+            "area_pixels": mask.area_pixels,
+        }));
+    }
+
+    let sidecar = args.out.join(format!("{stem}-{slug}.json"));
+    let manifest = serde_json::json!({
+        "image": image.to_string_lossy(),
+        "prompt": args.prompt,
+        "boxes": args.boxes.len(),
+        "model": response.model,
+        "device": response.device,
+        "masks": entries,
+    });
+    std::fs::write(&sidecar, serde_json::to_vec_pretty(&manifest)?)
+        .with_context(|| format!("could not write {}", sidecar.display()))?;
+    println!("sidecar {}", sidecar.display());
+    Ok(())
+}
+
+/// Filename-safe form of a prompt: lowercase, non-alphanumerics collapsed to
+/// single dashes.
+fn slugify(text: &str) -> String {
+    let mut slug = String::new();
+    for character in text.chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_matches('-').to_owned();
+    if slug.is_empty() {
+        "prompt".to_owned()
+    } else {
+        slug
+    }
+}
+
+/// Asks the local LM Studio vision model to judge images — the automated
+/// reviewer's eyes. One round per `--prompt`, all images attached in order;
+/// `--expect`/`--expect-not` gate the exit code so evaluation can gate a
+/// test script.
+async fn run_eval(eval: EvalArgs) -> Result<()> {
+    let config = AppConfig::load().context("could not load config/app.toml")?;
+    let mut lm_config = config.lm_studio.clone();
+    if let Some(model) = &eval.model {
+        lm_config.model = model.clone();
+    }
+    let client =
+        LmStudioClient::new(lm_config.clone()).map_err(|error| anyhow!(error.report().log()))?;
+
+    // Read every image up front so a missing file fails before any model
+    // round trips. Large canvases are downscaled to a fixed maximum
+    // dimension before encoding — LM Studio rejects oversized image
+    // payloads (two full 1024×1536 PNGs reliably come back empty).
+    const MAX_EVAL_DIMENSION: u32 = 1024;
+    let mut images: Vec<(String, String)> = Vec::new();
+    for path in &eval.images {
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("could not read image {}", path.display()))?;
+        let encoded = match image::load_from_memory(&bytes) {
+            Ok(image) => {
+                use image::GenericImageView as _;
+                let (width, height) = image.dimensions();
+                let scale = (width.max(height) as f32 / MAX_EVAL_DIMENSION as f32).max(1.0);
+                if scale > 1.0 {
+                    let resized = image.resize(
+                        (width as f32 / scale).round() as u32,
+                        (height as f32 / scale).round() as u32,
+                        image::imageops::FilterType::Lanczos3,
+                    );
+                    let mut buffer = std::io::Cursor::new(Vec::new());
+                    resized
+                        .write_to(&mut buffer, image::ImageFormat::Png)
+                        .context("could not re-encode image")?;
+                    buffer.into_inner()
+                } else {
+                    bytes
+                }
+            }
+            Err(_) => bytes,
+        };
+        use base64::Engine as _;
+        images.push((
+            path.display().to_string(),
+            format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(encoded)
+            ),
+        ));
+    }
+
+    let mut failures = 0usize;
+    for prompt in &eval.prompts {
+        let data_urls: Vec<String> = images.iter().map(|(_, url)| url.clone()).collect();
+        let messages = [
+            ChatMessage::text(
+                "system",
+                "You are a rigorous image evaluator for a visual-storytelling application. \
+                 Judge what you actually see in the attached images: composition, identity \
+                 consistency, localized edits, artifacts, distortion, and quality. Answer the \
+                 user's question directly.",
+            ),
+            ChatMessage::with_images(
+                "user",
+                format!(
+                    "{prompt}\n\nThe attached images are numbered in the order given (image 1, image 2, …). Be specific and concise."
+                ),
+                data_urls,
+            ),
+        ];
+        let options = ChatOptions {
+            max_tokens: Some(eval.max_tokens),
+            ..Default::default()
+        };
+        let answer = client
+            .chat_with_options(&messages, &options)
+            .await
+            .map_err(|error| anyhow!(error.report().log()))?;
+        let text = answer
+            .choices
+            .first()
+            .and_then(|choice| choice.message.content.clone())
+            .unwrap_or_else(|| "(no answer)".to_owned());
+
+        println!("model: {}", lm_config.model);
+        println!("question: {prompt}");
+        println!("{text}");
+        println!("----");
+
+        let lowered = text.to_lowercase();
+        if let Some(expected) = &eval.expect {
+            if !lowered.contains(&expected.to_lowercase()) {
+                failures += 1;
+                eprintln!(
+                    "expectation failed: the answer does not contain {:?}",
+                    expected
+                );
+            }
+        }
+        if let Some(banned) = &eval.expect_not {
+            if lowered.contains(&banned.to_lowercase()) {
+                failures += 1;
+                eprintln!("expectation failed: the answer contains {:?}", banned);
+            }
+        }
+    }
+
+    if failures > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Kills sd-server processes this CLI does not own (stale instances from
+/// interrupted sessions hold the port and cannot be restarted by the
+/// runtime). `pkill` exits 1 when nothing matched, which is fine.
+fn kill_resident_generation_servers() -> Result<()> {
+    let status = std::process::Command::new("pkill")
+        .args(["-f", "sd-server --diffusion"])
+        .status()
+        .context("could not run pkill")?;
+    println!("killed stale generation servers (pkill exit {status})");
+    Ok(())
+}
+
+// ------------------------------------------------------------------ project store
+
+/// Loads the registry snapshot from the SQLite database, creating the
+/// database (and schema) on first use.
+fn load_project(path: &Path) -> Result<ArtifactRegistry> {
+    let db = ProjectDb::open(path).map_err(|error| anyhow!(error.report().log()))?;
+    let stored = db.load().map_err(|error| anyhow!(error.report().log()))?;
+    Ok(stored.registry)
+}
+
+/// Replaces the stored snapshot with the in-memory registry (the database is
+/// a snapshot, not an event log).
+fn save_project(path: &Path, registry: &ArtifactRegistry) -> Result<()> {
+    let db = ProjectDb::open(path).map_err(|error| anyhow!(error.report().log()))?;
+    db.save_registry(registry)
+        .map_err(|error| anyhow!(error.report().log()))
+}
+
+// ------------------------------------------------------------------ operations
+
+/// Per-invocation execution settings extracted from the CLI args.
+struct CliRunOptions {
+    work_dir: PathBuf,
+    /// The `--out` golden-run folder; intermediates are copied here.
+    golden_dir: Option<PathBuf>,
+    approvals: ApprovalPolicy,
+    seed: Option<u64>,
+    generation: GenerationOverrides,
+    manual_text: Option<String>,
+}
+
+/// Whether executing the operation needs the live backend. Text-only
+/// model ops (create of story/scene/beat, compose) never do; visual
+/// `create`/`variant` generate the first image as part of the op, so they
+/// do; draft only needs it for the LLM step, which `--text` bypasses.
+/// The LoRA ops are registry mutations — no backend, but they do need the
+/// loaded config (the `lora_dir` existence check).
+fn operation_needs_backend(operation: &Operation, manual_text: Option<&str>) -> bool {
+    match operation {
+        Operation::Create { kind, .. } => kind.is_visual(),
+        Operation::Variant { .. } => true,
+        Operation::Compose { .. } => false,
+        Operation::Draft { .. } => manual_text.is_none(),
+        Operation::Regenerate { .. } | Operation::Resize { .. } | Operation::Modify { .. } => true,
+        Operation::AttachLora { .. }
+        | Operation::LoraScale { .. }
+        | Operation::LoraRemove { .. }
+        | Operation::Set { .. }
+        | Operation::Describe { .. } => false,
+    }
+}
+
+impl CliRunOptions {
+    fn to_execute_options<'a>(
+        &'a self,
+        backend: Option<&'a dyn GenerationBackend>,
+        defaults: &'a GenerationDefaults,
+        origin: OpOrigin,
+    ) -> ExecuteOptions<'a> {
+        // Adapters are sent to the native server under their registered
+        // (top-level) name; missing files are dropped with a warning.
+        let loras: Vec<LoraSelection> = self
+            .generation
+            .loras
+            .iter()
+            .filter_map(|selection| {
+                defaults
+                    .loras
+                    .registered(&selection.path)
+                    .map(|path| LoraSelection {
+                        path,
+                        multiplier: selection.multiplier,
+                    })
+            })
+            .collect();
+        ExecuteOptions {
+            backend,
+            run: RunOptions {
+                work_dir: self.work_dir.clone(),
+                approvals: match &self.approvals {
+                    ApprovalPolicy::Auto { .. } => ApprovalPolicy::auto(),
+                    ApprovalPolicy::Interactive(_) => interactive_policy(),
+                },
+                seed: self.seed,
+            },
+            generation: GenerationOverrides {
+                // The configured default step count (Settings → Image
+                // generation) shapes every CLI visual op too, mirroring the
+                // canvas path; an explicit per-op `--steps` wins last.
+                steps: Some(defaults.steps),
+                loras,
+                ..self.generation.clone()
+            },
+            defaults,
+            manual_text: self.manual_text.as_deref(),
+            origin,
+        }
+    }
+}
+
+/// Builds the typed operation from CLI args plus the execution settings.
+fn build_operation(op: OpCommand) -> Result<(Operation, CliRunOptions)> {
+    Ok(match op {
+        OpCommand::Create {
+            kind,
+            description,
+            name,
+            size,
+            loras,
+        } => (
+            Operation::Create {
+                kind: parse_kind(&kind).map_err(anyhow::Error::msg)?,
+                description,
+                name,
+                size,
+                steps: None,
+                loras: Vec::new(),
+            },
+            CliRunOptions {
+                work_dir: std::env::temp_dir(),
+                golden_dir: None,
+                approvals: ApprovalPolicy::auto(),
+                seed: None,
+                generation: GenerationOverrides {
+                    loras,
+                    ..Default::default()
+                },
+                manual_text: None,
+            },
+        ),
+        OpCommand::Variant {
+            target,
+            description,
+            name,
+            axis,
+            loras,
+        } => (
+            Operation::Variant {
+                target,
+                description,
+                name,
+                axis: axis
+                    .map(|axis| parse_axis(&axis).map_err(anyhow::Error::msg))
+                    .transpose()?,
+                size: None,
+                steps: None,
+                loras: Vec::new(),
+            },
+            CliRunOptions {
+                work_dir: std::env::temp_dir(),
+                golden_dir: None,
+                approvals: ApprovalPolicy::auto(),
+                seed: None,
+                generation: GenerationOverrides {
+                    loras,
+                    ..Default::default()
+                },
+                manual_text: None,
+            },
+        ),
+        OpCommand::Regenerate {
+            target,
+            prompt,
+            seed,
+            steps,
+            size,
+            model,
+            loras,
+            out,
+            approve,
+        } => (
+            Operation::Regenerate {
+                target,
+                prompt,
+                size: None,
+                steps: None,
+                loras: Vec::new(),
+            },
+            CliRunOptions {
+                work_dir: work_dir(out.as_deref()),
+                golden_dir: out,
+                approvals: approval_policy(approve),
+                // A fresh seed by default so "regenerate" is not identical to
+                // the previous revision; pass --seed for golden replay.
+                seed: Some(seed.unwrap_or_else(random_seed)),
+                generation: GenerationOverrides {
+                    steps,
+                    size,
+                    model,
+                    loras,
+                },
+                manual_text: None,
+            },
+        ),
+        OpCommand::Resize {
+            target,
+            size: (width, height),
+            out,
+            approve,
+        } => (
+            Operation::Resize {
+                target,
+                width,
+                height,
+            },
+            CliRunOptions {
+                work_dir: work_dir(out.as_deref()),
+                golden_dir: out,
+                approvals: approval_policy(approve),
+                seed: Some(random_seed()),
+                generation: GenerationOverrides::default(),
+                manual_text: None,
+            },
+        ),
+        OpCommand::Compose {
+            scene,
+            description,
+            background,
+            layers,
+            out,
+            approve,
+        } => (
+            Operation::Compose {
+                scene,
+                description,
+                background,
+                layers: layers
+                    .into_iter()
+                    .map(|artifact| ComposeLayer {
+                        artifact,
+                        variant: None,
+                    })
+                    .collect(),
+            },
+            CliRunOptions {
+                work_dir: work_dir(out.as_deref()),
+                golden_dir: out,
+                approvals: approval_policy(approve),
+                seed: None,
+                generation: GenerationOverrides::default(),
+                manual_text: None,
+            },
+        ),
+        OpCommand::Draft {
+            target,
+            request,
+            text,
+            out,
+            approve,
+        } => (
+            Operation::Draft { target, request },
+            CliRunOptions {
+                work_dir: work_dir(out.as_deref()),
+                golden_dir: out,
+                approvals: approval_policy(approve),
+                seed: None,
+                generation: GenerationOverrides::default(),
+                manual_text: text,
+            },
+        ),
+        OpCommand::Modify {
+            target,
+            description,
+            mask_prompt,
+            mask_file,
+            inpaint_prompt,
+            seed,
+            steps,
+            size,
+            model,
+            loras,
+            out,
+            approve,
+        } => (
+            Operation::Modify {
+                target,
+                description,
+                // `--mask-prompt auto` selects the planned source; a literal
+                // region stays a literal region.
+                plan: mask_prompt
+                    .as_deref()
+                    .is_some_and(|value| value.eq_ignore_ascii_case("auto")),
+                mask_prompt: mask_prompt.filter(|value| !value.eq_ignore_ascii_case("auto")),
+                mask_file,
+                inpaint_prompt,
+                size: None,
+                steps: None,
+                loras: Vec::new(),
+            },
+            CliRunOptions {
+                work_dir: work_dir(out.as_deref()),
+                golden_dir: out,
+                approvals: approval_policy(approve),
+                seed: Some(seed.unwrap_or_else(random_seed)),
+                generation: GenerationOverrides {
+                    steps,
+                    size,
+                    model,
+                    loras,
+                },
+                manual_text: None,
+            },
+        ),
+        OpCommand::AttachLora {
+            target,
+            lora,
+            multiplier,
+        } => (
+            Operation::AttachLora {
+                target,
+                lora,
+                multiplier,
+            },
+            CliRunOptions {
+                work_dir: std::env::temp_dir(),
+                golden_dir: None,
+                approvals: ApprovalPolicy::auto(),
+                seed: None,
+                generation: GenerationOverrides::default(),
+                manual_text: None,
+            },
+        ),
+        OpCommand::LoraScale { lora, multiplier } => (
+            Operation::LoraScale { lora, multiplier },
+            CliRunOptions {
+                work_dir: std::env::temp_dir(),
+                golden_dir: None,
+                approvals: ApprovalPolicy::auto(),
+                seed: None,
+                generation: GenerationOverrides::default(),
+                manual_text: None,
+            },
+        ),
+        OpCommand::Describe {
+            target,
+            description,
+        } => (
+            Operation::Describe {
+                target,
+                description,
+            },
+            CliRunOptions {
+                work_dir: std::env::temp_dir(),
+                golden_dir: None,
+                approvals: ApprovalPolicy::auto(),
+                seed: None,
+                generation: GenerationOverrides::default(),
+                manual_text: None,
+            },
+        ),
+        OpCommand::LoraRemove { lora } => (
+            Operation::LoraRemove { lora },
+            CliRunOptions {
+                work_dir: std::env::temp_dir(),
+                golden_dir: None,
+                approvals: ApprovalPolicy::auto(),
+                seed: None,
+                generation: GenerationOverrides::default(),
+                manual_text: None,
+            },
+        ),
+    })
+}
+
+async fn execute_one(
+    registry: &mut ArtifactRegistry,
+    operation: &Operation,
+    backend: Option<&dyn GenerationBackend>,
+    cli: &CliRunOptions,
+    defaults: &GenerationDefaults,
+    origin: OpOrigin,
+) -> Result<ops::OpOutcome> {
+    let options = cli.to_execute_options(backend, defaults, origin);
+    let outcome = ops::execute(registry, operation, &options)
+        .await
+        .map_err(|error| anyhow!(error.report().log()))?;
+    if let Some(run) = &outcome.run {
+        copy_golden_outputs(cli.golden_dir.as_deref(), run)?;
+    }
+    Ok(outcome)
+}
+
+/// `--out <dir>` golden runs: drop every intermediate (image, mask,
+/// composite) into the folder for human review.
+fn copy_golden_outputs(golden_dir: Option<&Path>, run: &PipelineRun) -> Result<()> {
+    let Some(dir) = golden_dir else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
+    for output in &run.outputs {
+        let Some(path) = &output.path else {
+            if let Some(text) = &output.text {
+                println!("golden {}: {text}", output.label);
+            }
+            continue;
+        };
+        if output.kind == OutputKind::Void {
+            continue;
+        }
+        let mut destination = dir.join(format!("{:02}-{}.png", output.step_index, output.label));
+        if destination.exists() {
+            let mut counter = 1;
+            while destination.exists() {
+                destination = dir.join(format!(
+                    "{:02}-{}-{counter}.png",
+                    output.step_index, output.label
+                ));
+                counter += 1;
+            }
+        }
+        if path == &destination {
+            continue; // already written into the golden folder (composite etc.)
+        }
+        std::fs::copy(path, &destination).with_context(|| {
+            format!(
+                "could not copy {} to {}",
+                path.display(),
+                destination.display()
+            )
+        })?;
+        println!("golden {}: {}", output.label, destination.display());
+    }
+    Ok(())
+}
+
+fn work_dir(out: Option<&Path>) -> PathBuf {
+    out.map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("svs-work-{}", Uuid::new_v4())))
+}
+
+fn approval_policy(approve: ApprovalArg) -> ApprovalPolicy {
+    match approve {
+        ApprovalArg::Auto => ApprovalPolicy::auto(),
+        ApprovalArg::Interactive => interactive_policy(),
+    }
+}
+
+fn interactive_policy() -> ApprovalPolicy {
+    ApprovalPolicy::Interactive(Box::new(|blocked| match blocked {
+        BlockedOn::SelectMask {
+            candidates,
+            description,
+        } => {
+            println!("\ncheckpoint: {description}");
+            for (index, candidate) in candidates.iter().enumerate() {
+                println!(
+                    "  [{index}] {} (score {:.3}, {} px)",
+                    candidate.path.display(),
+                    candidate.score,
+                    candidate.area_pixels
+                );
+            }
+            let choice = prompt("select mask [0]: ").trim().to_owned();
+            let choice = choice.parse::<usize>().unwrap_or(0);
+            Decision::SelectMask(choice.min(candidates.len().saturating_sub(1)))
+        }
+        BlockedOn::ApproveText { text, description } => {
+            println!("\ncheckpoint: {description}\n\n{text}\n");
+            if prompt("approve? [y/N]: ").trim().eq_ignore_ascii_case("y") {
+                Decision::AcceptText
+            } else {
+                Decision::Reject
+            }
+        }
+        BlockedOn::ProvideInput {
+            description,
+            purpose,
+        } => {
+            println!("\nmanual input needed: {description} (LLM unavailable)");
+            match purpose {
+                InputPurpose::DraftText | InputPurpose::Caption => {
+                    let text = prompt("text: ");
+                    if text.trim().is_empty() {
+                        Decision::Reject
+                    } else {
+                        Decision::ProvideText(text)
+                    }
+                }
+                InputPurpose::PlannedEdit => {
+                    let mask_prompt = prompt("mask prompt: ");
+                    let inpaint_prompt = prompt("inpaint prompt: ");
+                    if mask_prompt.trim().is_empty() || inpaint_prompt.trim().is_empty() {
+                        Decision::Reject
+                    } else {
+                        Decision::ProvidePlan(svs_core::registry::pipeline::PlannedEdit {
+                            mask_prompt,
+                            inpaint_prompt,
+                        })
+                    }
+                }
+                InputPurpose::Feedback => {
+                    let text = prompt("feedback: ");
+                    if text.trim().is_empty() {
+                        Decision::Reject
+                    } else {
+                        Decision::ProvideText(text)
+                    }
+                }
+            }
+        }
+    }))
+}
+
+fn prompt(message: &str) -> String {
+    print!("{message}");
+    io::stdout().flush().expect("stdout should flush");
+    io::stdin()
+        .lock()
+        .lines()
+        .next()
+        .transpose()
+        .expect("stdin should read")
+        .unwrap_or_default()
+}
+
+fn print_outcome(registry: &ArtifactRegistry, operation: &Operation, outcome: &ops::OpOutcome) {
+    match operation {
+        Operation::Create { .. } => {
+            let id = outcome.artifact_id.expect("create has an artifact");
+            println!(
+                "created {} {}",
+                registry.artifact(id).expect("created artifact exists").kind,
+                registry.ref_of(id)
+            );
+        }
+        Operation::Variant { .. } => {
+            let id = outcome.artifact_id.expect("variant has an artifact");
+            let artifact = registry.artifact(id).expect("variant exists");
+            let base = artifact
+                .variant_of
+                .map(|base| registry.ref_of(base))
+                .unwrap_or_else(|| "?".into());
+            println!("created variant {} of {base}", registry.ref_of(id));
+        }
+        Operation::Compose { .. } => {
+            let id = outcome.artifact_id.expect("compose has a beat");
+            println!("composed beat {}", registry.ref_of(id));
+        }
+        Operation::AttachLora { .. } => {
+            let id = outcome.artifact_id.expect("attach-lora has an artifact");
+            println!("attached lora to {}", registry.ref_of(id));
+        }
+        Operation::LoraScale { lora, .. } => {
+            println!("scaled lora {lora}");
+        }
+        Operation::LoraRemove { lora } => {
+            println!("removed lora {lora}");
+        }
+        Operation::Describe { .. } => {
+            let id = outcome.artifact_id.expect("describe has an artifact");
+            println!("described {}", registry.ref_of(id));
+        }
+        Operation::Set { .. } => {
+            let id = outcome.artifact_id.expect("set has an artifact");
+            let artifact = registry.artifact(id).expect("set artifact exists");
+            let steps = artifact
+                .default_steps
+                .map_or_else(|| "auto".to_owned(), |steps| steps.to_string());
+            let seed = artifact
+                .default_seed
+                .map_or_else(|| "random".to_owned(), |seed| seed.to_string());
+            println!("set {} steps={steps} seed={seed}", registry.ref_of(id));
+        }
+        Operation::Regenerate { .. } | Operation::Resize { .. } | Operation::Modify { .. } => {
+            let id = outcome.artifact_id.expect("visual ops have an artifact");
+            let revision_id = outcome.revision_id.expect("visual ops start a revision");
+            match outcome.status {
+                OpStatus::Applied => {
+                    let asset = registry
+                        .artifact(id)
+                        .and_then(|artifact| {
+                            artifact.revisions.iter().find(|r| r.id == revision_id)
+                        })
+                        .and_then(|revision| revision.asset_path.clone())
+                        .unwrap_or_else(|| "?".into());
+                    println!(
+                        "{} {} → revision {} (completed, {})",
+                        operation_name(operation),
+                        registry.ref_of(id),
+                        revision_id,
+                        asset
+                    );
+                }
+                OpStatus::Rejected => {
+                    println!(
+                        "{} {} → rejected at a checkpoint",
+                        operation_name(operation),
+                        registry.ref_of(id)
+                    );
+                }
+                _ => {}
+            }
+        }
+        Operation::Draft { .. } => {
+            let id = outcome.artifact_id.expect("draft has an artifact");
+            match outcome.status {
+                OpStatus::Applied => println!("drafted {} (approved)", registry.ref_of(id)),
+                OpStatus::Rejected => {
+                    println!("drafted {} (proposal rejected)", registry.ref_of(id))
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if let Some(run) = &outcome.run {
+        for record in &run.decisions {
+            match &record.decision {
+                Decision::SelectMask(choice) => {
+                    if let BlockedOn::SelectMask { candidates, .. } = &record.blocked_on {
+                        if let Some(candidate) = candidates.get(*choice) {
+                            println!(
+                                "checkpoint at step {}: mask {choice} selected (score {:.3}, {})",
+                                record.step_index,
+                                candidate.score,
+                                candidate.path.display()
+                            );
+                        }
+                    }
+                }
+                Decision::AcceptText => {
+                    println!("checkpoint at step {}: text approved", record.step_index);
+                }
+                Decision::ProvideText(_) | Decision::ProvidePlan(_) => {
+                    println!(
+                        "checkpoint at step {}: manual input used",
+                        record.step_index
+                    );
+                }
+                Decision::Reject => {}
+            }
+        }
+        if let Some(image) = run.final_image() {
+            println!("final image: {}", image.display());
+        }
+    }
+}
+
+fn operation_name(operation: &Operation) -> &'static str {
+    match operation {
+        Operation::Create { .. } => "create",
+        Operation::Variant { .. } => "variant",
+        Operation::Regenerate { .. } => "regenerate",
+        Operation::Resize { .. } => "resize",
+        Operation::Set { .. } => "set",
+        Operation::Compose { .. } => "compose",
+        Operation::Draft { .. } => "draft",
+        Operation::Modify { .. } => "modify",
+        Operation::AttachLora { .. } => "attach-lora",
+        Operation::LoraScale { .. } => "lora-scale",
+        Operation::LoraRemove { .. } => "lora-remove",
+        Operation::Describe { .. } => "describe",
+    }
+}
+
+// ------------------------------------------------------------------ stacks
+
+async fn run_stack(
+    registry: &mut ArtifactRegistry,
+    path: &Path,
+    origin: OpOrigin,
+    out: Option<PathBuf>,
+    approve: ApprovalArg,
+) -> Result<()> {
+    let contents = std::fs::read_to_string(path)
+        .with_context(|| format!("could not read stack file {}", path.display()))?;
+    let stack: OperationStack = serde_json::from_str(&contents)
+        .with_context(|| format!("could not parse stack file {}", path.display()))?;
+    if stack.operations.is_empty() {
+        bail!("stack contains no operations");
+    }
+    println!(
+        "stack {} ({} operations):",
+        path.display(),
+        stack.operations.len()
+    );
+    for (index, operation) in stack.operations.iter().enumerate() {
+        println!("  {index}: {}", operation.summary());
+    }
+
+    if approve == ApprovalArg::Interactive
+        && !prompt("execute this stack? [y/N]: ")
+            .trim()
+            .eq_ignore_ascii_case("y")
+    {
+        println!("stack rejected");
+        return Ok(());
+    }
+
+    let needs_backend = stack
+        .operations
+        .iter()
+        .any(|op| operation_needs_backend(op, None));
+    let config = AppConfig::load().context("could not load config/app.toml")?;
+    let backend = if needs_backend {
+        Some(CreativeBackend::new(&config))
+    } else {
+        None
+    };
+
+    let cli = CliRunOptions {
+        work_dir: work_dir(out.as_deref()),
+        golden_dir: out,
+        approvals: approval_policy(approve),
+        seed: None, // stacks replay deterministically unless ops carry prompts
+        generation: GenerationOverrides::default(),
+        manual_text: None,
+    };
+    for operation in &stack.operations {
+        match execute_one(
+            registry,
+            operation,
+            backend.as_ref().map(|b| b as &dyn GenerationBackend),
+            &cli,
+            &config.generation_defaults,
+            origin,
+        )
+        .await
+        {
+            Ok(outcome) => print_outcome(registry, operation, &outcome),
+            Err(error) => {
+                // The error was already reported (coded log) inside
+                // `execute_one`; its text carries the code.
+                bail!("operation {} failed: {error}", operation.summary());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The VLLM contract test bed: free text → an operation stack the model
+/// emits as JSON against the closed vocabulary Rust defines.
+async fn propose_stack(project_path: &Path, message: &str, out: Option<PathBuf>) -> Result<()> {
+    let registry = load_project(project_path)?;
+    let config = AppConfig::load().context("could not load config/app.toml")?;
+    let backend = CreativeBackend::new(&config);
+
+    let stack = backend
+        .propose_stack(&registry, &config.generation_defaults, None, message)
+        .await
+        .map_err(
+            |error| anyhow!(ReportedError::plain(ErrorCode::AppProposalFailed, error).log()),
+        )?;
+    let pretty = serde_json::to_string_pretty(&stack).context("could not serialize stack")?;
+    println!("{pretty}");
+
+    if let Some(out) = out {
+        std::fs::write(&out, pretty)
+            .with_context(|| format!("could not write stack to {}", out.display()))?;
+        println!("stack written to {}", out.display());
+    }
+    Ok(())
+}
+
+// ------------------------------------------------------------------ log
+
+fn print_log(registry: &ArtifactRegistry, target: Option<&Ref>) {
+    let filter = target
+        .map(|target| registry.resolve(target))
+        .transpose()
+        .ok()
+        .flatten();
+    let entries: Vec<_> = match filter {
+        Some(id) => registry.log_for(id).collect(),
+        None => registry.log.iter().collect(),
+    };
+    if entries.is_empty() {
+        println!("no log entries");
+        return;
+    }
+    for entry in entries {
+        let artifact = entry
+            .artifact_id
+            .map(|id| registry.ref_of(id))
+            .unwrap_or_else(|| "-".into());
+        println!(
+            "  {} {} {:>8} artifact {} — {}",
+            status_str(entry.status),
+            origin_str(entry.origin),
+            entry.id,
+            artifact,
+            entry.op.summary()
+        );
+    }
+}
+
+fn status_str(status: OpStatus) -> &'static str {
+    match status {
+        OpStatus::Proposed => "proposed",
+        OpStatus::Applied => "applied",
+        OpStatus::Rejected => "rejected",
+        OpStatus::Reverted => "reverted",
+    }
+}
+
+fn origin_str(origin: OpOrigin) -> &'static str {
+    match origin {
+        OpOrigin::User => "user",
+        OpOrigin::Llm => "llm",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use svs_core::registry::pipeline::{OutputKind, PipelineRun, StepOutput};
+
+    #[test]
+    fn golden_outputs_are_copied_with_step_prefixed_names() {
+        let dir = std::env::temp_dir().join(format!("svs-golden-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("generated.png");
+        std::fs::write(&source, b"png").unwrap();
+        let golden = dir.join("golden");
+
+        let run = PipelineRun {
+            outputs: vec![
+                StepOutput {
+                    step_index: 0,
+                    label: "segment".into(),
+                    kind: OutputKind::Mask,
+                    path: Some(source.clone()),
+                    text: None,
+                },
+                StepOutput {
+                    step_index: 1,
+                    label: "generate".into(),
+                    kind: OutputKind::Image,
+                    path: Some(source.clone()),
+                    text: None,
+                },
+                StepOutput {
+                    step_index: 3,
+                    label: "llm".into(),
+                    kind: OutputKind::Text,
+                    path: None,
+                    text: Some("draft text".into()),
+                },
+            ],
+            decisions: vec![],
+        };
+
+        copy_golden_outputs(Some(&golden), &run).unwrap();
+
+        assert!(golden.join("00-segment.png").is_file());
+        assert!(golden.join("01-generate.png").is_file());
+        assert!(
+            !golden.join("03-llm.png").exists(),
+            "text outputs are not copied"
+        );
+    }
+}

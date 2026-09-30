@@ -49,7 +49,7 @@ Place the resulting binary at `models/runtime/stable-diffusion.cpp/bin/sd-server
 Probe a running profile twice to separate first-request and warm latency:
 
 ```bash
-cd python
+cd apps/vision
 SVS_SD_CPP_URL=http://127.0.0.1:7861 .venv/bin/python -m scripts.krea_generation_probe \
   "A cinematic storyboard frame of a lighthouse in a storm, no text" \
   --profile krea-2-turbo-q2 --repeat 2
@@ -60,8 +60,8 @@ SVS_SD_CPP_URL=http://127.0.0.1:7861 .venv/bin/python -m scripts.krea_generation
 Review the Krea license, then let the Rust model store download, resume, and verify the selected profile:
 
 ```bash
-cargo run --bin model_setup -- --profile q2 --accept-krea-license
-cargo run --bin model_setup -- --profile q4 --accept-krea-license
+cargo run -p svs-cli --bin model_setup -- --profile q2 --accept-krea-license
+cargo run -p svs-cli --bin model_setup -- --profile q4 --accept-krea-license
 ```
 
 `--model-dir` overrides the platform directory for development. Q2 and Q4 share the encoder and VAE, so verified shared artifacts are not downloaded twice.

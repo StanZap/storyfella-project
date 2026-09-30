@@ -1,0 +1,28 @@
+[package]
+# The product's name stays the package name: the `dx` build/bundle artifact
+# names and the documented launch paths key off it.
+name = "smart-visual-sequencer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Plan, generate, and arrange visual stories."
+
+[features]
+default = ["desktop"]
+desktop = ["dioxus/desktop"]
+
+[dependencies]
+svs-core = { path = "../../crates/core" }
+anyhow.workspace = true
+dioxus.workspace = true
+futures-util.workspace = true
+image.workspace = true
+parking_lot.workspace = true
+rfd.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true

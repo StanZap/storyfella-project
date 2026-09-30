@@ -7,12 +7,58 @@ Rust application and the Python vision runtime.
 
 - Rust stable
 - The current stable Dioxus CLI (`dx`) — see <https://dioxuslabs.com>
-- Node.js/npm (Tailwind CSS 4 toolchain, pinned in `package-lock.json`)
+- Node.js/npm (Tailwind CSS 4 toolchain, pinned in `apps/desktop/package-lock.json`)
 - `uv` (Python environment management)
 - LM Studio, running separately, only when LLM features are exercised
-- Linux desktop builds: the system packages required by Dioxus/WebKitGTK
+- Linux desktop builds: the WebKitGTK/GTK development packages (see below)
 
 Supported targets: macOS on Apple Silicon (MPS) and Linux with NVIDIA CUDA.
+
+### Linux system packages
+
+`dx doctor` prints the set it expects on Linux:
+
+```
+libwebkit2gtk-4.1-dev libgtk-3-dev libasound2-dev libudev-dev \
+  libayatana-appindicator3-dev libxdo-dev libglib2.0-dev
+```
+
+On the dev machine (`Pop!_OS 24.04`) everything except `libasound2-dev` and
+`libudev-dev` is installed, and the app builds without those two — nothing in
+the tree links `libasound` or `libudev` yet. Install them when audio or
+gamepad/input-device support arrives, not before.
+
+Bundling (below) adds no system package: the AppImage is assembled by
+`linuxdeploy`, which the Dioxus CLI downloads on demand.
+
+## Workspace layout
+
+The repository is a Cargo workspace. `crates/core` (package `svs-core`) holds
+the domain layer — the artifact registry, typed operations, persistence, and
+the vision/LLM/runtime clients — and has **no GUI dependency**, so the CLI and
+the core tests never compile the toolkit or the WebKit stack. `apps/desktop`
+(package `smart-visual-sequencer`) is the Dioxus application and owns the
+`desktop` feature; `apps/cli` (package `svs-cli`) builds the `svs`,
+`model_setup`, and `vlm_probe` binaries. Both application crates depend on
+`svs-core` and name it explicitly (`svs_core::…`) rather than re-exporting it.
+
+`apps/vision` is the Python runtime. It is not a Cargo package; it sits under
+`apps/` beside the other launchables because the shipped bundle carries it
+next to the app binary. Data — `config/` and `assets/generated/` — stays at the
+workspace root, because project databases store absolute asset paths.
+
+The payoff is a cheap domain loop: `svs-core`'s dependency tree is 464 entries
+with no `dioxus`/`webkit`/`gtk`/`tao`/`wry` in it at all, against 1183 for the
+desktop crate, so
+
+```sh
+cargo test -p svs-core                  # domain tests, no toolkit
+cargo run -p svs-cli --bin svs -- --help
+```
+
+skip the GUI stack entirely. The workspace-wide `cargo check --workspace
+--all-targets` / `cargo test --workspace` cover everything, including the
+desktop crate's 77 tests.
 
 ## The `:` in the repository path
 
@@ -33,20 +79,22 @@ a tool complains about a path separator, that is the cause.
 ## First-time setup
 
 ```bash
-# Rust UI toolchain
+# Rust UI toolchain — run from apps/desktop (which holds package.json)
+cd apps/desktop
 npm install
 
 # Compiled stylesheet: `assets/tailwind.css` is git-ignored generated output.
 # `dx serve` compiles it automatically; for `cargo check`/`cargo test` on a
 # fresh clone, generate it once (the asset macro embeds the file at compile time):
 npm run css:build
+cd ..
 
 # Python runtime base environment (FastAPI, uvicorn, pydantic, pillow, numpy)
-uv sync --project python
+uv sync --project apps/vision
 
 # Optional POC extras — only needed for the Diffusers/SAM backends
-uv sync --project python --extra image-generation
-uv sync --project python --extra segmentation
+uv sync --project apps/vision --extra image-generation
+uv sync --project apps/vision --extra segmentation
 ```
 
 The ML frameworks are intentionally optional; the API and contract tests do
@@ -72,16 +120,19 @@ On Apple Silicon, build with MPS (`-DSD_MPS=ON`) instead.
 
 ## Run the desktop application
 
+Commands are run from `apps/desktop` (where `Dioxus.toml` and `package.json`
+live):
+
 ```bash
-dx serve --platform desktop
+cd apps/desktop && dx serve --platform desktop
 ```
 
-`dx` compiles `assets/tailwind.css` from the root `tailwind.css` automatically.
-To build or watch the CSS independently:
+`dx` compiles `apps/desktop/assets/tailwind.css` from `apps/desktop/tailwind.css`
+automatically. To build or watch the CSS independently:
 
 ```bash
-npm run css:build
-npm run css:watch
+cd apps/desktop && npm run css:build
+cd apps/desktop && npm run css:watch
 ```
 
 Most component styling is expressed as Tailwind utility classes in RSX, so
@@ -92,16 +143,74 @@ artifact update, not a feature change.
 ### Compile-only checks
 
 ```bash
-cargo check --features desktop
-cargo clippy --features desktop --all-targets
+cargo check --workspace --all-targets
+cargo clippy --workspace --all-targets
 ```
+
+## Bundling
+
+`dx bundle` produces the distributable artifacts; on Linux the useful package
+types are `appimage` and `deb`. Run it from `apps/desktop`:
+
+```bash
+# Release build + AppImage (prints `Created AppImage: <path>` when it lands)
+cd apps/desktop && dx bundle --platform desktop --package-types appimage -r
+
+# One value per flag occurrence — `--package-types appimage deb` and
+# `--package-types appimage,deb` are both rejected. Build several artifacts in
+# one run: each run rebuilds into a cleaned bundle directory, so an appimage-only
+# run deletes the .deb produced by the run before it.
+cd apps/desktop && dx bundle --platform desktop --package-types appimage --package-types deb -r
+```
+
+No extra Rust crate is involved — bundling is the CLI's own job. For an
+AppImage it lays out an `.AppDir` and runs **`linuxdeploy`**, downloading that
+one tool from GitHub (`github.com/tauri-apps/binary-releases`, which redirects
+to `objects.githubusercontent.com`) into `~/.local/share/.dx/tools` on first
+use. The build itself can be offline; **the bundle step needs network access the
+first time** (and on any machine without that cache). `linuxdeploy` is run with
+`APPIMAGE_EXTRACT_AND_RUN=1`, so FUSE is not required.
+
+Identity comes from `Dioxus.toml` — `[application] name` plus the `[bundle]`
+`identifier`, `publisher`, `category` and descriptions. (`[linux]` is documented
+as overriding those for Linux builds, but the *nothing* row below shows it is
+not wired through.) `dx config schema` documents every key. What actually
+reaches the Linux packages, verified on both package types:
+
+| Field | Source |
+| --- | --- |
+| `Comment`, deb `Description` | `bundle.short_description` (+ `long_description`) |
+| `Name` in the desktop entry | a sanitised product name — `Name=SmartVisualSequencer`, not `[application] name` verbatim |
+| deb `Maintainer` | Cargo `authors`, not `bundle.publisher` |
+| `Categories` / `Keywords` | **nothing** — `bundle.category` and `[linux] categories`/`keywords` are ignored; a categorised menu entry needs a custom desktop template |
+| `Icon` | the default Dioxus icon while `[bundle] icon` is unset (the deb also drops a stray `.dx-default-icon.png` at its root) |
+
+The AppImage does **not** carry the GUI stack: it links the host's GTK/
+WebKitGTK (`libwebkit2gtk-4.1`), so it runs on a normal desktop that already has
+WebKitGTK 4.1. Bundling the GUI stack itself needs `linuxdeploy-plugin-gtk` and
+is not wired here.
+
+Two inputs are still missing before a bundle is more than an empty shell (see
+[`ROADMAP.md`](ROADMAP.md) §12 item 11):
+
+- **An app icon.** `[bundle] icon` takes PNG paths (512×512 is the safe size).
+  The repo has none — `apps/desktop/assets/favicon.ico` and
+  `apps/desktop/assets/header.svg` came with the Dioxus scaffold and are
+  referenced nowhere. With no icon configured, `dx` writes a default one, so
+  the AppImage builds but is unlabelled.
+- **The runtime payloads.** `sd-server` and the frozen `vision-server` are
+  bundled with `[bundle] external_bin` (sidecar binaries) and/or
+  `[bundle] resources` (data files); both keys are inert until the files exist.
+  Shipping them also needs the code change named in item 11: resolve them
+  relative to the bundle root instead of `generation.executable` in
+  `config/app.toml`.
 
 ## Run the Python vision runtime
 
 For development, start the service directly:
 
 ```bash
-cd python
+cd apps/vision
 .venv/bin/python main.py --host 127.0.0.1 --port 8765
 ```
 
@@ -121,18 +230,19 @@ console output appears in the app's terminal. See
 ### Rust
 
 ```bash
-cargo test --features desktop
+cargo test --workspace
 ```
 
-The tests cover state transitions (`src/state/`), request serialization
-(`src/vision/`), multimodal message shape (`src/llm/`), and profile manifests
-(`src/runtime/`). They do not require a running Python runtime or LM Studio.
+The workspace runs 156 tests in `svs-core` plus 77 in the desktop crate (233
+total). They cover state transitions (`apps/desktop/src/state/`), request
+serialization (`crates/core/src/vision/`), multimodal message shape
+(`crates/core/src/llm/`), and profile manifests (`crates/core/src/runtime/`).
+They do not require a running Python runtime or LM Studio.
 
 ### Python
 
 ```bash
-cd python
-uv run python -m unittest discover -s tests
+PYTHONPATH=apps/vision apps/vision/.venv/bin/python -m unittest discover -s apps/vision/tests
 ```
 
 Some tests skip themselves when the optional torch environment is absent, so a
@@ -140,15 +250,15 @@ run that reports `OK (skipped=N)` is expected on a base environment.
 
 ### End-to-end: plans (the app's own regression suite)
 
-Unit tests do not exercise the app. The automation driver (`src/driver/`)
+Unit tests do not exercise the app. The automation driver (`apps/desktop/src/driver/`)
 does: it plays a **plan** — a YAML script written in the app's own vocabulary
-— through the same code paths the UI uses (`src/commands.rs`), and asserts
+— through the same code paths the UI uses (`apps/desktop/src/commands.rs`), and asserts
 outcomes against app state. Plans never mention selectors, coordinates or
 DOM, so they do not break when the UI is restyled.
 
 ```bash
 # Fast, backend-free: project, story, beats. Runs anywhere.
-cargo run --features desktop --bin smart-visual-sequencer -- \
+cargo run -p smart-visual-sequencer --bin smart-visual-sequencer -- \
   --plan config/plans/smoke.yaml --mode check
 ```
 
@@ -201,12 +311,12 @@ checkout rather than `/tmp`.
 
 | Command | Purpose |
 | --- | --- |
-| `cargo run --bin model_setup -- --profile q2 --accept-krea-license` | Download, resume, and checksum-verify the Krea 2 Q2 profile |
-| `cargo run --bin model_setup -- --profile q4 --accept-krea-license` | Same for Q4 |
-| `cargo run --bin vlm_probe -- --list-models` | List models visible through LM Studio |
-| `cargo run --bin vlm_probe -- --model <id>` | Run the visual-LLM probe against one model |
-| `cargo run --example generate_vlm_fixtures` | Regenerate the deterministic probe fixtures |
-| `cargo run --bin svs -- --help` | Operation CLI (typed ops, stacks, runtime serve, log) — see [`api-slice-1.md`](api-slice-1.md) for the command reference and the light/LLM/generation session split |
+| `cargo run -p svs-cli --bin model_setup -- --profile q2 --accept-krea-license` | Download, resume, and checksum-verify the Krea 2 Q2 profile |
+| `cargo run -p svs-cli --bin model_setup -- --profile q4 --accept-krea-license` | Same for Q4 |
+| `cargo run -p svs-cli --bin vlm_probe -- --list-models` | List models visible through LM Studio |
+| `cargo run -p svs-cli --bin vlm_probe -- --model <id>` | Run the visual-LLM probe against one model |
+| `cargo run -p svs-cli --example generate_vlm_fixtures` | Regenerate the deterministic probe fixtures |
+| `cargo run -p svs-cli --bin svs -- --help` | Operation CLI (typed ops, stacks, runtime serve, log) — see [`api-slice-1.md`](api-slice-1.md) for the command reference and the light/LLM/generation session split |
 
 `model_setup` refuses to run without `--accept-krea-license`; review the Krea 2
 licensing terms before distributing weights. The `svs` CLI needs no
@@ -216,7 +326,8 @@ provisioned models for the model-only and LLM-assisted tiers; only
 ## Configuration reference
 
 Configuration lives in [`config/app.toml`](../config/app.toml) and is loaded by
-`src/app/config.rs`. Missing sections fall back to defaults.
+`crates/core/src/config.rs`. Missing sections fall back to defaults. Relative
+paths in the file resolve against the project root (see the `paths` note below).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -239,25 +350,33 @@ Configuration lives in [`config/app.toml`](../config/app.toml) and is loaded by
 | `lora.environment` | none | Adapter file applied to environment generations without a project binding |
 | `lora.object` | none | Adapter file applied to object generations without a project binding |
 | `lora.multiplier` | `1.0` | Weight for the bindings above (per-artifact bindings carry their own) |
-| `paths.python_runtime` | `python` | Directory containing `.venv` and `main.py` |
+| `paths.python_runtime` | `apps/vision` | Directory containing `.venv` and `main.py` |
 | `paths.model_dir` | platform data dir + `models` | Model artifacts root |
 | `paths.cache_dir` | platform cache dir | Disposable cache data |
 | `paths.asset_dir` | platform data dir + `assets` | Imported/generated assets |
 | `paths.project_dir` | platform data dir + `projects` | Where the Projects screen keeps `.svs-project.db` files |
 
+Configured relative paths (the `paths.*` directories and the plan directory)
+resolve against the **project root**, not the working directory:
+`crates/core/src/paths.rs` picks `$SVS_HOME` first, otherwise the nearest
+ancestor of the working directory (then of the executable) that holds
+`config/app.toml`. The Python runtime mirrors the same rule in
+`apps/vision/runtime/paths.py`, so commands do not need to be run from the
+repository root.
+
 An invalid `generation.profile` value is a hard configuration error and the app
 shows the error screen on launch. The checked-in `config/app.toml` sets
-`lm_studio.model` to the gemma model id used on the dev machine — point it at
+`lm_studio.model` to `prism-ml/bonsai-27b` — point it at
 the model id your LM Studio serves (`curl http://localhost:1234/v1/models`).
 
 ## Common issues
 
 - **`cargo`/`dx` fail with path errors** — the `:` in the parent directory; the
   `.cargo/config.toml` target-dir redirect is the fix, do not remove it.
-- **Starting a service from Settings fails with `failed to start Python runtime: No such file or directory`** — this was a resolved bug where a relative `paths.python_runtime` combined with a relative working directory made the child resolve `python/.venv/bin/python` against the wrong directory. Spawn paths are now absolutized; if you still see this, the venv itself is missing or broken — recreate it with `uv sync --project python`.
-- **`Python virtual environment executable not found`** — the venv is not provisioned; run `uv sync --project python` from the repository root.
+- **Starting a service from Settings fails with `failed to start Python runtime: No such file or directory`** — this was a resolved bug where a relative `paths.python_runtime` combined with a relative working directory made the child resolve `apps/vision/.venv/bin/python` against the wrong directory. Spawn paths are now absolutized; if you still see this, the venv itself is missing or broken — recreate it with `uv sync --project apps/vision`.
+- **`Python virtual environment executable not found`** — the venv is not provisioned; run `uv sync --project apps/vision` from the repository root.
 - **Generation says the runtime is not ready / job fails** — the sd-server
-  binary or model artifacts are missing. Run `cargo run --bin model_setup`
+  binary or model artifacts are missing. Run `cargo run -p svs-cli --bin model_setup`
   after reviewing the license, and confirm `generation.executable` in
   `config/app.toml`.
 - **`generation job failed: resident backend has … loaded; … requires …`** —
@@ -266,6 +385,6 @@ the model id your LM Studio serves (`curl http://localhost:1234/v1/models`).
   session needs `svs runtime serve --force --model krea-2-turbo-q4` (or
   `pkill -f "sd-server --diffusion"`), then rerun.
 - **`/segment` fails with a torch import error** — the segmentation extra is
-  not installed; run `uv sync --project python --extra segmentation`.
+  not installed; run `uv sync --project apps/vision --extra segmentation`.
 - **LM Studio calls fail** — confirm LM Studio is running, the configured model
   is loaded, and `lm_studio.base_url` matches the server's `/v1` endpoint.

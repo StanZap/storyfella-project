@@ -1,14 +1,14 @@
 # Python vision runtime — HTTP API
 
-The Python runtime (`python/main.py`, FastAPI/uvicorn) exposes a stable HTTP
-contract that Rust consumes through `VisionClient` (`src/vision/mod.rs`). The
-contract lives in `python/models/schemas.py`; the routing lives in
-`python/api/routes.py`; the orchestration lives in `python/runtime/service.py`.
+The Python runtime (`apps/vision/main.py`, FastAPI/uvicorn) exposes a stable HTTP
+contract that Rust consumes through `VisionClient` (`crates/core/src/vision/mod.rs`). The
+contract lives in `apps/vision/models/schemas.py`; the routing lives in
+`apps/vision/api/routes.py`; the orchestration lives in `apps/vision/runtime/service.py`.
 
 The service binds to `127.0.0.1:8765` when launched by the desktop app:
 
 ```bash
-cd python
+cd apps/vision
 .venv/bin/python main.py --host 127.0.0.1 --port 8765
 ```
 
@@ -56,7 +56,7 @@ Reports what the optional torch environment can see. Without the
 ```
 
 `recommended_device` is `cuda`, `mps`, or `cpu` in that preference order.
-Device discovery lives in `python/runtime/device.py`.
+Device discovery lives in `apps/vision/runtime/device.py`.
 
 ## Shared request fields
 
@@ -87,7 +87,7 @@ relative to the configured LoRA directory — absolute paths and `..` traversal
 are rejected at validation time. `multiplier` is clamped to −2.0…2.0.
 
 The default generation profile used by the canvas and the CLI is 768×448 at
-four steps (the `GenerationParams` defaults in `src/registry/pipeline.rs`).
+four steps (the `GenerationParams` defaults in `crates/core/src/registry/pipeline.rs`).
 
 ## `POST /segment`
 
@@ -116,7 +116,7 @@ Request — one of three prompt styles:
 ```
 
 - A `prompt` with no points/boxes routes through Grounding DINO to produce
-  boxes, which are then fed to SAM (`python/runtime/grounder.py`).
+  boxes, which are then fed to SAM (`apps/vision/runtime/grounder.py`).
 - `points` use `label` `1` (positive) or `0` (negative) and describe one object.
 - Boxes must be ordered (`x_max > x_min`, `y_max > y_min`).
 
@@ -149,7 +149,7 @@ are written to `SVS_MASK_DIR` (default `<repo>/cache/masks`).
 ## `POST /generate` — synchronous generation
 
 This is the legacy blocking endpoint. `RoutedImageGenerator`
-(`python/runtime/image_generator.py`) dispatches by model name: a Krea profile
+(`apps/vision/runtime/image_generator.py`) dispatches by model name: a Krea profile
 id (`krea-2-turbo-q4`, the default; `krea-2-turbo-q2` also accepted) is sent
 to the native sd.cpp backend and waits for completion; any other model name is
 sent to the Diffusers SANA Sprint POC pipeline. The product path uses the
@@ -180,7 +180,7 @@ Response (native route):
 ### Edit inputs (shared by `/generate` and `/generation/jobs`)
 
 Beyond `prompt`/`width`/`height`/`steps`/`seed`/`model`, `GenerateRequest`
-(`python/models/schemas.py`) carries the fields that turn a generation into an
+(`apps/vision/models/schemas.py`) carries the fields that turn a generation into an
 edit. All are optional; omitting them all is a plain text-to-image render.
 
 | Field | sd.cpp body field | Meaning |
@@ -229,7 +229,7 @@ Response (`202 Accepted`):
 
 `reference_image_path` is honored by the adapter: the app-owned image is read
 and base64-encoded into sd.cpp's `ref_images` field for Krea edit mode
-(`python/runtime/sd_cpp.py`).
+(`apps/vision/runtime/sd_cpp.py`).
 
 ## `GET /generation/jobs/{id}` — polling
 
@@ -294,7 +294,7 @@ Placeholder. Always returns:
 
 ## Rust client
 
-`VisionClient` (`src/vision/mod.rs`) wraps these endpoints with typed request
+`VisionClient` (`crates/core/src/vision/mod.rs`) wraps these endpoints with typed request
 and response structs. Notable behaviors:
 
 - `submit_generation(request, false)` posts with `priority=interactive`.

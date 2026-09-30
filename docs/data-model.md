@@ -1,14 +1,14 @@
 # Data model and persistence
 
-The application state is a single `AppState` (`src/state/mod.rs`) holding the
+The application state is a single `AppState` (`apps/desktop/src/state/mod.rs`) holding the
 artifact registry, an unsaved-changes flag, and the currently selected
-artifact. The domain types live in `src/registry/`; persistence lives in
-`src/persistence/mod.rs`. The legacy `Project`/`StoryboardFrame`/`Timeline`
+artifact. The domain types live in `crates/core/src/registry/`; persistence lives in
+`crates/core/src/persistence/mod.rs`. The legacy `Project`/`StoryboardFrame`/`Timeline`
 model was removed when the canvas replaced it (roadmap §12 item 4).
 
 ## Types
 
-The registry (`src/registry/mod.rs`) is one id space for every artifact:
+The registry (`crates/core/src/registry/mod.rs`) is one id space for every artifact:
 
 ```text
 ArtifactRegistry
@@ -75,7 +75,7 @@ failed | cancelled`.
 
 ## Persistence format
 
-`ProjectDb` (`src/persistence/mod.rs`) is SQLite storage for the project: one
+`ProjectDb` (`crates/core/src/persistence/mod.rs`) is SQLite storage for the project: one
 `projects` row, then `artifacts`, `revisions`, `masks`, `layers`,
 `lora_registry` (project LoRA entries — round-tripped since the
 LoRA registry landed, §12 item 6), and `operation_log`. The registry stays the in-memory source of truth; a save
@@ -100,7 +100,7 @@ clears `has_unsaved_changes`.
    canonical absolute path of each generated file. A project moved between
    machines (or even directories) loses its image references. A stable,
    relative-to-project asset reference is needed before shipping.
-2. **No generated-asset index.** `src/assets/mod.rs` (`AssetCatalog`) is a
+2. **No generated-asset index.** `crates/core/src/assets/mod.rs` (`AssetCatalog`) is a
    stub; there is no central registry of imported/generated files,
    thumbnails, or usage counts.
 3. **No delete/rename ops.** The operation vocabulary has no `delete`

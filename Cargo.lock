@@ -4648,23 +4648,16 @@ name = "smart-visual-sequencer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.23.0",
- "clap",
  "dioxus",
- "directories",
  "futures-util",
  "image",
  "parking_lot",
- "reqwest",
  "rfd",
- "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2 0.11.0",
- "thiserror 2.0.19",
+ "svs-core",
  "tokio",
- "toml 1.1.4+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -4788,6 +4781,45 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
+name = "svs-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.0",
+ "clap",
+ "image",
+ "serde",
+ "serde_json",
+ "svs-core",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "svs-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.0",
+ "directories",
+ "futures-util",
+ "image",
+ "parking_lot",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.19",
+ "tokio",
+ "toml 1.1.4+spec-1.1.0",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "syn"
