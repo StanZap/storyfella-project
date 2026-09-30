@@ -4,13 +4,14 @@ Current shape: the artifact registry + typed operation layer (`crates/core/src/r
 
 # Layout
 
-A Cargo workspace: three packages plus the Python runtime.
+A Cargo workspace: four packages plus the Python runtime.
 
 | Path | Package | Owns |
 | :--- | :--- | :--- |
 | `crates/core` | `svs-core` | the domain layer — artifact registry and typed ops (`registry/`), `persistence/`, `vision/`, `llm/`, `runtime/`, `errors.rs`, `config.rs`, `assets/`, `paths.rs`. **No GUI dependency** |
 | `apps/desktop` | `smart-visual-sequencer` | the Dioxus app — `ui/`, `state/`, `commands.rs`, `driver/`, `app/`, plus `Dioxus.toml`, `tailwind.css`, `assets/`, `package.json` |
 | `apps/cli` | `svs-cli` | `svs`, `model_setup`, `vlm_probe`, the VLM fixture example and its fixtures |
+| `xtask` | `xtask` | `cargo xtask` — the developer task runner (build/run/bundle/check/test); not part of any shipped artifact |
 | `apps/vision` | — (Python) | the FastAPI vision runtime the app spawns; not a cargo package |
 
 `crates/core` never depends on the GUI. `apps/desktop` and `apps/cli` both depend on
@@ -39,7 +40,7 @@ working-directory-relative path or a `parents[N]` walk in the Python adapters.
 - **UI styling** is Tailwind CSS 4 utility classes in RSX (`apps/desktop/tailwind.css` is generated output; regenerate with `npm run css:build` from `apps/desktop`). Prefer the small shared component vocabulary in `apps/desktop/src/ui/components.rs` (`SettingRow`, `EmptyVisual`, `StatusDot`, …) and icons from `apps/desktop/src/ui/icons.rs`.
 - **State mutations** go through `AppState` methods in `apps/desktop/src/state/mod.rs`, which maintain the storyboard/timeline invariants documented in `docs/data-model.md`. Never mutate `Project` fields directly from UI code.
 - **The repository path contains a literal `:`.** Build artifacts are redirected to `/tmp/smart-visual-sequencer-target` by `.cargo/config.toml`; never remove that file.
-- **Build with `dx build --platform desktop` for runnable binaries, not plain `cargo build`.** Run `dx` from `apps/desktop`, where `Cargo.toml` and `Dioxus.toml` live. The `asset!` pipeline (Tailwind CSS + custom protocols) is wired by the dx CLI: a plain `cargo build` binary starts fine but renders **unstyled** (no CSS — the stylesheet is never embedded/served). `cargo check`/`cargo test` are workspace-wide (`--workspace`); only launching a built app needs the dx artifact (`/tmp/smart-visual-sequencer-target/dx/smart-visual-sequencer/debug/linux/app/smart-visual-sequencer` after `dx build`).
+- **Build with `dx build --platform desktop` for runnable binaries, not plain `cargo build`.** Run `dx` from `apps/desktop`, where `Cargo.toml` and `Dioxus.toml` live. The `asset!` pipeline (Tailwind CSS + custom protocols) is wired by the dx CLI: a plain `cargo build` binary starts fine but renders **unstyled** (no CSS — the stylesheet is never embedded/served). `cargo check`/`cargo test` are workspace-wide (`--workspace`); only launching a built app needs the dx artifact (`/tmp/smart-visual-sequencer-target/dx/smart-visual-sequencer/debug/linux/app/smart-visual-sequencer` after `dx build`). `cargo xtask build`/`run`/`serve`/`bundle` (and `check`/`test`/`fmt`/`clippy`) wrap these exact commands from the workspace root — prefer them over retyping the invocations.
 - **Validation logs and scratch files stay in the repo** under `.svs-e2e/` (gitignored). When live-testing the GUI, write its stdout/logs to `.svs-e2e/logs/` — never to `/tmp` or the repo root. When killing a stale app instance, use a bracket-quoted pattern so `pgrep`/`pkill` do not match their own command line (e.g. `pkill -f "smart-visual-sequence[r]"`).
 - **The vision evaluator — the agent's eyes.** The agent cannot see images; when judging generations, edits, or regressions, ask the local LM Studio vision model through `svs eval -i <image>… -p "<question>"` (default model `google/gemma-4-e4b`, must be running in LM Studio). Images are auto-downscaled to 1024px; default max-tokens 2048 (the model reasons before answering, and 512 was exhausted by reasoning). `--expect <substring>` / `--expect-not <substring>` gate the exit code for scripted checks — craft prompts that elicit strict YES/NO. Comparison workflow: attach the base first, then the candidate(s); the model refers to them as image 1, image 2, …. Common checks: localization of a mask edit, identity preservation across variants, artifacts/distortion in a generation. Evaluations used to drive a decision should be recorded in `.svs-e2e/logs/`.
 - Consult the documentation below before making changes; many decisions and known gaps are recorded there.

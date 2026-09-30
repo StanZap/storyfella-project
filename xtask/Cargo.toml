@@ -1,0 +1,14 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Development task runner for Smart Visual Sequencer (cargo xtask …)."
+# A developer tool, never a published artifact.
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+toml.workspace = true

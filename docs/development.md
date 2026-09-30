@@ -45,7 +45,8 @@ the core tests never compile the toolkit or the WebKit stack. `apps/desktop`
 `apps/vision` is the Python runtime. It is not a Cargo package; it sits under
 `apps/` beside the other launchables because the shipped bundle carries it
 next to the app binary. Data — `config/` and `assets/generated/` — stays at the
-workspace root, because project databases store absolute asset paths.
+workspace root, because project databases store absolute asset paths. `xtask/`
+is the developer task runner described below; nothing shipped depends on it.
 
 The payoff is a cheap domain loop: `svs-core`'s dependency tree is 464 entries
 with no `dioxus`/`webkit`/`gtk`/`tao`/`wry` in it at all, against 1183 for the
@@ -59,6 +60,48 @@ cargo run -p svs-cli --bin svs -- --help
 skip the GUI stack entirely. The workspace-wide `cargo check --workspace
 --all-targets` / `cargo test --workspace` cover everything, including the
 desktop crate's 77 tests.
+
+## Task runner (`cargo xtask`)
+
+The recurring `dx` / `cargo` / `npm` / `python` invocations are wrapped by a
+small task runner (`xtask/`, exposed through the `.cargo/config.toml` alias as
+`cargo xtask`). It runs the same commands the sections below document, from the
+workspace root, with every path resolved absolutely so it behaves the same from
+any directory:
+
+```bash
+cargo xtask build                 # dx build --platform desktop (debug)
+cargo xtask run [-r]              # build, then launch the app
+cargo xtask run -l                # …teeing its output to .svs-e2e/logs/
+cargo xtask plan config/plans/smoke.yaml --mode check
+cargo xtask serve                 # dx serve (hot reload)
+cargo xtask bundle                # release AppImage into dist/
+cargo xtask bundle --package-types appimage deb
+cargo xtask check                 # cargo check --workspace --all-targets
+cargo xtask clippy [--deny]        # cargo clippy …; --deny errors on warnings
+cargo xtask fmt [--check]         # cargo fmt --all
+cargo xtask test [--rust-only|--python-only]
+cargo xtask css [--install]       # npm run css:build
+cargo xtask vision                # start the Python runtime
+cargo xtask doctor                # prerequisite tools + provisioned paths
+cargo xtask clean                 # cargo clean + remove dist/
+```
+
+Debug is the default for `build`/`run`/`serve`; `bundle` defaults to release
+(shipping a debug bundle is almost never intended). `-r`/`--release` and
+`-d`/`--debug` override either, and conflict rather than silently picking one.
+`run` and `plan` propagate the app's exit code, so `cargo xtask plan … --mode
+check` gates a script.
+
+`run` and `plan` build with `dx` (never plain `cargo`, which skips the asset
+pipeline) and launch the binary from the workspace root so the app's
+project-root path resolution finds `config/app.toml`. `-l`/`--log` tees the
+app's stdout/stderr to `.svs-e2e/logs/app-<unix>.log` for the GUI live-test
+workflow. `bundle` writes to `dist/` (git-ignored) and lists each artifact.
+
+`cargo xtask <command> --help` documents the flags. The sections below remain
+the reference for the underlying commands, for when you need a flag the task
+runner does not expose.
 
 ## The `:` in the repository path
 
@@ -127,6 +170,9 @@ live):
 cd apps/desktop && dx serve --platform desktop
 ```
 
+`cargo xtask serve` runs the same command (and `cargo xtask run` builds once
+and launches without the dev server).
+
 `dx` compiles `apps/desktop/assets/tailwind.css` from `apps/desktop/tailwind.css`
 automatically. To build or watch the CSS independently:
 
@@ -147,7 +193,14 @@ cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets
 ```
 
+`cargo xtask check` and `cargo xtask clippy` are the same commands; the latter
+takes `--deny` to fail on warnings (the tree is not warning-clean yet).
+
 ## Bundling
+
+`cargo xtask bundle` wraps this section's command and drops the result in
+`dist/`; the rest of the section is the underlying `dx` invocation and the
+packaging details.
 
 `dx bundle` produces the distributable artifacts; on Linux the useful package
 types are `appimage` and `deb`. Run it from `apps/desktop`:
@@ -237,7 +290,8 @@ The workspace runs 156 tests in `svs-core` plus 77 in the desktop crate (233
 total). They cover state transitions (`apps/desktop/src/state/`), request
 serialization (`crates/core/src/vision/`), multimodal message shape
 (`crates/core/src/llm/`), and profile manifests (`crates/core/src/runtime/`).
-They do not require a running Python runtime or LM Studio.
+They do not require a running Python runtime or LM Studio. `cargo xtask test`
+runs these and the Python suite below together.
 
 ### Python
 

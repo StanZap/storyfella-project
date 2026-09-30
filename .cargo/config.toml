@@ -2,3 +2,7 @@
 # The workspace parent contains `:`, which macOS/Linux library-path variables treat
 # as a separator. Keep compiled artifacts outside that path so Cargo and dx work.
 target-dir = "/tmp/smart-visual-sequencer-target"
+
+[alias]
+# `cargo xtask <command>` — the developer task runner. See xtask/src/main.rs.
+xtask = "run --package xtask --"

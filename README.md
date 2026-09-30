@@ -83,6 +83,8 @@ apps/desktop/         smart-visual-sequencer — the Dioxus application:
 apps/cli/             svs-cli — src/bin/{svs,model_setup,vlm_probe}.rs
 apps/vision/          Python vision runtime (FastAPI): main.py, api/, models/,
                       runtime/, tests/
+xtask/                cargo xtask — the developer task runner (build, run, bundle,
+                      check, test); not part of any shipped artifact
 config/               app.toml + plans/*.yaml (data, at the workspace root)
 assets/generated/     Dev runtime data written by generations; project databases
                       store absolute asset paths, so this stays at the root
@@ -146,6 +148,10 @@ The `tailwind.css` file in `apps/desktop` selects Tailwind CSS 4 and lets `dx` a
 ```bash
 cd apps/desktop && dx serve --platform desktop
 ```
+
+The workspace also carries a task runner for the common commands — `cargo xtask
+run` (build and launch), `cargo xtask bundle` (release AppImage into `dist/`),
+`cargo xtask test`, and more; see [`docs/development.md`](docs/development.md).
 
 For a compile-only check:
 

@@ -10,10 +10,12 @@
 #   apps/cli      — `svs`, `model_setup`, `vlm_probe`.
 #   apps/vision   — the Python runtime. Not a cargo package; kept beside the
 #                   other launchables because the shipped bundle carries it.
+#   xtask         — `cargo xtask`: the developer task runner (build/run/bundle/
+#                   check/test). Not part of any shipped artifact.
 #
 # The `.cargo/config.toml` target-dir redirect must stay at this level.
 [workspace]
-members = ["crates/core", "apps/desktop", "apps/cli"]
+members = ["crates/core", "apps/desktop", "apps/cli", "xtask"]
 resolver = "2"
 
 [workspace.package]
