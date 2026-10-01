@@ -14,13 +14,10 @@
 //!   progress, and a pass/fail report is produced. This is the regression
 //!   suite — a plan that passes means the flows it covers still work.
 //!
-//! Checkpoints cannot be answered by a procedural run: the driver
-//! auto-rejects them, so any op that stops to ask fails fast with the
-//! checkpoint message. `modify` used to be such an op — it segmented and
-//! asked for mask approval. It no longer does: an instruction edit has no
-//! mask, so `modify` runs unattended in a plan (see `config/plans/edit.yaml`).
-//! The opt-in mask path (`--mask-prompt` + `--inpaint-prompt`) still
-//! checkpoints and still cannot be driven from a plan.
+//! Checkpoints cannot be answered by a procedural run: an operation that
+//! stops to ask fails fast, because a plan cannot answer a question only a
+//! user can. `modify` no longer does: an instruction edit is unattended, so
+//! it runs in a plan (see `config/plans/edit.yaml`).
 
 use std::{
     path::{Path, PathBuf},
@@ -91,19 +88,6 @@ pub enum StepVerb {
     Palette(bool),
     /// Pick a canvas tool, so the rail visibly changes the way a key does.
     SelectTool(crate::ui::tools::Tool),
-    /// Paint brush dabs onto the open image's mask.
-    ///
-    /// Dabs are given in fractions of the image, not pixels and not screen
-    /// coordinates: a plan describes *where on the picture*, which survives
-    /// any window size, and stays out of the view tree the way every other
-    /// step does.
-    Paint(Vec<PaintDab>),
-    /// Throw the painted mask away.
-    ClearMask,
-    /// Assert whether a painted mask exists — the thing `--mask painted`
-    /// resolves to, so a plan can check the brush reached the operation
-    /// layer without generating anything.
-    ExpectPaintedMask(bool),
     /// Put an artifact into the rendering state, wait, then complete it
     /// with its existing picture.
     ///
@@ -145,15 +129,6 @@ impl StepVerb {
             Self::Say => String::new(),
             Self::Caret(line) => format!("caret to line {line}"),
             Self::SelectTool(tool) => format!("pick the {} tool", tool.label().to_lowercase()),
-            Self::Paint(dabs) => format!("paint {} dabs of mask", dabs.len()),
-            Self::ClearMask => "clear the painted mask".to_owned(),
-            Self::ExpectPaintedMask(present) => {
-                if *present {
-                    "a painted mask exists".to_owned()
-                } else {
-                    "no painted mask".to_owned()
-                }
-            }
             Self::Cursor(name) => format!("cursor to \"{name}\""),
             Self::Palette(true) => "open the palette".to_owned(),
             Self::Palette(false) => "close the palette".to_owned(),
@@ -203,30 +178,6 @@ impl StepVerb {
                     crate::ui::tools::Tool::parse(&name)
                         .ok_or_else(|| format!("{name:?} is not a canvas tool the rail offers"))?,
                 )
-            }
-            "clear_mask" => Self::ClearMask,
-            "expect_painted_mask" => Self::ExpectPaintedMask(value.as_bool().unwrap_or(true)),
-            "paint" => {
-                let serde_yaml::Value::Sequence(dabs) = &value else {
-                    return Err("paint takes a list of {x, y, r} dabs".to_owned());
-                };
-                let mut parsed = Vec::new();
-                for dab in dabs {
-                    let field = |name: &str| -> Result<f64, String> {
-                        dab.get(serde_yaml::Value::String(name.into()))
-                            .and_then(serde_yaml::Value::as_f64)
-                            .ok_or_else(|| format!("a paint dab needs a numeric {name}"))
-                    };
-                    parsed.push(PaintDab {
-                        x: field("x")?,
-                        y: field("y")?,
-                        r: field("r")?,
-                    });
-                }
-                if parsed.is_empty() {
-                    return Err("paint needs at least one dab".to_owned());
-                }
-                Self::Paint(parsed)
             }
             "simulate_render" => Self::SimulateRender(text(&value)?),
             "go_settings" => Self::GoSettings,
@@ -557,38 +508,9 @@ impl RunReport {
     }
 }
 
-/// Resolves a revision's stored image reference to a file on disk.
-///
-/// Revisions store a bare asset filename and the UI serves it through the
-/// asset handler; a plan step that has to *read* the image needs the real
-/// path. An absolute path is taken as-is, so fixtures outside the asset
-/// directory still work.
-fn resolve_asset(config: &AppConfig, stored: &str) -> PathBuf {
-    let raw = Path::new(stored);
-    if raw.is_absolute() && raw.exists() {
-        return raw.to_path_buf();
-    }
-    let filename = raw.file_name().unwrap_or(raw.as_os_str());
-    let generated = config.asset_dir.join("generated").join(filename);
-    if generated.exists() {
-        generated
-    } else {
-        raw.to_path_buf()
-    }
-}
-
-/// One brush dab in a plan, in fractions of the image: `x` and `y` of its
-/// width and height, `r` of its width.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PaintDab {
-    pub x: f64,
-    pub y: f64,
-    pub r: f64,
-}
-
 /// What the runner needs to act: the app's signals, plus the driver's own
-/// execution surface (checkpoints auto-reject, failures land on its
-/// error signal — observed, never the global toast).
+/// execution surface (failures land on its error signal — observed, never
+/// the global toast).
 #[derive(Clone)]
 pub struct DriveContext {
     pub config: AppConfig,
@@ -603,10 +525,9 @@ pub struct DriveContext {
     pub writer_caret: crate::ui::WriterCaret,
     pub grid_cursor: crate::ui::GridCursor,
     pub palette_open: Signal<bool>,
-    /// The canvas tool rail and the mask painted on the open image, so a
-    /// plan can demonstrate the brush through the same state a hand drives.
+    /// The canvas tool rail, so a plan can demonstrate a tool through the
+    /// same state a hand drives.
     pub active_tool: crate::ui::canvas::ActiveTool,
-    pub painted_strokes: crate::ui::canvas::PaintedStrokes,
 }
 
 /// The live state of a run, as the assistant card renders it.
@@ -831,71 +752,6 @@ async fn execute_step(
             ctx.active_tool.0.clone().set(*tool);
             StepStatus::Passed
         }
-        StepVerb::ClearMask => {
-            ctx.painted_strokes.0.clone().write().clear();
-            crate::ui::canvas::write_painted_mask(ctx.app_state, &[], None);
-            StepStatus::Passed
-        }
-        StepVerb::ExpectPaintedMask(present) => {
-            let mask = ctx.app_state.read().painted_mask.clone();
-            match (present, mask) {
-                (true, Some(path)) if std::path::Path::new(&path).exists() => StepStatus::Passed,
-                (true, Some(path)) => StepStatus::Failed {
-                    reason: format!("the painted mask {path} was not written"),
-                },
-                (true, None) => StepStatus::Failed {
-                    reason: "nothing is painted".to_owned(),
-                },
-                (false, None) => StepStatus::Passed,
-                (false, Some(path)) => StepStatus::Failed {
-                    reason: format!("expected no painted mask, found {path}"),
-                },
-            }
-        }
-        StepVerb::Paint(dabs) => {
-            // Fractions are of the open image, so the plan needs it open and
-            // needs its real dimensions — the artifact's default size is a
-            // guess, and painting against a guess lands the mask elsewhere.
-            let image = ctx
-                .app_state
-                .read()
-                .selected_artifact()
-                .and_then(|artifact| {
-                    ctx.app_state
-                        .read()
-                        .display_image(artifact)
-                        .map(str::to_owned)
-                });
-            let Some(image) = image else {
-                return StepStatus::Failed {
-                    reason: "paint needs an artifact with an image open".to_owned(),
-                };
-            };
-            // A revision stores a bare asset filename, which the UI resolves
-            // through the asset handler; the driver has to resolve it on
-            // disk instead.
-            let on_disk = resolve_asset(&ctx.config, &image);
-            let Ok((width, height)) = svs_core::registry::image_ops::dimensions(&on_disk) else {
-                return StepStatus::Failed {
-                    reason: format!("could not read the size of {}", on_disk.display()),
-                };
-            };
-            let mut strokes = ctx.painted_strokes.0;
-            for dab in dabs {
-                let radius = dab.r * width as f64;
-                strokes.write().push(svs_core::registry::pipeline::Stroke {
-                    center_x: dab.x * width as f64,
-                    center_y: dab.y * height as f64,
-                    radius_x: radius,
-                    radius_y: radius,
-                });
-            }
-            // Write the mask now rather than waiting for the canvas to
-            // re-render: the very next step may be the command that uses it.
-            let painted = strokes.read().clone();
-            crate::ui::canvas::write_painted_mask(ctx.app_state, &painted, Some((width, height)));
-            StepStatus::Passed
-        }
         StepVerb::SimulateRender(name) => {
             let id = ctx
                 .app_state
@@ -932,7 +788,7 @@ async fn execute_step(
                     id,
                     prompt,
                     Some(4471),
-                    Some("krea-2-turbo-q4".into()),
+                    Some(svs_core::registry::pipeline::DEFAULT_MODEL.to_owned()),
                     svs_core::registry::RevisionOrigin::Canon,
                 )
             };
@@ -954,12 +810,11 @@ async fn execute_step(
             tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
             match existing {
                 Some(path) => {
-                    let _ = ctx.app_state.write().registry.finish_revision(
-                        id,
-                        revision,
-                        path,
-                        Vec::new(),
-                    );
+                    let _ = ctx
+                        .app_state
+                        .write()
+                        .registry
+                        .finish_revision(id, revision, path);
                 }
                 None => {
                     let _ = ctx.app_state.write().registry.cancel_revision(id, revision);
@@ -1132,7 +987,7 @@ fn status(ok: bool, reason: String) -> StepStatus {
 /// summary on the session (the assistant card shows what the app is doing).
 /// The busy sync must not live inside a poll closure — signals need `&mut`,
 /// closures passed to polling are `Fn`.
-async fn wait_for_op(mut ui: ExecutionUi, mut session: Signal<Option<GuideSession>>) -> StepStatus {
+async fn wait_for_op(ui: ExecutionUi, mut session: Signal<Option<GuideSession>>) -> StepStatus {
     let deadline = Instant::now() + Duration::from_millis(OP_TIMEOUT_MS);
     let done = loop {
         if session.read().is_none() {
@@ -1160,7 +1015,6 @@ async fn wait_for_op(mut ui: ExecutionUi, mut session: Signal<Option<GuideSessio
             session.busy = None;
         }
     });
-    ui.reject_pending();
     if !done {
         StepStatus::Failed {
             reason: "the operation did not finish in time".to_owned(),
@@ -1249,47 +1103,6 @@ mod tests {
 
     use super::*;
 
-    /// The brush verbs are the only ones that carry geometry, and geometry
-    /// is where a plan could start describing the screen instead of the
-    /// picture. These are fractions of the image, so they hold at any
-    /// window size — which is the property worth pinning.
-    #[test]
-    fn brush_steps_parse_as_image_fractions() {
-        let plan = Plan::from_yaml(
-            r#"
-name: "Brush"
-description: "d"
-steps:
-  - select_tool: "brush"
-  - paint:
-      - { x: 0.5, y: 0.25, r: 0.1 }
-      - { x: 0.4, y: 0.3, r: 0.08 }
-  - clear_mask: true
-"#,
-        )
-        .unwrap();
-        assert_eq!(
-            plan.steps[0].verb,
-            StepVerb::SelectTool(crate::ui::tools::Tool::Brush)
-        );
-        assert_eq!(
-            plan.steps[1].verb,
-            StepVerb::Paint(vec![
-                PaintDab {
-                    x: 0.5,
-                    y: 0.25,
-                    r: 0.1
-                },
-                PaintDab {
-                    x: 0.4,
-                    y: 0.3,
-                    r: 0.08
-                },
-            ])
-        );
-        assert_eq!(plan.steps[2].verb, StepVerb::ClearMask);
-    }
-
     #[test]
     fn a_tool_a_plan_cannot_use_is_rejected_at_parse() {
         // Crop is in the rail but does nothing yet. A plan naming it should
@@ -1299,15 +1112,6 @@ steps:
         )
         .unwrap_err();
         assert!(error.contains("nonsense"), "{error}");
-    }
-
-    #[test]
-    fn paint_needs_dabs_with_all_three_fields() {
-        let error = Plan::from_yaml(
-            "name: \"x\"\ndescription: \"d\"\nsteps:\n  - paint:\n      - { x: 0.5, y: 0.2 }\n",
-        )
-        .unwrap_err();
-        assert!(error.contains("r"), "{error}");
     }
 
     #[test]

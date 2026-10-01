@@ -10,16 +10,15 @@ use thiserror::Error;
 
 use crate::{
     errors::{CodedError, ErrorCode},
+    generation::{DEFAULT_CFG_SCALE, DEFAULT_SAMPLE_METHOD},
     llm::LmStudioConfig,
     paths,
     registry::{GenerationDefaults, KindLoraBindings, LoraBinding, LoraBindings, SizeDefaults},
-    runtime::KreaQuantization,
 };
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppConfig {
     pub lm_studio: LmStudioConfig,
-    pub python_runtime: PathBuf,
     pub model_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub asset_dir: PathBuf,
@@ -36,7 +35,9 @@ pub struct GenerationConfig {
     pub base_url: String,
     pub executable: PathBuf,
     pub lora_dir: PathBuf,
-    pub profile: KreaQuantization,
+    /// The configured generation profile id. Only `qwen-image-2.1` is
+    /// served; the value is kept for display and a mismatch is logged.
+    pub profile: String,
 }
 
 #[derive(Debug, Error)]
@@ -58,10 +59,6 @@ pub enum ConfigError {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error(
-        "unsupported Krea generation profile {0}; expected krea-2-turbo-q2 or krea-2-turbo-q4"
-    )]
-    GenerationProfile(String),
     #[error(
         "invalid {key} = {value:?} in {path}: dimensions must be multiples of 32 within 256..=2048"
     )]
@@ -85,7 +82,6 @@ impl CodedError for ConfigError {
             Self::Read { .. } => ErrorCode::ConfigRead,
             Self::Parse { .. } => ErrorCode::ConfigParse,
             Self::Write { .. } => ErrorCode::ConfigWrite,
-            Self::GenerationProfile(_) => ErrorCode::ConfigGenerationProfile,
             Self::InvalidSize { .. } => ErrorCode::ConfigInvalidSize,
             Self::MalformedSize { .. } => ErrorCode::ConfigMalformedSize,
         }
@@ -112,6 +108,10 @@ struct GenerationFileConfig {
     profile: String,
     #[serde(default = "default_steps")]
     steps: u32,
+    #[serde(default = "default_cfg_scale")]
+    cfg_scale: f32,
+    #[serde(default = "default_sample_method")]
+    sample_method: String,
     #[serde(default)]
     sizes: SizeFileConfig,
     executable: Option<PathBuf>,
@@ -124,6 +124,8 @@ impl Default for GenerationFileConfig {
             base_url: default_generation_url(),
             profile: default_generation_profile(),
             steps: default_steps(),
+            cfg_scale: default_cfg_scale(),
+            sample_method: default_sample_method(),
             sizes: SizeFileConfig::default(),
             executable: None,
             lora_dir: None,
@@ -146,11 +148,6 @@ struct SizeFileConfig {
 /// that kind of work". Values are file names within `generation.lora_dir`.
 #[derive(Debug, Deserialize)]
 struct LoraFileConfig {
-    /// Adapter applied to mask-guided edits (`modify`).
-    inpaint: Option<String>,
-    /// Adapter applied to reference-edit ops (`variant`/`regenerate`) —
-    /// e.g. Krea's identity-preserving edit adapter.
-    variant: Option<String>,
     character: Option<String>,
     environment: Option<String>,
     object: Option<String>,
@@ -162,8 +159,6 @@ struct LoraFileConfig {
 impl Default for LoraFileConfig {
     fn default() -> Self {
         Self {
-            inpaint: None,
-            variant: None,
             character: None,
             environment: None,
             object: None,
@@ -197,7 +192,6 @@ impl Default for LmStudioFileConfig {
 
 #[derive(Debug, Default, Deserialize)]
 struct PathOverrides {
-    python_runtime: Option<PathBuf>,
     model_dir: Option<PathBuf>,
     cache_dir: Option<PathBuf>,
     asset_dir: Option<PathBuf>,
@@ -237,16 +231,21 @@ impl AppConfig {
             .model_dir
             .map(paths::resolve)
             .unwrap_or_else(|| data_dir.join("models"));
-        let profile = match file.generation.profile.as_str() {
-            "krea-2-turbo-q2" => KreaQuantization::Q2,
-            "krea-2-turbo-q4" => KreaQuantization::Q4,
-            other => return Err(ConfigError::GenerationProfile(other.to_owned())),
-        };
         let lora_dir = file
             .generation
             .lora_dir
             .map(paths::resolve)
             .unwrap_or_else(|| model_dir.join("loras"));
+        // A single profile is served; a configured name that does not match
+        // is logged rather than rejected, since it cannot change the model.
+        let expected_profile = crate::runtime::generation_profile().id;
+        if file.generation.profile != expected_profile {
+            tracing::warn!(
+                configured = %file.generation.profile,
+                expected = expected_profile,
+                "[generation] profile is not the served profile; using {expected_profile}",
+            );
+        }
         let generation = GenerationConfig {
             base_url: file.generation.base_url,
             executable: file
@@ -261,7 +260,7 @@ impl AppConfig {
                         .join("sd-server")
                 }),
             lora_dir: lora_dir.clone(),
-            profile,
+            profile: file.generation.profile,
         };
         let size_override =
             |key: &str, value: Option<String>| -> Result<Option<(u32, u32)>, ConfigError> {
@@ -280,8 +279,6 @@ impl AppConfig {
         let file_lora = &file.lora;
         let lora_bindings = LoraBindings {
             dir: lora_dir,
-            inpaint: file_lora.inpaint.clone().map(|file| LoraBinding { file }),
-            variant: file_lora.variant.clone().map(|file| LoraBinding { file }),
             kinds: KindLoraBindings {
                 character: file_lora.character.clone().map(|file| LoraBinding { file }),
                 environment: file_lora
@@ -299,11 +296,6 @@ impl AppConfig {
                 api_key: file.lm_studio.api_key,
                 timeout: Duration::from_secs(file.lm_studio.timeout_seconds),
             },
-            python_runtime: file
-                .paths
-                .python_runtime
-                .map(paths::resolve)
-                .unwrap_or_else(|| paths::resolve("python")),
             model_dir,
             cache_dir: file
                 .paths
@@ -324,6 +316,8 @@ impl AppConfig {
             generation_defaults: GenerationDefaults {
                 sizes,
                 steps: file.generation.steps,
+                cfg_scale: file.generation.cfg_scale,
+                sample_method: file.generation.sample_method,
                 loras: lora_bindings,
             },
         })
@@ -436,6 +430,18 @@ impl AppConfig {
         );
         write_key(
             &mut lines,
+            "generation",
+            "cfg_scale",
+            Some(format!("{:?}", defaults.cfg_scale)),
+        );
+        write_key(
+            &mut lines,
+            "generation",
+            "sample_method",
+            Some(format!("{:?}", defaults.sample_method)),
+        );
+        write_key(
+            &mut lines,
             "generation.sizes",
             "character",
             size_str(defaults.sizes.character),
@@ -466,12 +472,6 @@ impl AppConfig {
         );
         let lora_file =
             |binding: Option<&LoraBinding>| binding.map(|binding| format!("{:?}", binding.file));
-        write_key(
-            &mut lines,
-            "lora",
-            "inpaint",
-            lora_file(defaults.loras.inpaint.as_ref()),
-        );
         write_key(
             &mut lines,
             "lora",
@@ -579,7 +579,15 @@ const fn default_timeout() -> u64 {
 }
 
 const fn default_steps() -> u32 {
-    4
+    25
+}
+
+fn default_cfg_scale() -> f32 {
+    DEFAULT_CFG_SCALE
+}
+
+fn default_sample_method() -> String {
+    DEFAULT_SAMPLE_METHOD.to_owned()
 }
 
 const fn default_lora_multiplier() -> f32 {
@@ -628,7 +636,7 @@ fn default_generation_url() -> String {
 }
 
 fn default_generation_profile() -> String {
-    "krea-2-turbo-q4".to_owned()
+    "qwen-image-2.1".to_owned()
 }
 
 #[cfg(test)]
@@ -642,24 +650,18 @@ mod tests {
         let path = dir.join("app.toml");
         std::fs::write(
             &path,
-            "[generation]\nsteps = 8\n[generation.sizes]\ncharacter = \"384x576\"\n\
-             [lora]\ninpaint = \"inpaintkrea.safetensors\"\ncharacter = \"mia-v2.safetensors\"\nmultiplier = 0.8\n",
+            "[generation]\nsteps = 8\ncfg_scale = 7.5\nsample_method = \"euler_a\"\n\
+             [generation.sizes]\ncharacter = \"384x576\"\n\
+             [lora]\ncharacter = \"mia-v2.safetensors\"\nmultiplier = 0.8\n",
         )
         .expect("fixture should write");
 
         let config = AppConfig::load_from(&path).expect("config should load");
         assert_eq!(config.generation_defaults.steps, 8);
+        assert_eq!(config.generation_defaults.cfg_scale, 7.5);
+        assert_eq!(config.generation_defaults.sample_method, "euler_a");
         assert_eq!(config.generation_defaults.sizes.character, Some((384, 576)));
         assert_eq!(config.generation_defaults.sizes.object, None);
-        assert_eq!(
-            config
-                .generation_defaults
-                .loras
-                .inpaint
-                .as_ref()
-                .map(|b| b.file.as_str()),
-            Some("inpaintkrea.safetensors")
-        );
         assert_eq!(
             config
                 .generation_defaults
@@ -696,19 +698,18 @@ mod tests {
         let path = dir.join("app.toml");
         std::fs::write(
             &path,
-            "# keep me\n[generation]\nbase_url = \"http://127.0.0.1:7861\"\nprofile = \"krea-2-turbo-q4\"\n",
+            "# keep me\n[generation]\nbase_url = \"http://127.0.0.1:7861\"\nprofile = \"qwen-image-2.1\"\n",
         )
         .expect("fixture should write");
 
         let mut defaults = GenerationDefaults {
             sizes: Default::default(),
             steps: 6,
+            cfg_scale: 7.0,
+            sample_method: "euler_a".to_owned(),
             loras: Default::default(),
         };
         defaults.sizes.character = Some((384, 576));
-        defaults.loras.inpaint = Some(LoraBinding {
-            file: "inpaintkrea.safetensors".into(),
-        });
         defaults.loras.kinds.character = Some(LoraBinding {
             file: "mia-v2.safetensors".into(),
         });
@@ -718,6 +719,8 @@ mod tests {
 
         let reloaded = AppConfig::load_from(&path).expect("persisted file should load");
         assert_eq!(reloaded.generation_defaults.steps, 6);
+        assert_eq!(reloaded.generation_defaults.cfg_scale, 7.0);
+        assert_eq!(reloaded.generation_defaults.sample_method, "euler_a");
         assert_eq!(
             reloaded.generation_defaults.sizes.character,
             Some((384, 576))
@@ -726,10 +729,11 @@ mod tests {
             reloaded
                 .generation_defaults
                 .loras
-                .inpaint
+                .kinds
+                .character
                 .map(|b| b.file)
                 .as_deref(),
-            Some("inpaintkrea.safetensors")
+            Some("mia-v2.safetensors")
         );
         assert_eq!(reloaded.generation_defaults.loras.multiplier, 0.8);
         // Untouched keys survive.
@@ -737,7 +741,7 @@ mod tests {
         let contents = std::fs::read_to_string(&path).expect("file should read");
         assert!(contents.contains("# keep me"), "{contents}");
         assert!(
-            contents.contains("profile = \"krea-2-turbo-q4\""),
+            contents.contains("profile = \"qwen-image-2.1\""),
             "{contents}"
         );
     }
@@ -752,6 +756,8 @@ mod tests {
         let mut defaults = GenerationDefaults {
             sizes: Default::default(),
             steps: 5,
+            cfg_scale: DEFAULT_CFG_SCALE,
+            sample_method: DEFAULT_SAMPLE_METHOD.to_owned(),
             loras: Default::default(),
         };
         defaults.sizes.beat = Some((1024, 576));
@@ -788,7 +794,7 @@ mod tests {
         let reloaded = AppConfig::load_from(&path).expect("persisted file should load");
         assert_eq!(reloaded.lm_studio.model, "google/gemma-3-27b-it");
         // The other sections survive the round trip.
-        assert_eq!(reloaded.generation.profile, KreaQuantization::Q4);
+        assert_eq!(reloaded.generation.profile, "qwen-image-2.1");
         assert_eq!(
             reloaded.lm_studio.base_url, "http://localhost:1234/v1",
             "base_url must not be clobbered by the model write"
@@ -804,11 +810,13 @@ mod tests {
 
         let mut defaults = GenerationDefaults {
             sizes: Default::default(),
-            steps: 4,
+            steps: 25,
+            cfg_scale: DEFAULT_CFG_SCALE,
+            sample_method: DEFAULT_SAMPLE_METHOD.to_owned(),
             loras: Default::default(),
         };
-        defaults.loras.inpaint = Some(LoraBinding {
-            file: "krea/INPAINTKREA-V1.safetensors".into(),
+        defaults.loras.kinds.character = Some(LoraBinding {
+            file: "characters/mia-v2.safetensors".into(),
         });
         AppConfig::persist_generation_defaults_to(&path, &defaults)
             .expect("defaults should persist");
@@ -817,10 +825,11 @@ mod tests {
             reloaded
                 .generation_defaults
                 .loras
-                .inpaint
+                .kinds
+                .character
                 .map(|binding| binding.file)
                 .as_deref(),
-            Some("krea/INPAINTKREA-V1.safetensors"),
+            Some("characters/mia-v2.safetensors"),
             "a nested (symlinked-folder) binding must survive a reload"
         );
     }
@@ -833,7 +842,7 @@ mod tests {
         std::fs::write(
             &path,
             "# api_key = \"lm-studio\"\n[lm_studio]\nbase_url = \"http://localhost:1234/v1\"\nmodel = \"old-model\"\n\n\
-             [generation]\nprofile = \"krea-2-turbo-q2\"\n",
+             [generation]\nprofile = \"qwen-image-2.1\"\n",
         )
         .expect("fixture should write");
 
@@ -842,7 +851,7 @@ mod tests {
         assert!(contents.contains("old-model") == false, "{contents}");
         assert!(contents.contains("new-model"), "{contents}");
         assert!(
-            contents.contains("krea-2-turbo-q2"),
+            contents.contains("qwen-image-2.1"),
             "generation profile must survive: {contents}"
         );
         assert!(
@@ -864,12 +873,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir should create");
         let path = dir.join("app.toml");
-        std::fs::write(&path, "[generation]\nprofile = \"krea-2-turbo-q2\"\n")
+        std::fs::write(&path, "[generation]\nprofile = \"qwen-image-2.1\"\n")
             .expect("fixture should write");
 
         AppConfig::persist_lm_model_to(&path, "new-model").expect("persist should write");
         let reloaded = AppConfig::load_from(&path).expect("persisted file should load");
         assert_eq!(reloaded.lm_studio.model, "new-model");
-        assert_eq!(reloaded.generation.profile, KreaQuantization::Q2);
+        assert_eq!(reloaded.generation.profile, "qwen-image-2.1");
     }
 }

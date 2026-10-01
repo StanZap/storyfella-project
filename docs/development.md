@@ -1,18 +1,20 @@
 # Development
 
 This document covers setting up a machine and the day-to-day commands for the
-Rust application and the Python vision runtime.
+Rust application.
 
 ## Prerequisites
 
 - Rust stable
 - The current stable Dioxus CLI (`dx`) — see <https://dioxuslabs.com>
 - Node.js/npm (Tailwind CSS 4 toolchain, pinned in `apps/desktop/package-lock.json`)
-- `uv` (Python environment management)
 - LM Studio, running separately, only when LLM features are exercised
+- A CUDA toolchain and an NVIDIA GPU to build and run `sd-server` (see below)
 - Linux desktop builds: the WebKitGTK/GTK development packages (see below)
 
-Supported targets: macOS on Apple Silicon (MPS) and Linux with NVIDIA CUDA.
+Validated target: Linux with an NVIDIA GPU (CUDA). The Qwen-Image-2.1 int8
+weights run on a CUDA build of `sd-server`; other sd.cpp backends are not
+validated here.
 
 ### Linux system packages
 
@@ -42,11 +44,11 @@ the core tests never compile the toolkit or the WebKit stack. `apps/desktop`
 `model_setup`, and `vlm_probe` binaries. Both application crates depend on
 `svs-core` and name it explicitly (`svs_core::…`) rather than re-exporting it.
 
-`apps/vision` is the Python runtime. It is not a Cargo package; it sits under
-`apps/` beside the other launchables because the shipped bundle carries it
-next to the app binary. Data — `config/` and `assets/generated/` — stays at the
-workspace root, because project databases store absolute asset paths. `xtask/`
-is the developer task runner described below; nothing shipped depends on it.
+`apps/vision` was the Python vision runtime; it was removed with the Krea/SAM
+migration — the project is pure Rust plus the native `sd-server`. Data —
+`config/` and `assets/generated/` — stays at the workspace root, because project
+databases store absolute asset paths. `xtask/` is the developer task runner
+described below; nothing shipped depends on it.
 
 The payoff is a cheap domain loop: `svs-core`'s dependency tree is 464 entries
 with no `dioxus`/`webkit`/`gtk`/`tao`/`wry` in it at all, against 1183 for the
@@ -63,7 +65,7 @@ desktop crate's 77 tests.
 
 ## Task runner (`cargo xtask`)
 
-The recurring `dx` / `cargo` / `npm` / `python` invocations are wrapped by a
+The recurring `dx` / `cargo` / `npm` invocations are wrapped by a
 small task runner (`xtask/`, exposed through the `.cargo/config.toml` alias as
 `cargo xtask`). It runs the same commands the sections below document, from the
 workspace root, with every path resolved absolutely so it behaves the same from
@@ -80,9 +82,8 @@ cargo xtask bundle --package-types appimage deb
 cargo xtask check                 # cargo check --workspace --all-targets
 cargo xtask clippy [--deny]        # cargo clippy …; --deny errors on warnings
 cargo xtask fmt [--check]         # cargo fmt --all
-cargo xtask test [--rust-only|--python-only]
+cargo xtask test                  # cargo test --workspace
 cargo xtask css [--install]       # npm run css:build
-cargo xtask vision                # start the Python runtime
 cargo xtask doctor                # prerequisite tools + provisioned paths
 cargo xtask clean                 # cargo clean + remove dist/
 ```
@@ -131,35 +132,30 @@ npm install
 # fresh clone, generate it once (the asset macro embeds the file at compile time):
 npm run css:build
 cd ..
-
-# Python runtime base environment (FastAPI, uvicorn, pydantic, pillow, numpy)
-uv sync --project apps/vision
-
-# Optional POC extras — only needed for the Diffusers/SAM backends
-uv sync --project apps/vision --extra image-generation
-uv sync --project apps/vision --extra segmentation
 ```
-
-The ML frameworks are intentionally optional; the API and contract tests do
-not require torch.
 
 ### Native generation backend (`sd-server`)
 
 The app spawns the `sd-server` binary from the vendored
-`stable-diffusion.cpp` checkout (it is git-ignored, like `models/`). Build it
-once and place it where `generation.executable` points:
+`stable-diffusion.cpp` checkout (it is git-ignored, like `models/`). Qwen-Image-2.1
+support landed upstream in `3f8527a` (`master-929-3f8527a`), so check the tree
+out at least that revision before building. Build it once and place it where
+`generation.executable` points:
 
 ```bash
-# CUDA build for NVIDIA GPUs — without it generation runs on CPU (~11 GB
-# weights; expect 30-45 s/step). Pick the compute capability of your card,
-# e.g. 86 for RTX 3090 (Ampere), 89 for RTX 40-series.
+# CUDA build for NVIDIA GPUs — the Qwen-Image-2.1 int8 convrot weights need it.
+# Pick the compute capability of your card, e.g. 86 for RTX 3090 (Ampere),
+# 89 for RTX 40-series.
 cmake -S stable-diffusion.cpp -B stable-diffusion.cpp/build \
   -DSD_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86
 cmake --build stable-diffusion.cpp/build --target sd-server -j
 cp stable-diffusion.cpp/build/bin/sd-server models/runtime/stable-diffusion.cpp/bin/
 ```
 
-On Apple Silicon, build with MPS (`-DSD_MPS=ON`) instead.
+The launcher passes `--model-args qwen_image_2_1_prefix_cache_type=q8_0` and
+`--diffusion-fa`, and points `--diffusion-model`/`--llm`/`--vae` at the
+profile's three safetensors (see [`runtime-lifecycle.md`](runtime-lifecycle.md)).
+Provision those weights with `model_setup` (see the CLI tools table below).
 
 ## Run the desktop application
 
@@ -251,32 +247,25 @@ Two inputs are still missing before a bundle is more than an empty shell (see
   `apps/desktop/assets/header.svg` came with the Dioxus scaffold and are
   referenced nowhere. With no icon configured, `dx` writes a default one, so
   the AppImage builds but is unlabelled.
-- **The runtime payloads.** `sd-server` and the frozen `vision-server` are
-  bundled with `[bundle] external_bin` (sidecar binaries) and/or
-  `[bundle] resources` (data files); both keys are inert until the files exist.
-  Shipping them also needs the code change named in item 11: resolve them
-  relative to the bundle root instead of `generation.executable` in
+- **The runtime payload.** `sd-server` is bundled with `[bundle] external_bin`
+  (sidecar binaries) and/or `[bundle] resources` (data files); both keys are inert
+  until the file exists. Shipping it also needs the code change named in item 11:
+  resolve it relative to the bundle root instead of `generation.executable` in
   `config/app.toml`.
 
-## Run the Python vision runtime
+## Run the generation backend
 
-For development, start the service directly:
-
-```bash
-cd apps/vision
-.venv/bin/python main.py --host 127.0.0.1 --port 8765
-```
-
-Then verify it:
+An op starts its own `sd-server` when none is running, and that server dies when
+the process exits (cold start per command). For a longer session, keep the
+resident server in one terminal and let ops in other terminals reuse it:
 
 ```bash
-curl http://127.0.0.1:8765/health
+cargo run -p svs-cli --bin svs -- runtime serve --force   # Ctrl-C to stop
 ```
 
-When the desktop app launches the runtime itself it inherits its logs, so the
-console output appears in the app's terminal. See
-[`runtime-lifecycle.md`](runtime-lifecycle.md) for the environment variables
-(`SVS_SD_CPP_URL`, `SVS_GENERATED_DIR`, `SVS_MASK_DIR`) the runtime reads.
+`--force` kills stale `sd-server` processes from interrupted sessions that hold
+port 7861. Only the `qwen-image-2.1` profile is served. See
+[`runtime-lifecycle.md`](runtime-lifecycle.md).
 
 ## Tests
 
@@ -286,21 +275,13 @@ console output appears in the app's terminal. See
 cargo test --workspace
 ```
 
-The workspace runs 156 tests in `svs-core` plus 77 in the desktop crate (233
-total). They cover state transitions (`apps/desktop/src/state/`), request
-serialization (`crates/core/src/vision/`), multimodal message shape
+The workspace runs 137 tests in `svs-core` plus 77 in the desktop crate, and 3
+in the CLI binaries (217 total). They cover state transitions
+(`apps/desktop/src/state/`), request serialization
+(`crates/core/src/generation/`), multimodal message shape
 (`crates/core/src/llm/`), and profile manifests (`crates/core/src/runtime/`).
-They do not require a running Python runtime or LM Studio. `cargo xtask test`
-runs these and the Python suite below together.
-
-### Python
-
-```bash
-PYTHONPATH=apps/vision apps/vision/.venv/bin/python -m unittest discover -s apps/vision/tests
-```
-
-Some tests skip themselves when the optional torch environment is absent, so a
-run that reports `OK (skipped=N)` is expected on a base environment.
+They do not require a running `sd-server` or LM Studio. `cargo xtask test` runs
+the same command.
 
 ### End-to-end: plans (the app's own regression suite)
 
@@ -342,8 +323,7 @@ Enter — prefer it over `command:` when the point is to exercise the UI.
 
 Steps that stop for approval cannot be driven from a plan: the driver
 auto-rejects checkpoints, so the op fails fast with the checkpoint message.
-`modify` is checkpoint-free (instruction edits segment nothing), but its
-opt-in mask path is not.
+`modify` is checkpoint-free (an instruction edit segments nothing).
 
 Two traps worth knowing before writing one. A bare `- wait_ms: 800` is **not**
 a step — every step needs an action, and `wait_ms`/`message`/`soft` are
@@ -365,17 +345,16 @@ checkout rather than `/tmp`.
 
 | Command | Purpose |
 | --- | --- |
-| `cargo run -p svs-cli --bin model_setup -- --profile q2 --accept-krea-license` | Download, resume, and checksum-verify the Krea 2 Q2 profile |
-| `cargo run -p svs-cli --bin model_setup -- --profile q4 --accept-krea-license` | Same for Q4 |
+| `cargo run -p svs-cli --bin model_setup [-- --model-dir <dir>]` | Download, resume, and checksum-verify the Qwen-Image-2.1 profile (diffusion + text encoder + VAE) |
 | `cargo run -p svs-cli --bin vlm_probe -- --list-models` | List models visible through LM Studio |
 | `cargo run -p svs-cli --bin vlm_probe -- --model <id>` | Run the visual-LLM probe against one model |
 | `cargo run -p svs-cli --example generate_vlm_fixtures` | Regenerate the deterministic probe fixtures |
-| `cargo run -p svs-cli --bin svs -- --help` | Operation CLI (typed ops, stacks, runtime serve, log) — see [`api-slice-1.md`](api-slice-1.md) for the command reference and the light/LLM/generation session split |
+| `cargo run -p svs-cli --bin svs -- --help` | Operation CLI (typed ops, stacks, runtime serve, log, eval) — see [`api-slice-1.md`](api-slice-1.md) for the command reference and the light/LLM/generation session split |
 
-`model_setup` refuses to run without `--accept-krea-license`; review the Krea 2
-licensing terms before distributing weights. The `svs` CLI needs no
-provisioned models for the model-only and LLM-assisted tiers; only
-`regenerate`/`modify` touch the Krea backend.
+`model_setup` provisions into `paths.model_dir` (the `--model-dir` override
+wins). The `svs` CLI needs no provisioned models for the model-only and
+LLM-assisted tiers; only the visual ops (`create`/`variant`/`regenerate`/`modify`)
+touch the generation backend.
 
 ## Configuration reference
 
@@ -389,22 +368,22 @@ paths in the file resolve against the project root (see the `paths` note below).
 | `lm_studio.model` | `local-model` | Model identifier loaded in LM Studio (editable in Settings → Intelligence; the picker applies it immediately and saves it back to this file) |
 | `lm_studio.api_key` | none | Optional bearer token |
 | `lm_studio.timeout_seconds` | `60` | Request timeout for planning/vision calls |
-| `generation.base_url` | `http://127.0.0.1:7861` | sd.cpp endpoint the Python adapter calls |
-| `generation.profile` | `krea-2-turbo-q4` | `krea-2-turbo-q2` or `krea-2-turbo-q4` |
+| `generation.base_url` | `http://127.0.0.1:7861` | The native `sd-server` endpoint the client calls |
+| `generation.profile` | `qwen-image-2.1` | The resident profile id; `qwen-image-2.1` is the only value served |
 | `generation.executable` | `<model_dir>/runtime/stable-diffusion.cpp/bin/sd-server` | Path to `sd-server` |
 | `generation.lora_dir` | `<model_dir>/loras` | LoRA root; adapter files are discovered here (subfolders and symlinked folders included) |
-| `generation.steps` | `4` | Default steps per generation (Settings → Image generation) |
+| `generation.steps` | `25` | Default steps per generation (Settings → Image generation; Qwen-Image-2.1 has no few-step turbo path) |
+| `generation.cfg_scale` | `6.0` | Text-guidance scale (`sample_params.guidance.txt_cfg`) |
+| `generation.sample_method` | `euler` | Sampler (`sample_params.sample_method`) |
 | `generation.sizes.character` | `512x768` | Default canvas for character images (`WxH`, multiples of 32) |
 | `generation.sizes.environment` | `1024x576` | Default canvas for environment images |
 | `generation.sizes.object` | `768x768` | Default canvas for object images |
 | `generation.sizes.scene` | `1024x576` | Default canvas for scene images |
 | `generation.sizes.beat` | `1024x576` | Default canvas for beat images |
-| `lora.inpaint` | none | Adapter file applied to the opt-in mask path of `modify` (`--inpaint-prompt` plus a mask source: `--mask-prompt` or `--mask-file`), e.g. `inpaintkrea.safetensors`. Instruction edits do not load it |
 | `lora.character` | none | Adapter file applied to character generations without a project binding |
 | `lora.environment` | none | Adapter file applied to environment generations without a project binding |
 | `lora.object` | none | Adapter file applied to object generations without a project binding |
 | `lora.multiplier` | `1.0` | Weight for the bindings above (per-artifact bindings carry their own) |
-| `paths.python_runtime` | `apps/vision` | Directory containing `.venv` and `main.py` |
 | `paths.model_dir` | platform data dir + `models` | Model artifacts root |
 | `paths.cache_dir` | platform cache dir | Disposable cache data |
 | `paths.asset_dir` | platform data dir + `assets` | Imported/generated assets |
@@ -414,9 +393,9 @@ Configured relative paths (the `paths.*` directories and the plan directory)
 resolve against the **project root**, not the working directory:
 `crates/core/src/paths.rs` picks `$SVS_HOME` first, otherwise the nearest
 ancestor of the working directory (then of the executable) that holds
-`config/app.toml`. The Python runtime mirrors the same rule in
-`apps/vision/runtime/paths.py`, so commands do not need to be run from the
-repository root.
+`config/app.toml`, so commands do not need to be run from the repository root.
+The checked-in `config/app.toml` raises `generation.sizes.character` to
+`1024x1536` (the full Qwen portrait canvas).
 
 An invalid `generation.profile` value is a hard configuration error and the app
 shows the error screen on launch. The checked-in `config/app.toml` sets
@@ -427,18 +406,13 @@ the model id your LM Studio serves (`curl http://localhost:1234/v1/models`).
 
 - **`cargo`/`dx` fail with path errors** — the `:` in the parent directory; the
   `.cargo/config.toml` target-dir redirect is the fix, do not remove it.
-- **Starting a service from Settings fails with `failed to start Python runtime: No such file or directory`** — this was a resolved bug where a relative `paths.python_runtime` combined with a relative working directory made the child resolve `apps/vision/.venv/bin/python` against the wrong directory. Spawn paths are now absolutized; if you still see this, the venv itself is missing or broken — recreate it with `uv sync --project apps/vision`.
-- **`Python virtual environment executable not found`** — the venv is not provisioned; run `uv sync --project apps/vision` from the repository root.
-- **Generation says the runtime is not ready / job fails** — the sd-server
+- **Generation says the runtime is not ready / job fails** — the `sd-server`
   binary or model artifacts are missing. Run `cargo run -p svs-cli --bin model_setup`
-  after reviewing the license, and confirm `generation.executable` in
-  `config/app.toml`.
-- **`generation job failed: resident backend has … loaded; … requires …`** —
-  the resident sd-server runs a different Krea profile than the request.
-  Ops restart their own server automatically; a stale server from another
-  session needs `svs runtime serve --force --model krea-2-turbo-q4` (or
+  and confirm `generation.executable` in `config/app.toml`.
+- **`generation server on :7861 has … loaded; … needs the server restarted`** —
+  the resident `sd-server` has a different model loaded than the requested
+  profile. Ops restart their own server automatically; a stale server from
+  another session needs `svs runtime serve --force` (or
   `pkill -f "sd-server --diffusion"`), then rerun.
-- **`/segment` fails with a torch import error** — the segmentation extra is
-  not installed; run `uv sync --project apps/vision --extra segmentation`.
 - **LM Studio calls fail** — confirm LM Studio is running, the configured model
   is loaded, and `lm_studio.base_url` matches the server's `/v1` endpoint.

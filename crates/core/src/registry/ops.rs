@@ -11,23 +11,20 @@
 //!
 //! Slice-1 operations: `create`, `variant`, `regenerate`, `compose`,
 //! `draft`, and `modify` (an instruction edit against the artifact's own
-//! image; the mask/inpaint path is opt-in).
+//! image).
 //!
 //! Execution model: user-typed ops apply immediately and are logged; LLM
 //! proposals (`stack propose`) are gated by approval before execution.
-//! Checkpoint steps inside pipelines (mask confirmation, draft text
-//! approval) always block per the approval policy. Undo is state restore
+//! Checkpoint steps inside pipelines (draft text approval) always block per
+//! the approval policy. Undo is state restore
 //! (`ArtifactRegistry::snapshot`/`restore`), never re-execution.
-
-use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::errors::{CodedError, ErrorCode, ReportedError};
-use crate::registry::pipeline::PlanPart;
-use crate::vision::LoraSelection;
+use crate::generation::LoraSelection;
 
 use super::{
     pipeline::{
@@ -35,7 +32,7 @@ use super::{
         PromptSource, RunOptions,
     },
     Artifact, ArtifactKind, ArtifactRegistry, CreateArtifact, GenerationDefaults, Layer, LayerRole,
-    Ref, RefError, RegistryError, RevisionOrigin, StoredMask, VariantAxis,
+    Ref, RefError, RegistryError, RevisionOrigin, VariantAxis,
 };
 
 /// The kinds an operation can have. Slice 1 only ships primitives; compound
@@ -134,27 +131,11 @@ pub enum Operation {
     /// LLM proposes story text; the user approves (checkpoint).
     Draft { target: Ref, request: String },
     /// Edit the artifact's active image from a plain-language instruction,
-    /// which is grounded against the artifact before it is sent. Supplying
-    /// both `mask_prompt` and `inpaint_prompt` opts into the mask path
-    /// (segment → confirm mask → inpaint → composite) instead.
+    /// which is grounded against the artifact before it is sent: reference
+    /// image = the active revision, prompt = the grounded instruction.
     Modify {
         target: Ref,
         description: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        mask_prompt: Option<String>,
-        /// The mask path's other source: a PNG on disk, used instead of
-        /// segmenting. Mutually exclusive with `mask_prompt`. Additive rather
-        /// than folded into a source enum so operations persisted before it
-        /// existed still deserialize.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        mask_file: Option<PathBuf>,
-        /// The third mask source: let the LLM name the region from the edit
-        /// description ("change her hair to a bob" -> mask "her hair").
-        /// Spelled `--mask auto`. Mutually exclusive with the other two.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        plan: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        inpaint_prompt: Option<String>,
         /// Per-run canvas override (user-requested only).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         size: Option<(u32, u32)>,
@@ -431,13 +412,6 @@ pub enum CompileError {
     NoActiveImage(Uuid),
     #[error("regenerate has no prompt and the artifact has neither an active revision nor a description")]
     NoPrompt(Uuid),
-    #[error(
-        "modify requires --inpaint-prompt together with a mask source \
-         (--mask-prompt or --mask-file), or an LLM to plan them"
-    )]
-    IncompleteModify,
-    #[error("modify takes one mask source: --mask-prompt or --mask-file, not both")]
-    ConflictingMaskSource,
     #[error("lora multiplier {0} must be within -2..=2")]
     BadLoraMultiplier(f32),
     #[error("steps {0} must be within 1..=50")]
@@ -462,8 +436,6 @@ impl CodedError for CompileError {
             Self::BadLayerKind { .. } => ErrorCode::OpBadLayerKind,
             Self::NoActiveImage(_) => ErrorCode::OpNoActiveImage,
             Self::NoPrompt(_) => ErrorCode::OpNoPrompt,
-            Self::IncompleteModify => ErrorCode::OpIncompleteModify,
-            Self::ConflictingMaskSource => ErrorCode::OpConflictingMaskSource,
             Self::BadLoraMultiplier(_) => ErrorCode::OpBadLoraMultiplier,
             Self::BadSteps(_) => ErrorCode::OpBadSteps,
             Self::LoraFileMissing { .. } => ErrorCode::OpLoraFileMissing,
@@ -514,36 +486,26 @@ impl CodedError for OpError {
     }
 }
 
+/// The default cfg scale and sampling method applied to every compiled
+/// pipeline come from the configurable [`GenerationDefaults`]; the builder
+/// carries the model's own defaults until then.
+///
 /// Statically validates the operation against the registry and compiles it
 /// to a pipeline. No IO; this is the static-validation surface. `defaults`
-/// carries the configurable sizes and LoRA bindings that shape the
+/// carries the configurable sizes, sampling, and LoRA bindings that shape the
 /// generation (the canvas passes its live signal; the CLI passes the
 /// loaded config).
-/// Tuned img2img blends for reference-based ops. The sd.cpp server default
-/// (0.9) renoises almost everything — wrong for turbo models, which distort
-/// under near-full renoise. These keep the subject while allowing the op's
-/// intended change; inpaint is deliberately near-full inside the mask.
-const REFERENCE_KEEP_SUBJECT: f32 = 0.45;
-const REFERENCE_RESIZE: f32 = 0.35;
-const REFERENCE_INPAINT: f32 = 0.95;
-/// The auto-injected inpaint adapter (INPAINTKREA) collapses a reference
-/// edit into a near no-op at full weight on the native backend (its masked
-/// conditioning is not honored there), so the injection is capped at a
-/// weight where it behaves as a style adapter. Explicit per-run
-/// `--lora …@<mult>` choices are never capped.
-const INPAINT_LORA_MULTIPLIER_CAP: f32 = 0.5;
-
-/// Where `modify`'s opt-in mask comes from. Both reduce to the same
-/// `SelectedMaskHandle`, so everything downstream is identical.
-enum MaskSource {
-    /// Segment the active image from a text prompt, then confirm a candidate.
-    Segment(String),
-    /// A mask PNG already on disk — no segmentation, no checkpoint.
-    File(PathBuf),
-    /// Ask the LLM to name the region, then segment for it. A soft
-    /// dependency like every other LLM step: with no LLM configured the
-    /// pipeline blocks for the two prompts by hand rather than failing.
-    Plan,
+///
+/// Finalizes a compiled pipeline: the configurable sampling controls apply to
+/// every visual op, then the static checks run once more.
+fn finish(
+    builder: super::pipeline::PipelineBuilder,
+    defaults: &GenerationDefaults,
+) -> Result<CompiledOp, CompileError> {
+    let mut pipeline = builder.build()?;
+    pipeline.params.cfg_scale = defaults.cfg_scale;
+    pipeline.params.sample_method = defaults.sample_method.clone();
+    Ok(CompiledOp::Pipeline(pipeline))
 }
 
 pub fn compile(
@@ -591,7 +553,7 @@ pub fn compile(
             }
             // The fresh artifact has no bindings yet; the kind-default
             // adapter (config) applies, then the per-run adapters.
-            for lora in auto_loras(registry, None, *kind, defaults, false, false) {
+            for lora in auto_loras(registry, None, *kind, defaults) {
                 builder.lora(lora.path, lora.multiplier);
             }
             for lora in loras {
@@ -607,8 +569,8 @@ pub fn compile(
                 };
                 builder.lora(registered, lora.multiplier);
             }
-            builder.generate(PromptSource::Text(description.clone()), None, None);
-            Ok(CompiledOp::Pipeline(builder.build()?))
+            builder.generate(PromptSource::Text(description.clone()), None);
+            finish(builder, defaults)
         }
         Operation::Variant {
             target,
@@ -666,14 +628,7 @@ pub fn compile(
             // default (the base artifact stands in for the not-yet-created
             // variant — same bindings by construction), then the per-run
             // adapters.
-            for lora in auto_loras(
-                registry,
-                Some(base_artifact),
-                base_artifact.kind,
-                defaults,
-                true,
-                false,
-            ) {
+            for lora in auto_loras(registry, Some(base_artifact), base_artifact.kind, defaults) {
                 builder.lora(lora.path, lora.multiplier);
             }
             for lora in loras {
@@ -693,7 +648,6 @@ pub fn compile(
                 .latest_image(base)
                 .and_then(|revision| revision.asset_path.clone())
                 .map(|path| builder.reference_image(path));
-            builder.reference_strength(REFERENCE_KEEP_SUBJECT);
             // A variant description is a *delta* ("in heavy yellow
             // oilskins"), which is exactly the terse instruction that
             // collapses toward base-model priors — measured, an ungrounded
@@ -708,8 +662,8 @@ pub fn compile(
                 ),
                 fallback,
             );
-            builder.generate(PromptSource::Prompt(grounded), reference, None);
-            Ok(CompiledOp::Pipeline(builder.build()?))
+            builder.generate(PromptSource::Prompt(grounded), reference);
+            finish(builder, defaults)
         }
         Operation::Compose {
             scene,
@@ -817,14 +771,7 @@ pub fn compile(
             if let Some(seed) = artifact.default_seed {
                 builder.seed(seed);
             }
-            for lora in auto_loras(
-                registry,
-                Some(artifact),
-                artifact.kind,
-                defaults,
-                true,
-                false,
-            ) {
+            for lora in auto_loras(registry, Some(artifact), artifact.kind, defaults) {
                 builder.lora(lora.path, lora.multiplier);
             }
             for lora in loras {
@@ -843,7 +790,6 @@ pub fn compile(
             let reference = active
                 .and_then(|revision| revision.asset_path.clone())
                 .map(|path| builder.reference_image(path));
-            builder.reference_strength(REFERENCE_KEEP_SUBJECT);
             // An explicit prompt is a delta ("make it warmer") and needs the
             // same grounding as a variant or a modify. A regenerate *without*
             // one replays the previous revision's prompt, which was already
@@ -862,8 +808,8 @@ pub fn compile(
                 }
                 None => PromptSource::Text(resolved_prompt),
             };
-            builder.generate(prompt_source, reference, None);
-            Ok(CompiledOp::Pipeline(builder.build()?))
+            builder.generate(prompt_source, reference);
+            finish(builder, defaults)
         }
         Operation::Resize {
             target,
@@ -893,28 +839,16 @@ pub fn compile(
             // last one used (the new canvas is the only intent).
             let mut builder = super::pipeline::PipelineBuilder::new();
             builder.size(*width, *height);
-            for lora in auto_loras(
-                registry,
-                Some(artifact),
-                artifact.kind,
-                defaults,
-                true,
-                false,
-            ) {
+            for lora in auto_loras(registry, Some(artifact), artifact.kind, defaults) {
                 builder.lora(lora.path, lora.multiplier);
             }
             let image = builder.reference_image(asset);
-            builder.reference_strength(REFERENCE_RESIZE);
-            builder.generate(PromptSource::Text(active.prompt.clone()), Some(image), None);
-            Ok(CompiledOp::Pipeline(builder.build()?))
+            builder.generate(PromptSource::Text(active.prompt.clone()), Some(image));
+            finish(builder, defaults)
         }
         Operation::Modify {
             target,
             description,
-            mask_prompt,
-            mask_file,
-            plan,
-            inpaint_prompt,
             size,
             steps,
             loras,
@@ -962,17 +896,7 @@ pub fn compile(
             if let Some(seed) = artifact.default_seed {
                 builder.seed(seed);
             }
-            // The inpaint adapter rides only the opt-in mask path; an
-            // instruct edit is the same adapter set as `regenerate`.
-            let masked = mask_prompt.is_some() || mask_file.is_some() || inpaint_prompt.is_some();
-            for lora in auto_loras(
-                registry,
-                Some(artifact),
-                artifact.kind,
-                defaults,
-                true,
-                masked,
-            ) {
+            for lora in auto_loras(registry, Some(artifact), artifact.kind, defaults) {
                 builder.lora(lora.path, lora.multiplier);
             }
             for lora in loras {
@@ -988,110 +912,28 @@ pub fn compile(
                 };
                 builder.lora(registered, lora.multiplier);
             }
-            // One mask, three possible sources; naming more than one is a
-            // mistake worth reporting rather than silently preferring one.
-            let named = [mask_prompt.is_some(), mask_file.is_some(), *plan];
-            if named.iter().filter(|named| **named).count() > 1 {
-                return Err(CompileError::ConflictingMaskSource);
-            }
-            let mask_source = match (mask_prompt.as_ref(), mask_file.as_ref(), *plan) {
-                (Some(prompt), _, _) => Some(MaskSource::Segment(prompt.clone())),
-                (_, Some(path), _) => Some(MaskSource::File(path.clone())),
-                (_, _, true) => Some(MaskSource::Plan),
-                (None, None, false) => None,
-            };
+            // A `modify` is a single instruction edit: the artifact's active
+            // revision is the reference image and the grounded instruction is
+            // the prompt. Localization comes from the instruction's semantics
+            // against the in-context reference; there is no segmentation, no
+            // mask and no composite.
+            //
+            // The instruction is grounded before it is sent — see
+            // `ground_instruction`. A bare instruction collapses the edit into
+            // base-model priors.
+            let fallback = ground_instruction(description, artifact);
+            // The artifact's name is an internal handle, not a visual trait:
+            // including it gets it echoed back into the instruction.
+            let grounded = builder.llm_ground(
+                format!(
+                    "Edit: {description}\nDescription of the image: {}",
+                    artifact.description
+                ),
+                fallback,
+            );
             let image = builder.reference_image(asset);
-            match (mask_source, inpaint_prompt) {
-                // Default: an instruction edit. Krea 2's identity-edit
-                // adapter is an instruct model — image plus plain-language
-                // instruction, and it preserves what the instruction did
-                // not ask to change. Localization comes from the
-                // instruction's semantics against the in-context reference,
-                // not from us protecting pixels afterwards, so there is no
-                // segmentation, no mask and no composite on this path.
-                //
-                // The instruction is grounded before it is sent — see
-                // `ground_instruction`. A bare instruction collapses the
-                // edit into base-model priors.
-                (None, None) => {
-                    // The LLM refines the grounding when one is configured;
-                    // `ground_instruction` is the fallback and is good
-                    // enough on its own, so this never blocks on the LLM.
-                    let fallback = ground_instruction(description, artifact);
-                    // The artifact's name is an internal handle, not a
-                    // visual trait: including it gets it echoed back into
-                    // the instruction ("vera — Vera, a young woman ...").
-                    let grounded = builder.llm_ground(
-                        format!(
-                            "Edit: {description}\nDescription of the image: {}",
-                            artifact.description
-                        ),
-                        fallback,
-                    );
-                    builder.generate(PromptSource::Prompt(grounded), Some(image), None);
-                }
-                // Opt-in: the mask path, for edits an instruction cannot
-                // express — filling a hole, removing an object, extending a
-                // canvas. This is INPAINTKREA territory. The masked-latent
-                // generate itself is sound (validated 2026-08-11 with a
-                // fixture mask); what is not is the `composite` below —
-                // where the mask runs tighter than the thing it masks, the
-                // pixels it misses survive as a rim of the old content. See
-                // .svs-e2e/logs/2026-08-11-inpaintkrea-sources.md.
-                (Some(source), inpaint) => {
-                    // Only the planned source can supply the look itself;
-                    // the other two need it spelled out.
-                    if inpaint.is_none() && !matches!(source, MaskSource::Plan) {
-                        return Err(CompileError::IncompleteModify);
-                    }
-                    // The plan step runs first so both of its halves are
-                    // available as typed references below. `--mask auto`
-                    // with an explicit --inpaint-prompt is allowed: the LLM
-                    // picks the region, the caller keeps the look.
-                    let plan = matches!(source, MaskSource::Plan).then(|| {
-                        builder.llm_plan(format!(
-                            "Edit: {description}\nDescription of the image: {}",
-                            artifact.description
-                        ))
-                    });
-                    let confirmed = match source {
-                        MaskSource::Segment(prompt) => {
-                            let candidates = builder.segment(image, PromptSource::Text(prompt));
-                            builder.confirm_mask(candidates)
-                        }
-                        MaskSource::File(path) => builder.load_mask(path),
-                        MaskSource::Plan => {
-                            let plan = plan.expect("the planned source builds a plan step");
-                            let candidates = builder
-                                .segment(image, PromptSource::PlanPart(plan, PlanPart::MaskPrompt));
-                            builder.confirm_mask(candidates)
-                        }
-                    };
-                    // An explicit inpaint prompt composes the artifact
-                    // description in verbatim so the re-render keeps the
-                    // scene's lighting and colour; a planned one already saw
-                    // the description and is left alone.
-                    let inpaint_source = match inpaint {
-                        Some(inpaint) => {
-                            let composed = if artifact.description.trim().is_empty() {
-                                inpaint.clone()
-                            } else {
-                                format!("{}, {}", artifact.description.trim(), inpaint)
-                            };
-                            PromptSource::Text(composed)
-                        }
-                        None => PromptSource::PlanPart(
-                            plan.expect("only the planned source omits the inpaint prompt"),
-                            PlanPart::InpaintPrompt,
-                        ),
-                    };
-                    builder.reference_strength(REFERENCE_INPAINT);
-                    builder.denoise_strength(super::pipeline::MASKED_LATENT_DENOISE);
-                    builder.inpaint(inpaint_source, image, confirmed);
-                }
-                (None, Some(_)) => return Err(CompileError::IncompleteModify),
-            }
-            Ok(CompiledOp::Pipeline(builder.build()?))
+            builder.generate(PromptSource::Prompt(grounded), Some(image));
+            finish(builder, defaults)
         }
         Operation::Draft { target, request } => {
             registry.resolve(target)?;
@@ -1101,7 +943,7 @@ pub fn compile(
             let mut builder = super::pipeline::PipelineBuilder::new();
             let text = builder.llm_draft(request.clone());
             builder.confirm_text(text);
-            Ok(CompiledOp::Pipeline(builder.build()?))
+            finish(builder, defaults)
         }
         Operation::AttachLora {
             target, multiplier, ..
@@ -1162,13 +1004,6 @@ fn validate_steps(steps: u32) -> Result<(), CompileError> {
     }
 }
 
-/// The LoRAs an auto-injected generation must carry, first-wins by
-/// resolved path: project entries bound to the artifact (or its variant
-/// base chain), then the config kind binding, then the reference-edit
-/// use-case adapter (`variant`/`regenerate` — e.g. Krea's identity edit),
-/// then the inpaint adapter for mask-guided edits. A configured adapter
-/// that is missing on disk is skipped with a warning rather than failing
-/// the generation.
 /// Anchors an edit instruction so the model edits *this* image instead of
 /// inventing a new one.
 ///
@@ -1206,15 +1041,18 @@ fn ground_instruction(instruction: &str, artifact: &Artifact) -> String {
     )
 }
 
+/// The LoRAs an auto-injected generation must carry, first-wins by
+/// resolved path: project entries bound to the artifact (or its variant
+/// base chain), then the config kind binding. A configured adapter
+/// that is missing on disk is skipped with a warning rather than failing
+/// the generation.
 fn auto_loras(
     registry: &ArtifactRegistry,
     artifact: Option<&Artifact>,
     kind: ArtifactKind,
     defaults: &GenerationDefaults,
-    edit: bool,
-    inpaint: bool,
-) -> Vec<crate::vision::LoraSelection> {
-    let mut selections: Vec<crate::vision::LoraSelection> = Vec::new();
+) -> Vec<LoraSelection> {
+    let mut selections: Vec<LoraSelection> = Vec::new();
     let mut push = |file: &str, multiplier: f32| {
         // The request must name the adapter as the native server registers
         // it (top-level file of the lora directory — see
@@ -1228,7 +1066,7 @@ fn auto_loras(
             return;
         };
         if !selections.iter().any(|selection| selection.path == path) {
-            selections.push(crate::vision::LoraSelection { path, multiplier });
+            selections.push(LoraSelection { path, multiplier });
         }
     };
     if let Some(artifact) = artifact {
@@ -1238,19 +1076,6 @@ fn auto_loras(
     }
     if let Some(binding) = defaults.loras.kinds.binding_for(kind) {
         push(&binding.file, defaults.loras.multiplier);
-    }
-    if edit {
-        if let Some(binding) = &defaults.loras.variant {
-            push(&binding.file, defaults.loras.multiplier);
-        }
-    }
-    if inpaint {
-        if let Some(binding) = &defaults.loras.inpaint {
-            push(
-                &binding.file,
-                defaults.loras.multiplier.min(INPAINT_LORA_MULTIPLIER_CAP),
-            );
-        }
     }
     selections
 }
@@ -1293,16 +1118,8 @@ pub async fn execute(
                 else {
                     unreachable!("visual create compiles to a pipeline");
                 };
-                return run_generation(
-                    registry,
-                    op,
-                    id,
-                    pipeline,
-                    description.clone(),
-                    |_| Ok(Vec::new()),
-                    options,
-                )
-                .await;
+                return run_generation(registry, op, id, pipeline, description.clone(), options)
+                    .await;
             }
             let log_id = registry.push_log(op.clone(), options.origin, OpStatus::Applied, Some(id));
             Ok(OpOutcome {
@@ -1357,16 +1174,7 @@ pub async fn execute(
             let CompiledOp::Pipeline(pipeline) = compile(registry, op, options.defaults)? else {
                 unreachable!("variant compiles to a pipeline");
             };
-            return run_generation(
-                registry,
-                op,
-                id,
-                pipeline,
-                description.clone(),
-                |_| Ok(Vec::new()),
-                options,
-            )
-            .await;
+            return run_generation(registry, op, id, pipeline, description.clone(), options).await;
         }
         Operation::Resize {
             target,
@@ -1393,16 +1201,7 @@ pub async fn execute(
                 .latest_image(id)
                 .map(|revision| revision.prompt.clone())
                 .unwrap_or(description);
-            run_generation(
-                registry,
-                op,
-                id,
-                pipeline,
-                revision_prompt,
-                |_| Ok(Vec::new()),
-                options,
-            )
-            .await
+            run_generation(registry, op, id, pipeline, revision_prompt, options).await
         }
         Operation::Compose {
             scene,
@@ -1535,24 +1334,7 @@ pub async fn execute(
                 Operation::Modify { description, .. } => description.clone(),
                 _ => unreachable!(),
             };
-            let masks = |run: &super::pipeline::PipelineRun| -> Result<Vec<StoredMask>, OpError> {
-                let Operation::Modify { mask_prompt, .. } = op else {
-                    return Ok(Vec::new());
-                };
-                // An instruction edit segments nothing, so there is no mask
-                // to record — only the opt-in mask path produces one.
-                let Some(mask) = selected_mask_from_run(run) else {
-                    return Ok(Vec::new());
-                };
-                Ok(vec![StoredMask {
-                    id: Uuid::new_v4(),
-                    asset_path: mask.path.display().to_string(),
-                    source: super::MaskSource::Auto,
-                    prompt: mask_prompt.clone().or_else(|| segment_prompt_from_run(run)),
-                    score: Some(mask.score),
-                }])
-            };
-            run_generation(registry, op, id, pipeline, revision_prompt, masks, options).await
+            run_generation(registry, op, id, pipeline, revision_prompt, options).await
         }
         Operation::AttachLora {
             target,
@@ -1702,7 +1484,6 @@ async fn run_generation(
     id: Uuid,
     mut pipeline: Pipeline,
     revision_prompt: String,
-    masks: impl FnOnce(&super::pipeline::PipelineRun) -> Result<Vec<StoredMask>, OpError>,
     options: &ExecuteOptions<'_>,
 ) -> Result<OpOutcome, OpError> {
     pipeline
@@ -1737,12 +1518,10 @@ async fn run_generation(
     let asset = run
         .final_image()
         .ok_or_else(|| OpError::Apply("pipeline produced no final image".to_owned()))?;
-    let masks = masks(&run)?;
-    // Locally-produced finals (the composite fallback) live in the work
-    // dir; import them into the persistent asset store so the revision
+    // Import the final into the persistent asset store so the revision
     // survives the work dir's cleanup.
     let stored = backend.import_asset(asset.clone()).await?;
-    registry.finish_revision(id, revision_id, stored, masks)?;
+    registry.finish_revision(id, revision_id, stored)?;
     let log_id = registry.push_log(op.clone(), options.origin, OpStatus::Applied, Some(id));
     Ok(OpOutcome {
         artifact_id: Some(id),
@@ -1805,29 +1584,6 @@ pub fn unique_name(registry: &ArtifactRegistry, base: &str) -> String {
     }
 }
 
-/// The mask the run confirmed, if the stack included a mask checkpoint.
-fn selected_mask_from_run(
-    run: &super::pipeline::PipelineRun,
-) -> Option<super::pipeline::MaskCandidate> {
-    for record in &run.decisions {
-        if let super::pipeline::BlockedOn::SelectMask { candidates, .. } = &record.blocked_on {
-            if let super::pipeline::Decision::SelectMask(index) = record.decision {
-                return candidates.get(index).cloned();
-            }
-        }
-    }
-    None
-}
-
-/// The mask prompt that fed the confirmed mask, from the segment step's own
-/// output (the stored mask keeps its grounding prompt as provenance).
-fn segment_prompt_from_run(run: &super::pipeline::PipelineRun) -> Option<String> {
-    run.outputs
-        .iter()
-        .find(|output| output.label == "segment")
-        .and_then(|output| output.text.clone())
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1836,10 +1592,8 @@ mod tests {
     };
 
     use super::*;
-    use crate::registry::{
-        pipeline::{BlockedOn, Decision, MaskCandidate, PipelineRun, StepOutput},
-        CreateArtifact, RevisionOrigin,
-    };
+    use crate::generation::{DEFAULT_CFG_SCALE, DEFAULT_SAMPLE_METHOD};
+    use crate::registry::pipeline::Decision;
 
     /// A fresh temp folder for generated asset paths in tests (the pipeline
     /// checks reference images exist on disk).
@@ -1853,7 +1607,9 @@ mod tests {
     fn test_defaults() -> GenerationDefaults {
         GenerationDefaults {
             sizes: Default::default(),
-            steps: 4,
+            steps: 25,
+            cfg_scale: DEFAULT_CFG_SCALE,
+            sample_method: DEFAULT_SAMPLE_METHOD.to_owned(),
             loras: Default::default(),
         }
     }
@@ -1884,7 +1640,7 @@ mod tests {
                 {"op": "regenerate", "target": "c:1234abcd", "prompt": "make it warmer"},
                 {"op": "compose", "scene": "c:1234abcd", "description": "Mia at the lantern", "background": "c:abcd1234", "layers": [{"artifact": "c:1234abcd", "variant": "c:abcd1234"}]},
                 {"op": "draft", "target": "c:1234abcd", "request": "write the opening beat"},
-                {"op": "modify", "target": "c:1234abcd", "description": "change her hair", "mask_prompt": "hair", "inpaint_prompt": "bob cut"}
+                {"op": "modify", "target": "c:1234abcd", "description": "change her hair"}
             ]
         }"#;
         let stack: OperationStack = serde_json::from_str(json).expect("stack should parse");
@@ -1904,13 +1660,7 @@ mod tests {
         );
         assert!(matches!(
             &stack.operations[5],
-            Operation::Modify {
-                mask_prompt: Some(_),
-                mask_file: None,
-                plan: false,
-                inpaint_prompt: Some(_),
-                ..
-            }
+            Operation::Modify { description, .. } if description == "change her hair"
         ));
     }
 
@@ -1962,10 +1712,6 @@ mod tests {
         let op = Operation::Modify {
             target: Ref::new(story.to_string()),
             description: "change it".into(),
-            mask_prompt: Some("everything".into()),
-            mask_file: None,
-            plan: false,
-            inpaint_prompt: Some("different".into()),
             size: None,
             steps: None,
             loras: Vec::new(),
@@ -2000,7 +1746,7 @@ mod tests {
             )
             .unwrap();
         registry
-            .finish_revision(id, revision, "assets/mia.png".into(), Vec::new())
+            .finish_revision(id, revision, "assets/mia.png".into())
             .unwrap();
 
         let op = Operation::Regenerate {
@@ -2036,7 +1782,7 @@ mod tests {
             )
             .unwrap();
         registry
-            .finish_revision(id, revision, "assets/mia.png".into(), Vec::new())
+            .finish_revision(id, revision, "assets/mia.png".into())
             .unwrap();
 
         let op = Operation::Regenerate {
@@ -2211,12 +1957,7 @@ mod tests {
             )
             .unwrap();
         registry
-            .finish_revision(
-                base,
-                base_revision,
-                mia_asset.display().to_string(),
-                Vec::new(),
-            )
+            .finish_revision(base, base_revision, mia_asset.display().to_string())
             .unwrap();
 
         let backend = VisualBackend::new(assets.join("mia-rain.png"));
@@ -2254,8 +1995,8 @@ mod tests {
         let assets = test_assets_dir();
         let backend = VisualBackend::new(assets.join("mia.png"));
         let lora_dir = assets.join("loras");
-        std::fs::create_dir_all(lora_dir.join("krea")).expect("lora dir should create");
-        std::fs::write(lora_dir.join("krea/char.safetensors"), b"lora")
+        std::fs::create_dir_all(lora_dir.join("characters")).expect("lora dir should create");
+        std::fs::write(lora_dir.join("characters/char.safetensors"), b"lora")
             .expect("dummy lora should write");
         let create = Operation::Create {
             kind: ArtifactKind::Character,
@@ -2264,7 +2005,7 @@ mod tests {
             size: Some((1024, 1024)),
             steps: Some(8),
             loras: vec![LoraSelection {
-                path: "krea/char.safetensors".into(),
+                path: "characters/char.safetensors".into(),
                 multiplier: 0.8,
             }],
         };
@@ -2289,10 +2030,10 @@ mod tests {
             Some((1024, 1024))
         );
         let request = &backend.requests()[0];
-        assert_eq!((request.width, request.height), (Some(1024), Some(1024)));
-        assert_eq!(request.steps, Some(8));
+        assert_eq!((request.width, request.height), (1024, 1024));
+        assert_eq!(request.steps, 8);
         assert_eq!(request.loras.len(), 1);
-        assert_eq!(request.loras[0].path, "krea-char.safetensors");
+        assert_eq!(request.loras[0].path, "characters-char.safetensors");
         assert_eq!(request.loras[0].multiplier, 0.8);
     }
 
@@ -2322,13 +2063,13 @@ mod tests {
             )
             .unwrap();
         registry
-            .finish_revision(mia, revision, mia_asset.display().to_string(), Vec::new())
+            .finish_revision(mia, revision, mia_asset.display().to_string())
             .unwrap();
 
         let backend = VisualBackend::new(assets.join("mia-regen.png"));
         let lora_dir = assets.join("loras");
-        std::fs::create_dir_all(lora_dir.join("krea")).expect("lora dir should create");
-        std::fs::write(lora_dir.join("krea/style.safetensors"), b"lora")
+        std::fs::create_dir_all(lora_dir.join("styles")).expect("lora dir should create");
+        std::fs::write(lora_dir.join("styles/style.safetensors"), b"lora")
             .expect("dummy lora should write");
         let op = Operation::Regenerate {
             target: Ref::new(registry.short_id(mia)),
@@ -2336,7 +2077,7 @@ mod tests {
             size: Some((768, 768)),
             steps: Some(12),
             loras: vec![LoraSelection {
-                path: "krea/style.safetensors".into(),
+                path: "styles/style.safetensors".into(),
                 multiplier: 1.0,
             }],
         };
@@ -2355,12 +2096,12 @@ mod tests {
             .block_on(execute(&mut registry, &op, &options))
             .unwrap();
         let request = &backend.requests()[0];
-        assert_eq!((request.width, request.height), (Some(768), Some(768)));
-        assert_eq!(request.steps, Some(12));
+        assert_eq!((request.width, request.height), (768, 768));
+        assert_eq!(request.steps, 12);
         assert!(request
             .loras
             .iter()
-            .any(|lora| lora.path == "krea-style.safetensors"));
+            .any(|lora| lora.path == "styles-style.safetensors"));
         // The artifact's stored default size is untouched (per-run only).
         assert_eq!(registry.artifact(mia).unwrap().default_size, None);
     }
@@ -2391,7 +2132,7 @@ mod tests {
             )
             .unwrap();
         registry
-            .finish_revision(mia, revision, mia_asset.display().to_string(), Vec::new())
+            .finish_revision(mia, revision, mia_asset.display().to_string())
             .unwrap();
 
         let backend = VisualBackend::new(assets.join("mia-1024.png"));
@@ -2422,7 +2163,7 @@ mod tests {
         // The image regenerates at the new canvas, subject kept via the
         // reference image and the last prompt.
         let request = &backend.requests()[0];
-        assert_eq!((request.width, request.height), (Some(1024), Some(1024)));
+        assert_eq!((request.width, request.height), (1024, 1024));
         assert_eq!(request.prompt, "Mia on the cliff");
         assert!(request.reference_image_path.is_some());
 
@@ -2455,18 +2196,14 @@ mod tests {
         std::fs::create_dir_all(&lora_dir).expect("lora dir should create");
         let mia_lora = lora_dir.join("mia-v2.safetensors");
         std::fs::write(&mia_lora, b"lora").expect("dummy lora should write");
-        let inpaint_lora = lora_dir.join("inpaintkrea.safetensors");
-        std::fs::write(&inpaint_lora, b"lora").expect("dummy inpaint lora should write");
 
         let defaults = GenerationDefaults {
             sizes: Default::default(),
-            steps: 4,
+            steps: 25,
+            cfg_scale: DEFAULT_CFG_SCALE,
+            sample_method: DEFAULT_SAMPLE_METHOD.to_owned(),
             loras: crate::registry::LoraBindings {
                 dir: lora_dir.clone(),
-                inpaint: Some(crate::registry::LoraBinding {
-                    file: "inpaintkrea.safetensors".into(),
-                }),
-                variant: None,
                 kinds: Default::default(),
                 multiplier: 1.0,
             },
@@ -2495,7 +2232,7 @@ mod tests {
             )
             .unwrap();
         registry
-            .finish_revision(mia, revision, mia_asset.display().to_string(), Vec::new())
+            .finish_revision(mia, revision, mia_asset.display().to_string())
             .unwrap();
 
         let attach = Operation::AttachLora {
@@ -2574,15 +2311,12 @@ mod tests {
             .iter()
             .any(|lora| lora.path == "external-models-char-style.safetensors"));
 
-        // A mask-guided edit additionally carries the inpaint adapter
-        // (checked at compile: the modify pipeline's generation params).
+        // A `modify` is a single instruction edit: it carries the bound
+        // adapters, references the active revision, and neither segments nor
+        // composites.
         let modify = Operation::Modify {
             target: Ref::new(registry.short_id(mia)),
             description: "change her hair".into(),
-            mask_prompt: Some("her hair".into()),
-            mask_file: None,
-            plan: false,
-            inpaint_prompt: Some("a bob cut".into()),
             size: None,
             steps: None,
             loras: Vec::new(),
@@ -2593,238 +2327,38 @@ mod tests {
         };
         assert_eq!(
             modify_pipeline.params().loras.len(),
-            3,
-            "both bound adapters + the inpaint binding"
+            2,
+            "both bound adapters ride the instruction edit"
         );
         assert!(
-            modify_pipeline
-                .params()
-                .loras
-                .iter()
-                .any(|lora| lora.path.ends_with("inpaintkrea.safetensors")),
-            "the inpaint binding rides mask-guided edits"
+            modify_pipeline.steps().iter().any(|step| matches!(
+                step,
+                crate::registry::pipeline::Step::Llm {
+                    kind: crate::registry::pipeline::LlmStepKind::Ground { .. }
+                }
+            )),
+            "the instruction is grounded before it is sent"
         );
+        assert!(
+            modify_pipeline.steps().iter().any(|step| matches!(
+                step,
+                crate::registry::pipeline::Step::Generate {
+                    reference: Some(_),
+                    ..
+                }
+            )),
+            "the edit references the active image"
+        );
+        assert_eq!(modify_pipeline.params().cfg_scale, DEFAULT_CFG_SCALE);
         assert_eq!(
-            modify_pipeline.params().denoise_strength,
-            Some(super::super::pipeline::MASKED_LATENT_DENOISE),
-            "masked-latent inpaint runs the full sigma schedule; the mask, \
-             not a truncated schedule, is what preserves the outside"
-        );
-
-        // A mask file is the same mask path with a different source: it
-        // loads the mask instead of segmenting for it, and skips the
-        // confirmation checkpoint (a file was already chosen deliberately).
-        let from_file = Operation::Modify {
-            target: Ref::new(registry.short_id(mia)),
-            description: "change her hair".into(),
-            mask_prompt: None,
-            mask_file: Some(PathBuf::from("/fixtures/mia-hair-0.png")),
-            plan: false,
-            inpaint_prompt: Some("a bob cut".into()),
-            size: None,
-            steps: None,
-            loras: Vec::new(),
-        };
-        let CompiledOp::Pipeline(file_pipeline) =
-            compile(&registry, &from_file, &defaults).unwrap()
-        else {
-            panic!("modify must compile to a pipeline");
-        };
-        assert!(
-            file_pipeline.steps().iter().any(|step| matches!(
-                step,
-                super::super::pipeline::Step::LoadMask { source }
-                    if source == std::path::Path::new("/fixtures/mia-hair-0.png")
-            )),
-            "the mask file becomes a LoadMask step"
-        );
-        assert!(
-            !file_pipeline
-                .steps()
-                .iter()
-                .any(|step| matches!(step, super::super::pipeline::Step::Segment { .. })),
-            "a mask file segments nothing"
-        );
-        assert!(
-            !file_pipeline
-                .steps()
-                .iter()
-                .any(|step| matches!(step, super::super::pipeline::Step::Checkpoint { .. })),
-            "a mask file has no candidates to confirm"
-        );
-        assert!(
-            file_pipeline
-                .params()
-                .loras
-                .iter()
-                .any(|lora| lora.path.ends_with("inpaintkrea.safetensors")),
-            "the mask path carries the inpaint adapter whichever source fed it"
-        );
-
-        // `--mask auto`: the LLM names the region and the look, so neither
-        // is spelled out here. Both halves reach the pipeline as typed
-        // references to the plan step rather than as text.
-        let planned = Operation::Modify {
-            target: Ref::new(registry.short_id(mia)),
-            description: "change her hair to a bob".into(),
-            mask_prompt: None,
-            mask_file: None,
-            plan: true,
-            inpaint_prompt: None,
-            size: None,
-            steps: None,
-            loras: Vec::new(),
-        };
-        let CompiledOp::Pipeline(planned_pipeline) =
-            compile(&registry, &planned, &defaults).unwrap()
-        else {
-            panic!("modify must compile to a pipeline");
-        };
-        let steps = planned_pipeline.steps();
-        let plan_step = steps
-            .iter()
-            .position(|step| {
-                matches!(
-                    step,
-                    super::super::pipeline::Step::Llm {
-                        kind: super::super::pipeline::LlmStepKind::Plan { .. }
-                    }
-                )
-            })
-            .expect("the planned source builds a plan step");
-        assert!(
-            steps.iter().any(|step| matches!(
-                step,
-                super::super::pipeline::Step::Segment {
-                    prompt: PromptSource::PlanPart(handle, PlanPart::MaskPrompt),
-                    ..
-                } if handle.step == plan_step
-            )),
-            "the plan's mask half grounds the segmentation"
-        );
-        assert!(
-            steps.iter().any(|step| matches!(
-                step,
-                super::super::pipeline::Step::Generate {
-                    prompt: PromptSource::PlanPart(handle, PlanPart::InpaintPrompt),
-                    ..
-                } if handle.step == plan_step
-            )),
-            "the plan's inpaint half becomes the generation prompt"
-        );
-
-        // An explicit look with a planned region: the LLM picks where, the
-        // caller keeps what.
-        let planned_region_only = Operation::Modify {
-            target: Ref::new(registry.short_id(mia)),
-            description: "change her hair".into(),
-            mask_prompt: None,
-            mask_file: None,
-            plan: true,
-            inpaint_prompt: Some("a bob cut".into()),
-            size: None,
-            steps: None,
-            loras: Vec::new(),
-        };
-        let CompiledOp::Pipeline(mixed) =
-            compile(&registry, &planned_region_only, &defaults).unwrap()
-        else {
-            panic!("modify must compile to a pipeline");
-        };
-        assert!(
-            mixed.steps().iter().any(|step| matches!(
-                step,
-                super::super::pipeline::Step::Generate {
-                    prompt: PromptSource::Text(text),
-                    ..
-                } if text.contains("a bob cut")
-            )),
-            "an explicit inpaint prompt wins over the plan's"
-        );
-
-        // Two mask sources is a mistake worth reporting, not one to resolve
-        // by silently preferring either.
-        let both = Operation::Modify {
-            target: Ref::new(registry.short_id(mia)),
-            description: "change her hair".into(),
-            mask_prompt: Some("her hair".into()),
-            mask_file: Some(PathBuf::from("/fixtures/mia-hair-0.png")),
-            plan: false,
-            inpaint_prompt: Some("a bob cut".into()),
-            size: None,
-            steps: None,
-            loras: Vec::new(),
-        };
-        assert!(matches!(
-            compile(&registry, &both, &defaults),
-            Err(CompileError::ConflictingMaskSource)
-        ));
-
-        // A mask source without an inpaint prompt is still incomplete.
-        let no_inpaint = Operation::Modify {
-            target: Ref::new(registry.short_id(mia)),
-            description: "change her hair".into(),
-            mask_prompt: None,
-            mask_file: Some(PathBuf::from("/fixtures/mia-hair-0.png")),
-            plan: false,
-            inpaint_prompt: None,
-            size: None,
-            steps: None,
-            loras: Vec::new(),
-        };
-        assert!(matches!(
-            compile(&registry, &no_inpaint, &defaults),
-            Err(CompileError::IncompleteModify)
-        ));
-
-        // The default (no mask/inpaint prompts) is an instruction edit: no
-        // segmentation, no composite, and none of the inpaint adapter.
-        let instruct = Operation::Modify {
-            target: Ref::new(registry.short_id(mia)),
-            description: "change her hair".into(),
-            mask_prompt: None,
-            mask_file: None,
-            plan: false,
-            inpaint_prompt: None,
-            size: None,
-            steps: None,
-            loras: Vec::new(),
-        };
-        let CompiledOp::Pipeline(instruct_pipeline) =
-            compile(&registry, &instruct, &defaults).unwrap()
-        else {
-            panic!("modify must compile to a pipeline");
-        };
-        assert!(
-            !instruct_pipeline
-                .params()
-                .loras
-                .iter()
-                .any(|lora| lora.path.ends_with("inpaintkrea.safetensors")),
-            "the inpaint adapter rides only the opt-in mask path"
-        );
-        assert_eq!(
-            instruct_pipeline.params().denoise_strength,
-            None,
-            "an instruction edit sends no init image, so no denoise strength"
-        );
-        assert!(
-            !instruct_pipeline.steps().iter().any(|step| matches!(
-                step,
-                crate::registry::pipeline::Step::Segment { .. }
-                    | crate::registry::pipeline::Step::Composite { .. }
-            )),
-            "an instruction edit neither segments nor composites"
+            modify_pipeline.params().sample_method,
+            DEFAULT_SAMPLE_METHOD
         );
     }
 
     #[test]
     fn describe_rewrites_the_anchor_that_edits_ground_against() {
-        let defaults = GenerationDefaults {
-            sizes: Default::default(),
-            steps: 4,
-            loras: Default::default(),
-        };
+        let defaults = test_defaults();
         let mut registry = ArtifactRegistry::new();
         let id = registry
             .create_artifact(
@@ -2963,10 +2497,6 @@ mod tests {
             RevisionOrigin::of(&Operation::Modify {
                 target: target.clone(),
                 description: "give her a bob cut".into(),
-                mask_prompt: None,
-                mask_file: None,
-                plan: false,
-                inpaint_prompt: None,
                 size: None,
                 steps: None,
                 loras: Vec::new(),
@@ -2995,7 +2525,9 @@ mod tests {
         std::fs::create_dir_all(&lora_dir).expect("lora dir should create");
         let defaults = GenerationDefaults {
             sizes: Default::default(),
-            steps: 4,
+            steps: 25,
+            cfg_scale: DEFAULT_CFG_SCALE,
+            sample_method: DEFAULT_SAMPLE_METHOD.to_owned(),
             loras: crate::registry::LoraBindings {
                 dir: lora_dir,
                 ..Default::default()
@@ -3164,7 +2696,7 @@ mod tests {
         // The request: description as prompt, kind default size, no reference.
         let request = &backend.requests()[0];
         assert_eq!(request.prompt, "Mia, a lighthouse keeper");
-        assert_eq!((request.width, request.height), (Some(512), Some(768)));
+        assert_eq!((request.width, request.height), (512, 768));
         assert!(request.reference_image_path.is_none());
     }
 
@@ -3194,12 +2726,7 @@ mod tests {
             )
             .unwrap();
         registry
-            .finish_revision(
-                base,
-                base_revision,
-                mia_asset.display().to_string(),
-                Vec::new(),
-            )
+            .finish_revision(base, base_revision, mia_asset.display().to_string())
             .unwrap();
 
         let backend = VisualBackend::new(assets.join("mia-outfit.png"));
@@ -3245,7 +2772,7 @@ mod tests {
             request.reference_image_path.as_deref(),
             Some(mia_asset.to_str().unwrap())
         );
-        assert_eq!((request.width, request.height), (Some(512), Some(768)));
+        assert_eq!((request.width, request.height), (512, 768));
 
         // A base without an image still generates, just without a reference.
         let mut registry = ArtifactRegistry::new();
@@ -3455,24 +2982,15 @@ mod tests {
 
     // ------------------------------------------------------- pipeline-backed ops
 
-    /// A minimal fake backend returning Ok(None) for LLM steps.
+    /// A minimal fake backend returning canned text for the draft LLM step.
     struct DraftBackend;
     impl GenerationBackend for DraftBackend {
-        fn segment(
-            &self,
-            _request: &crate::vision::SegmentRequest,
-        ) -> futures_util::future::BoxFuture<
-            '_,
-            Result<crate::vision::SegmentResponse, PipelineError>,
-        > {
-            unreachable!()
-        }
         fn generate(
             &self,
-            _request: &crate::vision::GenerateRequest,
+            _request: &crate::generation::GenerateRequest,
         ) -> futures_util::future::BoxFuture<
             '_,
-            Result<crate::vision::GenerateResponse, PipelineError>,
+            Result<crate::generation::GenerateResponse, PipelineError>,
         > {
             unreachable!()
         }
@@ -3482,22 +3000,13 @@ mod tests {
         ) -> futures_util::future::BoxFuture<'_, Result<Option<String>, PipelineError>> {
             Box::pin(async move { Ok(Some("The keeper winds the lamp.".to_owned())) })
         }
-        fn llm_plan(
-            &self,
-            _request: &str,
-        ) -> futures_util::future::BoxFuture<
-            '_,
-            Result<Option<super::super::pipeline::PlannedEdit>, PipelineError>,
-        > {
-            unreachable!()
-        }
     }
 
     /// A fake generation backend: captures requests and returns a canned
     /// image path for every generate call.
     struct VisualBackend {
         generated: PathBuf,
-        requests: Mutex<Vec<crate::vision::GenerateRequest>>,
+        requests: Mutex<Vec<crate::generation::GenerateRequest>>,
     }
 
     impl VisualBackend {
@@ -3508,27 +3017,18 @@ mod tests {
             }
         }
 
-        fn requests(&self) -> Vec<crate::vision::GenerateRequest> {
+        fn requests(&self) -> Vec<crate::generation::GenerateRequest> {
             self.requests.lock().unwrap().clone()
         }
     }
 
     impl GenerationBackend for VisualBackend {
-        fn segment(
-            &self,
-            _request: &crate::vision::SegmentRequest,
-        ) -> futures_util::future::BoxFuture<
-            '_,
-            Result<crate::vision::SegmentResponse, PipelineError>,
-        > {
-            unreachable!()
-        }
         fn generate(
             &self,
-            request: &crate::vision::GenerateRequest,
+            request: &crate::generation::GenerateRequest,
         ) -> futures_util::future::BoxFuture<
             '_,
-            Result<crate::vision::GenerateResponse, PipelineError>,
+            Result<crate::generation::GenerateResponse, PipelineError>,
         > {
             let request = request.clone();
             let generated = self.generated.clone();
@@ -3540,16 +3040,13 @@ mod tests {
                     let _ = std::fs::create_dir_all(parent);
                 }
                 std::fs::write(&generated, b"png").expect("dummy image should write");
-                Ok(crate::vision::GenerateResponse {
+                Ok(crate::generation::GenerateResponse {
                     status: "completed".to_owned(),
                     image_path: Some(generated.display().to_string()),
                     model: request.model.clone(),
-                    device: None,
-                    dtype: None,
                     seed: request.seed,
-                    width: request.width,
-                    height: request.height,
-                    duration_ms: None,
+                    width: Some(request.width),
+                    height: Some(request.height),
                     error: None,
                 })
             })
@@ -3558,15 +3055,6 @@ mod tests {
             &self,
             _request: &str,
         ) -> futures_util::future::BoxFuture<'_, Result<Option<String>, PipelineError>> {
-            unreachable!()
-        }
-        fn llm_plan(
-            &self,
-            _request: &str,
-        ) -> futures_util::future::BoxFuture<
-            '_,
-            Result<Option<super::super::pipeline::PlannedEdit>, PipelineError>,
-        > {
             unreachable!()
         }
     }
@@ -3665,40 +3153,5 @@ mod tests {
         assert_eq!(registry.log.len(), 1);
         assert_eq!(registry.log[0].status, OpStatus::Rejected);
         assert_eq!(registry.log[0].origin, OpOrigin::Llm);
-    }
-
-    #[test]
-    fn selected_mask_is_derived_from_the_run_decisions() {
-        let run = PipelineRun {
-            outputs: vec![StepOutput {
-                step_index: 1,
-                label: "segment".into(),
-                kind: crate::registry::pipeline::OutputKind::Mask,
-                path: Some("masks/hair.png".into()),
-                text: Some("her hair".into()),
-            }],
-            decisions: vec![crate::registry::pipeline::BlockRecord {
-                step_index: 2,
-                blocked_on: BlockedOn::SelectMask {
-                    description: "confirm the segmentation mask".into(),
-                    candidates: vec![MaskCandidate {
-                        path: "masks/hair.png".into(),
-                        score: 0.98,
-                        area_pixels: 900,
-                        bounding_box: crate::vision::SegmentBox {
-                            x_min: 0.0,
-                            y_min: 0.0,
-                            x_max: 10.0,
-                            y_max: 20.0,
-                        },
-                    }],
-                },
-                decision: Decision::SelectMask(0),
-            }],
-        };
-        let mask = selected_mask_from_run(&run).expect("mask should be derived");
-        assert_eq!(mask.path.to_str(), Some("masks/hair.png"));
-        assert_eq!(mask.score, 0.98);
-        assert_eq!(segment_prompt_from_run(&run).as_deref(), Some("her hair"));
     }
 }

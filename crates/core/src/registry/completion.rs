@@ -562,17 +562,7 @@ mod tests {
         let input = "/modify c:mara --";
         let completions = complete(input, input.len(), &refs());
         assert_eq!(completions.head, "flags");
-        assert_eq!(
-            labels(&completions),
-            [
-                "--mask",
-                "--mask-file",
-                "--inpaint",
-                "--size",
-                "--steps",
-                "--lora"
-            ]
-        );
+        assert_eq!(labels(&completions), ["--size", "--steps", "--lora"]);
 
         // /describe takes none, so nothing is offered rather than a wrong list.
         let input = "/describe c:mara --";

@@ -1,19 +1,21 @@
 # Architecture
 
-Smart Visual Sequencer is a desktop application with a deliberate boundary
-between product code and machine-learning code:
+Smart Visual Sequencer is a desktop application whose entire product code —
+UI, state, domain models, persistence, provisioning, process lifecycle, and
+path resolution — is Rust. There is no Python: the old FastAPI vision runtime
+and its SAM/segmentation stack were removed with the Krea/SAM migration, and
+the project's only generation backend is a native process Rust talks to over
+HTTP.
 
 - **Rust** owns the Dioxus UI, application state, domain models, project
   persistence, model download/provisioning, process lifecycle, directory
-  resolution, and the LM Studio client.
-- **Python** owns every ML framework and vision implementation detail. Rust
-  never imports or knows about PyTorch, Transformers, or SAM.
-- **HTTP** is the only boundary between them, and the Python side is a normal
-  FastAPI service with stable contracts (`apps/vision/models/schemas.py`).
-- **stable-diffusion.cpp** (`sd-server`) is a separate native process owned by
-  Rust that keeps the Krea 2 diffusion model resident.
+  resolution, the native generation client, and the LM Studio client.
+- **`stable-diffusion.cpp`** (`sd-server`) is a separate native process owned by
+  Rust that keeps the **Qwen-Image-2.1** diffusion model resident. Rust never
+  links an ML framework; it is only HTTP client to the server's `sdcpp` API.
 - **LM Studio** is an external OpenAI-compatible service accessed directly from
-  Rust. It currently ships a client but no planner business logic.
+  Rust. `crates/core/src/llm/` is the client; the planner business logic lives
+  in `crates/core/src/registry/`.
 
 ## Component map
 
@@ -23,11 +25,11 @@ between product code and machine-learning code:
 │  crates/core/src/  — the domain layer (no GUI dependency)                          │
 │    registry/      Artifact model, typed ops + pipelines, slash parser,             │
 │                   CreativeBackend (live backend)                                   │
+│    generation/    GenerationClient (typed client for the sd-server sdcpp API)      │
 │    persistence/   ProjectDb (SQLite, versioned migrations)                         │
 │    llm/           LmStudioClient (OpenAI-compatible chat completions)              │
-│    vision/        VisionClient (typed HTTP client for the Python runtime)          │
-│    runtime/       CreativeRuntime facade + PythonRuntime + GenerationRuntime +     │
-│                   ModelStore (download, resume, checksum verify)                   │
+│    runtime/       CreativeRuntime facade + GenerationRuntime + ModelStore          │
+│                   (download, resume, checksum verify)                             │
 │    assets/        AssetCatalog (import/index boundary; currently minimal)          │
 │                                                                                    │
 │  apps/desktop/src/  — the Dioxus application                                       │
@@ -35,10 +37,10 @@ between product code and machine-learning code:
 │    state/         AppState: registry, selection, undo/redo stacks                  │
 │                                                                                    │
 │  spawns and supervises:                                                            │
-│   ┌─────────────────────┐        ┌──────────────────────────────────────────────┐  │
-│   │ apps/vision/main.py │  HTTP  │ sd-server (stable-diffusion.cpp)             │  │
-│   │ FastAPI on :8765    │ ─────▶ │ resident Krea 2 + Qwen3-VL + VAE on :7861    │  │
-│   └─────────────────────┘        └──────────────────────────────────────────────┘  │
+│   ┌──────────────────────────────────────────────────────────────────────────────┐ │
+│   │ sd-server (stable-diffusion.cpp)                                             │ │
+│   │ resident Qwen-Image-2.1 + Qwen3-VL encoder + VAE on 127.0.0.1:7861           │ │
+│   └──────────────────────────────────────────────────────────────────────────────┘ │
 └────────────────────────────────────────────────────────────────────────────────────┘
   │
   │ OpenAI-compatible HTTP (crates/core/src/llm/)
@@ -48,9 +50,83 @@ between product code and machine-learning code:
 └──────────────────────────────┘
 ```
 
-The native generation server is started with `--listen-ip 127.0.0.1
---listen-port 7861`; the Python runtime listens on `127.0.0.1:8765`
-(see [`runtime-lifecycle.md`](runtime-lifecycle.md)). Both are loopback-only.
+The generation server is started with `--listen-ip 127.0.0.1 --listen-port 7861`
+and serves only on loopback; the client's `generation.base_url` and the port the
+runtime binds must agree (both come from `config/app.toml`). See
+[`runtime-lifecycle.md`](runtime-lifecycle.md).
+
+## The `sd-server` (`sdcpp`) HTTP contract
+
+Rust consumes the native server's async `sdcpp` API directly through
+`GenerationClient` (`crates/core/src/generation/mod.rs`). The authoritative
+field list is `stable-diffusion.cpp/examples/server/api.md` at the checked-out
+revision — read it before adding a field, because anything the server does not
+name in its JSON parser is dropped silently.
+
+### Endpoints
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/sdcpp/v1/img_gen` | Submit an image-generation job (async) |
+| `GET` | `/sdcpp/v1/jobs/{id}` | Poll a submitted job |
+| `GET` | `/sdcpp/v1/capabilities` | Report the resident model |
+
+The base URL is `generation.base_url` (`http://127.0.0.1:7861` by default).
+
+### Request body (`POST /sdcpp/v1/img_gen`)
+
+The client maps [`GenerateRequest`] onto this body. Fields the app does not
+vary keep the server defaults.
+
+| Field | Type | Value sent |
+| --- | --- | --- |
+| `prompt` | string | the (grounded) instruction or description |
+| `width`, `height` | int | multiples of 32 within 256–2048 |
+| `seed` | int | the requested seed, or `-1` for a random one |
+| `batch_count` | int | `1` |
+| `ref_images` | array of base64 strings | `[reference]` for an edit; the field is omitted when there is no reference |
+| `sample_params.scheduler` | string | `discrete` (pinned explicitly — the server's compatibility default is unnamed) |
+| `sample_params.sample_method` | string | `euler` by default |
+| `sample_params.sample_steps` | int | the step count (default 25) |
+| `sample_params.guidance.txt_cfg` | float | the text-guidance scale (default 6.0) |
+| `lora` | array of `{path, multiplier}` | the adapters to apply; omitted when empty |
+| `vae_tiling_params` | object | always sent, see below |
+| `output_format` | string | `png` |
+
+`vae_tiling_params` is sent with `enabled: true`, `tile_size_w`/`tile_size_h`
+256, and `target_overlap` 0.5. This build ignores tiling when only `enabled` is
+set, and the untiled decode buffers OOM on a 24 GiB card at a 1024×1536 canvas,
+so the explicit tile size is what keeps tiled decoding the only path. `lora[].path`
+is the name the server registers an adapter under (`LoraBindings::registered`),
+never an absolute path.
+
+### Response shapes
+
+Submission (`202 Accepted`):
+
+```json
+{ "id": "job-uuid", "kind": "img_gen", "status": "queued", "created": 0, "poll_url": null }
+```
+
+Polled job (`GET /sdcpp/v1/jobs/{id}`):
+
+```json
+{
+  "id": "job-uuid", "kind": "img_gen", "status": "completed", "created": 0,
+  "started": 1, "completed": 2, "queue_position": 0,
+  "result": { "output_format": "png", "images": [ { "index": 0, "b64_json": "…" } ] },
+  "error": null
+}
+```
+
+`status` is one of `queued`, `generating`, `completed`, `failed`, `cancelled`.
+A failed job carries `error: { code, message }`. `GenerationJob::first_image`
+base64-decodes `result.images[0].b64_json`.
+
+Capabilities (`GET /sdcpp/v1/capabilities`) is a large document; only the
+resident-model block is consumed — `{ "model": { "name", "stem", "path" }, … }`.
+Readiness compares the reported `name`/`stem` against the profile's diffusion
+file name (either form is accepted).
 
 ## The prompt-to-revision flow
 
@@ -75,14 +151,12 @@ ops::execute (crates/core/src/registry/ops.rs)
          │  AppState::snapshot_for_undo (registry snapshot — undo basis)
          ▼
        CreativeBackend::generate (crates/core/src/registry/backend.rs)
-         │  CreativeRuntime::ensure_profile_ready (cold start: sd-server + python)
-         │  VisionClient::submit_generation(POST /generation/jobs)
+         │  CreativeRuntime::ensure_profile_ready (cold start: sd-server)
+         │  GenerationClient::generate (POST /sdcpp/v1/img_gen)
          ▼
-       sd.cpp generates into python's SVS_GENERATED_DIR
-         │  CreativeRuntime::wait_for_job polls GET /generation/jobs/{id}
-         ▼
-       completed job exposes image_path
-         │  CreativeRuntime::import_asset copies into <asset_dir>/generated/<uuid>.png
+       CreativeRuntime::wait_for_job polls GET /sdcpp/v1/jobs/{id},
+       then decodes result.images[0].b64_json and writes
+       <asset_dir>/generated/<uuid>.png (the canonical asset path)
          ▼
        registry.finish_revision → completed revision + active image
          │  has_unsaved_changes → autosave writes the SQLite snapshot
@@ -91,15 +165,15 @@ Artifact detail: image + revision history (served via /generated/<file>)
 ```
 
 A `modify` is an **instruction edit**, not a regional one: `LoadImage →
-Ground(instruction) → Generate(reference, grounded instruction)`. Krea 2's
-identity-edit adapter takes an image plus a plain-language instruction and
-preserves what the instruction did not mention, so nothing is segmented,
-masked or composited, and the op runs unattended — there is no checkpoint.
+Generate(reference, grounded instruction)`. The model takes an image plus a
+plain-language instruction and preserves what the instruction did not mention,
+so nothing is segmented, masked or composited, and the op runs unattended —
+there is no checkpoint.
 
-The `Ground` step is why it holds together. A terse instruction
-under-specifies the render and it collapses toward base-model priors, so the
-instruction is rewritten to name the medium and re-state the artifact's own
-description as the traits to keep. `ground_instruction` (`crates/core/src/registry/ops.rs`)
+Grounding is why it holds together. A terse instruction under-specifies the
+render and it collapses toward base-model priors, so the instruction is
+rewritten to name the medium and re-state the artifact's own description as the
+traits to keep. `ground_instruction` (`crates/core/src/registry/ops.rs`)
 does that deterministically; when LM Studio is configured, `llm_ground`
 refines it by dropping the traits the edit overrides. The LLM is a soft
 dependency — it never blocks, and a missing one falls back to the template.
@@ -118,34 +192,24 @@ cut` grounds the second edit against the original description, and the auburn
 washes out. That is deliberate — an artifact has one canonical look and edits
 are experiments against it — so `describe` is the op that promotes an edit to
 canonical (`/describe c:mara "…, auburn hair, …"`), and `variant` is how a
-look becomes its own artifact. Anchoring on the current revision instead would
-need a caption of the active image; `/caption` is a placeholder today.
-
-Passing both `--mask-prompt` and `--inpaint-prompt` opts into the older
-regional flow instead (`Segment → Checkpoint(confirm mask) → Generate →
-Composite`, see `docs/ROADMAP.md` §5). That path still checkpoints — the
-canvas overlays the segmentation candidates in a modal, the CLI offers
-`--approve interactive`, and non-interactive runs auto-pick the best
-candidate — and it is retained for inpaint/outpaint work that an instruction
-cannot express. It does not currently produce correct results; see
-`AGENTS.md`.
-
-The interactive draft profile requests 768×448 at four steps to favor
-iteration speed on slower hardware.
+look becomes its own artifact.
 
 ## Process boundaries
 
 | Process | Owner | Lifetime | Purpose |
 | --- | --- | --- | --- |
 | Dioxus desktop app | Rust | Application session | UI, state, orchestration |
-| `apps/vision/main.py` (uvicorn) | Rust (`PythonRuntime`) | On demand, resident after first generation | HTTP adapter, result store, segmentation, Diffusers POC |
-| `sd-server` | Rust (`GenerationRuntime`) | On demand, resident | Persistent Krea 2 inference |
-| LM Studio | User (external) | External | LLM planning/VLM (future) |
+| `sd-server` | Rust (`GenerationRuntime`) | On demand, resident | Persistent Qwen-Image-2.1 inference |
+| LM Studio | User (external) | External | LLM planning/grounding and VLM evaluation |
 
-Rust does not start the Python runtime at app launch; the shell reports the
-runtime as idle until a generation request triggers `ensure_ready` — or until
-it is started manually from the Settings Status section
-(see [`runtime-lifecycle.md`](runtime-lifecycle.md#on-demand-start-and-stop)).
+Rust does not start `sd-server` at app launch; the shell reports it as idle
+until a generation request triggers `ensure_profile_ready` — or until it is
+started manually from the Settings Status section (see
+[`runtime-lifecycle.md`](runtime-lifecycle.md)).
+
+Only one model can be resident: Qwen-Image-2.1 peaks at ≈23.4 GiB on a 24 GiB
+card, so the planner/LLM cannot run concurrently with a generation. Free VRAM
+— stop the LM Studio model — before a generation on this hardware.
 
 ## Directory resolution
 
@@ -167,11 +231,13 @@ The checked-in config points everything at the repository (`models/`, `cache/`,
   driven through `CreativeBackend`. The Canvas free-form composer messages
   are proposed as operation stacks (LLM → closed-vocabulary JSON → approval
   modal → executed through the same worker machinery as slash commands).
-- **No ComfyUI.** Image generation is native (`stable-diffusion.cpp`) or a
-  Diffusers POC behind `/generate`; ComfyUI is not a dependency.
+- **No Python and no ML framework.** There is no FastAPI vision runtime, no
+  segmentation, and no Diffusers pipeline. Generation is the native
+  `stable-diffusion.cpp` process; the only other model service is the external
+  LM Studio endpoint.
+- **No ComfyUI.** Image generation is the native `sd-server`; ComfyUI is not a
+  dependency.
 - **No web/mobile targets.** The app is desktop-only; `cargo` features are
   limited to `desktop`.
-- **Captioning is a placeholder.** `POST /caption` returns
-  `status = "not_implemented"` until a captioning model is selected.
 
 See the [README roadmap](../README.md#roadmap) for the ordered backlog.

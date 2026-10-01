@@ -108,7 +108,6 @@ fn start_plan(
     grid_cursor: GridCursor,
     palette_open: Signal<bool>,
     active_tool: canvas::ActiveTool,
-    painted_strokes: canvas::PaintedStrokes,
     driver_ui: ExecutionUi,
     session: Signal<Option<GuideSession>>,
     plan: Plan,
@@ -129,7 +128,6 @@ fn start_plan(
         grid_cursor,
         palette_open,
         active_tool,
-        painted_strokes,
     };
     driver::run_plan(ctx, driver_ui, plan, mode, session, exit_on_done);
 }
@@ -150,10 +148,6 @@ pub fn Workspace(
     let generated_asset_directory = config.asset_dir.join("generated");
     dioxus::desktop::use_asset_handler("generated", move |request, responder| {
         serve_generated_asset(&generated_asset_directory, request, responder);
-    });
-    let mask_asset_directory = config.asset_dir.join("masks");
-    dioxus::desktop::use_asset_handler("mask", move |request, responder| {
-        serve_generated_asset(&mask_asset_directory, request, responder);
     });
 
     // Autosave: the mode lives here and is shared with Settings via context.
@@ -187,14 +181,11 @@ pub fn Workspace(
     use_context_provider(|| writer_caret);
     let grid_cursor = GridCursor(use_signal(|| 0usize));
     use_context_provider(|| grid_cursor);
-    // The canvas tool and its painted mask are provided here, beside the
-    // other cursors, rather than in the canvas: the driver context is built
-    // at this level, and a plan that drives the brush has to reach the same
-    // signals the rail does.
+    // The canvas tool is provided here, beside the other cursors, rather
+    // than in the canvas: the driver context is built at this level, and a
+    // plan that drives a tool has to reach the same signal the rail does.
     let active_tool = canvas::ActiveTool(use_signal(tools::Tool::default));
     use_context_provider(|| active_tool);
-    let painted_strokes = canvas::PaintedStrokes(use_signal(Vec::new));
-    use_context_provider(|| painted_strokes);
 
     // The automation driver: its own execution surface (the assistant card
     // and the runner observe it; the global toast stays untouched) and the
@@ -239,7 +230,6 @@ pub fn Workspace(
                 grid_cursor,
                 palette_open,
                 active_tool,
-                painted_strokes,
                 hook_driver_ui,
                 session,
                 plan,
@@ -360,7 +350,6 @@ pub fn Workspace(
                 grid_cursor,
                 palette_open,
                 active_tool,
-                painted_strokes,
                 plans_driver_ui.clone(),
                 session,
                 plan,
@@ -471,13 +460,6 @@ fn guide_overlay(session: Signal<Option<GuideSession>>) -> Option<Element> {
 /// serves (the handler serves `asset_dir/generated/<filename>`).
 pub fn generated_asset_url(path: &str) -> Option<String> {
     asset_url("generated", path)
-}
-
-/// Maps a stored mask path to the URL the `mask` asset handler serves (the
-/// handler serves `asset_dir/masks/<filename>` — where `SVS_MASK_DIR`
-/// points the vision service).
-pub fn mask_asset_url(path: &str) -> Option<String> {
-    asset_url("mask", path)
 }
 
 fn asset_url(protocol: &str, path: &str) -> Option<String> {

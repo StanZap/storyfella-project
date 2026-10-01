@@ -1,14 +1,15 @@
 [generation.sizes]
-# VAE tiling (enabled client-side) keeps the decode buffers small, so the
-# full portrait canvas fits the 24GiB card even with the resident encoder.
+# Qwen-Image-2.1 has no few-step turbo path: it is sampled with CFG at ~25
+# steps, and portrait characters use the full portrait canvas.
 character = "1024x1536"
+
 [lora]
-inpaint = "krea/INPAINTKREA-V1.safetensors"
-# Krea's identity-preserving edit adapter: applied to variant/regenerate
-# only (not create/modify — its 1.8GB resident footprint would push the
-# 24GiB card over budget on mask edits).
-variant = "krea/krea2_identity_edit_v1_2.safetensors"
 multiplier = 1.0
+# Per-kind adapters (file names in generation.lora_dir):
+# character = "mia-v2.safetensors"
+# environment = "sea-shore.safetensors"
+# object = "brass-lantern.safetensors"
+
 [lm_studio]
 base_url = "http://localhost:1234/v1"
 # Instruction grounding for `modify` is a subtraction task — restate the
@@ -23,29 +24,16 @@ model = "prism-ml/bonsai-27b"
 timeout_seconds = 60
 
 [generation]
-steps = 8
+steps = 25
+cfg_scale = 6.0
+sample_method = "euler"
 base_url = "http://127.0.0.1:7861"
-profile = "krea-2-turbo-q4"
+profile = "qwen-image-2.1"
 # executable and lora_dir default beneath model_dir.
 # executable = "models/runtime/stable-diffusion.cpp/bin/sd-server"
 # lora_dir = "models/loras"
-# steps = 4                                  # default steps per generation
-# [generation.sizes]                         # per-kind default canvases (WxH)
-# character = "512x768"
-# environment = "1024x576"
-# object = "768x768"
-# scene = "1024x576"
-# beat = "1024x576"
-
-# [lora]                                     # adapters by use-case (file names in lora_dir)
-# inpaint = "inpaintkrea.safetensors"        # applied to /modify (mask-guided edits)
-# character = "mia-v2.safetensors"
-# environment = "sea-shore.safetensors"
-# object = "brass-lantern.safetensors"
-# multiplier = 1.0                           # weight for the bindings above
 
 [paths]
-python_runtime = "apps/vision"
 # Development uses the model artifacts already provisioned in this checkout.
 # Packaged builds may omit these overrides to use platform application directories.
 model_dir = "models"

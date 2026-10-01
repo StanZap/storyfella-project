@@ -7,13 +7,9 @@
 //! variant, Regenerate, Modify) prefill it, so there is exactly one input
 //! path — the same typed vocabulary as the `svs` CLI.
 //!
-//! `modify` runs its pipeline on a worker thread (own tokio runtime) so the
-//! mask checkpoint can block on the user without freezing the UI: the worker
-//! forwards the segmentation candidates through a channel, the supervisor
-//! task (UI thread) shows them in a modal, and the user's choice is sent back
-//! to the worker. Stored masks are listed under the active revision.
-
-use std::{cell::RefCell, rc::Rc, sync::mpsc};
+//! `modify` is an instruction edit — a reference image plus a grounded
+//! instruction — so it runs unattended and this screen has no checkpoint to
+//! answer.
 
 use dioxus::prelude::*;
 use uuid::Uuid;
@@ -23,15 +19,12 @@ use svs_core::registry::{
     backend::CreativeBackend,
     completion::RefCandidate,
     ops::{self, Operation},
-    pipeline::{Decision, PlannedEdit},
     slash::is_slash_command,
-    Artifact, ArtifactRegistry, ArtifactRevision, RevisionStatus, StoredMask,
+    Artifact, ArtifactRegistry, ArtifactRevision, RevisionStatus,
 };
 
 use crate::{
-    commands::{
-        self, ExecutionUi, MaskCandidateUi, OpActivity, PendingApproval, PendingMaskApproval,
-    },
+    commands::{self, ExecutionUi, OpActivity},
     state::AppState,
 };
 
@@ -42,7 +35,6 @@ use super::{
     generated_asset_url,
     icons::{Icon, IconName},
     inspector::Inspector,
-    mask_asset_url,
     palette::{self, Palette},
     shortcuts,
 };
@@ -53,15 +45,6 @@ use super::{
 /// the tooltip lies about.
 #[derive(Clone, Copy)]
 pub struct ActiveTool(pub Signal<super::tools::Tool>);
-
-/// The strokes painted on the open image, in its own pixel coordinates.
-///
-/// In context alongside [`ActiveTool`] so the automation driver can paint a
-/// demonstration the same way a hand does — through the state the rail and
-/// the overlay already read, rather than through a second path that could
-/// diverge from the real one.
-#[derive(Clone, Copy)]
-pub struct PaintedStrokes(pub Signal<Vec<svs_core::registry::pipeline::Stroke>>);
 
 /// Collapse state for the detail panels, in context so the key handler and
 /// the pane share one source of truth.
@@ -101,14 +84,6 @@ pub fn Canvas(
         .map(|artifact| RefCandidate::new(artifact.name.clone(), artifact.kind.as_str()))
         .collect();
 
-    // The mask checkpoint handshake. `reply_slot` is the UI-side end of the
-    // channel the op worker blocks on; the modal's buttons send the choice.
-    // Both stay on the UI thread (signals are not cross-thread safe).
-    let mut pending_approval = use_signal(|| None::<PendingApproval>);
-    let reply_slot = use_hook(|| Rc::new(RefCell::new(None::<mpsc::Sender<Decision>>)));
-    // The rerun action re-executes an operation from the log; it needs its
-    // own reply-slot clone (the closure below moves the original).
-    let reply_slot_for_rerun = reply_slot.clone();
     // A free-form message proposed as an operation stack, awaiting approval.
     let mut proposal = use_signal(|| None::<StackProposal>);
     let reviewing = proposal.read().is_some();
@@ -116,15 +91,12 @@ pub fn Canvas(
 
     // The inspector's controls are commands: they take the same path a
     // typed one does, so the rail and the bar cannot diverge.
-    let reply_slot_for_rail = reply_slot.clone();
     let run_command = move |input: String| {
         if disabled {
             return;
         }
         let ui = ExecutionUi {
             activity,
-            pending_approval,
-            reply_slot: reply_slot_for_rail.clone(),
             error_report,
         };
         if let Err(report) =
@@ -262,7 +234,6 @@ pub fn Canvas(
         }
     });
 
-    let reply_slot_for_run = reply_slot.clone();
     let submit = move |_| {
         if disabled {
             return;
@@ -276,8 +247,6 @@ pub fn Canvas(
         if is_slash_command(&input) {
             let ui = ExecutionUi {
                 activity,
-                pending_approval,
-                reply_slot: reply_slot_for_run.clone(),
                 error_report,
             };
             if let Err(report) =
@@ -299,45 +268,6 @@ pub fn Canvas(
         }
     };
 
-    // The active modal, built before the rsx (a `let` inside a rsx block is
-    // not allowed). The checkpoint modals and the proposal modal are
-    // mutually exclusive (the composer is disabled while busy).
-    let modal = {
-        let pending = pending_approval.read().clone();
-        match pending {
-            Some(PendingApproval::Mask(approval)) => {
-                let reply = reply_slot.clone();
-                let on_decide = move |decision: Decision| {
-                    if let Some(sender) = reply.borrow_mut().take() {
-                        let _ = sender.send(decision);
-                    }
-                    pending_approval.set(None);
-                };
-                Some(rsx! {
-                    MaskApprovalModal {
-                        approval,
-                        on_decide,
-                    }
-                })
-            }
-            Some(PendingApproval::PlannedEdit { description }) => {
-                let reply = reply_slot.clone();
-                let on_decide = move |decision: Decision| {
-                    if let Some(sender) = reply.borrow_mut().take() {
-                        let _ = sender.send(decision);
-                    }
-                    pending_approval.set(None);
-                };
-                Some(rsx! {
-                    PlanEditModal {
-                        description,
-                        on_decide,
-                    }
-                })
-            }
-            None => None,
-        }
-    };
     let proposal_modal = {
         let pending = proposal.read().clone();
         match pending {
@@ -350,8 +280,6 @@ pub fn Canvas(
                             proposal.set(None);
                             let ui = ExecutionUi {
                                 activity,
-                                pending_approval,
-                                reply_slot: reply_slot.clone(),
                                 error_report,
                             };
                             commands::run_operations(
@@ -397,8 +325,6 @@ pub fn Canvas(
                     }
                     let ui = ExecutionUi {
                         activity,
-                        pending_approval,
-                        reply_slot: reply_slot_for_rerun.clone(),
                         error_report,
                     };
                     commands::run_operations(
@@ -441,7 +367,6 @@ pub fn Canvas(
                 },
             }
         }
-        {modal}
         {proposal_modal}
     }
 }
@@ -562,135 +487,6 @@ fn draft_on_visual_artifact(registry: &ArtifactRegistry, operation: &Operation) 
     })
 }
 
-/// The mask checkpoint modal: the segmentation candidates overlaid on the
-/// artifact's image; picking one resumes the `modify` pipeline, Cancel
-/// rejects the checkpoint (revision cancelled, op logged rejected).
-#[component]
-fn MaskApprovalModal(approval: PendingMaskApproval, on_decide: EventHandler<Decision>) -> Element {
-    let image_url = approval.image.as_deref().and_then(generated_asset_url);
-    let description = approval.description.clone();
-    let candidate_count = approval.candidates.len();
-    // Score labels computed here: RSX text nodes cannot nest format calls.
-    let candidates: Vec<(MaskCandidateUi, String)> = approval
-        .candidates
-        .iter()
-        .map(|candidate| (candidate.clone(), format!("score {:.3}", candidate.score)))
-        .collect();
-    rsx! {
-        div { class: "fixed inset-0 z-50 grid place-items-center bg-black/60 p-6 backdrop-blur-sm",
-            div { class: "w-full max-w-3xl rounded-2xl bg-zinc-950 p-6 shadow-[0_30px_90px_rgba(0,0,0,.5)] ring-1 ring-white/[0.09]",
-                div { class: "mb-1 flex items-center gap-2",
-                    span { class: "size-2 animate-pulse rounded-full bg-amber-400" }
-                    p { class: "text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500", "Checkpoint" }
-                }
-                h2 { class: "mb-1 text-base font-semibold text-zinc-100", "{description}" }
-                p { class: "mb-5 text-[10px] leading-4 text-zinc-600",
-                    "{candidate_count} candidate masks — pick the one that covers the right region, or cancel."
-                }
-                if candidate_count == 0 {
-                    p { class: "mb-5 rounded-lg bg-rose-400/10 px-3 py-2 text-[11px] text-rose-300 ring-1 ring-inset ring-rose-400/20",
-                        "Segmentation produced no masks for this prompt."
-                    }
-                }
-                div { class: "grid grid-cols-[repeat(auto-fill,minmax(170px,1fr))] gap-3",
-                    for (index, (candidate, score_label)) in candidates.iter().enumerate() {
-                        button {
-                            class: "group min-w-0 rounded-xl text-left transition hover:ring-2 hover:ring-violet-400/50",
-                            title: "Use this mask",
-                            onclick: move |_| on_decide.call(Decision::SelectMask(index)),
-                            div { class: "relative aspect-square overflow-hidden rounded-xl bg-zinc-900 ring-1 ring-inset ring-white/[0.08]",
-                                if let Some(url) = &image_url {
-                                    img { class: "absolute inset-0 h-full w-full object-cover", src: "{url}", alt: "artifact" }
-                                }
-                                if let Some(mask_url) = mask_asset_url(&candidate.path) {
-                                    img { class: "absolute inset-0 h-full w-full object-cover opacity-80 mix-blend-screen", src: "{mask_url}", alt: "candidate mask" }
-                                }
-                                span { class: "absolute left-1.5 top-1.5 rounded bg-black/60 px-1.5 py-0.5 font-mono text-[9px] text-violet-200 backdrop-blur",
-                                    "{index + 1}"
-                                }
-                            }
-                            p { class: "mt-1.5 truncate font-mono text-[10px] text-zinc-400", "{score_label}" }
-                            p { class: "truncate text-[9px] text-zinc-700", "{candidate.area_pixels} px" }
-                        }
-                    }
-                }
-                div { class: "mt-5 flex justify-end gap-2",
-                    button {
-                        class: "flex h-8 items-center rounded-lg bg-white/[0.05] px-3.5 text-[10px] font-medium text-zinc-300 ring-1 ring-inset ring-white/[0.07] transition hover:bg-white/[0.09] hover:text-white",
-                        onclick: move |_| on_decide.call(Decision::Reject),
-                        "Cancel"
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// The degraded-LLM fallback for `modify` without explicit prompts: the
-/// edit plan (mask region + inpaint look) could not be produced by the LLM,
-/// so the user supplies the split manually — the same degradation the CLI
-/// offers (`--approve interactive`).
-#[component]
-fn PlanEditModal(description: String, on_decide: EventHandler<Decision>) -> Element {
-    let mut mask_prompt = use_signal(String::new);
-    let mut inpaint_prompt = use_signal(String::new);
-    let ready = !mask_prompt.read().trim().is_empty() && !inpaint_prompt.read().trim().is_empty();
-    rsx! {
-        div { class: "fixed inset-0 z-50 grid place-items-center bg-black/60 p-6 backdrop-blur-sm",
-            div { class: "w-full max-w-lg rounded-2xl bg-zinc-950 p-6 shadow-[0_30px_90px_rgba(0,0,0,.5)] ring-1 ring-white/[0.09]",
-                div { class: "mb-1 flex items-center gap-2",
-                    span { class: "size-2 animate-pulse rounded-full bg-amber-400" }
-                    p { class: "text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500", "Manual plan" }
-                }
-                h2 { class: "mb-1 text-base font-semibold text-zinc-100", "The edit needs a plan" }
-                p { class: "mb-5 text-[10px] leading-4 text-zinc-600",
-                    "The LLM is unavailable, so describe the edit yourself: what region of the image to change, and what it should look like. \"{description}\""
-                }
-                div { class: "space-y-3",
-                    div {
-                        p { class: "mb-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-zinc-600", "Mask region" }
-                        input {
-                            class: "h-9 w-full rounded-lg bg-white/[0.045] px-3 text-[11px] text-zinc-200 outline-none ring-1 ring-inset ring-white/[0.06] transition placeholder:text-zinc-700 focus:ring-violet-400/40",
-                            placeholder: "e.g. her hair",
-                            value: "{mask_prompt}",
-                            oninput: move |event| mask_prompt.set(event.value()),
-                        }
-                    }
-                    div {
-                        p { class: "mb-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-zinc-600", "Inpaint look" }
-                        input {
-                            class: "h-9 w-full rounded-lg bg-white/[0.045] px-3 text-[11px] text-zinc-200 outline-none ring-1 ring-inset ring-white/[0.06] transition placeholder:text-zinc-700 focus:ring-violet-400/40",
-                            placeholder: "e.g. a bob cut",
-                            value: "{inpaint_prompt}",
-                            oninput: move |event| inpaint_prompt.set(event.value()),
-                        }
-                    }
-                }
-                div { class: "mt-6 flex justify-end gap-2",
-                    button {
-                        class: "flex h-8 items-center rounded-lg bg-white/[0.05] px-3.5 text-[10px] font-medium text-zinc-300 ring-1 ring-inset ring-white/[0.07] transition hover:bg-white/[0.09] hover:text-white",
-                        onclick: move |_| on_decide.call(Decision::Reject),
-                        "Cancel"
-                    }
-                    button {
-                        class: "flex h-8 items-center rounded-lg bg-zinc-100 px-3.5 text-[10px] font-semibold text-zinc-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-35",
-                        disabled: !ready,
-                        title: "Segment the mask region, then inpaint",
-                        onclick: move |_| {
-                            let plan = PlannedEdit {
-                                mask_prompt: mask_prompt().trim().to_owned(),
-                                inpaint_prompt: inpaint_prompt().trim().to_owned(),
-                            };
-                            on_decide.call(Decision::ProvidePlan(plan));
-                        },
-                        "Plan the edit"
-                    }
-                }
-            }
-        }
-    }
-}
-
 fn is_visual(artifact: &Artifact) -> bool {
     artifact.kind.is_visual()
 }
@@ -808,7 +604,7 @@ struct RevisionRow {
     promote: String,
 }
 
-/// "Revision 3 · krea-2-turbo-q2 · Ready" — the 1-based index plus model
+/// "Revision 3 · qwen-image-2.1 · Ready" — the 1-based index plus model
 /// and status.
 fn revision_meta_label(index: usize, revision: &ArtifactRevision) -> String {
     let model = revision
@@ -913,29 +709,6 @@ fn ArtifactDetail(
     // The active canvas tool. Pointer is the resting state, so opening an
     // artifact never lands you in a mode you did not ask for.
     let tool = use_context::<ActiveTool>().0;
-    let mut strokes = use_context::<PaintedStrokes>().0;
-    let mut painting = use_signal(|| false);
-    // In pane pixels, so the brush stays the size it looks.
-    let brush_radius = use_signal(|| 24.0f64);
-    // The render pane's size, measured once it exists. Until then there is
-    // no mapping from pointer to pixel, so painting is inert rather than
-    // wrong.
-    let mut pane = use_signal(|| None::<(f64, f64)>);
-    // The image's own pixel dimensions, which the mapping needs and the
-    // artifact's default size only guesses at.
-    let image_for_size: Option<String> = image.clone();
-    let image_size = use_memo(move || {
-        image_for_size
-            .as_deref()
-            .map(std::path::Path::new)
-            .and_then(|path| svs_core::registry::image_ops::dimensions(path).ok())
-    })();
-    // The mask file is written by whatever changed the strokes — the
-    // pointer handler here, or the driver's paint step — never by a
-    // reactive echo of them. An effect would re-fire on any re-render and
-    // rewrite the file against whatever `image_size` had resolved to by
-    // then, which is how a plan ended up editing through a mask sized for
-    // the artifact it had open a moment earlier.
 
     // Size and bound adapters are the inspector rail's business now.
     // Always the base's family, never the open artifact's children —
@@ -983,12 +756,6 @@ fn ArtifactDetail(
             promote: format!("/describe {ref_label} {:?}", revision.prompt.trim()),
         })
         .collect();
-    // The masks of the revision currently on screen (the active one).
-    let active_masks: Vec<StoredMask> = artifact
-        .active_revision_id
-        .and_then(|id| artifact.revisions.iter().find(|revision| revision.id == id))
-        .map(|revision| revision.masks.clone())
-        .unwrap_or_default();
 
     rsx! {
         // Three regions with their own space, so the page never scrolls:
@@ -1066,50 +833,13 @@ fn ArtifactDetail(
             // The render takes whatever the other two regions leave.
             div { class: "relative min-h-0 flex-1 overflow-hidden bg-black/25",
                 if is_visual && image.is_some() {
-                    ToolRail {
-                        tool,
-                        disabled,
-                        brush_radius,
-                        painted: !strokes.read().is_empty(),
-                        on_clear: move |_| {
-                            strokes.write().clear();
-                            write_painted_mask(app_state, &[], None);
-                        },
-                    }
+                    ToolRail { tool, disabled }
                 }
                 match image {
                     Some(path) => rsx! {
                         if let Some(url) = generated_asset_url(&path) {
-                            // The picture and the painting surface are the
-                            // same box: `Fitted` maps pointer positions in it
-                            // to image pixels, so both must measure the same
-                            // element.
-                            div {
-                                class: if tool().paints() { "absolute inset-3 cursor-crosshair" } else { "absolute inset-3" },
-                                onmounted: move |event| async move {
-                                    if let Ok(rect) = event.get_client_rect().await {
-                                        pane.set(Some((rect.size.width, rect.size.height)));
-                                    }
-                                },
-                                onmousedown: move |event| {
-                                    if tool().paints() {
-                                        painting.set(true);
-                                        let at = event.element_coordinates();
-                                        paint_at((at.x, at.y), pane(), image_size, brush_radius, tool(), strokes, app_state);
-                                    }
-                                },
-                                onmousemove: move |event| {
-                                    if painting() && tool().paints() {
-                                        let at = event.element_coordinates();
-                                        paint_at((at.x, at.y), pane(), image_size, brush_radius, tool(), strokes, app_state);
-                                    }
-                                },
-                                onmouseup: move |_| painting.set(false),
-                                onmouseleave: move |_| painting.set(false),
-                                img { class: "pointer-events-none h-full w-full object-contain", src: "{url}", alt: artifact.name }
-                                if !strokes.read().is_empty() {
-                                    MaskOverlay { strokes, pane: pane(), image_size }
-                                }
+                            div { class: "absolute inset-3",
+                                img { class: "h-full w-full object-contain", src: "{url}", alt: artifact.name }
                             }
                         }
                     },
@@ -1118,7 +848,7 @@ fn ArtifactDetail(
                             EmptyVisual {
                                 icon: IconName::Generate,
                                 title: if is_visual { "No image yet" } else { "Not a visual artifact" },
-                                description: if is_visual { "The first image is generated with the create — this one failed or predates it. Run /regenerate to retry (Krea must be provisioned)." } else { "This artifact carries text only — its images come from the layers that use it." }
+                                description: if is_visual { "The first image is generated with the create — this one failed or predates it. Run /regenerate to retry (Qwen-Image-2.1 must be provisioned)." } else { "This artifact carries text only — its images come from the layers that use it." }
                             }
                         }
                     },
@@ -1170,37 +900,6 @@ fn ArtifactDetail(
             // history is reference you open when you want it.
             if show_history() {
             div { class: "min-h-0 max-h-[38%] shrink-0 overflow-y-auto border-t border-white/[0.05] px-5 pb-24 pt-3",
-            if !active_masks.is_empty() {
-                Section { title: format!("Masks ({})", active_masks.len()),
-                    p { class: "mb-3 -mt-2 text-[9px] leading-4 text-zinc-700",
-                        "The mask that confined the edit on the active revision — follow-up modifications can reuse it."
-                    }
-                    div { class: "grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-3",
-                        for mask in &active_masks {
-                            div { class: "min-w-0",
-                                div { class: "relative aspect-square overflow-hidden rounded-xl bg-white/[0.04] ring-1 ring-inset ring-white/[0.07]",
-                                    if let Some(url) = mask_asset_url(&mask.asset_path) {
-                                        img { class: "h-full w-full object-cover", src: "{url}", alt: "mask" }
-                                    } else {
-                                        div { class: "absolute inset-0 grid place-items-center text-zinc-700", Icon { name: IconName::Generate, class: "size-4" } }
-                                    }
-                                }
-                                p { class: "mt-1.5 truncate text-[10px] text-zinc-400",
-                                    if let Some(prompt) = &mask.prompt { "{prompt}" } else { "mask" }
-                                }
-                                p { class: "truncate text-[9px] text-zinc-700",
-                                    if let Some(score) = mask.score {
-                                        "auto · score {score:.3}"
-                                    } else {
-                                        "auto"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
             if !artifact.revisions.is_empty() {
                 Section { title: format!("Revisions ({})", artifact.revisions.len()),
                     // Canon renders the description; an experiment renders a
@@ -1589,10 +1288,6 @@ mod tests {
         let modify_without_image = Operation::Modify {
             target: Ref::new("c:mia"),
             description: "change her hair".into(),
-            mask_prompt: Some("her hair".into()),
-            mask_file: None,
-            plan: false,
-            inpaint_prompt: Some("a bob cut".into()),
             size: None,
             steps: None,
             loras: Vec::new(),
@@ -1617,6 +1312,8 @@ mod tests {
             &svs_core::registry::GenerationDefaults {
                 sizes: Default::default(),
                 steps: 4,
+                cfg_scale: svs_core::generation::DEFAULT_CFG_SCALE,
+                sample_method: svs_core::generation::DEFAULT_SAMPLE_METHOD.to_owned(),
                 loras: Default::default(),
             },
         );
@@ -1653,14 +1350,7 @@ mod tests {
 /// hidden — the shape of the toolset is information, and a tool that appears
 /// only once it works looks like a tool that was never going to exist.
 #[component]
-fn ToolRail(
-    mut tool: Signal<super::tools::Tool>,
-    disabled: bool,
-    mut brush_radius: Signal<f64>,
-    /// Whether anything is painted, which is what makes clearing meaningful.
-    painted: bool,
-    on_clear: EventHandler<()>,
-) -> Element {
+fn ToolRail(mut tool: Signal<super::tools::Tool>, disabled: bool) -> Element {
     use super::tools::Tool;
     rsx! {
         div { class: "pointer-events-none absolute left-3 top-3 z-20 flex flex-col gap-1 rounded-xl bg-black/45 p-1 backdrop-blur ring-1 ring-inset ring-white/[0.07]",
@@ -1680,151 +1370,6 @@ fn ToolRail(
                     }
                 }
             }
-            // Brush settings and the mask's own controls appear only while a
-            // painting tool is held, so the rail stays a rail.
-            if tool().paints() {
-                div { class: "pointer-events-auto flex flex-col items-center gap-1 border-t border-white/[0.08] pt-1",
-                    input {
-                        r#type: "range",
-                        class: "h-16 w-6 cursor-pointer accent-violet-400",
-                        style: "writing-mode: vertical-lr; direction: rtl;",
-                        min: "4",
-                        max: "96",
-                        value: "{brush_radius()}",
-                        title: "Brush size",
-                        oninput: move |event| {
-                            if let Ok(value) = event.value().parse::<f64>() {
-                                brush_radius.set(value);
-                            }
-                        },
-                    }
-                    IconAction {
-                        icon: IconName::Close,
-                        title: "Clear the painted mask".to_owned(),
-                        disabled: !painted,
-                        onclick: move |_| on_clear.call(()),
-                    }
-                }
-            }
         }
     }
-}
-
-/// Rasterises the painted strokes and records the file on the app state.
-///
-/// Both surfaces that can paint call this — the brush's pointer handler and
-/// the automation driver's `paint` step — because the mask has to exist by
-/// the time a command runs, and a component effect only fires when that
-/// component re-renders. Tying the file to a render is how a plan can paint
-/// and then find nothing painted.
-pub fn write_painted_mask(
-    mut app_state: Signal<AppState>,
-    strokes: &[svs_core::registry::pipeline::Stroke],
-    image_size: Option<(u32, u32)>,
-) {
-    match (strokes.is_empty(), image_size) {
-        (false, Some((width, height))) => {
-            let output = std::env::temp_dir().join(format!("svs-painted-{}.png", Uuid::new_v4()));
-            match svs_core::registry::image_ops::strokes_to_mask(width, height, strokes, &output) {
-                Ok(()) => app_state.write().painted_mask = Some(output.display().to_string()),
-                Err(error) => tracing::warn!(%error, "could not write the painted mask"),
-            }
-        }
-        _ => app_state.write().painted_mask = None,
-    }
-}
-
-/// Draws the painted mask over the picture, in the picture's own box.
-#[component]
-fn MaskOverlay(
-    strokes: Signal<Vec<svs_core::registry::pipeline::Stroke>>,
-    pane: Option<(f64, f64)>,
-    image_size: Option<(u32, u32)>,
-) -> Element {
-    let (Some(pane), Some(image_size)) = (pane, image_size) else {
-        return rsx! {};
-    };
-    let Some(fitted) = super::tools::Fitted::contain(pane, image_size) else {
-        return rsx! {};
-    };
-    // The overlay is drawn in image coordinates and scaled by the same fit
-    // the pointer mapping uses, so what is drawn and what is masked are the
-    // same shape by construction rather than by two agreeing calculations.
-    let dabs: Vec<(f64, f64, f64, f64)> = strokes
-        .read()
-        .iter()
-        .map(|stroke| {
-            (
-                stroke.center_x,
-                stroke.center_y,
-                stroke.radius_x,
-                stroke.radius_y,
-            )
-        })
-        .collect();
-    rsx! {
-        svg {
-            class: "pointer-events-none absolute",
-            style: "left: {fitted.left}px; top: {fitted.top}px; width: {fitted.width}px; height: {fitted.height}px;",
-            view_box: "0 0 {image_size.0} {image_size.1}",
-            preserve_aspect_ratio: "none",
-            for (index, (x, y, rx, ry)) in dabs.into_iter().enumerate() {
-                ellipse {
-                    key: "{index}",
-                    cx: "{x}",
-                    cy: "{y}",
-                    rx: "{rx}",
-                    ry: "{ry}",
-                    fill: "rgb(167 139 250)",
-                    fill_opacity: "0.45",
-                }
-            }
-        }
-    }
-}
-
-/// Adds one brush dab at a pointer position, or removes what it touches.
-///
-/// Inert until the pane has been measured: without a fit there is no
-/// mapping from pointer to pixel, and a guessed one paints somewhere other
-/// than where the cursor is.
-fn paint_at(
-    at: (f64, f64),
-    pane: Option<(f64, f64)>,
-    image_size: Option<(u32, u32)>,
-    brush_radius: Signal<f64>,
-    tool: super::tools::Tool,
-    mut strokes: Signal<Vec<svs_core::registry::pipeline::Stroke>>,
-    app_state: Signal<AppState>,
-) {
-    let (Some(pane), Some(image_size)) = (pane, image_size) else {
-        return;
-    };
-    let Some(fitted) = super::tools::Fitted::contain(pane, image_size) else {
-        return;
-    };
-    let Some((x, y)) = fitted.to_image(at.0, at.1, image_size) else {
-        return; // in the letterbox, not on the picture
-    };
-    let radius = fitted.radius_to_image(brush_radius(), image_size);
-    match tool {
-        super::tools::Tool::Eraser => {
-            // Erasing drops whole dabs rather than subtracting shapes: the
-            // mask is a list of strokes, and a stroke is the unit a person
-            // painted.
-            strokes.write().retain(|stroke| {
-                let dx = stroke.center_x - x;
-                let dy = stroke.center_y - y;
-                (dx * dx + dy * dy).sqrt() > radius
-            });
-        }
-        _ => strokes.write().push(svs_core::registry::pipeline::Stroke {
-            center_x: x,
-            center_y: y,
-            radius_x: radius,
-            radius_y: radius,
-        }),
-    }
-    let painted = strokes.read().clone();
-    write_painted_mask(app_state, &painted, Some(image_size));
 }

@@ -1,19 +1,18 @@
 //! What each subcommand actually does.
 //!
 //! Thin wrappers over the documented workflows: build (debug or release),
-//! launch, bundle, check, lint, format, test, stylesheet, runtime, doctor. The
+//! launch, bundle, check, lint, format, test, stylesheet, doctor, clean. The
 //! only logic worth reading here is path resolution and exit-code propagation —
 //! everything else is a command assembled and handed to [`crate::proc`].
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command as Process, ExitCode, ExitStatus};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 
 use crate::cli::{
-    BuildArgs, BundleArgs, Cli, ClippyArgs, Command, CssArgs, FmtArgs, PlanArgs, RunArgs,
-    ServeArgs, TestArgs, VisionArgs,
+    BuildArgs, BundleArgs, Cli, ClippyArgs, Command, CssArgs, FmtArgs, PlanArgs, RunArgs, ServeArgs,
 };
 use crate::proc;
 use crate::workspace::{Profile, Workspace};
@@ -30,9 +29,8 @@ pub fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Check => check(&ws),
         Command::Clippy(args) => clippy(&ws, args),
         Command::Fmt(args) => fmt(&ws, args),
-        Command::Test(args) => test(&ws, args),
+        Command::Test => test(&ws),
         Command::Css(args) => css(&ws, args),
-        Command::Vision(args) => vision(&ws, args),
         Command::Doctor => doctor(&ws),
         Command::Clean => clean(&ws),
     }
@@ -135,17 +133,8 @@ fn fmt(ws: &Workspace, args: FmtArgs) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn test(ws: &Workspace, args: TestArgs) -> Result<ExitCode> {
-    if !args.python_only {
-        cargo(ws, &["test", "--workspace"])?;
-    }
-    if !args.rust_only {
-        let mut cmd = Process::new(python_interpreter(ws)?);
-        cmd.current_dir(ws.root())
-            .env("PYTHONPATH", "apps/vision")
-            .args(["-m", "unittest", "discover", "-s", "apps/vision/tests"]);
-        proc::require(&mut cmd)?;
-    }
+fn test(ws: &Workspace) -> Result<ExitCode> {
+    cargo(ws, &["test", "--workspace"])?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -163,20 +152,6 @@ fn css(ws: &Workspace, args: CssArgs) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn vision(ws: &Workspace, args: VisionArgs) -> Result<ExitCode> {
-    let port = args.port.to_string();
-    let mut cmd = Process::new(python_interpreter(ws)?);
-    cmd.current_dir(ws.vision()).args([
-        "main.py",
-        "--host",
-        args.host.as_str(),
-        "--port",
-        port.as_str(),
-    ]);
-    proc::require(&mut cmd)?;
-    Ok(ExitCode::SUCCESS)
-}
-
 fn doctor(ws: &Workspace) -> Result<ExitCode> {
     // Tools that must be present for the documented workflows to run at all.
     proc::step("toolchain");
@@ -186,7 +161,6 @@ fn doctor(ws: &Workspace) -> Result<ExitCode> {
         ("dx", "--version", true),
         ("node", "--version", false),
         ("npm", "--version", false),
-        ("uv", "--version", false),
     ];
     let mut missing_required = Vec::new();
     for (program, version_arg, required) in tools {
@@ -217,11 +191,6 @@ fn doctor(ws: &Workspace) -> Result<ExitCode> {
             ws.desktop().join("assets/tailwind.css"),
             false,
             "cargo xtask css",
-        ),
-        (
-            ws.vision().join(".venv/bin/python"),
-            false,
-            "uv sync --project apps/vision",
         ),
     ];
     for (path, required, hint) in paths {
@@ -300,17 +269,6 @@ fn npm(dir: &Path, args: &[&str]) -> Result<()> {
     let mut cmd = Process::new("npm");
     cmd.current_dir(dir).args(args);
     proc::require(&mut cmd)
-}
-
-fn python_interpreter(ws: &Workspace) -> Result<PathBuf> {
-    let python = ws.vision().join(".venv/bin/python");
-    if !python.is_file() {
-        bail!(
-            "Python venv not found at {} — create it with `uv sync --project apps/vision`",
-            python.display()
-        );
-    }
-    Ok(python)
 }
 
 fn exit_code(status: ExitStatus) -> ExitCode {

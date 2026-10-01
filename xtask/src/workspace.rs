@@ -91,10 +91,6 @@ impl Workspace {
         self.root.join("apps/desktop")
     }
 
-    pub fn vision(&self) -> PathBuf {
-        self.root.join("apps/vision")
-    }
-
     /// Where `cargo xtask bundle` writes artifacts by default.
     pub fn dist(&self) -> PathBuf {
         self.root.join("dist")

@@ -31,19 +31,17 @@ impl HealthStatus {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceId {
+    /// The LM Studio / llama.cpp OpenAI-compatible LLM endpoint.
     LmStudio,
-    VisionRuntime,
+    /// The native stable-diffusion.cpp generation server.
     ImageGeneration,
-    Segmentation,
 }
 
 impl ServiceId {
     pub const fn label(self) -> &'static str {
         match self {
             Self::LmStudio => "LM Studio",
-            Self::VisionRuntime => "Vision runtime",
-            Self::ImageGeneration => "Image generation (Krea 2)",
-            Self::Segmentation => "Segmentation (SAM 2 + DINO)",
+            Self::ImageGeneration => "Image generation (Qwen-Image-2.1)",
         }
     }
 }
@@ -68,13 +66,8 @@ impl ServiceHealth {
 /// Probes every service the application depends on. The checks are read-only:
 /// nothing is started, stopped, or downloaded as a side effect.
 pub async fn check_all(config: &AppConfig, runtime: &CreativeRuntime) -> Vec<ServiceHealth> {
-    let vision = check_vision_runtime(runtime).await;
-    let (lm_studio, generation, segmentation) = tokio::join!(
-        check_lm_studio(config),
-        check_generation(runtime, &vision),
-        check_segmentation(runtime, &vision),
-    );
-    vec![lm_studio, vision, generation, segmentation]
+    let (lm_studio, generation) = tokio::join!(check_lm_studio(config), check_generation(runtime),);
+    vec![lm_studio, generation]
 }
 
 async fn check_lm_studio(config: &AppConfig) -> ServiceHealth {
@@ -118,28 +111,7 @@ async fn check_lm_studio(config: &AppConfig) -> ServiceHealth {
     }
 }
 
-async fn check_vision_runtime(runtime: &CreativeRuntime) -> ServiceHealth {
-    let process_running = runtime.python_runtime().is_running();
-    match with_timeout(runtime.vision_client().health(), CHECK_TIMEOUT_SECONDS).await {
-        Ok(_) => ServiceHealth::new(
-            ServiceId::VisionRuntime,
-            HealthStatus::Online,
-            "API ready · 127.0.0.1:8765".to_owned(),
-        ),
-        Err(error) if process_running => ServiceHealth::new(
-            ServiceId::VisionRuntime,
-            HealthStatus::Offline,
-            format!("API unhealthy: {}", truncate(&error)),
-        ),
-        Err(_) => ServiceHealth::new(
-            ServiceId::VisionRuntime,
-            HealthStatus::Idle,
-            "not started · starts on demand".to_owned(),
-        ),
-    }
-}
-
-async fn check_generation(runtime: &CreativeRuntime, vision: &ServiceHealth) -> ServiceHealth {
+async fn check_generation(runtime: &CreativeRuntime) -> ServiceHealth {
     let generation = runtime.generation_runtime();
     if !generation.executable().is_file() {
         return ServiceHealth::new(
@@ -151,112 +123,33 @@ async fn check_generation(runtime: &CreativeRuntime, vision: &ServiceHealth) -> 
             ),
         );
     }
-    if !generation.has_profile_artifacts(runtime.profile()) {
+    if !generation.has_profile_artifacts() {
         return ServiceHealth::new(
             ServiceId::ImageGeneration,
             HealthStatus::Degraded,
-            "model artifacts missing · run `cargo run --bin model_setup -- --accept-krea-license`"
-                .to_owned(),
+            "model artifacts missing · run `cargo run --bin model_setup`".to_owned(),
         );
     }
     let process_running = generation.is_running();
-    match vision.status {
-        HealthStatus::Idle if !process_running => {
-            return ServiceHealth::new(
-                ServiceId::ImageGeneration,
-                HealthStatus::Idle,
-                "follows the vision runtime".to_owned(),
-            );
-        }
-        HealthStatus::Idle => {
-            return ServiceHealth::new(
-                ServiceId::ImageGeneration,
-                HealthStatus::Degraded,
-                "native server is resident but the vision runtime is not running".to_owned(),
-            );
-        }
-        HealthStatus::Offline => {
-            return ServiceHealth::new(
-                ServiceId::ImageGeneration,
-                HealthStatus::Offline,
-                "vision runtime unavailable".to_owned(),
-            );
-        }
-        HealthStatus::Online | HealthStatus::Degraded => {}
-    }
-    match with_timeout(
-        runtime.vision_client().generation_capabilities(),
-        CHECK_TIMEOUT_SECONDS,
-    )
-    .await
-    {
-        Ok(capabilities) if capabilities.status == "ready" => ServiceHealth::new(
+    match with_timeout(runtime.client().capabilities(), CHECK_TIMEOUT_SECONDS).await {
+        Ok(capabilities) => ServiceHealth::new(
             ServiceId::ImageGeneration,
             HealthStatus::Online,
             format!(
                 "{} ready · {} resident",
-                runtime.profile().profile_id(),
-                capabilities.model.as_deref().unwrap_or("model")
+                runtime.profile().id,
+                capabilities.model.name
             ),
-        ),
-        Ok(capabilities) => ServiceHealth::new(
-            ServiceId::ImageGeneration,
-            HealthStatus::Degraded,
-            capabilities
-                .error
-                .unwrap_or_else(|| "backend not ready".to_owned()),
         ),
         Err(error) if process_running => ServiceHealth::new(
             ServiceId::ImageGeneration,
             HealthStatus::Offline,
-            format!(
-                "backend unreachable through the vision runtime: {}",
-                truncate(&error)
-            ),
+            format!("backend unreachable: {}", truncate(&error)),
         ),
         Err(_) => ServiceHealth::new(
             ServiceId::ImageGeneration,
             HealthStatus::Idle,
             "not started · starts on demand".to_owned(),
-        ),
-    }
-}
-
-async fn check_segmentation(runtime: &CreativeRuntime, vision: &ServiceHealth) -> ServiceHealth {
-    match vision.status {
-        HealthStatus::Online => {
-            match with_timeout(runtime.vision_client().capabilities(), CHECK_TIMEOUT_SECONDS).await
-            {
-                Ok(capabilities) if capabilities.torch_available => ServiceHealth::new(
-                    ServiceId::Segmentation,
-                    HealthStatus::Online,
-                    format!(
-                        "SAM 2.1 + Grounding DINO ready · {} device",
-                        capabilities.recommended_device
-                    ),
-                ),
-                Ok(_) => ServiceHealth::new(
-                    ServiceId::Segmentation,
-                    HealthStatus::Degraded,
-                    "torch extras not installed · run `uv sync --project python --extra segmentation`"
-                        .to_owned(),
-                ),
-                Err(error) => ServiceHealth::new(
-                    ServiceId::Segmentation,
-                    HealthStatus::Degraded,
-                    format!("device discovery failed: {}", truncate(&error)),
-                ),
-            }
-        }
-        HealthStatus::Idle => ServiceHealth::new(
-            ServiceId::Segmentation,
-            HealthStatus::Idle,
-            "follows the vision runtime".to_owned(),
-        ),
-        _ => ServiceHealth::new(
-            ServiceId::Segmentation,
-            HealthStatus::Offline,
-            "vision runtime unavailable".to_owned(),
         ),
     }
 }
@@ -292,7 +185,7 @@ mod tests {
         assert_eq!(ServiceId::LmStudio.label(), "LM Studio");
         assert_eq!(
             ServiceId::ImageGeneration.label(),
-            "Image generation (Krea 2)"
+            "Image generation (Qwen-Image-2.1)"
         );
     }
 
@@ -313,8 +206,8 @@ mod tests {
 
     #[test]
     fn health_entries_carry_their_service_and_detail() {
-        let entry = ServiceHealth::new(ServiceId::VisionRuntime, HealthStatus::Online, "ok");
-        assert_eq!(entry.id, ServiceId::VisionRuntime);
+        let entry = ServiceHealth::new(ServiceId::ImageGeneration, HealthStatus::Online, "ok");
+        assert_eq!(entry.id, ServiceId::ImageGeneration);
         assert_eq!(entry.status, HealthStatus::Online);
         assert_eq!(entry.detail, "ok");
     }

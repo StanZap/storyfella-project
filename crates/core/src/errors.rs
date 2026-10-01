@@ -50,8 +50,6 @@ pub enum ErrorCode {
     OpBadLayerKind,
     OpNoActiveImage,
     OpNoPrompt,
-    OpIncompleteModify,
-    OpConflictingMaskSource,
     OpBadLoraMultiplier,
     OpBadSteps,
     OpLoraFileMissing,
@@ -61,19 +59,11 @@ pub enum ErrorCode {
     OpRejected,
     OpBuildEmpty,
     OpBuildOrdering,
-    OpBuildMaskWithoutReference,
     OpBuildBadModel,
     OpBuildBadSize,
     OpBuildBadSteps,
     OpBuildTooManyLoras,
     OpBuildBadLoraMultiplier,
-    OpBuildBadFeatherRadius,
-
-    // ---- IMG · image operations (src/registry/image_ops.rs) ----
-    ImgOpen,
-    ImgWrite,
-    ImgDimensionMismatch,
-    ImgEmptyUnion,
 
     // ---- STO · persistence (src/persistence/mod.rs) ----
     StoreOpen,
@@ -89,7 +79,6 @@ pub enum ErrorCode {
     ConfigRead,
     ConfigParse,
     ConfigWrite,
-    ConfigGenerationProfile,
     ConfigInvalidSize,
     ConfigMalformedSize,
 
@@ -99,15 +88,13 @@ pub enum ErrorCode {
     LlmStatus,
     LlmPlanner,
 
-    // ---- VIS · vision client (src/vision/mod.rs) ----
-    VisionRequest,
-    VisionStatus,
+    // ---- GEN · native generation client (src/generation/mod.rs) ----
+    GenRequest,
+    GenStatus,
+    GenReference,
+    GenImage,
 
     // ---- RTE · runtimes (src/runtime/) ----
-    RuntimeAlreadyRunning,
-    RuntimeMissingPython,
-    RuntimeStart,
-    RuntimeStop,
     RuntimeGenerationAlreadyRunning,
     RuntimeGenerationMissingExecutable,
     RuntimeGenerationMissingArtifact,
@@ -116,7 +103,6 @@ pub enum ErrorCode {
     RuntimeGenerationStop,
     RuntimeReadinessTimeout,
     RuntimeJobFailed,
-    RuntimeMissingImage,
     RuntimeProfileMismatch,
     RuntimeCreateAssetDirectory,
     RuntimeImportAsset,
@@ -295,20 +281,6 @@ impl ErrorCode {
                 "Regenerate needs a prompt, but the artifact has neither an active \
                  revision nor a description.",
             ),
-            Self::OpIncompleteModify => (
-                "SVS-OP-110",
-                "Modify needs a mask region and an inpaint look",
-                "/modify requires both a mask prompt and an inpaint prompt, or \
-                 LM Studio to plan them. Start LM Studio, or write the full \
-                 command: /modify c:<ref> <region> into <look>.",
-            ),
-            Self::OpConflictingMaskSource => (
-                "SVS-OP-149",
-                "Modify was given two mask sources",
-                "A mask comes from one place: --mask-prompt segments it, \
-                 --mask-file loads one already on disk. Drop whichever you \
-                 did not mean.",
-            ),
             Self::OpBadLoraMultiplier => (
                 "SVS-OP-111",
                 "LoRA multiplier out of range",
@@ -334,9 +306,9 @@ impl ErrorCode {
             Self::OpBackendFailed => (
                 "SVS-OP-130",
                 "Generation backend error",
-                "A pipeline step failed in the generation backend (runtime or \
-                 vision service). Check the service status in Settings and the \
-                 logs for details.",
+                "A pipeline step failed in the generation backend (the native \
+                 sd-server). Check the service status in Settings and the logs \
+                 for details.",
             ),
             Self::OpStepFailed => (
                 "SVS-OP-131",
@@ -361,17 +333,11 @@ impl ErrorCode {
                 "A step references the output of a later step. This is an \
                  internal pipeline construction error.",
             ),
-            Self::OpBuildMaskWithoutReference => (
-                "SVS-OP-142",
-                "Mask step needs a reference image",
-                "A native mask step requires a reference image to attach to; \
-                 none was provided.",
-            ),
             Self::OpBuildBadModel => (
                 "SVS-OP-143",
                 "Unsupported generation model",
-                "The requested model is not one of the native Krea profiles \
-                 (krea-2-turbo-q2, krea-2-turbo-q4).",
+                "The requested model is not the configured Qwen-Image-2.1 \
+                 profile.",
             ),
             Self::OpBuildBadSize => (
                 "SVS-OP-144",
@@ -394,34 +360,6 @@ impl ErrorCode {
                 "SVS-OP-147",
                 "LoRA multiplier out of range",
                 "The multiplier must be within -2..=2. Retry with a value in that range.",
-            ),
-            Self::OpBuildBadFeatherRadius => (
-                "SVS-OP-148",
-                "Feather radius out of range",
-                "The feather radius must be within 1..=64 pixels.",
-            ),
-            Self::ImgOpen => (
-                "SVS-IMG-101",
-                "Could not open image file",
-                "The image file could not be read. It may be missing or \
-                 corrupted; regenerate the artifact.",
-            ),
-            Self::ImgWrite => (
-                "SVS-IMG-102",
-                "Could not write image file",
-                "The image file could not be written. Check the asset directory \
-                 permissions and disk space.",
-            ),
-            Self::ImgDimensionMismatch => (
-                "SVS-IMG-103",
-                "Image dimension mismatch",
-                "The images being composited have different dimensions. \
-                 Regenerate the layers at the same size.",
-            ),
-            Self::ImgEmptyUnion => (
-                "SVS-IMG-104",
-                "Empty mask union",
-                "Mask compositing needs at least one mask; none were provided.",
             ),
             Self::StoreOpen => (
                 "SVS-STO-101",
@@ -488,12 +426,6 @@ impl ErrorCode {
                 "Could not write config file",
                 "config/app.toml could not be written. Check file permissions.",
             ),
-            Self::ConfigGenerationProfile => (
-                "SVS-CFG-105",
-                "Unsupported generation profile",
-                "The configured generation profile must be krea-2-turbo-q2 or \
-                 krea-2-turbo-q4. Fix it in config/app.toml.",
-            ),
             Self::ConfigInvalidSize => (
                 "SVS-CFG-106",
                 "Invalid size in config",
@@ -530,41 +462,29 @@ impl ErrorCode {
                 "LM Studio did not produce a usable plan. Retry, or use slash \
                  commands directly.",
             ),
-            Self::VisionRequest => (
-                "SVS-VIS-101",
-                "Vision service request failed",
-                "The vision service (Python runtime) failed to answer. Start it \
-                 from Settings and retry.",
+            Self::GenRequest => (
+                "SVS-GEN-101",
+                "Generation server request failed",
+                "The native sd-server failed to answer. Start it from Settings \
+                 and retry.",
             ),
-            Self::VisionStatus => (
-                "SVS-VIS-102",
-                "Vision service returned an error",
-                "The vision service answered with an error status. Check its \
+            Self::GenStatus => (
+                "SVS-GEN-102",
+                "Generation server returned an error",
+                "The native sd-server answered with an error status. Check its \
                  logs for the underlying cause.",
             ),
-            Self::RuntimeAlreadyRunning => (
-                "SVS-RTE-101",
-                "Python runtime already running",
-                "The vision service is already running; stop it before starting \
-                 again.",
+            Self::GenReference => (
+                "SVS-GEN-103",
+                "Could not read the reference image",
+                "The image an edit references could not be read. It may have \
+                 been moved or deleted; regenerate the artifact.",
             ),
-            Self::RuntimeMissingPython => (
-                "SVS-RTE-102",
-                "Python virtual environment not found",
-                "The Python venv for the vision service does not exist. Create it \
-                 with `uv sync --project python`.",
-            ),
-            Self::RuntimeStart => (
-                "SVS-RTE-104",
-                "Could not start Python runtime",
-                "The vision service failed to start. Check the runtime logs for \
-                 the underlying cause.",
-            ),
-            Self::RuntimeStop => (
-                "SVS-RTE-105",
-                "Could not stop Python runtime",
-                "The vision service could not be stopped cleanly. It may still \
-                 be running in the background.",
+            Self::GenImage => (
+                "SVS-GEN-104",
+                "Generation returned an unreadable image",
+                "The generation job completed but its image payload could not \
+                 be decoded. Retry the generation.",
             ),
             Self::RuntimeGenerationAlreadyRunning => (
                 "SVS-RTE-110",
@@ -581,8 +501,8 @@ impl ErrorCode {
             Self::RuntimeGenerationMissingArtifact => (
                 "SVS-RTE-112",
                 "Model artifact not found",
-                "A model file for the selected Krea profile is missing. Run \
-                 model_setup to provision the models.",
+                "A Qwen-Image-2.1 model file is missing. Run model_setup to \
+                 provision the models.",
             ),
             Self::RuntimeGenerationCreateLoraDirectory => (
                 "SVS-RTE-113",
@@ -603,8 +523,8 @@ impl ErrorCode {
             ),
             Self::RuntimeReadinessTimeout => (
                 "SVS-RTE-120",
-                "Vision service did not become ready",
-                "The vision service did not report readiness in time. Restart \
+                "Generation server did not become ready",
+                "The native sd-server did not report readiness in time. Restart \
                  it from Settings and retry.",
             ),
             Self::RuntimeJobFailed => (
@@ -612,12 +532,6 @@ impl ErrorCode {
                 "Generation job failed",
                 "The generation job failed in the backend. Check the runtime \
                  logs for the underlying cause.",
-            ),
-            Self::RuntimeMissingImage => (
-                "SVS-RTE-122",
-                "Generation returned no image",
-                "The generation job finished without producing an image. \
-                 Regenerate to retry.",
             ),
             Self::RuntimeProfileMismatch => (
                 "SVS-RTE-123",
@@ -874,7 +788,7 @@ mod tests {
     /// the count so any change to the registry is deliberate.
     #[test]
     fn registry_size_is_pinned() {
-        assert_eq!(codes().len(), 96, "error codes must never be renumbered");
+        assert_eq!(codes().len(), 84, "error codes must never be renumbered");
     }
 
     #[test]
@@ -898,12 +812,12 @@ mod tests {
         let report = super::ReportedError::plain(ErrorCode::OpBackendFailed, "backend error")
             .with_context("operation", "/create character Mia")
             .with_context("prompt", "a lantern on a shelf")
-            .with_context("model", "krea-2-turbo-q4");
+            .with_context("model", "qwen-image-2.1");
         assert_eq!(report.context.len(), 3);
         assert_eq!(
             report.to_string(),
             "SVS-OP-130 backend error (operation=/create character Mia, \
-             prompt=a lantern on a shelf, model=krea-2-turbo-q4)"
+             prompt=a lantern on a shelf, model=qwen-image-2.1)"
         );
         let copy = report.copy_text();
         assert!(copy.contains("- operation: /create character Mia"));
@@ -967,8 +881,6 @@ mod tests {
             ErrorCode::OpBadLayerKind,
             ErrorCode::OpNoActiveImage,
             ErrorCode::OpNoPrompt,
-            ErrorCode::OpIncompleteModify,
-            ErrorCode::OpConflictingMaskSource,
             ErrorCode::OpBadLoraMultiplier,
             ErrorCode::OpBadSteps,
             ErrorCode::OpLoraFileMissing,
@@ -978,17 +890,11 @@ mod tests {
             ErrorCode::OpRejected,
             ErrorCode::OpBuildEmpty,
             ErrorCode::OpBuildOrdering,
-            ErrorCode::OpBuildMaskWithoutReference,
             ErrorCode::OpBuildBadModel,
             ErrorCode::OpBuildBadSize,
             ErrorCode::OpBuildBadSteps,
             ErrorCode::OpBuildTooManyLoras,
             ErrorCode::OpBuildBadLoraMultiplier,
-            ErrorCode::OpBuildBadFeatherRadius,
-            ErrorCode::ImgOpen,
-            ErrorCode::ImgWrite,
-            ErrorCode::ImgDimensionMismatch,
-            ErrorCode::ImgEmptyUnion,
             ErrorCode::StoreOpen,
             ErrorCode::StoreConfigure,
             ErrorCode::StoreMigrate,
@@ -1000,19 +906,16 @@ mod tests {
             ErrorCode::ConfigRead,
             ErrorCode::ConfigParse,
             ErrorCode::ConfigWrite,
-            ErrorCode::ConfigGenerationProfile,
             ErrorCode::ConfigInvalidSize,
             ErrorCode::ConfigMalformedSize,
             ErrorCode::LlmBuild,
             ErrorCode::LlmRequest,
             ErrorCode::LlmStatus,
             ErrorCode::LlmPlanner,
-            ErrorCode::VisionRequest,
-            ErrorCode::VisionStatus,
-            ErrorCode::RuntimeAlreadyRunning,
-            ErrorCode::RuntimeMissingPython,
-            ErrorCode::RuntimeStart,
-            ErrorCode::RuntimeStop,
+            ErrorCode::GenRequest,
+            ErrorCode::GenStatus,
+            ErrorCode::GenReference,
+            ErrorCode::GenImage,
             ErrorCode::RuntimeGenerationAlreadyRunning,
             ErrorCode::RuntimeGenerationMissingExecutable,
             ErrorCode::RuntimeGenerationMissingArtifact,
@@ -1021,7 +924,6 @@ mod tests {
             ErrorCode::RuntimeGenerationStop,
             ErrorCode::RuntimeReadinessTimeout,
             ErrorCode::RuntimeJobFailed,
-            ErrorCode::RuntimeMissingImage,
             ErrorCode::RuntimeProfileMismatch,
             ErrorCode::RuntimeCreateAssetDirectory,
             ErrorCode::RuntimeImportAsset,

@@ -18,12 +18,11 @@
 //! - A beat is a composition: `composition` carries the mode and the layer
 //!   list (backdrop / baked / dynamic); the backdrop slot is the environment
 //!   (or "generate fresh" when no backdrop layer exists).
-//! - Masks attach to a specific revision; a revision carries its generation
-//!   seed and model so golden runs can be replayed identically.
+//! - A revision carries its generation seed and model so golden runs can be
+//!   replayed identically.
 
 pub mod backend;
 pub mod completion;
-pub mod image_ops;
 pub mod ops;
 pub mod pipeline;
 pub mod slash;
@@ -358,9 +357,6 @@ pub struct ArtifactRevision {
     /// Whether this renders the description or an experiment against it.
     #[serde(default)]
     pub origin: RevisionOrigin,
-    /// Masks are a view over this specific revision image.
-    #[serde(default)]
-    pub masks: Vec<StoredMask>,
 }
 
 /// Why a revision exists.
@@ -404,25 +400,6 @@ impl fmt::Display for RevisionOrigin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct StoredMask {
-    pub id: Uuid,
-    pub asset_path: String,
-    pub source: MaskSource,
-    /// Grounding text or box JSON for auto masks.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub score: Option<f64>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MaskSource {
-    Auto,
-    Painted,
 }
 
 /// A proposed/approved piece of story text (see `draft`).
@@ -495,11 +472,6 @@ pub struct LoraBinding {
 pub struct LoraBindings {
     /// Where adapter files live; resolved at use time.
     pub dir: std::path::PathBuf,
-    /// Adapter applied to mask-guided edits (`modify`) — e.g. INPAINTKREA.
-    pub inpaint: Option<LoraBinding>,
-    /// Adapter applied to reference-edit ops (`variant`/`regenerate`) —
-    /// e.g. Krea's identity-preserving edit adapter.
-    pub variant: Option<LoraBinding>,
     /// Per-kind defaults: applied to every generation of that kind.
     pub kinds: KindLoraBindings,
     /// The weight for every config binding.
@@ -510,8 +482,6 @@ impl Default for LoraBindings {
     fn default() -> Self {
         Self {
             dir: std::path::PathBuf::new(),
-            inpaint: None,
-            variant: None,
             kinds: KindLoraBindings::default(),
             multiplier: 1.0,
         }
@@ -548,7 +518,7 @@ impl LoraBindings {
 }
 
 /// The native generation server registers only the top-level files of its
-/// lora directory, so adapters kept in subdirectories (e.g. `krea/…`) are
+/// lora directory, so adapters kept in subdirectories (e.g. `characters/…`) are
 /// linked to the top level as `<subdir>-<basename>` — mirroring
 /// [`LoraBindings::registered`]. Must run *before* the server starts (its
 /// registration scan happens at startup). Idempotent; existing top-level
@@ -716,6 +686,10 @@ impl KindLoraBindings {
 pub struct GenerationDefaults {
     pub sizes: SizeDefaults,
     pub steps: u32,
+    /// Text-guidance scale (`sample_params.guidance.txt_cfg`).
+    pub cfg_scale: f32,
+    /// Sampling method (`sample_params.sample_method`).
+    pub sample_method: String,
     pub loras: LoraBindings,
 }
 
@@ -1048,7 +1022,6 @@ impl ArtifactRegistry {
             model,
             error: None,
             origin,
-            masks: Vec::new(),
         });
         artifact.active_revision_id = Some(revision_id);
         Ok(revision_id)
@@ -1060,7 +1033,6 @@ impl ArtifactRegistry {
         artifact_id: Uuid,
         revision_id: Uuid,
         asset_path: String,
-        masks: Vec<StoredMask>,
     ) -> Result<(), RegistryError> {
         let artifact = self
             .artifact_mut(artifact_id)
@@ -1073,7 +1045,6 @@ impl ArtifactRegistry {
         revision.status = RevisionStatus::Completed;
         revision.asset_path = Some(asset_path);
         revision.error = None;
-        revision.masks = masks;
         artifact.active_revision_id = Some(revision_id);
         Ok(())
     }
@@ -1098,7 +1069,7 @@ impl ArtifactRegistry {
         Ok(())
     }
 
-    /// Marks a revision cancelled (e.g. the user rejected a mask checkpoint).
+    /// Marks a revision cancelled (e.g. the user rejected a proposal).
     pub fn cancel_revision(
         &mut self,
         artifact_id: Uuid,
@@ -1338,8 +1309,8 @@ mod tests {
     fn discover_loras_finds_top_level_and_nested_adapters() {
         let dir = scratch_lora_dir();
         std::fs::write(dir.join("mia-v2.safetensors"), b"lora").unwrap();
-        std::fs::create_dir_all(dir.join("krea-inpaint")).unwrap();
-        std::fs::write(dir.join("krea-inpaint/inpaintkrea.safetensors"), b"lora").unwrap();
+        std::fs::create_dir_all(dir.join("character-pack")).unwrap();
+        std::fs::write(dir.join("character-pack/mia.safetensors"), b"lora").unwrap();
         std::fs::create_dir_all(dir.join("nested/deep")).unwrap();
         std::fs::write(dir.join("nested/deep/style.safetensors"), b"lora").unwrap();
         // Non-adapter files are ignored.
@@ -1350,7 +1321,7 @@ mod tests {
         assert_eq!(
             files,
             vec![
-                "krea-inpaint/inpaintkrea.safetensors".to_owned(),
+                "character-pack/mia.safetensors".to_owned(),
                 "mia-v2.safetensors".to_owned(),
                 "nested/deep/style.safetensors".to_owned(),
             ],
@@ -1858,7 +1829,7 @@ mod tests {
             .start_revision(id, "first".into(), Some(1), None, RevisionOrigin::Canon)
             .unwrap();
         registry
-            .finish_revision(id, first, "first.png".into(), Vec::new())
+            .finish_revision(id, first, "first.png".into())
             .unwrap();
         let second = registry
             .start_revision(id, "second".into(), Some(2), None, RevisionOrigin::Canon)

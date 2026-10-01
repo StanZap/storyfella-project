@@ -4,7 +4,7 @@
 //! typed operations (`svs op …`), serialized operation stacks (`svs stack
 //! run` — the VLLM contract test bed), LLM stack proposals (`svs stack
 //! propose`), and the operation log. `--out <dir>` drops every intermediate
-//! (image, mask, composite) into a folder for the manual golden-run tier
+//! (image, text) into a folder for the manual golden-run tier
 //! (`docs/ROADMAP.md` §7).
 //!
 //! The project is a SQLite database (`.svs-project.db` by default, see
@@ -21,6 +21,7 @@ use uuid::Uuid;
 
 use svs_core::config::AppConfig;
 use svs_core::errors::{CodedError, ErrorCode, ReportedError};
+use svs_core::generation::LoraSelection;
 use svs_core::llm::{ChatMessage, ChatOptions, LmStudioClient};
 use svs_core::persistence::ProjectDb;
 use svs_core::registry::backend::CreativeBackend;
@@ -32,8 +33,7 @@ use svs_core::registry::pipeline::{
     OutputKind, PipelineRun, RunOptions,
 };
 use svs_core::registry::{ArtifactKind, ArtifactRegistry, GenerationDefaults, Ref, VariantAxis};
-use svs_core::runtime::KreaQuantization;
-use svs_core::vision::{LoraSelection, SegmentBox, SegmentRequest};
+use svs_core::runtime::generation_profile;
 
 #[derive(Parser)]
 #[command(
@@ -76,38 +76,11 @@ enum Command {
         #[command(flatten)]
         eval: EvalArgs,
     },
-    /// Segment an image and write every candidate mask to a folder.
-    ///
-    /// The mask-fixture builder: it stops before generating, so masks can be
-    /// authored once against real images and then replayed into
-    /// `op modify --mask-file` as often as an investigation needs. Keeping
-    /// the two apart also keeps SAM's weights out of the generating process
-    /// — the Python runtime only loads them once a segmentation has run.
-    Segment(SegmentArgs),
     /// Show the operation log (all entries, or one artifact's).
     Log {
         /// Filter to one artifact's entries.
         target: Option<Ref>,
     },
-}
-
-/// Standalone segmentation — the mask-fixture builder.
-#[derive(Args)]
-struct SegmentArgs {
-    /// The image to segment. Any file on disk; it need not be in a project.
-    image: PathBuf,
-    /// What to segment ("her hair", "the bird"). Omit when passing --box.
-    prompt: Option<String>,
-    /// Where to write the masks and their sidecar (created if absent).
-    #[arg(long, short = 'o')]
-    out: PathBuf,
-    /// Geometry prompt instead of text: `x1,y1,x2,y2` in pixels. Geometry
-    /// runs on SAM 2.1 rather than SAM 3 — see python/runtime/segmenter.py.
-    #[arg(long = "box", value_parser = parse_segment_box)]
-    boxes: Vec<SegmentBox>,
-    /// Override the segmentation model id.
-    #[arg(long)]
-    model: Option<String>,
 }
 
 /// The image-evaluation workflow against the local LM Studio vision model.
@@ -226,22 +199,10 @@ enum OpCommand {
         approve: ApprovalArg,
     },
     /// /modify <ref> <description> — edit the image from a plain-language
-    /// instruction ("give her a bob cut"). Pass --inpaint-prompt with a mask
-    /// source (--mask-prompt or --mask-file) to opt into the mask path.
+    /// instruction ("give her a bob cut").
     Modify {
         target: Ref,
         description: String,
-        /// The region to segment ("her hair"), or `auto` to let the planner
-        /// name it from the description.
-        #[arg(long = "mask-prompt", conflicts_with = "mask_file")]
-        mask_prompt: Option<String>,
-        /// A mask PNG on disk (e.g. one `svs segment` wrote), used instead of
-        /// segmenting. Keeps the mask fixed across runs, and keeps the SAM
-        /// weights out of the generating process.
-        #[arg(long = "mask-file")]
-        mask_file: Option<PathBuf>,
-        #[arg(long = "inpaint-prompt")]
-        inpaint_prompt: Option<String>,
         #[arg(long)]
         seed: Option<u64>,
         #[arg(long)]
@@ -298,12 +259,12 @@ enum StackCommand {
 
 #[derive(Subcommand)]
 enum RuntimeCommand {
-    /// Start (or restart) the native generation server with a Krea profile
-    /// and keep it resident in this terminal; ops in other terminals reuse
-    /// it. Ctrl-C stops it.
+    /// Start (or restart) the native generation server with the Qwen-Image-2.1
+    /// profile and keep it resident in this terminal; ops in other terminals
+    /// reuse it. Ctrl-C stops it.
     Serve {
-        #[arg(long, default_value = "krea-2-turbo-q4", value_parser = parse_model)]
-        model: KreaQuantization,
+        #[arg(long, default_value = "qwen-image-2.1", value_parser = parse_model)]
+        model: String,
         /// Kill stale sd-server processes holding the port first (leftovers
         /// from interrupted sessions cannot be restarted by the runtime).
         #[arg(long)]
@@ -313,7 +274,7 @@ enum RuntimeCommand {
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ApprovalArg {
-    /// Non-interactive: best mask candidate, accept text.
+    /// Non-interactive: accept proposed text without asking.
     Auto,
     /// Ask at every checkpoint.
     Interactive,
@@ -400,13 +361,15 @@ fn parse_lora(value: &str) -> Result<LoraSelection, String> {
     Ok(LoraSelection { path, multiplier })
 }
 
-fn parse_model(value: &str) -> Result<KreaQuantization, String> {
-    match value {
-        "krea-2-turbo-q2" => Ok(KreaQuantization::Q2),
-        "krea-2-turbo-q4" => Ok(KreaQuantization::Q4),
-        other => Err(format!(
-            "unknown generation profile {other:?}; expected krea-2-turbo-q2 or krea-2-turbo-q4"
-        )),
+fn parse_model(value: &str) -> Result<String, String> {
+    let profile = generation_profile();
+    if value == profile.id {
+        Ok(value.to_owned())
+    } else {
+        Err(format!(
+            "unknown generation profile {value:?}; expected {}",
+            profile.id
+        ))
     }
 }
 
@@ -494,26 +457,19 @@ async fn run(cli: Cli) -> Result<()> {
             print_log(&registry, target.as_ref());
             Ok(())
         }
-        Command::Segment(args) => run_segment(args).await,
         Command::Eval { eval } => run_eval(eval).await,
         Command::Runtime { runtime } => match runtime {
-            RuntimeCommand::Serve {
-                model: profile,
-                force,
-            } => {
+            RuntimeCommand::Serve { model, force } => {
                 if force {
                     kill_resident_generation_servers()?;
                 }
                 let config = AppConfig::load().context("could not load config/app.toml")?;
-                let backend = CreativeBackend::with_profile(&config, profile);
+                let backend = CreativeBackend::new(&config);
                 backend
-                    .ensure_profile_ready(profile)
+                    .ensure_ready()
                     .await
                     .map_err(|error| anyhow!(error.report().log()))?;
-                println!(
-                    "generation runtime ready with {}; Ctrl-C to stop",
-                    profile.profile_id()
-                );
+                println!("generation runtime ready with {model}; Ctrl-C to stop");
                 let _ = tokio::signal::ctrl_c().await;
                 backend
                     .stop_generation()
@@ -523,138 +479,6 @@ async fn run(cli: Cli) -> Result<()> {
                 Ok(())
             }
         },
-    }
-}
-
-/// `--box x1,y1,x2,y2` — a geometry prompt in pixel coordinates.
-fn parse_segment_box(value: &str) -> Result<SegmentBox, String> {
-    let parts: Vec<&str> = value.split(',').map(str::trim).collect();
-    let [x1, y1, x2, y2] = parts.as_slice() else {
-        return Err(format!("expected x1,y1,x2,y2 — got {value:?}"));
-    };
-    let coord = |name: &str, raw: &str| -> Result<f64, String> {
-        raw.parse::<f64>()
-            .map_err(|_| format!("{name} must be a number — got {raw:?}"))
-    };
-    Ok(SegmentBox {
-        x_min: coord("x1", x1)?,
-        y_min: coord("y1", y1)?,
-        x_max: coord("x2", x2)?,
-        y_max: coord("y2", y2)?,
-    })
-}
-
-/// Segments one image and writes every candidate to `--out`, highest score
-/// first, beside a JSON sidecar.
-///
-/// The sidecar records which model produced the masks. A fixture corpus
-/// outlives the segmenter that built it — text prompts currently run a
-/// community SAM 3 conversion, not `facebook/sam3.1` — and masks compared
-/// across two different segmenters are not a comparison at all.
-async fn run_segment(args: SegmentArgs) -> Result<()> {
-    if !args.image.exists() {
-        bail!("image {} does not exist", args.image.display());
-    }
-    if args.prompt.is_none() && args.boxes.is_empty() {
-        bail!("segment needs a text prompt or at least one --box");
-    }
-    // The Python runtime is a separate process with its own working
-    // directory, so it can only open an absolute path — a relative one it
-    // reports back as "image does not exist", naming a file that plainly
-    // does exist from here.
-    let image = args
-        .image
-        .canonicalize()
-        .with_context(|| format!("could not resolve {}", args.image.display()))?;
-    let config = AppConfig::load().context("could not load config/app.toml")?;
-    let backend = CreativeBackend::new(&config);
-
-    let mut request = SegmentRequest::new(image.to_string_lossy().to_string());
-    request.prompt = args.prompt.clone();
-    request.boxes = args.boxes.clone();
-    request.model = args.model.clone();
-
-    let response = backend
-        .segment(&request)
-        .await
-        .map_err(|error| anyhow!(error.report().log()))?;
-    if response.masks.is_empty() {
-        bail!(
-            "no masks returned for {:?} ({})",
-            args.prompt.as_deref().unwrap_or("<geometry>"),
-            response.error.as_deref().unwrap_or("no error reported")
-        );
-    }
-
-    std::fs::create_dir_all(&args.out)
-        .with_context(|| format!("could not create {}", args.out.display()))?;
-    let stem = args
-        .image
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().to_string())
-        .unwrap_or_else(|| "image".to_owned());
-    let slug = args
-        .prompt
-        .as_deref()
-        .map(slugify)
-        .unwrap_or_else(|| "box".to_owned());
-
-    let mut masks = response.masks.clone();
-    // Highest score first, so `<stem>-<slug>-0.png` is the candidate the
-    // interactive picker would have offered by default.
-    masks.sort_by(|a, b| b.score.total_cmp(&a.score));
-
-    let mut entries = Vec::new();
-    for (index, mask) in masks.iter().enumerate() {
-        let name = format!("{stem}-{slug}-{index}.png");
-        let destination = args.out.join(&name);
-        std::fs::copy(&mask.path, &destination).with_context(|| {
-            format!("could not copy {} to {}", mask.path, destination.display())
-        })?;
-        println!(
-            "{}  score {:.3}  {} px",
-            destination.display(),
-            mask.score,
-            mask.area_pixels
-        );
-        entries.push(serde_json::json!({
-            "file": name,
-            "score": mask.score,
-            "area_pixels": mask.area_pixels,
-        }));
-    }
-
-    let sidecar = args.out.join(format!("{stem}-{slug}.json"));
-    let manifest = serde_json::json!({
-        "image": image.to_string_lossy(),
-        "prompt": args.prompt,
-        "boxes": args.boxes.len(),
-        "model": response.model,
-        "device": response.device,
-        "masks": entries,
-    });
-    std::fs::write(&sidecar, serde_json::to_vec_pretty(&manifest)?)
-        .with_context(|| format!("could not write {}", sidecar.display()))?;
-    println!("sidecar {}", sidecar.display());
-    Ok(())
-}
-
-/// Filename-safe form of a prompt: lowercase, non-alphanumerics collapsed to
-/// single dashes.
-fn slugify(text: &str) -> String {
-    let mut slug = String::new();
-    for character in text.chars() {
-        if character.is_ascii_alphanumeric() {
-            slug.push(character.to_ascii_lowercase());
-        } else if !slug.ends_with('-') {
-            slug.push('-');
-        }
-    }
-    let slug = slug.trim_matches('-').to_owned();
-    if slug.is_empty() {
-        "prompt".to_owned()
-    } else {
-        slug
     }
 }
 
@@ -976,6 +800,7 @@ fn build_operation(op: OpCommand) -> Result<(Operation, CliRunOptions)> {
                     size,
                     model,
                     loras,
+                    ..Default::default()
                 },
                 manual_text: None,
             },
@@ -1049,9 +874,6 @@ fn build_operation(op: OpCommand) -> Result<(Operation, CliRunOptions)> {
         OpCommand::Modify {
             target,
             description,
-            mask_prompt,
-            mask_file,
-            inpaint_prompt,
             seed,
             steps,
             size,
@@ -1063,14 +885,6 @@ fn build_operation(op: OpCommand) -> Result<(Operation, CliRunOptions)> {
             Operation::Modify {
                 target,
                 description,
-                // `--mask-prompt auto` selects the planned source; a literal
-                // region stays a literal region.
-                plan: mask_prompt
-                    .as_deref()
-                    .is_some_and(|value| value.eq_ignore_ascii_case("auto")),
-                mask_prompt: mask_prompt.filter(|value| !value.eq_ignore_ascii_case("auto")),
-                mask_file,
-                inpaint_prompt,
                 size: None,
                 steps: None,
                 loras: Vec::new(),
@@ -1085,6 +899,7 @@ fn build_operation(op: OpCommand) -> Result<(Operation, CliRunOptions)> {
                     size,
                     model,
                     loras,
+                    ..Default::default()
                 },
                 manual_text: None,
             },
@@ -1168,8 +983,8 @@ async fn execute_one(
     Ok(outcome)
 }
 
-/// `--out <dir>` golden runs: drop every intermediate (image, mask,
-/// composite) into the folder for human review.
+/// `--out <dir>` golden runs: drop every intermediate (image, text) into the
+/// folder for human review.
 fn copy_golden_outputs(golden_dir: Option<&Path>, run: &PipelineRun) -> Result<()> {
     let Some(dir) = golden_dir else {
         return Ok(());
@@ -1197,7 +1012,7 @@ fn copy_golden_outputs(golden_dir: Option<&Path>, run: &PipelineRun) -> Result<(
             }
         }
         if path == &destination {
-            continue; // already written into the golden folder (composite etc.)
+            continue; // already written into the golden folder
         }
         std::fs::copy(path, &destination).with_context(|| {
             format!(
@@ -1225,23 +1040,6 @@ fn approval_policy(approve: ApprovalArg) -> ApprovalPolicy {
 
 fn interactive_policy() -> ApprovalPolicy {
     ApprovalPolicy::Interactive(Box::new(|blocked| match blocked {
-        BlockedOn::SelectMask {
-            candidates,
-            description,
-        } => {
-            println!("\ncheckpoint: {description}");
-            for (index, candidate) in candidates.iter().enumerate() {
-                println!(
-                    "  [{index}] {} (score {:.3}, {} px)",
-                    candidate.path.display(),
-                    candidate.score,
-                    candidate.area_pixels
-                );
-            }
-            let choice = prompt("select mask [0]: ").trim().to_owned();
-            let choice = choice.parse::<usize>().unwrap_or(0);
-            Decision::SelectMask(choice.min(candidates.len().saturating_sub(1)))
-        }
         BlockedOn::ApproveText { text, description } => {
             println!("\ncheckpoint: {description}\n\n{text}\n");
             if prompt("approve? [y/N]: ").trim().eq_ignore_ascii_case("y") {
@@ -1262,18 +1060,6 @@ fn interactive_policy() -> ApprovalPolicy {
                         Decision::Reject
                     } else {
                         Decision::ProvideText(text)
-                    }
-                }
-                InputPurpose::PlannedEdit => {
-                    let mask_prompt = prompt("mask prompt: ");
-                    let inpaint_prompt = prompt("inpaint prompt: ");
-                    if mask_prompt.trim().is_empty() || inpaint_prompt.trim().is_empty() {
-                        Decision::Reject
-                    } else {
-                        Decision::ProvidePlan(svs_core::registry::pipeline::PlannedEdit {
-                            mask_prompt,
-                            inpaint_prompt,
-                        })
                     }
                 }
                 InputPurpose::Feedback => {
@@ -1394,22 +1180,10 @@ fn print_outcome(registry: &ArtifactRegistry, operation: &Operation, outcome: &o
     if let Some(run) = &outcome.run {
         for record in &run.decisions {
             match &record.decision {
-                Decision::SelectMask(choice) => {
-                    if let BlockedOn::SelectMask { candidates, .. } = &record.blocked_on {
-                        if let Some(candidate) = candidates.get(*choice) {
-                            println!(
-                                "checkpoint at step {}: mask {choice} selected (score {:.3}, {})",
-                                record.step_index,
-                                candidate.score,
-                                candidate.path.display()
-                            );
-                        }
-                    }
-                }
                 Decision::AcceptText => {
                     println!("checkpoint at step {}: text approved", record.step_index);
                 }
-                Decision::ProvideText(_) | Decision::ProvidePlan(_) => {
+                Decision::ProvideText(_) => {
                     println!(
                         "checkpoint at step {}: manual input used",
                         record.step_index
@@ -1605,8 +1379,8 @@ mod tests {
             outputs: vec![
                 StepOutput {
                     step_index: 0,
-                    label: "segment".into(),
-                    kind: OutputKind::Mask,
+                    label: "load_image".into(),
+                    kind: OutputKind::Image,
                     path: Some(source.clone()),
                     text: None,
                 },
@@ -1630,7 +1404,7 @@ mod tests {
 
         copy_golden_outputs(Some(&golden), &run).unwrap();
 
-        assert!(golden.join("00-segment.png").is_file());
+        assert!(golden.join("00-load_image.png").is_file());
         assert!(golden.join("01-generate.png").is_file());
         assert!(
             !golden.join("03-llm.png").exists(),

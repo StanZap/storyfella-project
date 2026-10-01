@@ -32,13 +32,14 @@ ArtifactRegistry
 │       ├── active_revision_id: Option<Uuid>
 │       ├── revisions: Vec<ArtifactRevision>    — generation history
 │       │   └── ArtifactRevision { id, prompt, asset_path, status:
-│       │       RevisionStatus, seed, model, error, masks: Vec<StoredMask> }
+│       │       RevisionStatus, seed, model, error, origin: RevisionOrigin }
 │       └── drafts: Vec<StoryDraft>      — pre-.sf story text proposals
 └── log: Vec<OperationLogEntry>          — provenance, the undo basis
 ```
 
 `RevisionStatus` serializes as `snake_case`: `queued | generating | completed |
-failed | cancelled`.
+failed | cancelled`. `RevisionOrigin` is `canon | experiment` — canon is a
+promoted revision, experiment an edit that has not been made canonical.
 
 ## Invariants maintained by the registry and `AppState`
 
@@ -76,14 +77,15 @@ failed | cancelled`.
 ## Persistence format
 
 `ProjectDb` (`crates/core/src/persistence/mod.rs`) is SQLite storage for the project: one
-`projects` row, then `artifacts`, `revisions`, `masks`, `layers`,
+`projects` row, then `artifacts`, `revisions`, `layers`,
 `lora_registry` (project LoRA entries — round-tripped since the
 LoRA registry landed, §12 item 6), and `operation_log`. The registry stays the in-memory source of truth; a save
 replaces the snapshot rows in one transaction. Schema versioning lives in
 `schema_meta`; migrations are appended scripts applied on open — the way the
 current format evolves (no legacy formats are parsed; the TOML `ProjectStore`
 and the `project_json` storyboard column (schema v3) were removed with the
-models they carried). The `svs` CLI persists to `.svs-project.db`.
+models they carried, and the `masks` table (schema v8) was dropped with the
+mask edit path). The `svs` CLI persists to `.svs-project.db`.
 
 ### The GUI save flow
 
@@ -93,6 +95,28 @@ projects as `slug.svs-project.db`, and opens any `.db` file in place via the
 Open… picker. The workspace autosaves per the General settings select — after
 every change, every minute, or off — and `Cmd/Ctrl+S` saves manually; saving
 clears `has_unsaved_changes`.
+
+## The generation request
+
+A generation is a `GenerateRequest` (`crates/core/src/generation/mod.rs`) — the
+app-level shape the pipeline builds and the client maps onto the `sd-server`
+wire body (see [`architecture.md`](architecture.md)):
+
+| Field | Meaning |
+| --- | --- |
+| `prompt` | the (grounded) instruction or description |
+| `reference_image_path` | the image being edited as in-context reference tokens; `None` is a plain text-to-image render |
+| `width`, `height` | output size (multiples of 32 within 256–2048) |
+| `steps` | sampling steps (1–50) |
+| `cfg_scale` | text-guidance scale |
+| `sample_method` | sampler (`euler` by default) |
+| `seed` | `None` lets the server pick a random seed |
+| `model` | the profile id (`qwen-image-2.1`), carried for provenance |
+| `device` | boundary metadata; the native backend runs on its launch device |
+| `loras: Vec<LoraSelection>` | adapters as `{ path, multiplier }`, `path` being the server-registered name |
+
+There is no mask, init-image, or reference-strength field: an edit is the
+reference image plus the instruction.
 
 ## Known gaps
 

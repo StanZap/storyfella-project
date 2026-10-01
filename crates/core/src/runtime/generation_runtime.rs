@@ -10,21 +10,6 @@ use tokio::process::{Child, Command};
 use crate::errors::{CodedError, ErrorCode};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum KreaQuantization {
-    Q2,
-    Q4,
-}
-
-impl KreaQuantization {
-    pub const fn profile_id(self) -> &'static str {
-        match self {
-            Self::Q2 => "krea-2-turbo-q2",
-            Self::Q4 => "krea-2-turbo-q4",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ModelArtifact {
     pub filename: &'static str,
     pub repository: &'static str,
@@ -34,63 +19,50 @@ pub struct ModelArtifact {
     pub sha256: &'static str,
 }
 
+/// The single generation profile the app runs: Qwen-Image-2.1, served by the
+/// native `stable-diffusion.cpp` `sd-server`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct KreaProfile {
+pub struct GenerationProfile {
     pub id: &'static str,
-    pub quantization: &'static str,
+    /// The directory under `model_dir` the artifacts are provisioned into.
+    pub model_root: &'static str,
     pub diffusion: ModelArtifact,
     pub text_encoder: ModelArtifact,
     pub vae: ModelArtifact,
 }
 
-const QWEN3_VL_Q4: ModelArtifact = ModelArtifact {
-    filename: "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
-    repository: "Qwen/Qwen3-VL-4B-Instruct-GGUF",
-    revision: "1cd86afb9a95c410a6038ab3b40d8b578c892266",
-    remote_path: "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
-    size_bytes: 2_497_281_664,
-    sha256: "66358cb18bb6b3b1b6675aa412c7a88ef01d228f481184d13668e5201c730a0a",
+const QWEN_DIFFUSION: ModelArtifact = ModelArtifact {
+    filename: "qwen-image-2.1-UC-int8_convrot.safetensors",
+    repository: "Comfy-Org/Qwen-Image-2.1",
+    revision: "main",
+    remote_path: "split_files/diffusion_models/qwen-image-2.1-UC-int8_convrot.safetensors",
+    size_bytes: 7_256_796_840,
+    sha256: "5bc5a6c007eff1e0d4004344a24c4af966b9d2c83d142e613b0d456ccceb19ae",
 };
-const KREA_VAE: ModelArtifact = ModelArtifact {
-    filename: "wan_2.1_vae.safetensors",
-    repository: "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
-    revision: "06e001fc51048fb03433a6fb25334de7836704a5",
-    remote_path: "split_files/vae/wan_2.1_vae.safetensors",
-    size_bytes: 253_815_318,
-    sha256: "2fc39d31359a4b0a64f55876d8ff7fa8d780956ae2cb13463b0223e15148976b",
+const QWEN_TEXT_ENCODER: ModelArtifact = ModelArtifact {
+    filename: "qwen3vl_8b_int8_convrot.safetensors",
+    repository: "Comfy-Org/Qwen-Image-2.1",
+    revision: "main",
+    remote_path: "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+    size_bytes: 9_350_798_360,
+    sha256: "8bfd0f6e12abf2d2d697ecc888e5e90b0d6741d6708f05799f53afa560452e8f",
+};
+const QWEN_VAE: ModelArtifact = ModelArtifact {
+    filename: "qwen_image_2.1_vae_bf16.safetensors",
+    repository: "Comfy-Org/Qwen-Image-2.1",
+    revision: "main",
+    remote_path: "vae/qwen_image_2.1_vae_bf16.safetensors",
+    size_bytes: 675_509_688,
+    sha256: "bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9",
 };
 
-pub const fn krea_profile(quantization: KreaQuantization) -> KreaProfile {
-    let (id, name, size, sha256) = match quantization {
-        KreaQuantization::Q2 => (
-            "krea-2-turbo-q2",
-            "krea2_turbo-q2_k.gguf",
-            4_212_730_912,
-            "eb9f3ad08e552dc9244a1c18dc2def02fbaaca77c7fab457de50ba47720694a6",
-        ),
-        KreaQuantization::Q4 => (
-            "krea-2-turbo-q4",
-            "krea2_turbo-iq4_xs.gguf",
-            6_816_424_992,
-            "56e1bfb0318693e4d0882e48c72286b7ad98f72dc9c9e5c46a5164c6cca7c77d",
-        ),
-    };
-    KreaProfile {
-        id,
-        quantization: match quantization {
-            KreaQuantization::Q2 => "Q2_K",
-            KreaQuantization::Q4 => "IQ4_XS",
-        },
-        diffusion: ModelArtifact {
-            filename: name,
-            repository: "gguf-org/krea-2-gguf",
-            revision: "7813603b1acf32759db87950268afb7e61b362b1",
-            remote_path: name,
-            size_bytes: size,
-            sha256,
-        },
-        text_encoder: QWEN3_VL_Q4,
-        vae: KREA_VAE,
+pub const fn generation_profile() -> GenerationProfile {
+    GenerationProfile {
+        id: "qwen-image-2.1",
+        model_root: "qwen-image-2.1",
+        diffusion: QWEN_DIFFUSION,
+        text_encoder: QWEN_TEXT_ENCODER,
+        vae: QWEN_VAE,
     }
 }
 
@@ -99,7 +71,6 @@ pub struct GenerationRuntime {
     model_directory: PathBuf,
     lora_directory: PathBuf,
     child: Mutex<Option<Child>>,
-    active_profile: Mutex<Option<KreaQuantization>>,
 }
 
 #[derive(Debug, Error)]
@@ -145,16 +116,11 @@ impl GenerationRuntime {
             model_directory: model_directory.into(),
             lora_directory: lora_directory.into(),
             child: Mutex::new(None),
-            active_profile: Mutex::new(None),
         }
     }
 
-    pub fn start(
-        &self,
-        quantization: KreaQuantization,
-        host: &str,
-        port: u16,
-    ) -> Result<(), GenerationRuntimeError> {
+    /// Starts the resident server holding the Qwen-Image-2.1 profile.
+    pub fn start(&self, host: &str, port: u16) -> Result<(), GenerationRuntimeError> {
         let mut child_slot = self.child.lock();
         if child_slot.is_some() {
             return Err(GenerationRuntimeError::AlreadyRunning);
@@ -164,8 +130,8 @@ impl GenerationRuntime {
                 self.executable.clone(),
             ));
         }
-        let profile = krea_profile(quantization);
-        let model_root = self.model_directory.join("krea-2");
+        let profile = generation_profile();
+        let model_root = self.model_directory.join(profile.model_root);
         for artifact in [profile.diffusion, profile.text_encoder, profile.vae] {
             let path = model_root.join(artifact.filename);
             if !path.is_file() {
@@ -196,8 +162,19 @@ impl GenerationRuntime {
             "started resident native generation runtime"
         );
         *child_slot = Some(child);
-        *self.active_profile.lock() = Some(quantization);
         Ok(())
+    }
+
+    /// Starts the server unless an instance this runtime owns is alive.
+    pub async fn ensure_running(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Result<(), GenerationRuntimeError> {
+        if self.is_running() {
+            return Ok(());
+        }
+        self.start(host, port)
     }
 
     pub async fn stop(&self) -> Result<(), GenerationRuntimeError> {
@@ -205,23 +182,9 @@ impl GenerationRuntime {
         if let Some(mut child) = child {
             child.start_kill().map_err(GenerationRuntimeError::Stop)?;
             child.wait().await.map_err(GenerationRuntimeError::Stop)?;
-            *self.active_profile.lock() = None;
             tracing::info!("stopped native generation runtime");
         }
         Ok(())
-    }
-
-    pub async fn switch_profile(
-        &self,
-        quantization: KreaQuantization,
-        host: &str,
-        port: u16,
-    ) -> Result<(), GenerationRuntimeError> {
-        if self.active_profile() == Some(quantization) && self.is_running() {
-            return Ok(());
-        }
-        self.stop().await?;
-        self.start(quantization, host, port)
     }
 
     pub fn is_running(&self) -> bool {
@@ -234,7 +197,6 @@ impl GenerationRuntime {
             Ok(Some(status)) => {
                 tracing::warn!(?status, "native generation runtime exited");
                 slot.take();
-                *self.active_profile.lock() = None;
                 false
             }
             Err(error) => {
@@ -244,24 +206,26 @@ impl GenerationRuntime {
         }
     }
 
-    pub fn active_profile(&self) -> Option<KreaQuantization> {
-        *self.active_profile.lock()
-    }
-
     pub fn executable(&self) -> &Path {
         &self.executable
     }
 
     /// Whether every artifact the profile needs exists under the model directory.
-    pub fn has_profile_artifacts(&self, quantization: KreaQuantization) -> bool {
-        let profile = krea_profile(quantization);
-        let model_root = self.model_directory.join("krea-2");
+    pub fn has_profile_artifacts(&self) -> bool {
+        let profile = generation_profile();
+        let model_root = self.model_directory.join(profile.model_root);
         [profile.diffusion, profile.text_encoder, profile.vae]
             .iter()
             .all(|artifact| model_root.join(artifact.filename).is_file())
     }
 
-    fn command(&self, profile: KreaProfile, model_root: &Path, host: &str, port: u16) -> Command {
+    fn command(
+        &self,
+        profile: GenerationProfile,
+        model_root: &Path,
+        host: &str,
+        port: u16,
+    ) -> Command {
         let mut command = Command::new(&self.executable);
         command
             .arg("--diffusion-model")
@@ -270,28 +234,13 @@ impl GenerationRuntime {
             .arg(model_root.join(profile.text_encoder.filename))
             .arg("--vae")
             .arg(model_root.join(profile.vae.filename))
+            // An explicit quantized prefix cache keeps the working set small;
+            // `auto` would pick f32 (4 GiB per condition) with flash attention.
+            .arg("--model-args")
+            .arg("qwen_image_2_1_prefix_cache_type=q8_0")
+            .arg("--diffusion-fa")
             .arg("--lora-model-dir")
             .arg(&self.lora_directory)
-            .arg("--lora-apply-mode")
-            .arg("at_runtime")
-            .arg("--diffusion-fa")
-            // The identity-edit LoRA is trained with 768px VLM grounding;
-            // the default ostris preset passes up to 1536px, which splits
-            // or duplicates compositions (the model card warns about it).
-            //
-            // `vae_input_max_pixels` is the reference's in-context grid.
-            // sd.cpp caps it at 1MP by default (`min(cap, w*h)`), so a
-            // 1024x1536 (1.5MP) canvas encodes its reference at ~836x1254
-            // and the model renders that content stretched onto the larger
-            // output grid — a ~1.22x zoom that reframes the whole picture.
-            // A 2MP ceiling makes the cap inert at every canvas we allow,
-            // which is the node pack's `fit_mode: fit` ("the source is
-            // resampled to the target grid"); 2MP is also the identity-edit
-            // card's own resolution limit.
-            //
-            // CLI-only: the server JSON API never exposes ref_image_args.
-            .arg("--ref-image-args")
-            .arg("preset=krea2_edit,vae_input_max_pixels=2097152")
             .arg("--listen-ip")
             .arg(host)
             .arg("--listen-port")
@@ -308,36 +257,37 @@ impl GenerationRuntime {
 mod tests {
     use std::fs;
 
-    use super::{krea_profile, GenerationRuntime, KreaQuantization};
+    use super::{generation_profile, GenerationRuntime};
 
     #[test]
-    fn profiles_share_the_quantized_text_encoder_and_vae() {
-        let q2 = krea_profile(KreaQuantization::Q2);
-        let q4 = krea_profile(KreaQuantization::Q4);
-
-        assert_eq!(q2.text_encoder, q4.text_encoder);
-        assert_eq!(q2.vae, q4.vae);
-        assert!(q2.diffusion.size_bytes < q4.diffusion.size_bytes);
+    fn profile_provisions_the_qwen_artifacts() {
+        let profile = generation_profile();
+        assert_eq!(profile.id, "qwen-image-2.1");
+        assert_eq!(
+            profile.diffusion.filename,
+            "qwen-image-2.1-UC-int8_convrot.safetensors"
+        );
+        assert_eq!(profile.text_encoder.size_bytes, 9_350_798_360);
+        assert_eq!(profile.vae.size_bytes, 675_509_688);
     }
 
     #[test]
     fn profile_artifacts_are_detected_on_disk() {
         let directory =
             std::env::temp_dir().join(format!("svs-artifacts-test-{}", uuid::Uuid::new_v4()));
-        let model_root = directory.join("krea-2");
         let runtime = GenerationRuntime::new("/dev/null/sd-server", &directory, &directory);
 
-        assert!(!runtime.has_profile_artifacts(KreaQuantization::Q2));
+        assert!(!runtime.has_profile_artifacts());
 
-        let profile = krea_profile(KreaQuantization::Q2);
+        let profile = generation_profile();
+        let model_root = directory.join(profile.model_root);
         fs::create_dir_all(&model_root).expect("model root should be created");
         for artifact in [profile.diffusion, profile.text_encoder, profile.vae] {
             fs::write(model_root.join(artifact.filename), b"x")
                 .expect("artifact should be written");
         }
 
-        assert!(runtime.has_profile_artifacts(KreaQuantization::Q2));
-        assert!(!runtime.has_profile_artifacts(KreaQuantization::Q4));
+        assert!(runtime.has_profile_artifacts());
         let _ = fs::remove_dir_all(&directory);
     }
 }

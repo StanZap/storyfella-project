@@ -1,5 +1,9 @@
 # Grounded segmentation proof of concept
 
+> **Historical.** Text-grounded segmentation and the Python `/segment`
+> boundary were removed with the Qwen-Image-2.1 migration; the product has no
+> segmentation path. Kept as a record of the decision.
+
 This slice connects text grounding to mask refinement entirely behind `POST /segment`:
 
 ```text

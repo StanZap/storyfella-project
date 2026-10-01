@@ -2,10 +2,6 @@
 # will have compiled files and executables
 /target
 node_modules/
-apps/vision/.venv/
-apps/vision/__pycache__/
-apps/vision/**/__pycache__/
-*.pyc
 cache/*
 !cache/.gitkeep
 models/*
@@ -35,6 +31,3 @@ stable-diffusion.cpp/
 
 # Bundled desktop artifacts from `cargo xtask bundle` (AppImage/.deb/…)
 /dist/
-
-# Runtime-generated segmentation masks (SVS_MASK_DIR output)
-/apps/vision/assets/masks/

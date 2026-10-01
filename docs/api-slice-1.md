@@ -10,9 +10,10 @@ surfaces the artifact registry in the GUI.
 1. **Execution model:** user-typed ops apply immediately and are logged;
    LLM proposals (`svs stack propose`) are gated by approval. Adopted as
    proposed.
-2. **Approval granularity:** checkpoints. The mask confirm in the `modify`
-   path is a `Checkpoint` step that blocks mid-stack; stack-level
-   pre-approval still gates LLM-proposed stacks before execution.
+2. **Approval granularity:** checkpoints. A `Checkpoint` step blocks
+   mid-stack (draft-text approval); stack-level pre-approval still gates
+   LLM-proposed stacks before execution. `modify` is checkpoint-free — an
+   instruction edit segments nothing.
 3. **Ref format:** memorable names are the primary `c:` ref — `c:mia`
    (case-insensitive exact match; duplicate names are rejected as
    ambiguous). Full UUIDs, `c:` + UUID, and the 8-hex short id remain
@@ -20,24 +21,21 @@ surfaces the artifact registry in the GUI.
    derived from their description (`"Mia, a lighthouse keeper"` →
    `mia-a-lighthouse-keeper`); variants are auto-named `{base}-{axis}`
    (or `{base}-{slug}`) so every system-created key stays unique.
-4. **Masks are no longer how `modify` works** (revised 2026-08-10). The
-   generation model is an instruction editor that preserves what the
-   instruction did not mention, so `modify` sends a reference image and a
-   grounded instruction and the mask machinery is opt-in. `mask_path` is
-   still carried in the Rust ↔ Python `GenerateRequest` contract, and the
-   sd.cpp body field is **`mask_image`** — singular. It was `mask_images`
-   (an array) for a long time; sd.cpp drops unrecognized keys silently, so
-   the mask never arrived and the composite pasted a region of a fully
-   re-rendered frame over the original. Anything the server does not name
-   in its JSON parser is discarded without a warning — check the parser
-   before concluding a generation input has no effect.
+4. **`modify` is an instruction edit** (revised 2026-08-10; made
+   unconditional by the Qwen-Image-2.1 migration). The generation model takes
+   a reference image plus a plain-language instruction and preserves what the
+   instruction did not mention, so `modify` sends the artifact's active
+   revision as the reference and a grounded instruction as the prompt — no
+   mask, no segmentation, no composite. `GenerateRequest` has no mask field,
+   and the pipeline has no mask/Segment/Composite steps. Anything the server
+   does not name in its JSON parser is discarded without a warning — check the
+   parser before concluding a generation input has no effect.
 5. **Visual `create`/`variant` generate the first image.** Character,
    environment, and object artifacts get their first image as part of the
    operation (prompt = description, at the artifact's size); the variant's
    first image is an edit of the base — its active image as the reference,
    and the variant description **grounded against the base** before it is
-   sent (`generate(prompt: ground(variant description, base), reference:
-   base image)`). The grounding is not optional: a variant description is a
+   sent. The grounding is not optional: a variant description is a
    delta ("in heavy yellow oilskins") and sending it bare drifts off the
    base entirely — measured, a variant of a woman in her forties came back
    as a different person of a different sex. A failed generation keeps the
@@ -58,36 +56,29 @@ surfaces the artifact registry in the GUI.
 
 | Module | Contents |
 | --- | --- |
-| `crates/core/src/registry/mod.rs` | Artifact model (kinds, variants, scenes, beats, layers, revisions, masks, drafts), one id space, `c:` ref resolution, parent/kind invariants, snapshot/restore undo |
+| `crates/core/src/registry/mod.rs` | Artifact model (kinds, variants, scenes, beats, layers, revisions, drafts), one id space, `c:` ref resolution, parent/kind invariants, snapshot/restore undo |
 | `crates/core/src/registry/ops.rs` | Typed operation set (slice 1: create, variant, regenerate, compose, draft, modify), closed JSON vocabulary (`op`-tagged), compiler (`compile`), executor (`execute`), operation log |
-| `crates/core/src/registry/pipeline.rs` | Linear fail-fast pipeline builder: closed `Step` vocabulary, typed handles (`ImageHandle`, `MaskHandle` → `SelectedMaskHandle`, `PromptHandle`, `PlanHandle`, …), static validation at `build()`, `GenerationBackend` trait, checkpoints, approval policies, `RunOptions` |
+| `crates/core/src/registry/pipeline.rs` | Linear fail-fast pipeline builder: closed `Step` vocabulary (`LoadImage`, `Checkpoint`, `Generate`, `Llm`), typed handles (`ImageHandle`, `PromptHandle`, `FeedbackHandle`), static validation at `build()`, `GenerationBackend` trait, checkpoints, approval policies, `RunOptions` |
 | `crates/core/src/registry/backend.rs` | `CreativeBackend` — the live backend (`CreativeRuntime` + `LmStudioClient`); LLM steps are soft dependencies that degrade to manual input |
-| `crates/core/src/registry/image_ops.rs` | Pure image primitives: composite (masked blend), invert, feather, union — deterministic, property-tested |
-| `apps/cli/src/bin/svs.rs` | The `svs` CLI (clap, a binary of the `svs-cli` package) |
+| `crates/core/src/generation/mod.rs` | `GenerationClient` — the typed client for the native `sd-server` `sdcpp` API (see `architecture.md`) |
 | `crates/core/src/persistence/mod.rs` | SQLite project store (`ProjectDb`): §10 schema, versioned migrations, WAL, snapshot save/load of the registry |
-| `crates/core/src/vision/mod.rs` ↔ `apps/vision/models/schemas.py` | `mask_path` added to `GenerateRequest` on both sides |
+| `apps/cli/src/bin/svs.rs` | The `svs` CLI (clap, a binary of the `svs-cli` package) |
 
 ## Pipeline rules (as implemented)
 
 - Steps are a closed Rust enum; the VLLM combines kinds, never invents
   them. LLM plan/draft steps degrade to manual input on failure — they
   never hard-fail a stack.
-- `build()` validates: non-empty stacks, handle ordering, native mask ⇒
-  reference image, sizes (multiples of 32, 256..=2048), steps 1..=50,
-  ≤ 8 LoRAs with multipliers in -2..=2, model ∈ {krea-2-turbo-q2,
-  krea-2-turbo-q4} (Krea 2 is the product model).
+- `build()` validates: non-empty stacks, handle ordering, sizes (multiples
+  of 32, 256..=2048), steps 1..=50, ≤ 8 LoRAs with multipliers in -2..=2,
+  and model `qwen-image-2.1` (the only generation model).
 - Execution is linear and fail-fast; a rejected checkpoint ends the stack
   cleanly (revision cancelled, op logged `rejected`); a failed step keeps
   intermediates and fails the revision.
 - Undo is state restore (`ArtifactRegistry::snapshot`/`restore`), never
   pipeline re-execution.
-- The `modify` compiler emits one of two shapes. Default (an instruction
-  edit): `LoadImage → Ground(instruction) → Generate(reference, grounded
-  instruction)` — no mask, no composite, no checkpoint, and the inpaint
-  adapter is not injected. With both `--mask-prompt` and `--inpaint-prompt`
-  (opt-in): `LoadImage → Segment(mask prompt) → Checkpoint(confirm mask) →
-  Generate(reference, inpaint prompt) → Composite`; the confirmed mask is
-  stored on the new revision (`masks`) with its grounding prompt and score.
+- The `modify` compiler emits one shape: `LoadImage → Generate(reference,
+  grounded instruction)` — no mask, no composite, no checkpoint.
 - `Ground` is a soft LLM step with a deterministic fallback, so unlike
   `Plan` it never blocks on a missing planner — it substitutes the template
   and continues. `variant` and `regenerate`-with-a-prompt emit it too; a
@@ -103,31 +94,31 @@ svs --project p.db op create scene "The kitchen at dusk" --name kitchen
 svs --project p.db op create object "an antique brass lantern" --name lantern --size 768x768
 svs --project p.db op compose c:<scene> "Mia lights the lantern" --background c:<env> --layer c:<char>
 svs --project p.db op variant c:<char> "in rain gear" --axis outfit
-svs --project p.db op regenerate c:<char> "make it warmer" --seed 42 --steps 4 --size 768x448 --out golden/
+svs --project p.db op regenerate c:<char> "make it warmer" --seed 42 --steps 25 --size 1024x1536 --out golden/
 svs --project p.db op draft c:<story> "write the opening"          # LLM + approval checkpoint
 svs --project p.db op draft c:<story> "write the opening" --text "…"   # manual, no checkpoint
 svs --project p.db op modify c:<char> "give her a short bob haircut"   # instruction edit
 svs --project p.db op describe c:<char> "Mia, a lighthouse keeper, short bob"  # make an edit canonical
-svs --project p.db op modify c:<char> "change her hair" --mask-prompt "her hair" --inpaint-prompt "a bob cut" --approve auto --out golden/  # opt-in mask path
 svs --project p.db stack run stack.json --approve auto             # the VLLM contract test bed
 svs --project p.db stack propose "Add a rainy variant of the kitchen scene"   # LM Studio → JSON
-svs --project p.db runtime serve --force --model krea-2-turbo-q4   # resident generation profile
+svs --project p.db runtime serve --force                           # resident generation server
+svs eval -i image.png -p "answer YES or NO: …"                     # LM Studio vision judge
 svs --project p.db log [c:<ref>]
 ```
 
 `create --size WxH` sets the artifact's default generation size (kind
 defaults otherwise: character 512×768, object 768×768, environment/scene/beat
-1024×576); `regenerate`/`modify` honor it, and `--size`/`--steps` on those
+1024×576; the checked-in `config/app.toml` raises character to 1024×1536);
+`regenerate`/`modify` honor it, and `--size`/`--steps` on those
 commands override it per run. Variants inherit the base artifact's size.
 `create`/`variant` of visual kinds generate the first image at that size as
 part of the op (so they need the generation backend — see the table below);
 variants use the base's active image as the reference.
 
 `--approve auto|interactive` (default interactive) resolves checkpoints;
-`--out <dir>` drops every intermediate (image, mask, composite) into a
-folder for human review — the manual golden-run tier. `stack run` persists
-already-applied ops even when a later op fails (fail-fast, intermediates
-kept).
+`--out <dir>` drops every intermediate image into a folder for human review —
+the manual golden-run tier. `stack run` persists already-applied ops even
+when a later op fails (fail-fast, intermediates kept).
 
 ## Session guide — what runs where
 
@@ -137,27 +128,25 @@ can stay light (or run on another machine) without the generation backend:
 | Tier | Needs running | Ops |
 | --- | --- | --- |
 | Model-only | nothing — any machine, even a fresh checkout | `create` of text-only kinds (story/scene/beat), `compose`, `draft --text`, `log`, `project`, `stack run` of model-only stacks |
-| LLM-assisted | LM Studio (see below) | `draft` (propose + approve), `modify` without explicit prompts (the LLM plans the mask/inpaint split), `stack propose`, free-form canvas messages (proposed stacks shown for approval) |
-| Generation | provisioned Krea profile + resident sd-server | `create`/`variant` of visual kinds (first image), `regenerate`, `modify` |
+| LLM-assisted | LM Studio (see below) | `draft` (propose + approve), `modify` (the LLM grounds the instruction), `stack propose`, free-form canvas messages (proposed stacks shown for approval) |
+| Generation | provisioned Qwen-Image-2.1 profile + resident `sd-server` | `create`/`variant` of visual kinds (first image), `regenerate`, `modify` |
 
 LLM steps are soft dependencies: with LM Studio off, `draft`/`modify`
-degrade to manual input at a checkpoint instead of failing the stack.
+degrade to deterministic/manual behaviour instead of failing the stack.
 
-### Keeping a generation profile resident
+### Keeping the generation server resident
 
-An op starts its own sd-server when none is running, and that server dies
+An op starts its own `sd-server` when none is running, and that server dies
 when the CLI exits (cold start per command). For a longer generation
-session, keep a profile resident in one terminal:
+session, keep the profile resident in one terminal:
 
 ```sh
-svs --project p.json runtime serve --force --model krea-2-turbo-q4   # Ctrl-C to stop
+svs --project p.db runtime serve --force   # Ctrl-C to stop
 ```
 
-- `--force` kills stale sd-server processes from interrupted sessions —
+- `--force` kills stale `sd-server` processes from interrupted sessions —
   they hold port 7861 and cannot be restarted by the runtime.
-- Ops auto-restart **their own** server when the requested model differs
-  from the resident one: `--model krea-2-turbo-q4` while q2 is loaded just
-  works.
+- Only the `qwen-image-2.1` profile is served.
 - A mismatched server that another session owns errors with a
   `ProfileMismatch` message naming the fix (`svs runtime serve --force` or
   `pkill -f "sd-server --diffusion"`).
@@ -166,38 +155,31 @@ svs --project p.json runtime serve --force --model krea-2-turbo-q4   # Ctrl-C to
 
 `lm_studio.model` in `config/app.toml` must match a model id LM Studio
 serves (`curl http://localhost:1234/v1/models` lists them). The checked-in
-config points at the gemma model used on the dev machine.
+config points at the larger planner model used on the dev machine.
 
 ### Platform notes (measured)
 
-- **macOS Apple Silicon:** q2 @ 768×448 @ 4 steps ≈ 1–2 min per image —
-  the light loop (everything in the table, including `modify`).
-  q4 @ 1024×1024 @ 8 steps is ≈ 9 min per image — not worth it; keep heavy
-  work on CUDA.
-- **Linux + NVIDIA CUDA:** q2 and q4 are both fast. The 20-minute job cap
-  in `CreativeRuntime::wait_for_job` only matters on slow hardware.
-- `model_setup` runs once per machine/profile
-  (`--profile q2|q4 --accept-krea-license`); artifacts land in
-  `paths.model_dir` (`models/` in this checkout).
+- **Linux + NVIDIA CUDA:** the validated target. Measured on an RTX 3090
+  (24 GiB, int8 weights, 25 steps, CFG 6.0, euler): text-to-image 1024²
+  ≈52 s sampling (≈62–68 s wall), reference edit/cutout 1024×1536 ≈140 s,
+  peak ≈23.4 GiB. Qwen-Image-2.1 has no few-step turbo path.
+- The 20-minute job cap in `CreativeRuntime::wait_for_job` only matters on
+  slow hardware.
+- `model_setup` runs once per machine (artifacts land in `paths.model_dir`,
+  `models/` in this checkout).
 
 ## Divergences from the design doc (deferred, by directive)
 
 - **The legacy storyboard model is gone.** The canvas (roadmap item 4)
   replaced `Project`/`StoryboardFrame`/`Timeline`; the GUI is the artifact
-  registry (`AppState` in `apps/desktop/src/state/`). Schema v3 drops `project_json`
-  from the `projects` row — the sanctioned one-time loss, no legacy
+  registry (`AppState` in `apps/desktop/src/state/`). Schema v3 dropped
+  `project_json` — the sanctioned one-time loss, no legacy
   formats are parsed.
-- **Canvas slice 1** (`apps/desktop/src/ui/canvas.rs`): sidebar grouped by kind, detail
+- **Canvas slice 1** (`apps/desktop/src/ui/canvas.rs`): gallery grid and detail
   pane (image, description, variants, revisions, children, operation log),
   slash-command composer (`/create`, `/variant`, `/regenerate`,
-  `/modify`), undo/redo via registry snapshots. The mask checkpoint of
-  `modify` is interactive: the op runs on a worker thread (its own tokio
-  runtime) and the segmentation candidates are shown overlaid on the image
-  in a modal; the choice is sent back over a channel. A `modify` whose LLM
-  edit plan degrades (no LM Studio) asks for the mask/inpaint split in a
-  second modal instead of rejecting. Stored masks appear
-  under the active revision (served via the `mask` asset handler; the
-  runtime points `SVS_MASK_DIR` at `<asset_dir>/masks`). Free-form composer
+  `/modify`), undo/redo via registry snapshots. `modify` runs unattended (an
+  instruction edit has no checkpoint). Free-form composer
   messages (no leading `/`) are proposed as operation stacks by LM Studio
   (`CreativeBackend::propose_stack`, shared with `svs stack propose`) and
   shown in an approval modal with per-op toggles; approved stacks run in
@@ -212,19 +194,18 @@ config points at the gemma model used on the dev machine.
   ops would duplicate state and are excluded with a tooltip).
   Deferred per §6:
   artboard pan/zoom, `c:` autocomplete, syntax highlighting, and the
-  compose/draft op surface (beats are item 5, Studio integration).
-- `paint_strokes` is vocabulary (a `Step` + builder method) but not
-  executable in slice 1; `describe`/`critique` LLM steps degrade to manual
-  input.
+  compose/draft op surface (beats are Studio integration).
+- `describe`/`critique` LLM steps degrade to manual input.
 
 ## After slice 1: generation quality controls + LoRA registry
 
 - **Configurable defaults** (`config/app.toml`, editable in Settings →
   Image generation, persisted line-preserving): `[generation] steps`,
-  `[generation.sizes]` per kind (`WxH` strings), `[lora]` bindings
-  (`inpaint`, `character`, `environment`, `object` file names within
-  `generation.lora_dir` plus a shared `multiplier`; discovery is recursive
-  (subfolders and symlinked model trees) with a refresh icon in Settings). The
+  `[generation] cfg_scale`/`sample_method`, `[generation.sizes]` per kind
+  (`WxH` strings), and `[lora]` bindings (`character`, `environment`,
+  `object` file names within `generation.lora_dir` plus a shared
+  `multiplier`; discovery is recursive (subfolders and symlinked model
+  trees) with a refresh icon in Settings). The
   canvas ops read a
   live `Signal<GenerationDefaults>` (Workspace context); the CLI builds
   them from the loaded config. Kind resolution order everywhere: the
@@ -253,10 +234,10 @@ config points at the gemma model used on the dev machine.
   parser, the CLI, and the LLM closed vocabulary (the planner prompt lists
   the discovered adapters so the LLM can propose bindings). Auto-injection
   into every generation pipeline at compile: artifact-bound entries
-  (walking the variant-of base chain) first, then the config kind binding,
-  then the inpaint adapter on `modify`; first-wins by resolved path,
-  missing-on-disk adapters are skipped with a warning. Per-run `--lora
-  <file>@<mult>` CLI flags append after the auto-injected set (deduped).
+  (walking the variant-of base chain) first, then the config kind binding;
+  first-wins by resolved path, missing-on-disk adapters are skipped with a
+  warning. Per-run `--lora <file>@<mult>` CLI flags append after the
+  auto-injected set (deduped).
 - `svs` CLI: `op attach-lora`/`lora-scale`/`lora-remove`, `--lora` on
   `create`/`variant`/`regenerate`/`modify`, `stack run`/`propose` carry
   the new ops.
@@ -264,12 +245,9 @@ config points at the gemma model used on the dev machine.
 ## First CI surface
 
 - Builder validation tests (`crates/core/src/registry/pipeline.rs`): empty stacks,
-  bounds, ordering, mask-without-reference.
-- Composite property tests (`crates/core/src/registry/image_ops.rs`): pixels outside
-  the mask are bit-identical with and without feathering.
+  bounds, ordering.
 - Execution tests with a fake backend: request bodies (prompt, reference,
-  mask, LoRA, size, seed), revision state transitions, checkpoint
+  LoRA, size, seed), revision state transitions, checkpoint
   accept/reject/degrade.
-- Contract tests: `mask_path` round-trips on both sides of the wire
-  (Rust `vision` tests, Python `test_contracts.py`,
-  `test_native_generation.py`).
+- Serialization tests (`crates/core/src/generation/`): the `sdcpp` wire body
+  (sampling controls, reference, LoRA, VAE tiling) and job decoding.

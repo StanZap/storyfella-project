@@ -1,31 +1,21 @@
-//! The live [`GenerationBackend`]: `CreativeRuntime` for vision/generation,
+//! The live [`GenerationBackend`]: `CreativeRuntime` for generation,
 //! `LmStudioClient` for the soft LLM steps.
 
 use futures_util::future::BoxFuture;
 
 use crate::{
     config::AppConfig,
+    generation::{GenerateRequest, GenerateResponse},
     llm::{strip_json_fence, ChatMessage, ChatOptions, LmStudioClient},
-    runtime::{CreativeRuntime, CreativeRuntimeError, KreaQuantization},
-    vision::{GenerateRequest, GenerateResponse, SegmentRequest, SegmentResponse},
+    runtime::{CreativeRuntime, CreativeRuntimeError},
 };
 
 use super::{
     ops::OperationStack,
-    pipeline::{GenerationBackend, PipelineError, PlannedEdit},
+    pipeline::{GenerationBackend, PipelineError},
     Artifact, ArtifactRegistry, GenerationDefaults,
 };
 use crate::registry::discover_loras;
-
-/// The request context for a failed segmentation: which image and prompt.
-fn segment_context(request: &SegmentRequest) -> Vec<(&'static str, String)> {
-    let mut context = Vec::new();
-    context.push(("image", request.image_path.clone()));
-    if let Some(prompt) = &request.prompt {
-        context.push(("prompt", prompt.clone()));
-    }
-    context
-}
 
 /// The request context for a failed generation: the exact prompt that was
 /// sent (the LLM-derived one or the manual one), the model, the
@@ -41,23 +31,14 @@ fn generate_context(
     if let Some(model) = &request.model {
         context.push(("model", model.clone()));
     }
-    if let Some(width) = request.width {
-        context.push(("width", width.to_string()));
-    }
-    if let Some(height) = request.height {
-        context.push(("height", height.to_string()));
-    }
-    if let Some(steps) = request.steps {
-        context.push(("steps", steps.to_string()));
-    }
+    context.push(("width", request.width.to_string()));
+    context.push(("height", request.height.to_string()));
+    context.push(("steps", request.steps.to_string()));
     if let Some(seed) = request.seed {
         context.push(("seed", seed.to_string()));
     }
     if let Some(path) = &request.reference_image_path {
         context.push(("reference", path.clone()));
-    }
-    if let Some(path) = &request.mask_path {
-        context.push(("mask", path.clone()));
     }
     if !request.loras.is_empty() {
         context.push((
@@ -99,33 +80,18 @@ impl CreativeBackend {
         }
     }
 
-    /// A backend whose runtime starts with a specific Krea profile (the
-    /// resident-server profile is otherwise taken from `config/app.toml`).
-    pub fn with_profile(config: &AppConfig, profile: KreaQuantization) -> Self {
-        let mut config = config.clone();
-        config.generation.profile = profile;
-        Self::new(&config)
-    }
-
-    pub fn profile(&self) -> KreaQuantization {
-        self.runtime.profile()
-    }
-
     /// The [`CreativeRuntime`] this backend drives (the Settings screen
     /// controls the same processes the canvas generates through).
     pub fn runtime(&self) -> CreativeRuntime {
         self.runtime.clone()
     }
 
-    /// Ensures the native server is resident with the requested profile.
-    pub async fn ensure_profile_ready(
-        &self,
-        profile: KreaQuantization,
-    ) -> Result<(), CreativeRuntimeError> {
-        self.runtime.ensure_profile_ready(profile).await
+    /// Ensures the native generation server is resident and ready.
+    pub async fn ensure_ready(&self) -> Result<(), CreativeRuntimeError> {
+        self.runtime.ensure_ready().await
     }
 
-    /// Stops the generation server this backend owns (keeps Python up).
+    /// Stops the generation server this backend owns.
     pub async fn stop_generation(&self) -> Result<(), CreativeRuntimeError> {
         self.runtime.stop_generation_runtime().await
     }
@@ -160,14 +126,14 @@ impl CreativeBackend {
          no markdown."
     }
 
-    /// Krea 2's identity-edit adapter is an instruct model: it edits a
-    /// reference image from a plain-language instruction. A terse
-    /// instruction under-specifies the result and the render collapses into
-    /// base-model priors — measured, `"make him smile"` returned an anime
-    /// illustration of a different person. Restating the invariants pulls
-    /// it back, but a template can only restate them *all*, including the
-    /// ones the edit is meant to override. Doing that subtraction is the
-    /// LLM's job here, and the only one.
+    /// Qwen-Image-2.1's instruction edit takes an image plus a plain-language
+    /// instruction and preserves what the instruction does not mention. A
+    /// terse instruction under-specifies the result and the render collapses
+    /// into base-model priors — measured, `"make him smile"` returned an anime
+    /// illustration of a different person. Restating the invariants pulls it
+    /// back, but a template can only restate them *all*, including the ones
+    /// the edit is meant to override. Doing that subtraction is the LLM's job
+    /// here, and the only one.
     fn ground_system_prompt() -> &'static str {
         "You rewrite image-edit instructions for a photographic image editor. \
          You are given the edit the user asked for and a description of the \
@@ -193,18 +159,6 @@ impl CreativeBackend {
          commentary, no markdown, no quotes."
     }
 
-    fn plan_system_prompt() -> &'static str {
-        "You split visual-edit descriptions into two prompts. Respond with \
-         JSON only, exactly this shape: {\"mask_prompt\": \"...\", \
-         \"inpaint_prompt\": \"...\"}. The mask_prompt names the region to \
-         select (e.g. \"her hair\"). The inpaint_prompt describes the new \
-         look (e.g. \"a short bob cut\"). Name the smallest region the edit \
-         actually changes: a mask that covers a large share of the frame \
-         forces the model to invent that much new background, which it does \
-         poorly. Prefer a region that stops at the subject's body rather \
-         than one running off the edge of the picture."
-    }
-
     /// The shared op vocabulary + intent rules block of the planner prompt
     /// (used by both the tool-calling and the static-fallback prompts).
     fn vocabulary_block() -> String {
@@ -216,7 +170,7 @@ impl CreativeBackend {
          {{\"op\": \"resize\", \"target\": \"c:<name>\", \"width\": w, \"height\": h}}\n\
          {{\"op\": \"compose\", \"scene\": \"c:<name>\", \"description\": \"...\", \"background\": \"c:<name>\", \"layers\": [{{\"artifact\": \"c:<name>\", \"variant\": \"c:<name>\"}}]}}\n\
          {{\"op\": \"draft\", \"target\": \"c:<name>\", \"request\": \"...\"}}\n\
-         {{\"op\": \"modify\", \"target\": \"c:<name>\", \"description\": \"...\", \"mask_prompt\": \"...\", \"inpaint_prompt\": \"...\", \"size\": [w, h], \"steps\": n, \"loras\": [...]}}\n\
+         {{\"op\": \"modify\", \"target\": \"c:<name>\", \"description\": \"...\", \"size\": [w, h], \"steps\": n, \"loras\": [...]}}\n\
          {{\"op\": \"attach-lora\", \"target\": \"c:<name>\", \"lora\": \"<adapter file>\", \"multiplier\": 0.8}}\n\
          {{\"op\": \"lora-scale\", \"lora\": \"<adapter name>\", \"multiplier\": 0.9}}\n\
          {{\"op\": \"lora-remove\", \"lora\": \"<adapter name>\"}}\n\
@@ -232,12 +186,8 @@ impl CreativeBackend {
          - modify: a localized change to one region of an existing image (add \
          glasses, change the hair, change the sky). A change to what an image \
          shows is modify, not regenerate. Give it a plain-language \
-         instruction and leave mask_prompt and inpaint_prompt out: the edit \
-         model preserves whatever the instruction does not mention, and that \
-         path is measurably better. Only fill them in when the change cannot \
-         be *said* — filling a hole, removing an object with no name, or \
-         extending the canvas — because a masked edit must invent everything \
-         inside the mask, and does that poorly over large areas.\n\
+         instruction: the edit model preserves whatever the instruction does \
+         not mention.\n\
          - compose: assemble a scene from existing artifacts (background plus \
          layered characters).\n\
          - draft: ONLY a text note or idea attached to an artifact. It never \
@@ -311,7 +261,6 @@ impl CreativeBackend {
             .iter()
             .chain(defaults.loras.kinds.environment.iter())
             .chain(defaults.loras.kinds.object.iter())
-            .chain(defaults.loras.inpaint.iter())
         {
             if !adapters.iter().any(|file| file == &binding.file) {
                 adapters.push(binding.file.clone());
@@ -539,26 +488,6 @@ enum ProposeError {
 }
 
 impl GenerationBackend for CreativeBackend {
-    fn segment(
-        &self,
-        request: &SegmentRequest,
-    ) -> BoxFuture<'_, Result<SegmentResponse, PipelineError>> {
-        let this = self.clone();
-        let request = request.clone();
-        Box::pin(async move {
-            this.runtime.start_vision_runtime().await.map_err(|error| {
-                PipelineError::backend_with_context(error, segment_context(&request))
-            })?;
-            this.runtime
-                .vision_client()
-                .segment(&request)
-                .await
-                .map_err(|error| {
-                    PipelineError::backend_with_context(error, segment_context(&request))
-                })
-        })
-    }
-
     fn generate(
         &self,
         request: &GenerateRequest,
@@ -566,29 +495,19 @@ impl GenerationBackend for CreativeBackend {
         let this = self.clone();
         let request = request.clone();
         Box::pin(async move {
-            // The requested model drives which profile must be resident; a
-            // mismatched server is restarted automatically (only sd-server).
-            let profile = match request.model.as_deref() {
-                Some("krea-2-turbo-q2") => KreaQuantization::Q2,
-                Some("krea-2-turbo-q4") => KreaQuantization::Q4,
-                _ => this.runtime.profile(),
-            };
-            this.runtime
-                .ensure_profile_ready(profile)
-                .await
-                .map_err(|error| {
-                    PipelineError::backend_with_context(error, generate_context(&request, None))
-                })?;
+            this.runtime.ensure_ready().await.map_err(|error| {
+                PipelineError::backend_with_context(error, generate_context(&request, None))
+            })?;
             let job = this
                 .runtime
-                .vision_client()
-                .submit_generation(&request, false)
+                .client()
+                .generate(&request)
                 .await
                 .map_err(|error| {
                     PipelineError::backend_with_context(error, generate_context(&request, None))
                 })?;
             // The job id lets a failed run be cross-referenced against the
-            // Python runtime logs.
+            // server logs.
             let job_id = job.id.clone();
             let generated = this.runtime.wait_for_job(job).await.map_err(|error| {
                 PipelineError::backend_with_context(
@@ -610,12 +529,9 @@ impl GenerationBackend for CreativeBackend {
                 status: "completed".to_owned(),
                 image_path: Some(imported),
                 model: request.model.clone(),
-                device: None,
-                dtype: None,
                 seed: request.seed,
-                width: request.width,
-                height: request.height,
-                duration_ms: None,
+                width: Some(request.width),
+                height: Some(request.height),
                 error: None,
             })
         })
@@ -680,46 +596,6 @@ impl GenerationBackend for CreativeBackend {
                     .filter(|content| !content.is_empty())),
                 Err(error) => {
                     tracing::warn!(%error, "LLM grounding degraded to the deterministic template");
-                    Ok(None)
-                }
-            }
-        })
-    }
-
-    fn llm_plan(&self, request: &str) -> BoxFuture<'_, Result<Option<PlannedEdit>, PipelineError>> {
-        let this = self.clone();
-        let request = request.to_owned();
-        Box::pin(async move {
-            let Some(client) = &this.llm else {
-                return Ok(None);
-            };
-            let messages = [
-                ChatMessage::text("system", Self::plan_system_prompt()),
-                ChatMessage::text("user", request),
-            ];
-            let options = ChatOptions {
-                response_format: Some(Self::edit_plan_response_format()),
-                ..ChatOptions::default()
-            };
-            match client.chat_with_options(&messages, &options).await {
-                Ok(completion) => {
-                    let Some(content) = completion
-                        .choices
-                        .first()
-                        .and_then(|choice| choice.message.content.clone())
-                    else {
-                        return Ok(None);
-                    };
-                    match serde_json::from_str::<PlannedEdit>(strip_json_fence(&content)) {
-                        Ok(plan) => Ok(Some(plan)),
-                        Err(error) => {
-                            tracing::warn!(%error, "LLM plan did not parse as JSON");
-                            Ok(None)
-                        }
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "LLM plan degraded to manual input");
                     Ok(None)
                 }
             }
@@ -846,8 +722,6 @@ impl CreativeBackend {
                                         "op": { "const": "modify" },
                                         "target": { "type": "string" },
                                         "description": { "type": "string" },
-                                        "mask_prompt": { "type": "string" },
-                                        "inpaint_prompt": { "type": "string" },
                                         "size": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 },
                                         "steps": { "type": "integer" },
                                         "loras": { "type": "array", "items": { "type": "object", "additionalProperties": false, "properties": { "path": { "type": "string" }, "multiplier": { "type": "number" } }, "required": ["path"] } }
@@ -892,22 +766,6 @@ impl CreativeBackend {
             }),
         )
     }
-
-    /// The edit-plan shape: `{"mask_prompt", "inpaint_prompt"}`.
-    fn edit_plan_response_format() -> serde_json::Value {
-        Self::json_schema_response_format(
-            "planned_edit",
-            serde_json::json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "mask_prompt": { "type": "string" },
-                    "inpaint_prompt": { "type": "string" }
-                },
-                "required": ["mask_prompt", "inpaint_prompt"]
-            }),
-        )
-    }
 }
 
 #[cfg(test)]
@@ -935,23 +793,22 @@ mod tests {
                 "every op variant requires the discriminator"
             );
         }
-        // The edit plan keeps its two-field contract.
-        let plan = CreativeBackend::edit_plan_response_format();
-        assert_eq!(plan["json_schema"]["strict"], true);
-        assert_eq!(
-            plan["json_schema"]["schema"]["required"],
-            serde_json::json!(["mask_prompt", "inpaint_prompt"])
-        );
+    }
+
+    fn test_defaults() -> GenerationDefaults {
+        GenerationDefaults {
+            sizes: Default::default(),
+            steps: 25,
+            cfg_scale: crate::generation::DEFAULT_CFG_SCALE,
+            sample_method: crate::generation::DEFAULT_SAMPLE_METHOD.to_owned(),
+            loras: Default::default(),
+        }
     }
 
     #[test]
     fn planner_prompt_defines_when_each_op_applies() {
         let registry = ArtifactRegistry::new();
-        let defaults = GenerationDefaults {
-            sizes: Default::default(),
-            steps: 4,
-            loras: Default::default(),
-        };
+        let defaults = test_defaults();
         let prompt = CreativeBackend::propose_system_prompt(&registry, &defaults, None);
         for expectation in [
             "modify: a localized change to one region of an existing image",
@@ -994,11 +851,7 @@ mod tests {
                 },
             )
             .unwrap();
-        let defaults = GenerationDefaults {
-            sizes: Default::default(),
-            steps: 4,
-            loras: Default::default(),
-        };
+        let defaults = test_defaults();
         let prompt = CreativeBackend::propose_system_prompt(
             &registry,
             &defaults,
@@ -1017,11 +870,7 @@ mod tests {
     #[test]
     fn vocabulary_teaches_size_steps_and_lora_intent() {
         let registry = ArtifactRegistry::new();
-        let defaults = GenerationDefaults {
-            sizes: Default::default(),
-            steps: 4,
-            loras: Default::default(),
-        };
+        let defaults = test_defaults();
         let prompt = CreativeBackend::propose_system_prompt(&registry, &defaults, None);
         for expectation in [
             "\"op\": \"resize\", \"target\": \"c:<name>\", \"width\": w, \"height\": h",

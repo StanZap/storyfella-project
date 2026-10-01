@@ -1,5 +1,9 @@
 # Image-generation proof of concept
 
+> **Historical.** This Diffusers/SANA Sprint path was removed with the
+> Qwen-Image-2.1 migration: the product has no Python runtime and generates
+> only through the native `sd-server`. Kept as a record of the decision.
+
 This spike validates local text-to-image inference behind the existing Python HTTP boundary. It deliberately does not connect generation to the timeline or application state.
 
 ## Baseline

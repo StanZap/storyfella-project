@@ -1,9 +1,9 @@
 # The edit loop: make an image, then change one thing about it and keep the
-# subject. This is the plan that would have caught the "nonsensical edit" bug
-# — every step here failed, or produced a wrong picture, before 2026-08-10.
+# subject. Every step here runs unattended against the generation backend.
 #
-# `modify` is an instruction edit: no mask, no segmentation, no approval
-# checkpoint, so it runs unattended. Needs the generation backend.
+# `modify` is a plain instruction edit: a reference image plus a plain-language
+# instruction — no region to select and no approval checkpoint. It needs the
+# generation backend.
 name: "The edit loop"
 description: "Create a character, then restyle her by instruction — hair, then outfit — and check she survives each edit."
 speed_ms: 2000
@@ -21,18 +21,18 @@ steps:
     message: "A first portrait. Now the part that matters: changing one thing without losing her."
 
   - compose: "/modify c:mara change her hair color to auburn"
-    message: "A recolour, in plain language — no mask, no region to select. The model keeps what the instruction did not mention."
+    message: "A recolour, in plain language. The model keeps what the instruction did not mention."
   - expect_image: "mara"
     soft: true
     wait_ms: 2000
-    message: "Same face, same sweater, same wall — auburn hair. The edit is localized because the instruction is, not because we cut a hole."
+    message: "Same face, same sweater, same wall — auburn hair. The edit stays local because the instruction is specific."
 
   - compose: "/modify c:mara give her a short bob haircut"
     message: "Harder: a haircut changes shape, not just colour. Her description says 'long dark hair', which contradicts this — the grounding step drops the length and keeps the rest."
   - expect_image: "mara"
     soft: true
     wait_ms: 2000
-    message: "A bob, and still Mara. Terse instructions are the risk here: unGROUNDED, 'give her a bob' can return a different person entirely."
+    message: "A bob, and still Mara. Terse instructions are the risk here: ungrounded, 'give her a bob' can return a different person entirely."
 
   - compose: "/modify c:mara change her sweater to a yellow raincoat"
     message: "Edits stack — this one applies to the bob-cut revision, not the original."
@@ -42,4 +42,4 @@ steps:
     message: "The raincoat lands on the previous edit. Every revision is kept, so the operation log is the whole history of how she got here."
 
   - expect_no_error: true
-    message: "Three edits, one subject, no masks and no compositing. That is the edit loop."
+    message: "Three instruction edits, one subject, no errors. That is the edit loop."

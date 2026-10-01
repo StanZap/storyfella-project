@@ -135,32 +135,22 @@ scene lighthouse
     keeper_elias: "It's been down there longer than you've been alive."
 "#;
 
-/// The pictures checked into `docs/poc/` that stand in for generated ones.
+/// The picture checked into `docs/poc/` that stands in for a generated one.
 ///
-/// Three real images across twelve artifacts is deliberate: the grid has to
+/// A single real image across twelve artifacts is deliberate: the grid has to
 /// be judged with *both* states present, and a project mid-way through its
 /// work is mostly placeholders anyway.
 ///
 /// Resolved against the manifest directory rather than the working
-/// directory, so a dev build finds them from anywhere. The images live in the
+/// directory, so a dev build finds it from anywhere. The image lives in the
 /// repository's `docs/poc/`, and the manifest directory is this crate
 /// (`apps/desktop`), so the `../..` hops up to the workspace root. They are
 /// ~2.4MB and are **not** embedded: a shipped binary simply will not find
 /// them, and [`install_image`] falls back to leaving the artifact imageless.
-const STAND_IN_IMAGES: &[&str] = &[
-    concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/poc/image-generation/latest/lighthouse-seed-42.png"
-    ),
-    concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/poc/native-generation/latest/krea2-q2-lighthouse-seed-43.png"
-    ),
-    concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/poc/native-generation/latest/krea2-q4-lighthouse-seed-64.png"
-    ),
-];
+const STAND_IN_IMAGES: &[&str] = &[concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../docs/poc/image-generation/latest/lighthouse-seed-42.png"
+)];
 
 /// Copies a stand-in into the generated-asset directory under a fresh name
 /// and returns that filename, which is what a revision stores.
@@ -248,14 +238,14 @@ pub fn project(asset_dir: &Path) -> (ArtifactRegistry, String) {
                 *id,
                 description,
                 Some(4471),
-                Some("krea-2-turbo-q4".into()),
+                Some(svs_core::registry::pipeline::DEFAULT_MODEL.to_owned()),
                 RevisionOrigin::Canon,
             )
             .expect("sample revision starts");
         match install_image(asset_dir, STAND_IN_IMAGES[slot]) {
             Some(filename) => {
                 registry
-                    .finish_revision(*id, canon, filename, Vec::new())
+                    .finish_revision(*id, canon, filename)
                     .expect("sample revision finishes");
             }
             None => {
@@ -273,13 +263,13 @@ pub fn project(asset_dir: &Path) -> (ArtifactRegistry, String) {
                     *id,
                     "give her cropped bleached hair".to_owned(),
                     Some(9120),
-                    Some("krea-2-turbo-q4".into()),
+                    Some(svs_core::registry::pipeline::DEFAULT_MODEL.to_owned()),
                     RevisionOrigin::Experiment,
                 )
                 .expect("sample revision starts");
             if let Some(filename) = install_image(asset_dir, STAND_IN_IMAGES[0]) {
                 registry
-                    .finish_revision(*id, experiment, filename, Vec::new())
+                    .finish_revision(*id, experiment, filename)
                     .expect("sample revision finishes");
             }
         }

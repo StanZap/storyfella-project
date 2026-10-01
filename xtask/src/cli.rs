@@ -25,7 +25,7 @@ use crate::workspace::Profile;
         cargo xtask plan config/plans/smoke.yaml\n  \
         cargo xtask plan config/plans/tour.yaml --mode guide\n  \
         cargo xtask bundle --package-types appimage deb\n  \
-        cargo xtask test --python-only"
+        cargo xtask test"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -50,12 +50,10 @@ pub enum Command {
     Clippy(ClippyArgs),
     /// Format the workspace (`cargo fmt --all`).
     Fmt(FmtArgs),
-    /// Run the Rust and Python test suites.
-    Test(TestArgs),
+    /// Run the workspace test suite (`cargo test --workspace`).
+    Test,
     /// Rebuild the Tailwind stylesheet (`npm run css:build`).
     Css(CssArgs),
-    /// Start the Python vision runtime (`apps/vision`).
-    Vision(VisionArgs),
     /// Report prerequisite tools and provisioned directories.
     Doctor,
     /// Remove build output (cargo target directory and `dist/`).
@@ -220,28 +218,8 @@ pub struct FmtArgs {
 }
 
 #[derive(Args)]
-pub struct TestArgs {
-    /// Run only the Rust tests (`cargo test --workspace`).
-    #[arg(long, conflicts_with = "python_only")]
-    pub rust_only: bool,
-    /// Run only the Python tests (`apps/vision`).
-    #[arg(long, conflicts_with = "rust_only")]
-    pub python_only: bool,
-}
-
-#[derive(Args)]
 pub struct CssArgs {
     /// Install the frontend toolchain (`npm install`) before building.
     #[arg(long)]
     pub install: bool,
-}
-
-#[derive(Args)]
-pub struct VisionArgs {
-    /// Interface to bind the runtime to.
-    #[arg(long, default_value = "127.0.0.1")]
-    pub host: String,
-    /// Port to bind the runtime to.
-    #[arg(long, default_value_t = 8765)]
-    pub port: u16,
 }

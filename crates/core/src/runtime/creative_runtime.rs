@@ -6,45 +6,41 @@ use uuid::Uuid;
 use crate::{
     config::AppConfig,
     errors::{CodedError, ErrorCode},
-    vision::{GenerationJobResponse, VisionClient, VisionClientError},
+    generation::{
+        GenerationClient, GenerationClientError, GenerationJob, JobSubmission, ModelInfo,
+    },
 };
 
-use super::{
-    krea_profile, GenerationRuntime, GenerationRuntimeError, KreaQuantization, PythonRuntime,
-    RuntimeError,
-};
+use super::{generation_profile, GenerationProfile, GenerationRuntime, GenerationRuntimeError};
 
-const VISION_BASE_URL: &str = "http://127.0.0.1:8765";
+/// The native server is a single resident process on loopback; the client's
+/// base URL and these must agree (both come from `config/app.toml`).
+const GENERATION_HOST: &str = "127.0.0.1";
+const GENERATION_PORT: u16 = 7861;
 
 #[derive(Clone)]
 pub struct CreativeRuntime {
-    vision: VisionClient,
-    python: Arc<PythonRuntime>,
+    client: GenerationClient,
     generation: Arc<GenerationRuntime>,
-    profile: KreaQuantization,
     asset_directory: PathBuf,
 }
 
 impl PartialEq for CreativeRuntime {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.python, &other.python) && Arc::ptr_eq(&self.generation, &other.generation)
+        Arc::ptr_eq(&self.generation, &other.generation)
     }
 }
 
 #[derive(Debug, Error)]
 pub enum CreativeRuntimeError {
-    #[error("could not start the Krea runtime: {0}")]
+    #[error("could not start the generation server: {0}")]
     Generation(#[from] GenerationRuntimeError),
-    #[error("could not start the vision service: {0}")]
-    Python(#[from] RuntimeError),
-    #[error("vision service did not become ready: {0}")]
-    Vision(#[from] VisionClientError),
-    #[error("vision service did not become ready within {0:?}")]
+    #[error("generation server did not answer: {0}")]
+    Client(#[from] GenerationClientError),
+    #[error("generation server did not become ready within {0:?}")]
     ReadinessTimeout(Duration),
     #[error("generation job failed: {0}")]
     Job(String),
-    #[error("generation job returned no image")]
-    MissingImage,
     #[error(
         "generation server on :7861 has {loaded} loaded; {requested} needs the server restarted. \
          Stop stale instances first (`svs runtime serve --force` or `pkill -f \"sd-server --diffusion\"`)"
@@ -66,11 +62,9 @@ impl CodedError for CreativeRuntimeError {
     fn code(&self) -> ErrorCode {
         match self {
             Self::Generation(error) => error.code(),
-            Self::Python(error) => error.code(),
-            Self::Vision(error) => error.code(),
+            Self::Client(error) => error.code(),
             Self::ReadinessTimeout(_) => ErrorCode::RuntimeReadinessTimeout,
             Self::Job(_) => ErrorCode::RuntimeJobFailed,
-            Self::MissingImage => ErrorCode::RuntimeMissingImage,
             Self::ProfileMismatch { .. } => ErrorCode::RuntimeProfileMismatch,
             Self::CreateAssetDirectory { .. } => ErrorCode::RuntimeCreateAssetDirectory,
             Self::ImportAsset { .. } => ErrorCode::RuntimeImportAsset,
@@ -81,32 +75,24 @@ impl CodedError for CreativeRuntimeError {
 impl CreativeRuntime {
     pub fn new(config: &AppConfig) -> Self {
         Self {
-            vision: VisionClient::new(VISION_BASE_URL),
-            python: Arc::new(
-                PythonRuntime::new(&config.python_runtime)
-                    .with_generation_url(&config.generation.base_url)
-                    .with_mask_dir(config.asset_dir.join("masks")),
-            ),
+            client: GenerationClient::new(&config.generation.base_url),
             generation: Arc::new(GenerationRuntime::new(
                 &config.generation.executable,
                 &config.model_dir,
                 &config.generation.lora_dir,
             )),
-            profile: config.generation.profile,
             asset_directory: config.asset_dir.join("generated"),
         }
     }
 
-    pub fn vision_client(&self) -> VisionClient {
-        self.vision.clone()
+    /// The native generation client (the Settings screen and the backend
+    /// share the same server through it).
+    pub fn client(&self) -> GenerationClient {
+        self.client.clone()
     }
 
-    pub fn profile(&self) -> KreaQuantization {
-        self.profile
-    }
-
-    pub(crate) fn python_runtime(&self) -> &PythonRuntime {
-        &self.python
+    pub fn profile(&self) -> GenerationProfile {
+        generation_profile()
     }
 
     pub(crate) fn generation_runtime(&self) -> &GenerationRuntime {
@@ -114,96 +100,85 @@ impl CreativeRuntime {
     }
 
     pub async fn ensure_ready(&self) -> Result<(), CreativeRuntimeError> {
-        self.ensure_profile_ready(self.profile).await
+        self.ensure_profile_ready().await
     }
 
-    /// Ensures the native generation server is resident **with the requested
-    /// Krea profile**, restarting only sd-server when a different model is
-    /// loaded. A mismatched server that this process does not own (started by
-    /// another session) cannot be restarted from here and is reported as
-    /// [`CreativeRuntimeError::ProfileMismatch`].
-    pub async fn ensure_profile_ready(
-        &self,
-        profile: KreaQuantization,
-    ) -> Result<(), CreativeRuntimeError> {
-        let expected = krea_profile(profile).diffusion.filename;
+    /// Ensures the native generation server is resident with the Qwen-Image-2.1
+    /// profile, restarting only a server this process owns. A mismatched server
+    /// started by another session cannot be restarted from here and is reported
+    /// as [`CreativeRuntimeError::ProfileMismatch`].
+    pub async fn ensure_profile_ready(&self) -> Result<(), CreativeRuntimeError> {
+        let expected = generation_profile().diffusion.filename;
 
-        if self.vision.health().await.is_ok() {
-            if let Ok(capabilities) = self.vision.generation_capabilities().await {
-                if capabilities.status == "ready" && capabilities.model.as_deref() == Some(expected)
-                {
-                    return Ok(());
-                }
-                if capabilities.status == "ready" && !self.generation.is_running() {
-                    return Err(CreativeRuntimeError::ProfileMismatch {
-                        loaded: capabilities.model.unwrap_or_else(|| "unknown".to_owned()),
-                        requested: expected.to_owned(),
-                    });
-                }
+        if let Ok(capabilities) = self.client.capabilities().await {
+            if model_matches(&capabilities.model, expected) {
+                return Ok(());
             }
+            if !self.generation.is_running() {
+                return Err(CreativeRuntimeError::ProfileMismatch {
+                    loaded: capabilities.model.name,
+                    requested: expected.to_owned(),
+                });
+            }
+            // Ours is resident but reports another model; restart it.
+            self.generation.stop().await?;
         }
 
-        // Restart only the native generation server with the requested
-        // profile; reuse a resident Python runtime when it is healthy.
         self.generation
-            .switch_profile(profile, "127.0.0.1", 7861)
+            .ensure_running(GENERATION_HOST, GENERATION_PORT)
             .await?;
-        if self.vision.health().await.is_err() && !self.python.is_running() {
-            self.python.start("127.0.0.1", 8765)?;
-        }
 
-        let timeout = Duration::from_secs(90);
+        // Loading ~17.3 GiB of weights takes minutes; the cap must stay generous.
+        let timeout = Duration::from_secs(600);
         let deadline = tokio::time::Instant::now() + timeout;
         let mut last_error = None;
         while tokio::time::Instant::now() < deadline {
-            match self.vision.generation_capabilities().await {
-                Ok(capabilities) if capabilities.status == "ready" => {
-                    if capabilities.model.as_deref() == Some(expected) {
-                        return Ok(());
-                    }
+            match self.client.capabilities().await {
+                Ok(capabilities) if model_matches(&capabilities.model, expected) => return Ok(()),
+                Ok(capabilities) => {
                     // A foreign server answered — ours could not bind.
                     return Err(CreativeRuntimeError::ProfileMismatch {
-                        loaded: capabilities.model.unwrap_or_else(|| "unknown".to_owned()),
+                        loaded: capabilities.model.name,
                         requested: expected.to_owned(),
                     });
                 }
-                Ok(_) => {}
                 Err(error) => last_error = Some(error),
             }
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
         if let Some(error) = last_error {
-            tracing::warn!(%error, "vision runtime readiness timed out");
+            tracing::warn!(%error, "generation server readiness timed out");
         }
         Err(CreativeRuntimeError::ReadinessTimeout(timeout))
     }
 
+    /// Stops the resident generation server.
+    pub async fn stop_generation_runtime(&self) -> Result<(), CreativeRuntimeError> {
+        self.generation.stop().await?;
+        Ok(())
+    }
+
+    /// Polls a submitted job to completion and stores its image in the asset
+    /// directory, returning the stored path.
     pub async fn wait_for_job(
         &self,
-        initial: GenerationJobResponse,
+        initial: JobSubmission,
     ) -> Result<PathBuf, CreativeRuntimeError> {
         if initial.status == "failed" {
             return Err(CreativeRuntimeError::Job(
-                initial
-                    .error
-                    .unwrap_or_else(|| "generation failed".to_owned()),
+                "the generation job was rejected on submission".to_owned(),
             ));
         }
-        // Krea at higher resolutions/step counts is slow (q4 @ 1024×1024,
-        // 8 steps ≈ 9 min on Apple Silicon); the cap must stay generous.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(1200);
         while tokio::time::Instant::now() < deadline {
-            let job = self.vision.generation_job(&initial.id).await?;
+            let job = self.client.job(&initial.id).await?;
             match job.status.as_str() {
-                "completed" => {
-                    return job
-                        .image_path
-                        .map(PathBuf::from)
-                        .ok_or(CreativeRuntimeError::MissingImage);
-                }
+                "completed" => return self.store_image(&job).await,
                 "failed" | "cancelled" => {
                     return Err(CreativeRuntimeError::Job(
-                        job.error.unwrap_or_else(|| job.status.clone()),
+                        job.error
+                            .map(|error| error.message)
+                            .unwrap_or_else(|| job.status.clone()),
                     ));
                 }
                 _ => tokio::time::sleep(Duration::from_millis(150)).await,
@@ -214,54 +189,35 @@ impl CreativeRuntime {
         ))
     }
 
-    /// Starts only the Python vision runtime (segmentation, adapter) and waits
-    /// for its health endpoint.
-    pub async fn start_vision_runtime(&self) -> Result<(), CreativeRuntimeError> {
-        if self.vision.health().await.is_ok() {
-            return Ok(());
-        }
-        if !self.python.is_running() {
-            self.python.start("127.0.0.1", 8765)?;
-        }
-        self.wait_for_vision_health(Duration::from_secs(30)).await
-    }
-
-    pub async fn stop_vision_runtime(&self) -> Result<(), CreativeRuntimeError> {
-        self.python.stop().await?;
-        Ok(())
-    }
-
-    pub async fn restart_vision_runtime(&self) -> Result<(), CreativeRuntimeError> {
-        let _ = self.python.stop().await;
-        self.start_vision_runtime().await
-    }
-
-    /// Starts the resident native Krea server (and the vision runtime when it
-    /// is needed as the adapter) and waits until both are ready.
-    pub async fn start_generation_runtime(&self) -> Result<(), CreativeRuntimeError> {
-        self.ensure_ready().await
-    }
-
-    pub async fn stop_generation_runtime(&self) -> Result<(), CreativeRuntimeError> {
-        self.generation.stop().await?;
-        Ok(())
-    }
-
-    async fn wait_for_vision_health(&self, timeout: Duration) -> Result<(), CreativeRuntimeError> {
-        let deadline = tokio::time::Instant::now() + timeout;
-        while tokio::time::Instant::now() < deadline {
-            if self.vision.health().await.is_ok() {
-                return Ok(());
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-        Err(CreativeRuntimeError::ReadinessTimeout(timeout))
+    /// Decodes a completed job's first image and writes it as a PNG in the
+    /// generated-asset directory.
+    async fn store_image(&self, job: &GenerationJob) -> Result<PathBuf, CreativeRuntimeError> {
+        let bytes = job.first_image().map_err(CreativeRuntimeError::Client)?;
+        tokio::fs::create_dir_all(&self.asset_directory)
+            .await
+            .map_err(|source| CreativeRuntimeError::CreateAssetDirectory {
+                path: self.asset_directory.clone(),
+                source,
+            })?;
+        let destination = self.asset_directory.join(format!("{}.png", Uuid::new_v4()));
+        tokio::fs::write(&destination, &bytes)
+            .await
+            .map_err(|source| CreativeRuntimeError::ImportAsset {
+                path: destination.clone(),
+                source,
+            })?;
+        let absolute = tokio::fs::canonicalize(&destination)
+            .await
+            .map_err(|source| CreativeRuntimeError::ImportAsset {
+                path: destination,
+                source,
+            })?;
+        Ok(absolute)
     }
 
     pub async fn import_asset(&self, source: PathBuf) -> Result<String, CreativeRuntimeError> {
         // Already-stored finals (backend-generated images land here via the
-        // job path) are returned as-is; only locally-produced images (the
-        // composite fallback) are copied in.
+        // job path) are returned as-is.
         if source.starts_with(&self.asset_directory) {
             return Ok(source.display().to_string());
         }
@@ -287,4 +243,15 @@ impl CreativeRuntime {
             })?;
         Ok(absolute.display().to_string())
     }
+}
+
+/// Whether the resident model is the profile's diffusion artifact. sd.cpp
+/// reports the file name or its stem, so both are accepted.
+fn model_matches(model: &ModelInfo, expected_filename: &str) -> bool {
+    let expected_stem = expected_filename
+        .strip_suffix(".safetensors")
+        .unwrap_or(expected_filename);
+    [model.name.as_str(), model.stem.as_str()]
+        .iter()
+        .any(|name| *name == expected_filename || *name == expected_stem)
 }

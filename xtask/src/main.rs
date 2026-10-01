@@ -1,7 +1,7 @@
 //! `cargo xtask` — the workspace's own task runner.
 //!
 //! Every subcommand wraps a workflow documented in `docs/development.md`, so
-//! the exact `dx` / `cargo` / `npm` / `python` invocations live in one
+//! the exact `dx` / `cargo` / `npm` invocations live in one
 //! reviewable place instead of being retyped from memory. Run it through the
 //! alias in `.cargo/config.toml`:
 //!

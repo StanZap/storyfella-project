@@ -7,7 +7,7 @@
 //! /create character Mia, a lighthouse keeper --name mia --size 512x768
 //! /variant c:mia "in yellow rain gear" --axis outfit
 //! /regenerate c:mia "make it warmer"
-//! /modify c:mia "change her hair" --mask "her hair" --inpaint "a bob cut"
+//! /modify c:mia "change her hair" --steps 25
 //! /attach-lora c:mia character-main --multiplier 0.8
 //! /lora-scale character-main 0.9
 //! /lora-remove character-main
@@ -28,8 +28,9 @@
 //! instead of silently becoming part of the description. Quoted text is
 //! never treated as an option.
 
-use std::{collections::HashMap, fmt, path::PathBuf, str::FromStr};
+use std::{collections::HashMap, fmt, str::FromStr};
 
+use crate::generation::LoraSelection;
 use crate::registry::{ops::Operation, pipeline::is_valid_size, ArtifactKind, Ref, VariantAxis};
 
 /// A slash command that failed to parse; the message is user-facing.
@@ -101,14 +102,7 @@ pub const OPS: &[OpSpec] = &[
     OpSpec {
         name: "/modify",
         params: &["c:<ref>", "<instruction>"],
-        flags: &[
-            "--mask",
-            "--mask-file",
-            "--inpaint",
-            "--size",
-            "--steps",
-            "--lora",
-        ],
+        flags: &["--size", "--steps", "--lora"],
         summary: "instruction edit against the description",
     },
     OpSpec {
@@ -357,46 +351,9 @@ fn parse_set(tokens: &[Token]) -> Result<Operation, SlashError> {
 
 fn parse_modify(tokens: &[Token]) -> Result<Operation, SlashError> {
     let target = parse_ref(tokens, "modify")?;
-    let (description, flags) = split_flags(
-        tokens,
-        2,
-        &[
-            "--mask",
-            "--mask-file",
-            "--inpaint",
-            "--size",
-            "--steps",
-            "--lora",
-        ],
-    )?;
+    let (description, flags) = split_flags(tokens, 2, &["--size", "--steps", "--lora"])?;
     if description.trim().is_empty() {
         return Err(SlashError("modify needs a description".to_owned()));
-    }
-    // `--mask auto` is the third source: the LLM names the region from the
-    // description. A literal region ("her hair") stays a literal region.
-    let raw_mask = flag_value(&flags, "--mask");
-    let plan = raw_mask.is_some_and(|value| value.eq_ignore_ascii_case("auto"));
-    let mask_prompt = raw_mask.filter(|_| !plan).map(str::to_owned);
-    let mask_file = flag_value(&flags, "--mask-file").map(PathBuf::from);
-    let inpaint_prompt = flag_value(&flags, "--inpaint").map(str::to_owned);
-    if mask_prompt.is_some() && mask_file.is_some() || plan && mask_file.is_some() {
-        return Err(SlashError(
-            "modify takes one mask source: --mask segments it, --mask auto \
-             lets the planner name the region, --mask-file loads one already \
-             on disk."
-                .to_owned(),
-        ));
-    }
-    // `--mask auto` supplies the look too, so it is the one source that does
-    // not need --inpaint (though it accepts one).
-    let has_mask = mask_prompt.is_some() || mask_file.is_some();
-    if has_mask != inpaint_prompt.is_some() && !plan {
-        return Err(SlashError(
-            "modify takes a mask source (--mask or --mask-file) together with \
-             --inpaint, or neither. Neither is the normal case: the edit is \
-             described in plain language and no mask is involved."
-                .to_owned(),
-        ));
     }
     let size = match flag_value(&flags, "--size") {
         Some(value) => Some(parse_size(value).map_err(SlashError)?),
@@ -413,10 +370,6 @@ fn parse_modify(tokens: &[Token]) -> Result<Operation, SlashError> {
     Ok(Operation::Modify {
         target,
         description,
-        mask_prompt,
-        mask_file,
-        plan,
-        inpaint_prompt,
         size,
         steps,
         loras,
@@ -494,7 +447,7 @@ fn parse_steps(value: &str) -> Result<u32, String> {
 
 /// `--lora <file>@<multiplier>` for the slash surface (one adapter per
 /// flag; the CLI repeats the flag for more).
-fn parse_lora_flag(value: &str) -> Result<crate::vision::LoraSelection, String> {
+fn parse_lora_flag(value: &str) -> Result<LoraSelection, String> {
     let (path, multiplier) = match value.rsplit_once('@') {
         Some((path, multiplier)) => (
             path.to_owned(),
@@ -512,7 +465,7 @@ fn parse_lora_flag(value: &str) -> Result<crate::vision::LoraSelection, String> 
     if path.is_empty() {
         return Err("--lora needs an adapter file: --lora <file>@<multiplier>".to_owned());
     }
-    Ok(crate::vision::LoraSelection { path, multiplier })
+    Ok(LoraSelection { path, multiplier })
 }
 
 /// The token at index 1 is the `c:` ref (bare names and UUIDs resolve too).
@@ -761,7 +714,6 @@ pub fn tokenize(input: &str) -> Vec<Token> {
 mod tests {
     use super::*;
     use crate::registry::ops::Operation;
-    use crate::vision::LoraSelection;
 
     #[test]
     fn quotes_can_be_escaped_inside_a_quoted_argument() {
@@ -803,9 +755,6 @@ mod tests {
             "--steps" => "8",
             "--lora" => "adapter@0.8",
             "--axis" => "outfit",
-            "--mask" => "hair",
-            "--mask-file" => "masks/hair-0.png",
-            "--inpaint" => "bob",
             "--multiplier" => "0.8",
             "--seed" => "4471",
             other => panic!("no test value for {other}"),
@@ -989,57 +938,15 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_slash(
-                "/modify c:mia \"change her hair\" --mask \"her hair\" --inpaint \"a bob cut\""
-            )
-            .unwrap(),
+            parse_slash("/modify c:mia \"change her hair\" --steps 25").unwrap(),
             Operation::Modify {
                 target: Ref::new("c:mia"),
                 description: "change her hair".to_owned(),
-                mask_prompt: Some("her hair".to_owned()),
-                mask_file: None,
-                plan: false,
-                inpaint_prompt: Some("a bob cut".to_owned()),
                 size: None,
-                steps: None,
+                steps: Some(25),
                 loras: Vec::new(),
             }
         );
-    }
-
-    #[test]
-    fn modify_takes_a_mask_file_as_the_other_mask_source() {
-        assert_eq!(
-            parse_slash(
-                "/modify c:mia \"change her hair\" --mask-file masks/mia-hair-0.png \
-                 --inpaint \"a bob cut\""
-            )
-            .unwrap(),
-            Operation::Modify {
-                target: Ref::new("c:mia"),
-                description: "change her hair".to_owned(),
-                mask_prompt: None,
-                mask_file: Some(PathBuf::from("masks/mia-hair-0.png")),
-                plan: false,
-                inpaint_prompt: Some("a bob cut".to_owned()),
-                size: None,
-                steps: None,
-                loras: Vec::new(),
-            }
-        );
-
-        // One mask, one source.
-        let both = parse_slash(
-            "/modify c:mia \"change her hair\" --mask \"her hair\" \
-             --mask-file masks/mia-hair-0.png --inpaint \"a bob cut\"",
-        )
-        .unwrap_err();
-        assert!(both.0.contains("one mask source"), "{}", both.0);
-
-        // A mask source still needs a look to paint into it.
-        let lonely =
-            parse_slash("/modify c:mia \"change her hair\" --mask-file masks/m.png").unwrap_err();
-        assert!(lonely.0.contains("--inpaint"), "{}", lonely.0);
     }
 
     #[test]
@@ -1074,10 +981,10 @@ mod tests {
             .unwrap_err()
             .0
             .contains("description"));
-        assert!(parse_slash("/modify c:mia nothing --mask x")
+        assert!(parse_slash("/modify c:mia")
             .unwrap_err()
             .0
-            .contains("--inpaint"));
+            .contains("description"));
         assert!(parse_slash("/regenerate").unwrap_err().0.contains("target"));
     }
 
@@ -1137,7 +1044,7 @@ mod tests {
     #[test]
     fn repeated_lora_flags_accumulate() {
         let operation = parse_slash(
-            "/create character Ada --lora krea/facial-krea.safetensors@0.8 --lora krea/INPAINTKREA-V1.safetensors@1.0",
+            "/create character Ada --lora characters/ada-v2.safetensors@0.8 --lora styles/noir.safetensors@1.0",
         )
         .unwrap();
         let Operation::Create { loras, .. } = operation else {
@@ -1147,11 +1054,11 @@ mod tests {
             loras,
             vec![
                 LoraSelection {
-                    path: "krea/facial-krea.safetensors".to_owned(),
+                    path: "characters/ada-v2.safetensors".to_owned(),
                     multiplier: 0.8,
                 },
                 LoraSelection {
-                    path: "krea/INPAINTKREA-V1.safetensors".to_owned(),
+                    path: "styles/noir.safetensors".to_owned(),
                     multiplier: 1.0,
                 },
             ]
@@ -1229,7 +1136,7 @@ mod tests {
     fn visual_ops_parse_size_steps_and_lora_flags() {
         assert_eq!(
             parse_slash(
-                "/regenerate c:mia warmer --size 1024x1024 --steps 8 --lora krea/style@0.8"
+                "/regenerate c:mia warmer --size 1024x1024 --steps 8 --lora styles/noir@0.8"
             )
             .unwrap(),
             Operation::Regenerate {
@@ -1237,8 +1144,8 @@ mod tests {
                 prompt: Some("warmer".to_owned()),
                 size: Some((1024, 1024)),
                 steps: Some(8),
-                loras: vec![crate::vision::LoraSelection {
-                    path: "krea/style".to_owned(),
+                loras: vec![LoraSelection {
+                    path: "styles/noir".to_owned(),
                     multiplier: 0.8,
                 }],
             }

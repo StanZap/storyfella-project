@@ -16,10 +16,6 @@
 //!    which is how a packaged bundle resolves the resources shipped beside it;
 //! 4. the working directory, which leaves a config-less run on the platform
 //!    application directories, exactly as it behaved before anchoring.
-//!
-//! The Python runtime mirrors rules 1 and 2 in `python/runtime/paths.py`; the
-//! two must stay in step, because both resolve `cache/` and `assets/` for
-//! themselves.
 
 use std::path::{Path, PathBuf};
 

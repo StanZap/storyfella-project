@@ -1,5 +1,11 @@
 # Native Krea 2 generation
 
+> **Historical.** The Krea 2 profiles below were the first native backend;
+> the current product serves Qwen-Image-2.1 through the same
+> `stable-diffusion.cpp` `sd-server` (see `../../architecture.md` and
+> `../../runtime-lifecycle.md`). Kept as a record of the native path's first
+> validation.
+
 This proof of concept uses `stable-diffusion.cpp` as a small native inference runtime. It is not ComfyUI and does not require ComfyUI. The runtime provides Metal and CUDA backends, GGUF loading, request-time LoRA selection, and a persistent HTTP server.
 
 ## Profiles

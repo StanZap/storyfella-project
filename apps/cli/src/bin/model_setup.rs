@@ -1,52 +1,27 @@
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
-use clap::{Parser, ValueEnum};
+use anyhow::{Context, Result};
+use clap::Parser;
 use svs_core::{
     config::AppConfig,
-    runtime::{KreaQuantization, ModelStore},
+    runtime::{generation_profile, ModelStore},
 };
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum ProfileArgument {
-    Q2,
-    Q4,
-}
-
-impl From<ProfileArgument> for KreaQuantization {
-    fn from(value: ProfileArgument) -> Self {
-        match value {
-            ProfileArgument::Q2 => Self::Q2,
-            ProfileArgument::Q4 => Self::Q4,
-        }
-    }
-}
-
 #[derive(Debug, Parser)]
-#[command(about = "Download and verify native Krea 2 model artifacts")]
+#[command(about = "Download and verify the Qwen-Image-2.1 model artifacts")]
 struct Arguments {
-    #[arg(long, value_enum, default_value = "q2")]
-    profile: ProfileArgument,
     #[arg(long)]
     model_dir: Option<PathBuf>,
-    #[arg(long)]
-    accept_krea_license: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let arguments = Arguments::parse();
-    if !arguments.accept_krea_license {
-        bail!(
-            "review https://www.krea.ai/krea-2-licensing and rerun with \
-             --accept-krea-license"
-        );
-    }
     let config = AppConfig::load().context("failed to load application configuration")?;
     let store = ModelStore::new(arguments.model_dir.unwrap_or(config.model_dir));
     let mut previous = (String::new(), u64::MAX);
     store
-        .ensure_krea_profile(arguments.profile.into(), |progress| {
+        .ensure_profile(generation_profile(), |progress| {
             let percent = progress
                 .downloaded_bytes
                 .saturating_mul(100)
@@ -59,7 +34,7 @@ async fn main() -> Result<()> {
             }
         })
         .await
-        .context("failed to provision Krea 2 profile")?;
+        .context("failed to provision the Qwen-Image-2.1 profile")?;
     println!("model profile is downloaded and checksum-verified");
     Ok(())
 }

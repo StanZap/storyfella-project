@@ -152,18 +152,6 @@ pub const SHORTCUTS: &[Shortcut] = &[
         scope: Scope::Detail,
     },
     Shortcut {
-        action: "tool-brush",
-        keys: "b",
-        label: "Paint a mask region by hand",
-        scope: Scope::Detail,
-    },
-    Shortcut {
-        action: "tool-eraser",
-        keys: "x",
-        label: "Erase from the painted mask",
-        scope: Scope::Detail,
-    },
-    Shortcut {
         action: "tool-crop",
         keys: "c",
         label: "Crop the image (not yet implemented)",

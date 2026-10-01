@@ -1,15 +1,13 @@
 # Workspace root.
 #
 #   crates/core   — the domain layer (artifact registry, typed operations,
-#                   persistence, and the runtime/LLM/vision clients). No GUI
-#                   dependency, so `svs` and the core tests never compile the
-#                   toolkit or the WebKit stack.
+#                   persistence, the native generation client, and the
+#                   runtime/LLM clients). No GUI dependency, so `svs` and the
+#                   core tests never compile the toolkit or the WebKit stack.
 #   apps/desktop  — the Dioxus application: UI, state, command language, the
 #                   plan driver, and the compiled assets. Owns the `desktop`
 #                   feature.
 #   apps/cli      — `svs`, `model_setup`, `vlm_probe`.
-#   apps/vision   — the Python runtime. Not a cargo package; kept beside the
-#                   other launchables because the shipped bundle carries it.
 #   xtask         — `cargo xtask`: the developer task runner (build/run/bundle/
 #                   check/test). Not part of any shipped artifact.
 #

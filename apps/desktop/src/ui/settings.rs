@@ -9,8 +9,7 @@ use svs_core::registry::{
     backend::CreativeBackend, discover_loras, GenerationDefaults, LoraBinding,
 };
 use svs_core::runtime::{
-    check_all as check_services, CreativeRuntime, HealthStatus, KreaQuantization, ServiceHealth,
-    ServiceId,
+    check_all as check_services, CreativeRuntime, HealthStatus, ServiceHealth, ServiceId,
 };
 
 use super::{
@@ -40,7 +39,6 @@ enum ModelListState {
 enum ServiceAction {
     Start,
     Stop,
-    Restart,
 }
 
 impl ServiceAction {
@@ -48,17 +46,13 @@ impl ServiceAction {
         match self {
             Self::Start => "Start",
             Self::Stop => "Stop",
-            Self::Restart => "Restart",
         }
     }
 }
 
 fn action_for(service: ServiceId, status: HealthStatus) -> Option<ServiceAction> {
     match (service, status) {
-        (ServiceId::LmStudio, _) | (ServiceId::Segmentation, _) => None,
-        (ServiceId::VisionRuntime, HealthStatus::Online) => Some(ServiceAction::Stop),
-        (ServiceId::VisionRuntime, HealthStatus::Offline) => Some(ServiceAction::Restart),
-        (ServiceId::VisionRuntime, _) => Some(ServiceAction::Start),
+        (ServiceId::LmStudio, _) => None,
         (ServiceId::ImageGeneration, HealthStatus::Online) => Some(ServiceAction::Stop),
         (ServiceId::ImageGeneration, _) => Some(ServiceAction::Start),
     }
@@ -70,34 +64,22 @@ mod tests {
     use svs_core::runtime::{HealthStatus, ServiceId};
 
     #[test]
-    fn external_and_following_services_have_no_controls() {
+    fn external_services_have_no_controls() {
         assert_eq!(action_for(ServiceId::LmStudio, HealthStatus::Online), None);
-        assert_eq!(
-            action_for(ServiceId::Segmentation, HealthStatus::Online),
-            None
-        );
     }
 
     #[test]
-    fn resident_runtimes_offer_start_stop_by_state() {
-        assert_eq!(
-            action_for(ServiceId::VisionRuntime, HealthStatus::Idle),
-            Some(ServiceAction::Start)
-        );
-        assert_eq!(
-            action_for(ServiceId::VisionRuntime, HealthStatus::Online),
-            Some(ServiceAction::Stop)
-        );
-        assert_eq!(
-            action_for(ServiceId::VisionRuntime, HealthStatus::Offline),
-            Some(ServiceAction::Restart)
-        );
+    fn the_resident_runtime_offers_start_stop_by_state() {
         assert_eq!(
             action_for(ServiceId::ImageGeneration, HealthStatus::Idle),
             Some(ServiceAction::Start)
         );
         assert_eq!(
             action_for(ServiceId::ImageGeneration, HealthStatus::Degraded),
+            Some(ServiceAction::Start)
+        );
+        assert_eq!(
+            action_for(ServiceId::ImageGeneration, HealthStatus::Offline),
             Some(ServiceAction::Start)
         );
         assert_eq!(
@@ -115,7 +97,6 @@ pub fn Settings(
 ) -> Element {
     let runtime = backend.read().runtime();
     let mut section = use_signal(|| SettingsSection::Status);
-    let profile = use_signal(|| config.generation.profile);
     let health = use_signal(Vec::<ServiceHealth>::new);
     let checking = use_signal(|| false);
     let checked_at = use_signal(|| None::<String>);
@@ -196,7 +177,7 @@ pub fn Settings(
                         SettingsSection::Status => rsx! { StatusSettings { health, checking, checked_at, busy, operation_error, on_check: on_check.clone(), on_operate: on_operate.clone() } },
                         SettingsSection::General => rsx! { GeneralSettings {} },
                         SettingsSection::Intelligence => rsx! { IntelligenceSettings { config: config.clone(), backend, health, lm_model, models_state, on_check: on_check.clone() } },
-                        SettingsSection::Generation => rsx! { GenerationSettings { config: config.clone(), profile, defaults } },
+                        SettingsSection::Generation => rsx! { GenerationSettings { config: config.clone(), defaults } },
                         SettingsSection::Storage => rsx! { StorageSettings { config: config.clone() } },
                     }
                 }
@@ -270,24 +251,11 @@ fn operate_service(
     operation_error.set(None);
     spawn(async move {
         let result = match (service, action) {
-            (ServiceId::VisionRuntime, ServiceAction::Start) => {
-                runtime.start_vision_runtime().await
-            }
-            (ServiceId::VisionRuntime, ServiceAction::Stop) => runtime.stop_vision_runtime().await,
-            (ServiceId::VisionRuntime, ServiceAction::Restart) => {
-                runtime.restart_vision_runtime().await
-            }
-            (ServiceId::ImageGeneration, ServiceAction::Start) => {
-                runtime.start_generation_runtime().await
-            }
+            (ServiceId::ImageGeneration, ServiceAction::Start) => runtime.ensure_ready().await,
             (ServiceId::ImageGeneration, ServiceAction::Stop) => {
                 runtime.stop_generation_runtime().await
             }
-            (ServiceId::ImageGeneration, ServiceAction::Restart) => {
-                let _ = runtime.stop_generation_runtime().await;
-                runtime.start_generation_runtime().await
-            }
-            (ServiceId::LmStudio | ServiceId::Segmentation, _) => Ok(()),
+            (ServiceId::LmStudio, _) => Ok(()),
         };
         busy.set(None);
         match result {
@@ -566,13 +534,10 @@ fn ModelPicker(
 }
 
 #[component]
-fn GenerationSettings(
-    config: AppConfig,
-    mut profile: Signal<KreaQuantization>,
-    mut defaults: Signal<GenerationDefaults>,
-) -> Element {
+fn GenerationSettings(config: AppConfig, mut defaults: Signal<GenerationDefaults>) -> Element {
     let sizes = defaults.read().sizes;
     let steps = defaults.read().steps;
+    let cfg_scale = defaults.read().cfg_scale;
     let size_error = use_signal(|| None::<String>);
     let mut steps_error = use_signal(|| None::<String>);
     // The lora dir shown here and the bindings share the same defaults.
@@ -586,27 +551,16 @@ fn GenerationSettings(
         SectionHeading {
             eyebrow: "Local image engine",
             title: "Image generation",
-            description: "Krea 2 Turbo runs locally through the native resident runtime, with no ComfyUI dependency. Profiles are designed for a 24 GB memory budget."
-        }
-        div { class: "mb-8 grid grid-cols-2 gap-3",
-            ProfileChoice {
-                name: "Q2 · Fast draft",
-                detail: "Lower memory · fastest iteration",
-                selected: profile() == KreaQuantization::Q2,
-                onclick: move |_| profile.set(KreaQuantization::Q2)
-            }
-            ProfileChoice {
-                name: "Q4 · Final quality",
-                detail: "Higher fidelity · more memory",
-                selected: profile() == KreaQuantization::Q4,
-                onclick: move |_| profile.set(KreaQuantization::Q4)
-            }
+            description: "Qwen-Image-2.1 runs locally through the native resident stable-diffusion.cpp server, with no ComfyUI dependency. The profile is designed for a 24 GB memory budget."
         }
         div { class: "border-y border-white/[0.06]",
+            SettingRow { title: "Profile", description: "The resident generation model.",
+                input { class: "setting-control", value: "{config.generation.profile}", readonly: true }
+            }
             SettingRow { title: "Runtime endpoint", description: "Resident stable-diffusion.cpp service.",
                 input { class: "setting-control", value: "{config.generation.base_url}", readonly: true }
             }
-            SettingRow { title: "Steps per image", description: "Quality vs. speed of every generation. The default is 4 (Krea 2 Turbo); raise it when the image needs detail.",
+            SettingRow { title: "Steps per image", description: "Quality vs. speed of every generation. The default is 25 at CFG {cfg_scale:.1} (Qwen-Image-2.1); fewer steps is faster and rougher.",
                 div { class: "flex items-center gap-3",
                     if let Some(error) = steps_error() {
                         p { class: "truncate text-[9px] text-rose-300/80", "{error}" }
@@ -668,7 +622,7 @@ fn GenerationSettings(
         LoRASettings { defaults, discovered }
         div { class: "mt-5 flex items-start gap-3 rounded-xl bg-amber-400/[0.035] px-4 py-3 ring-1 ring-inset ring-amber-300/[0.08]",
             Icon { name: IconName::Sparkles, class: "mt-0.5 size-3.5 shrink-0 text-amber-200/50" }
-            p { class: "text-[10px] leading-5 text-zinc-600", "Changing quantization requires switching the resident generation process. Queued work will finish before the switch in the production scheduler. Size and steps changes apply to the next generation immediately." }
+            p { class: "text-[10px] leading-5 text-zinc-600", "Qwen-Image-2.1 peaks around 23.4 GiB (diffusion + text encoder + VAE + a reference encode), so leave headroom on a 24 GB card. Size and steps changes apply to the next generation immediately." }
         }
     }
 }
@@ -744,9 +698,9 @@ fn SizeField(
 }
 
 /// Config-level adapter bindings: discovered files from `lora_dir` bound
-/// to use-cases (mask-guided edits, per-kind defaults) at one multiplier.
-/// The `discovered` signal is owned by [`GenerationSettings`] — the
-/// refresh action lives next to the directory row.
+/// to per-kind defaults at one multiplier. The `discovered` signal is owned
+/// by [`GenerationSettings`] — the refresh action lives next to the
+/// directory row.
 #[component]
 fn LoRASettings(
     mut defaults: Signal<GenerationDefaults>,
@@ -764,8 +718,7 @@ fn LoRASettings(
         }
         div { class: "mb-4 rounded-lg bg-white/[0.025] px-3 py-2.5 text-[10px] leading-4 text-zinc-600 ring-1 ring-inset ring-white/[0.05]",
             {
-                let bound = bindings.inpaint.is_some()
-                    || bindings.kinds.character.is_some()
+                let bound = bindings.kinds.character.is_some()
                     || bindings.kinds.environment.is_some()
                     || bindings.kinds.object.is_some();
                 let summary = if files.is_empty() {
@@ -783,7 +736,6 @@ fn LoRASettings(
             }
         }
         div { class: "border-y border-white/[0.06]",
-            LoraBindingRow { slot: LoraSlot::Inpaint, current: bindings.inpaint.clone(), files: files.clone(), defaults }
             LoraBindingRow { slot: LoraSlot::Character, current: bindings.kinds.character.clone(), files: files.clone(), defaults }
             LoraBindingRow { slot: LoraSlot::Environment, current: bindings.kinds.environment.clone(), files: files.clone(), defaults }
             LoraBindingRow { slot: LoraSlot::Object, current: bindings.kinds.object.clone(), files: files.clone(), defaults }
@@ -823,7 +775,6 @@ fn LoRASettings(
 /// Which use-case a LoRA binding row edits.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum LoraSlot {
-    Inpaint,
     Character,
     Environment,
     Object,
@@ -832,7 +783,6 @@ enum LoraSlot {
 impl LoraSlot {
     fn title(self) -> &'static str {
         match self {
-            Self::Inpaint => "Mask edits (inpaint)",
             Self::Character => "Characters",
             Self::Environment => "Environments",
             Self::Object => "Objects",
@@ -841,9 +791,10 @@ impl LoraSlot {
 
     fn description(self) -> &'static str {
         match self {
-            Self::Inpaint => "Applied to /modify generations — e.g. INPAINTKREA keeps the rest of the image untouched.",
             Self::Character => "Applied to every character generation without a project binding.",
-            Self::Environment => "Applied to every environment generation without a project binding.",
+            Self::Environment => {
+                "Applied to every environment generation without a project binding."
+            }
             Self::Object => "Applied to every object generation without a project binding.",
         }
     }
@@ -883,7 +834,6 @@ fn LoraBindingRow(
                         };
                         let mut settings = defaults.write();
                         match slot {
-                            LoraSlot::Inpaint => settings.loras.inpaint = binding,
                             LoraSlot::Character => settings.loras.kinds.character = binding,
                             LoraSlot::Environment => settings.loras.kinds.environment = binding,
                             LoraSlot::Object => settings.loras.kinds.object = binding,
@@ -920,8 +870,7 @@ fn StorageSettings(config: AppConfig) -> Element {
         div { class: "border-y border-white/[0.06]",
             PathRow { title: "Models", path: config.model_dir.display().to_string() }
             PathRow { title: "Generated assets", path: config.asset_dir.display().to_string() }
-            PathRow { title: "Cache", path: config.cache_dir.display().to_string() }
-            PathRow { title: "Python runtime", path: config.python_runtime.display().to_string(), last: true }
+            PathRow { title: "Cache", path: config.cache_dir.display().to_string(), last: true }
         }
     }
 }
@@ -934,26 +883,6 @@ fn PathRow(title: String, path: String, #[props(default)] last: bool) -> Element
                 code { class: "min-w-0 flex-1 truncate text-[10px] text-zinc-500", title: "{path}", "{path}" }
                 button { class: "shrink-0 rounded-lg bg-white/[0.05] px-2.5 py-1.5 text-[9px] text-zinc-500 hover:text-white", "Reveal" }
             }
-        }
-    }
-}
-
-#[component]
-fn ProfileChoice(
-    name: String,
-    detail: String,
-    selected: bool,
-    onclick: EventHandler<MouseEvent>,
-) -> Element {
-    let class = if selected {
-        "relative p-4 text-left ring-1 ring-inset ring-violet-400/35 bg-violet-500/[0.055] rounded-xl"
-    } else {
-        "relative p-4 text-left ring-1 ring-inset ring-white/[0.07] hover:ring-white/[0.13] rounded-xl transition"
-    };
-    rsx! {
-        button { class, onclick,
-            div { class: "flex items-center justify-between", p { class: "text-[12px] font-medium text-zinc-200", "{name}" } if selected { span { class: "size-1.5 rounded-full bg-violet-400" } } }
-            p { class: "mt-1.5 text-[10px] text-zinc-600", "{detail}" }
         }
     }
 }

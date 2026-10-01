@@ -1,5 +1,9 @@
 # Segmentation proof of concept
 
+> **Historical.** SAM segmentation and the Python `/segment` boundary were
+> removed with the Qwen-Image-2.1 migration; the product has no segmentation
+> path. Kept as a record of the decision.
+
 This spike validates promptable mask generation behind the Python `/segment` boundary. The initial backend is Meta SAM 2.1 Tiny through Hugging Face Transformers.
 
 ## Why SAM 2.1 first

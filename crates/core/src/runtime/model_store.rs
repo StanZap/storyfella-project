@@ -11,7 +11,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::errors::{CodedError, ErrorCode};
 
-use super::generation_runtime::{krea_profile, KreaQuantization, ModelArtifact};
+use super::generation_runtime::{GenerationProfile, ModelArtifact};
 
 #[derive(Clone, Debug)]
 pub struct ModelStore {
@@ -86,17 +86,16 @@ impl ModelStore {
         &self.root
     }
 
-    pub async fn ensure_krea_profile<F>(
+    pub async fn ensure_profile<F>(
         &self,
-        quantization: KreaQuantization,
+        profile: GenerationProfile,
         mut progress: F,
     ) -> Result<(), ModelStoreError>
     where
         F: FnMut(DownloadProgress),
     {
         self.prepare()?;
-        let profile = krea_profile(quantization);
-        let model_root = self.root.join("krea-2");
+        let model_root = self.root.join(profile.model_root);
         fs::create_dir_all(&model_root).map_err(|source| ModelStoreError::CreateDirectory {
             path: model_root.display().to_string(),
             source,
@@ -222,6 +221,11 @@ impl ModelStore {
                 actual,
                 expected: artifact.size_bytes,
             });
+        }
+        // A profile whose checksum has not been recorded yet (an empty
+        // `sha256`) verifies by size only.
+        if artifact.sha256.is_empty() {
+            return Ok(());
         }
         let mut file =
             tokio::fs::File::open(path)

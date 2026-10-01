@@ -12,7 +12,8 @@
 
 The product lets a user write a visual story and create its slides, iterating
 on both until the result is right. The current app already covers prompt →
-storyboard beat → Krea generation → revision history. The target shape adds:
+storyboard beat → Qwen-Image-2.1 generation → revision history. The target
+shape adds:
 
 - a shared **artifact registry** (characters, environments, objects, scenes,
   beats) with persistent visual variants;
@@ -20,16 +21,17 @@ storyboard beat → Krea generation → revision history. The target shape adds:
   through language (`/create …`, `/modify …`) plus direct manipulation;
 - LLM-assisted story writing (plot → bible → scenes → beat narration) with
   propose/approve semantics;
-- full per-beat generation history, mask-based regional edits, and a LoRA
+- full per-beat generation history and a LoRA
   registry for character/environment consistency.
 - the **Storyfella DSL** as the authored story surface: `.sf` files that
   reference registry artifacts, with the canvas as the visual-asset editor
   (see §9).
 
-**Model focus:** Krea 2 (served by the native `stable-diffusion.cpp` process)
-is the primary generation model. The stack stays as documented in
-`architecture.md`; Krea 2's prompt-following and quality are the baseline and
-LoRAs build on top of it.
+**Model focus:** Qwen-Image-2.1 (served by the native `stable-diffusion.cpp`
+process) is the only generation model. The stack stays as documented in
+`architecture.md`; Qwen-Image-2.1's prompt-following and quality are the
+baseline and LoRAs build on top of it. Krea 2 and the older SAM/segmentation
+edit path were removed in the Qwen migration.
 
 ## 2. Vocabulary
 
@@ -80,7 +82,7 @@ A beat renders in one of three modes:
 
 | Mode | Description | Change cost |
 | --- | --- | --- |
-| Baked | Everything in one Krea generation (today's flow). Max quality. | Regenerate or inpaint the region. |
+| Baked | Everything in one Qwen-Image-2.1 generation (today's flow). Max quality. | Regenerate the region. |
 | Layered | Environment base + character/object cutouts composited by the app. | Instant: swap variant/expression and recomposite. |
 | Hybrid | Baked backdrop (environment + background characters baked in) with dynamic character layers composited on top. | Only dynamic layers regenerate. |
 
@@ -89,59 +91,47 @@ Consequences:
 - The beat needs a **composition spec** separate from the rendered image:
   `background` (environment variant ref or "generate fresh"), `layers:
   [{artifact_ref, variant_ref, role, anchor}]`, and `mode`.
-- **Re-sync is mode-dependent:** layered → recomposite; baked → regenerate or
-  inpaint; hybrid → regenerate dynamic layers only.
-- **Cutouts come from segmentation + matting**, not diffusion (no alpha
-  channel). SAM 2.1 segmentation exists (`POST /segment`); matting quality
-  (hair edges) is imperfect, so layered mode is the iteration mode while
-  baked/hybrid dominate final quality. *(Matte quality acceptance: open.)*
+- **Re-sync is mode-dependent:** layered → recomposite; baked → regenerate; hybrid → regenerate dynamic layers only.
+- **Cutouts come from the model's prompt-driven alpha channel**, not from
+  segmentation + matting: Qwen-Image-2.1 renders an alpha channel when the
+  prompt asks for transparency, and it survives only in PNG/WebP (verified
+  against upstream's own examples). Cutout quality is subject-dependent —
+  reliable for logo/object subjects, weaker for some portraits — so layered
+  mode is the iteration mode while baked/hybrid dominate final quality.
+  *(Cutout quality acceptance: open.)*
 - **Positioning is direct manipulation, not an operation.** Ops carry intent
   (what), gestures carry geometry (where, size, z-order).
 
 ## 5. Generation & consistency
 
-- **LoRA registry.** Existing plumbing: `--lora-model-dir` on sd-server, up to
-  eight `LoraSelection { path, multiplier }` per generation request in the
-  Rust contract (`crates/core/src/vision/mod.rs`) and the Python contract
-  (`apps/vision/models/schemas.py`). Missing: a project-level registry (name, file,
+- **LoRA registry.** Existing plumbing: `--lora-model-dir` on `sd-server`, up to
+  eight `LoraSelection { path, multiplier }` per generation request
+  (`crates/core/src/generation/mod.rs`). The project-level registry (name, file,
   base model, tags), binding a LoRA to an artifact, and auto-injection into
-  every generation referencing that artifact. *(Confirmed as desired; the
-  registry is new work.)*
+  every generation referencing that artifact are implemented (§12 item 6).
 - **Character/environment consistency** is achieved by injecting canonical
   reference images and bound LoRAs into every generation that references the
   artifact. Trained character LoRAs are expected to be the main lever.
-- **Masks.** Segmentation exists and produces mask PNGs. Masks attach to a
-  *revision* (they are a view over one specific image). Missing: `mask_path`
-  in `GenerateRequest` for mask-guided inpaint/outpaint edits (same W×H
-  output). *(Whether the native backend takes the mask directly or the Python
-  adapter composites the region must be validated: open.)*
 
-### Regional edits — the canonical `modify` flow
+### Regional edits — `modify` is an instruction edit
 
 The flagship use case is a visual `modify` on a character ("change her hair
-style"). One command expands into a sequence of primitives:
+style"). It is a single operation, not a mask sequence:
 
-1. `modify <char> <description>` — the change description is parsed (with LLM
-   help) into a **mask prompt** ("hair") and an **inpaint prompt** ("bob
-   cut").
-2. `mask <char> <mask-prompt>` — `POST /segment` (SAM 2.1 + grounding)
-   proposes candidate hair masks over the character's active image.
-3. **User confirms a mask** — SAM returns several candidates; generating
-   against the wrong mask wastes a full generation, so the mask is shown for
-   confirmation before diffusion runs. This is the one interactive step.
-4. `inpaint` — image + chosen mask + inpaint prompt go to the generator; the
-   output keeps the original dimensions (same W×H).
-5. The result is stored as a new revision; the mask is stored on the revision
-   (`masks` table) so follow-up edits ("make it shorter") reuse or refine the
-   same mask.
+1. `modify <char> <description>` — the change description is grounded (with LLM
+   help) against the artifact's description, producing a plain-language
+   instruction.
+2. `generate` — the artifact's active revision is the reference image and the
+   grounded instruction is the prompt; the model re-renders, preserving what the
+   instruction did not mention.
+3. The result is stored as a new revision; `/describe` promotes an edit to the
+   artifact's canonical look, and `/variant` forks it into its own artifact.
 
-Two mechanisms can guarantee "only the mask region changes":
-
-- **Native mask input**: pass `mask_path` to the backend if the model accepts
-  masked inpainting directly (validation gate — open question 6).
-- **Composite fallback (guaranteed)**: generate with the reference image and
-  prompt, then blend so everything *outside* the mask keeps the original
-  pixels, with feathering to hide seams.
+`modify` is **not** localized by a user-selected mask: the instruction's
+semantics decide what changes. The earlier mask/inpaint/composite flow
+(segmentation, mask confirmation, inpaint) was removed with the Qwen migration —
+there is no mask source, no segmentation step, and no composite. Localization is
+a quality goal of prompt-following, not a region drawn by the user.
 
 The same flow applies to environments and objects; character hair is the
 canonical example and the first to be built.
@@ -200,8 +190,6 @@ core that drives prototyping; slices 2 and 3 extend it.
 | 2 | write | primitive | `/write <ref> <text>` | Direct text (narration, premise, …) |
 | 2 | rename | primitive | `/rename <ref> <name>` | Rename |
 | 2 | delete | primitive | `/delete <ref>` | Remove (cascade rules TBD) |
-| 2 | mask | primitive | `/mask <ref> <prompt-or-box>` | Segment the revision's image; store candidate masks |
-| 2 | inpaint | primitive | `/inpaint <ref> <description> [mask]` | Mask-guided regional edit, same W×H output |
 | 2 | outpaint | primitive | `/outpaint <ref> <description>` | Extend the image beyond its borders |
 | 2 | layer | primitive | `/layer <beat> <ref> [role] [variant]` | Add/swap a layer (role: backdrop / baked / dynamic); geometry added by drag afterward |
 | 2 | promote | primitive | `/promote <ref>` | Mark a revision as the artifact's canonical reference image |
@@ -210,7 +198,7 @@ core that drives prototyping; slices 2 and 3 extend it.
 | 2 | ask | pure | `/ask <question>` | LLM Q&A about the story; no mutation |
 | 2 | variations | compound | `/variations <ref> <n>` | Generate an N-revision grid for comparison |
 | 2 | re-sync | compound | `/re-sync <ref>` | Regenerate/recomposite every beat referencing the artifact |
-| 3 | cutout | primitive | `/cutout <ref>` | Extract subject to a transparent PNG (matte) for layered mode |
+| 3 | cutout | primitive | `/cutout <ref>` | Extract subject to a transparent PNG using the model's prompt-driven alpha channel, for layered mode |
 | 3 | lora-scale | primitive | `/lora-scale <ref> <multiplier>` | Adjust a bound LoRA's weight |
 | 3 | lora-remove | primitive | `/lora-remove <ref>` | Unbind a LoRA |
 | 3 | style | primitive | `/style <ref> <description>` | Project/story-level style binding (style LoRA + prompt prefix) |
@@ -240,11 +228,10 @@ Semantics notes:
   the retry. Text-only kinds (story, scene, beat) still apply instantly.
 - `create`/`variant` accept `--name`; without it, names derive from the
   description (create) or the base (variant: `{base}-{axis}`/`{base}-{slug}`).
-- `/modify` changes the artifact's defining description (character sheet,
-  scene summary) on text artifacts; on visual artifacts it routes to the
-  mask-guided regional edit pipeline (see §5): segment → confirm mask →
-  inpaint. The flagship use case is a character hair-style change; `mask` and
-  `inpaint` are expected to ride with slice 1 for this reason.
+- `/modify` on a visual artifact is an **instruction edit** (see §5): the
+  artifact's active revision is the reference image and the grounded
+  description is the prompt. There is no mask/segment/inpaint path. The
+  flagship use case is a character hair-style change.
 - `/layer` carries intent only; where a layer goes is a drag afterward.
 - **Slice 1 core (the five):** create, variant, regenerate, compose, draft —
   enough to exercise the full pipeline: artifact creation, visual iteration,
@@ -268,12 +255,11 @@ Each operation compiles to a pipeline:
 
 ```rust
 let pipeline = GenerationPipeline::new()
-    .model("krea-2-turbo-q4")
-    .size(768, 448)
-    .steps(4)
+    .model("qwen-image-2.1")
+    .size(1024, 1536)
+    .steps(25)
     .reference_image(&revision.asset_path)
-    .mask(&hair_mask.path)
-    .lora("lora/character.safetensors", 0.8)
+    .lora("character.safetensors", 0.8)
     .build();           // static validation happens here
 
 let job = pipeline.run(&runtime).await?;
@@ -283,8 +269,8 @@ Rules:
 
 - Each operation compiles to a pipeline; pure operations (`ask`, `summarize`)
   are plain LLM calls, not pipelines.
-- The builder validates statically at `build()` (a mask requires a reference
-  image; sizes within contract bounds); runtime failures surface as job
+- The builder validates statically at `build()` (sizes within contract bounds,
+  step counts, LoRA count); runtime failures surface as job
   statuses, unchanged.
 - The VLLM (LM Studio) never produces code — it emits operation stacks as
   structured JSON (function calling against a schema Rust defines); Rust
@@ -299,14 +285,13 @@ produce values later steps consume, and the builder returns typed handles:
 ```rust
 let pipeline = Pipeline::new()
     .reference_image(&revision.asset_path)
-    .segment("hair")        // produces a MaskHandle
-    .inpaint("bob cut")     // consumes the MaskHandle
+    .generate("give her a bob cut", Some(image))
     .build();
 ```
 
 Handles resolve at run time; step kinds are checked statically, so a caption
-cannot be fed into a mask slot. Mask steps include `segment`, `paint_strokes`,
-`invert`, `feather`, `union`.
+cannot be fed into an image slot. There is no mask handle — the closed step
+vocabulary is `LoadImage`, `Checkpoint`, `Generate`, `Llm`.
 
 **The VLLM is also a pipeline primitive.** Besides proposing whole stacks it
 can be a step inside one: `describe(image) -> caption/prompt`, `plan(text) ->
@@ -322,29 +307,26 @@ enumerated kinds with validated parameters.
 the stack failed, keeps any intermediates produced so far, and the artifact's
 revision status reflects it. No retries or branching in slice 1.
 
-**Undo is state restore, not re-execution.** Replaying a stack with VLLM or
-painted-mask steps cannot reproduce the same result, so undo restores the
+**Undo is state restore, not re-execution.** Replaying an LLM-derived stack
+cannot reproduce the same result, so undo restores the
 prior project state (revisions already provide snapshot semantics); the log
 is for provenance, not replay.
 
 **Testability.** The layering makes the pipeline layer testable end to end:
 
-1. **Builder unit tests** (no IO): static validation (mask without a reference
-   image is a build error), step ordering, parameter bounds, stack
+1. **Builder unit tests** (no IO): static validation, step ordering,
+   parameter bounds, stack
    deserialization from JSON fixtures.
 2. **Execution tests with a fake backend:** pipelines run against a stubbed
-   `VisionClient`; assert request bodies (prompt, mask, LoRA, size) and
+   `GenerationBackend`; assert request bodies (prompt, reference, LoRA, size) and
    revision state transitions. The VLLM step is injectable the same way.
-3. **Contract tests (Python):** the existing fake-based pattern in
-   `apps/vision/tests` keeps both sides of the wire in sync.
+3. **Wire serialization tests:** the `sdcpp` request/job types
+   (`crates/core/src/generation/`) round-trip.
 4. **Manual golden runs:** a scripted harness executes one pipeline against
-   the real backend and drops outputs (image, mask, composite) into a folder
-   for human review — "is this mask the hair?", "did only the shirt change?".
+   the real backend and drops the output image into a folder
+   for human review.
 
-For this to hold, image primitives must be **pure functions**. The composite
-fallback then gets a property test: pixels outside the mask are bit-identical
-to the original — "only the masked region changes" is assertable, while mask
-semantics remain a human judgment (the manual tier). Steps carry **seeds** so
+Steps carry **seeds** so
 a golden run can be replayed identically when a manual validation fails.
 
 **CLI (`svs`).** The pipeline API gets a thin clap-based CLI so operations can
@@ -355,17 +337,16 @@ pipeline → executes — one code path shared with the UI and the VLLM.
 - `svs project open <path>` — select the SQLite project
 - `svs op create <kind> <description>`, `svs op variant <ref> <desc>`,
   `svs op regenerate <ref> [prompt] --seed --steps --size`,
-  `svs op mask <ref> <prompt> --out <dir>`, `svs op inpaint <ref> <prompt>
-  --mask <path> --out <dir>`
+  `svs op modify <ref> <description>`
 - `svs stack run <stack.json>` — execute a serialized op-stack; doubles as
   the VLLM contract test bed, since the model emits the same JSON. `svs stack
   propose <message>` drives LM Studio to produce a stack from free text.
-- `--out <dir>` on any op drops intermediates/outputs (image, mask,
-  composite) into a folder for human review — the manual validation tier.
+- `--out <dir>` on any op drops the output image into a folder for human
+  review — the manual validation tier.
 - `svs log <ref>` — show an artifact's operation log.
 
 The CLI is a separate binary crate sharing the domain modules
-(config, vision client, runtime, operations/pipelines) without the
+(config, generation client, runtime, operations/pipelines) without the
 Dioxus UI: `crates/core` holds the shared modules; `apps/desktop/src/main.rs`
 (UI) and `apps/cli/src/bin/svs.rs` (CLI) both build on it.
 
@@ -406,7 +387,7 @@ Decisions:
   or links the kitchen scene artifact; the registry follows the text. The
   canvas is the visual-detail editor for things the text only names.
 - **`.sf` is the story source of truth** — diffable, greppable, versionable.
-  SQLite keeps only the asset side (artifacts, revisions, masks, operation
+  SQLite keeps only the asset side (artifacts, revisions, operation
   log); the `story_documents` table is dropped from the schema.
 - **References by name in the DSL** (`character: mia`), ids under the hood;
   the compiler catches collisions; the writer's autocomplete resolves names
@@ -433,7 +414,8 @@ Assets (PNGs) stay as files on disk; the database stores relative paths
 via a `schema_meta` table. Applied so far: v1 (§10 tables), v2/v3 (the
 legacy storyboard column, added then dropped), v4 (per-artifact default
 size), v5 (per-artifact default steps and pinned seed), v6 (`RevisionOrigin`
-on revisions), v7 (`projects.story_source`, the Writer's text).
+on revisions), v7 (`projects.story_source`, the Writer's text), v8 (drops the
+`masks` table with the removed mask edit path).
 
 ```sql
 CREATE TABLE schema_meta (version INTEGER NOT NULL, applied_at TEXT NOT NULL);
@@ -472,15 +454,8 @@ CREATE TABLE revisions (
   created_at TEXT NOT NULL
 );
 
--- Masks are a view over one specific revision image.
-CREATE TABLE masks (
-  id TEXT PRIMARY KEY,
-  revision_id TEXT NOT NULL REFERENCES revisions(id),
-  asset_path TEXT NOT NULL,
-  source TEXT NOT NULL,          -- auto (segmentation) | painted
-  prompt TEXT,                   -- grounding text or box JSON
-  score REAL
-);
+-- Masks are gone: `GenerateRequest` has no mask field and `modify` is an
+-- instruction edit (see §5); schema v8 dropped the table.
 
 -- Beat composition layers.
 CREATE TABLE layers (
@@ -539,9 +514,8 @@ reference).
 3. **Execution model:** user-typed ops instant + undo; LLM proposals gated by
    approve. *(Proposed, pending confirmation.)*
 4. **Short-id format** for `c:<ref>` chips.
-5. **Layered-mode matte quality** acceptance for final output.
-6. **Krea mask input:** validate whether the native backend accepts a mask
-   directly or the adapter composites the inpaint region.
+5. **Layered-mode cutout quality** acceptance for final output (Qwen-Image-2.1's alpha channel is subject-dependent).
+6. **Native mask input** — **resolved by removal:** the mask/inpaint path was deleted with the Krea/SAM migration; `modify` is an instruction edit and there is no mask source.
 7. **SQLite crate** — **resolved:** `rusqlite` (bundled), one writer
    connection + WAL (`crates/core/src/persistence/`). The TOML `ProjectStore` and the
    stopgap JSON registry were removed with their imports; formats evolve
@@ -554,11 +528,12 @@ plan to ship, with its status; update it when work lands.
 
 1. **The API:** artifact domain model (artifact kinds, variants, scenes,
    beats — the registry), typed operation set + pipeline builder (closed
-   vocabulary, typed intermediates, static validation at `build()`, linear
-   fail-fast stacks), `mask_path` in the generation contract, and the
-   slice-1 op compilers (create, variant, regenerate, compose, draft, plus
-   the mask-edit path). — **✅ implemented** (`docs/api-slice-1.md`); live
-   validation of `modify`/`stack propose` on Linux/CUDA pending
+   vocabulary — `LoadImage`/`Checkpoint`/`Generate`/`Llm`; typed intermediates,
+   static validation at `build()`, linear fail-fast stacks), and the
+   slice-1 op compilers (create, variant, regenerate, compose, draft, modify).
+   — **✅ implemented** (`docs/api-slice-1.md`); the Qwen-Image-2.1 migration
+   removed the mask/inpaint path and made `modify` a reference + grounded
+   instruction. Live validation of `modify`/`stack propose` on Linux/CUDA pending
 2. **The CLI (`svs`):** ops, `stack run`/`propose`, `--out` golden runs —
    drives and validates the API without the UI. — **✅ implemented**
 3. **SQLite foundation:** schema + storage layer (§10) — `crates/core/src/persistence/`
@@ -582,12 +557,9 @@ plan to ship, with its status; update it when work lands.
    `modify` honor. Visual `create`/`variant` generate the artifact's first
    image as part of the operation (variants reference the base's active
    image); a failed generation keeps the artifact with a failed revision,
-   and `/regenerate` is the retry. `modify` surfaces its checkpoints
-   interactively: the op runs on a worker thread and the segmentation
-   candidates appear overlaid on the image in a modal (the one interactive
-   step of the regional-edit flow, §5); when the LLM edit plan degrades
-   (LM Studio off), a second modal asks for the mask/inpaint split manually.
-   The confirmed mask is listed under the active revision. Free-form
+   and `/regenerate` is the retry. `modify` runs unattended — an instruction
+   edit has no checkpoint and no segmentation step.
+   Free-form
    composer messages (no leading `/`) go to the LLM, which proposes an
    operation stack against the closed vocabulary; the proposal is shown in
    an approval modal with per-op toggles before any op runs (LLM proposals
@@ -609,12 +581,12 @@ plan to ship, with its status; update it when work lands.
 6. **LoRA registry:** project-level adapter registry (SQLite
    `lora_registry` table, round-tripped) with per-artifact bindings
    (`/attach-lora`, `/lora-scale`, `/lora-remove` — slash, CLI, and LLM
-   vocabulary), config-level use-case bindings (`[lora]`: inpaint adapter
-   for mask-guided edits, per-kind defaults, one multiplier), discovery
+   vocabulary), config-level use-case bindings (`[lora]`:
+   per-kind defaults, one multiplier), discovery
    from `lora_dir` (recursive — subfolders and symlinked model trees included; a
    refresh icon in Settings rescans), and auto-injection into
-   every generation (artifact-bound first, then kind default, then the
-   inpaint adapter on `modify`; per-run `--lora <file>@<mult>` flags on
+   every generation (artifact-bound first, then kind default;
+   per-run `--lora <file>@<mult>` flags on
    the CLI). — **✅ implemented**
  7. **Error codes and reporting:** a central registry (`crates/core/src/errors.rs` —
     `ErrorCode`, one stable `SVS-<DOMAIN>-<NNN>` per failure, with a short
@@ -653,16 +625,10 @@ plan to ship, with its status; update it when work lands.
 11. **Self-contained distribution (no user-side dependencies):** one
    downloadable artifact per platform (AppImage/`.deb` on Linux, `.app`
    bundle on macOS, installer/portable zip on Windows) containing the app
-   binary, a release-built `sd-server` (CUDA or CPU flavor), and the Python
-   vision runtime **frozen into a single executable** (`vision-server` via
-   PyInstaller or python-build-standalone + uv at release/CI time — no
-   system Python, no venv, no uv on user machines). The Rust spawn/
-   supervision/readiness architecture is unchanged; the only code change is
-   resolving `sd-server`/`vision-server` relative to the bundle root instead
-   of config-relative paths. Segmentation (torch) is the size driver — decide
-   whether the frozen runtime ships torch (full bundle) or drops it (slim
-   bundle, segmentation degrades via the existing "torch extras not
-   installed" path); generation never needs torch. Model weights stay out of
+   binary and a release-built `sd-server` (CUDA or CPU flavor). The Rust
+   spawn/supervision/readiness architecture is unchanged; the only code change
+   is resolving `sd-server` relative to the bundle root instead of the
+   config-relative path. Model weights stay out of
    any bundle (multi-GiB, licensed) and keep provisioning through
    `model_setup`. Explicitly out: embedding sd.cpp into the Rust process —
    the C API exists, but in-process inference would rework the entire
@@ -675,9 +641,9 @@ plan to ship, with its status; update it when work lands.
    not required). `Dioxus.toml` now
    carries the bundle identity (`[application] name`, `[bundle] identifier`/
    `publisher`/`category`/descriptions); `[bundle] external_bin` and
-   `[bundle] resources` are the hooks for the `sd-server`/`vision-server`
-   payloads. Still missing for a shippable bundle: an icon (PNG) and those two
-   payloads, plus resolving them relative to the bundle root. — **⏳ planned**
+   `[bundle] resources` are the hooks for the `sd-server`
+   payload. Still missing for a shippable bundle: an icon (PNG) and that
+   payload, plus resolving it relative to the bundle root. — **⏳ planned**
 
 ## 13. Implementation handoff
 
@@ -691,15 +657,15 @@ registry, and UX fixes.
 
 ### Entry points (existing code)
 
-- `crates/core/src/registry/` — artifact kinds, variants, scenes/beats, revisions +
-  masks, drafts; the typed operation set + pipeline builder; the slash
+- `crates/core/src/registry/` — artifact kinds, variants, scenes/beats, revisions,
+  drafts; the typed operation set + pipeline builder; the slash
   parser (`slash.rs`) the canvas composer uses; `CreativeBackend` (live
   backend shared by the CLI, the canvas, and Settings).
 - `apps/desktop/src/state/mod.rs` — AppState: registry, selection, undo/redo stacks.
-- `crates/core/src/persistence/mod.rs` — `ProjectDb` (§10 schema, v3 drops the legacy
-  `project_json` column).
-- `crates/core/src/vision/mod.rs` ↔ `apps/vision/models/schemas.py` — Rust/Python HTTP
-  contracts; `mask_path` is in `GenerateRequest`.
+- `crates/core/src/persistence/mod.rs` — `ProjectDb` (§10 schema; v3 dropped the legacy
+  `project_json` column, v8 dropped the `masks` table).
+- `crates/core/src/generation/mod.rs` — `GenerationClient`, the typed client for the
+  native `sd-server` `sdcpp` API; `GenerateRequest` is the domain shape.
 - `crates/core/src/runtime/creative_runtime.rs`, `crates/core/src/runtime/generation_runtime.rs` —
   process lifecycle + job orchestration the pipeline builder wraps.
 - `crates/core/src/llm/` — LM Studio client; the operation registry is the planner
@@ -709,18 +675,18 @@ registry, and UX fixes.
 
 1. Execution model: user-typed ops instant + undo; LLM proposals gated by
    approval — proposed, unconfirmed.
-2. Approval granularity: whole stack vs per-step checkpoints (the hair-mask
-   confirm is a checkpoint).
+2. Approval granularity: whole stack vs per-step checkpoints (draft-text
+   approval is the remaining checkpoint).
 3. Short-id format for `c:` references.
-4. Native mask support for Krea (open question 6) — decides whether the
-   composite fallback is primary.
+4. Native mask support for Krea — **removed** with the Krea/SAM migration;
+   there is no mask source and no composite fallback.
 5. Deferred with SQLite: crate choice (`rusqlite` vs `sqlx`). —
    **resolved:** `rusqlite` (bundled, WAL, one writer connection).
 
 ### Pitfalls
 
-- Krea 2 is the focus model (native, via stable-diffusion.cpp); do not treat
-  "sd" as the product model.
+- Qwen-Image-2.1 is the only generation model (native, via
+  stable-diffusion.cpp); Krea 2 and the SAM/segmentation path are gone.
 - Undo is state restore, never pipeline re-execution.
 - VLLM vocabulary is closed; LLM steps are soft dependencies.
 - The builder is substrate: linear, fail-fast, no branching/DAG in slice 1.

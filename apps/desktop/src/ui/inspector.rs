@@ -447,7 +447,7 @@ mod tests {
             artifact_id: Some(owner),
         };
         let bound = vec![
-            entry("facial-krea", 0.8, mine),
+            entry("facial-detail", 0.8, mine),
             // At the ceiling: stepping up must clamp, not overshoot.
             entry("inherited-style", 2.0, base),
         ];
@@ -463,8 +463,8 @@ mod tests {
                 });
             }
         }
-        assert_eq!(rows[0].weaker, "/lora-scale facial-krea 0.75");
-        assert_eq!(rows[0].stronger, "/lora-scale facial-krea 0.85");
+        assert_eq!(rows[0].weaker, "/lora-scale facial-detail 0.75");
+        assert_eq!(rows[0].stronger, "/lora-scale facial-detail 0.85");
         assert_eq!(
             rows[1].stronger, "/lora-scale inherited-style 2.00",
             "stepping past the ceiling clamps to it"

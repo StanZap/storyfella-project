@@ -38,7 +38,7 @@ use crate::errors::{CodedError, ErrorCode};
 use crate::registry::{
     ops::{Operation, OperationLogEntry},
     Artifact, ArtifactRegistry, ArtifactRevision, BeatComposition, CompositionMode, Layer,
-    LoraEntry, StoredMask, StoryDraft,
+    LoraEntry, StoryDraft,
 };
 
 /// The `projects` row for a database, plus the full registry snapshot.
@@ -189,7 +189,6 @@ impl ProjectDb {
                 source,
             })?;
         for table in [
-            "masks",
             "layers",
             "revisions",
             "artifacts",
@@ -269,25 +268,6 @@ impl ProjectDb {
                     path: self.path.clone(),
                     source,
                 })?;
-
-                for mask in &revision.masks {
-                    tx.execute(
-                        "INSERT INTO masks (id, revision_id, asset_path, source, prompt, score) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                        params![
-                            mask.id.to_string(),
-                            revision.id.to_string(),
-                            mask.asset_path,
-                            enum_to_db(mask.source),
-                            mask.prompt,
-                            mask.score,
-                        ],
-                    )
-                    .map_err(|source| StoreError::Save {
-                        path: self.path.clone(),
-                        source,
-                    })?;
-                }
             }
 
             if let Some(composition) = &artifact.composition {
@@ -394,7 +374,7 @@ impl ProjectDb {
 
         let mut registry = ArtifactRegistry::default();
 
-        // Artifacts, in creation order. Revisions/masks/layers are attached
+        // Artifacts, in creation order. Revisions and layers are attached
         // below once every row is in hand.
         let mut artifacts: Vec<Artifact> = {
             let mut stmt = conn
@@ -494,7 +474,7 @@ impl ProjectDb {
             artifacts
         };
 
-        // Revisions, then masks grouped per revision.
+        // Revisions, then layers grouped per revision.
         {
             let mut stmt = conn
                 .prepare(
@@ -531,42 +511,6 @@ impl ProjectDb {
                 })?);
             }
 
-            let masks: std::collections::HashMap<String, Vec<MaskRow>> = {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT id, revision_id, asset_path, source, prompt, score \
-                         FROM masks ORDER BY rowid",
-                    )
-                    .map_err(|source| StoreError::Load {
-                        path: self.path.clone(),
-                        source,
-                    })?;
-                let rows = stmt
-                    .query_map([], |row| {
-                        Ok(MaskRow {
-                            id: row.get(0)?,
-                            revision_id: row.get(1)?,
-                            asset_path: row.get(2)?,
-                            source: row.get(3)?,
-                            prompt: row.get(4)?,
-                            score: row.get(5)?,
-                        })
-                    })
-                    .map_err(|source| StoreError::Load {
-                        path: self.path.clone(),
-                        source,
-                    })?;
-                let mut masks = std::collections::HashMap::<String, Vec<MaskRow>>::new();
-                for row in rows {
-                    let row = row.map_err(|source| StoreError::Load {
-                        path: self.path.clone(),
-                        source,
-                    })?;
-                    masks.entry(row.revision_id.clone()).or_default().push(row);
-                }
-                masks
-            };
-
             let artifact_index = index_by_id(&artifacts);
             for revision in &revisions {
                 let revision_artifact_id =
@@ -588,27 +532,6 @@ impl ProjectDb {
                     model: revision.model.clone(),
                     error: revision.error.clone(),
                     origin: enum_from_db(&self.path, "revisions.origin", &revision.origin)?,
-                    masks: masks
-                        .get(&revision.id)
-                        .map(|rows| {
-                            rows.iter()
-                                .map(|mask| {
-                                    Ok::<_, StoreError>(StoredMask {
-                                        id: uuid_from_db(&self.path, "masks.id", &mask.id)?,
-                                        asset_path: mask.asset_path.clone(),
-                                        source: enum_from_db(
-                                            &self.path,
-                                            "masks.source",
-                                            &mask.source,
-                                        )?,
-                                        prompt: mask.prompt.clone(),
-                                        score: mask.score,
-                                    })
-                                })
-                                .collect::<Result<Vec<_>, _>>()
-                        })
-                        .transpose()?
-                        .unwrap_or_default(),
                 });
             }
         }
@@ -900,7 +823,7 @@ impl ProjectDb {
 /// `CREATE TABLE IF NOT EXISTS`/`ALTER TABLE` script migrates existing
 /// databases; `schema_meta` records what has been applied.
 const MIGRATIONS: &[&str] = &[
-    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
 ];
 
 /// Schema version 2 — the GUI carried the legacy `Project` model
@@ -942,6 +865,12 @@ ALTER TABLE revisions ADD COLUMN origin TEXT NOT NULL DEFAULT 'canon' \
 const SCHEMA_V7: &str = "\
 ALTER TABLE projects ADD COLUMN story_source TEXT NOT NULL DEFAULT '';";
 
+/// Schema version 8 — the mask/inpaint/composite edit path is gone; the mask
+/// table and its index are dropped. Revisions no longer carry masks.
+const SCHEMA_V8: &str = "\
+DROP INDEX IF EXISTS idx_masks_revision;\n\
+DROP TABLE IF EXISTS masks;";
+
 const SCHEMA_V1: &str = "
 CREATE TABLE projects (
   id TEXT PRIMARY KEY,
@@ -981,15 +910,6 @@ CREATE TABLE revisions (
   created_at INTEGER NOT NULL
 );
 
-CREATE TABLE masks (
-  id TEXT PRIMARY KEY,
-  revision_id TEXT NOT NULL REFERENCES revisions(id),
-  asset_path TEXT NOT NULL,
-  source TEXT NOT NULL CHECK (source IN ('auto','painted')),
-  prompt TEXT,
-  score REAL
-);
-
 CREATE TABLE layers (
   id TEXT PRIMARY KEY,
   beat_id TEXT NOT NULL REFERENCES artifacts(id),
@@ -1022,7 +942,6 @@ CREATE TABLE operation_log (
 );
 
 CREATE INDEX idx_revisions_artifact ON revisions(artifact_id);
-CREATE INDEX idx_masks_revision ON masks(revision_id);
 CREATE INDEX idx_layers_beat ON layers(beat_id);
 CREATE INDEX idx_operation_log_project ON operation_log(project_id);
 ";
@@ -1056,15 +975,6 @@ struct RevisionRow {
     model: Option<String>,
     error: Option<String>,
     origin: String,
-}
-
-struct MaskRow {
-    id: String,
-    revision_id: String,
-    asset_path: String,
-    source: String,
-    prompt: Option<String>,
-    score: Option<f64>,
 }
 
 struct LoraRow {
@@ -1178,8 +1088,8 @@ mod tests {
     use crate::registry::{
         ops::{self, ExecuteOptions, OpOrigin},
         pipeline::RunOptions,
-        ArtifactKind, ArtifactRevision, GenerationDefaults, MaskSource, RevisionStatus, StoredMask,
-        StoryDraft, VariantAxis,
+        ArtifactKind, ArtifactRevision, GenerationDefaults, RevisionStatus, StoryDraft,
+        VariantAxis,
     };
 
     fn temp_db() -> (PathBuf, ProjectDb) {
@@ -1200,37 +1110,25 @@ mod tests {
     /// and returns its path.
     struct VisualBackend;
     impl crate::registry::pipeline::GenerationBackend for VisualBackend {
-        fn segment(
-            &self,
-            _request: &crate::vision::SegmentRequest,
-        ) -> futures_util::future::BoxFuture<
-            '_,
-            Result<crate::vision::SegmentResponse, crate::registry::pipeline::PipelineError>,
-        > {
-            unreachable!()
-        }
         fn generate(
             &self,
-            request: &crate::vision::GenerateRequest,
+            request: &crate::generation::GenerateRequest,
         ) -> futures_util::future::BoxFuture<
             '_,
-            Result<crate::vision::GenerateResponse, crate::registry::pipeline::PipelineError>,
+            Result<crate::generation::GenerateResponse, crate::registry::pipeline::PipelineError>,
         > {
             let request = request.clone();
             Box::pin(async move {
                 let path =
                     std::env::temp_dir().join(format!("svs-persist-gen-{}.png", Uuid::new_v4()));
                 std::fs::write(&path, b"png").expect("dummy image should write");
-                Ok(crate::vision::GenerateResponse {
+                Ok(crate::generation::GenerateResponse {
                     status: "completed".to_owned(),
                     image_path: Some(path.display().to_string()),
                     model: request.model.clone(),
-                    device: None,
-                    dtype: None,
                     seed: request.seed,
-                    width: request.width,
-                    height: request.height,
-                    duration_ms: None,
+                    width: Some(request.width),
+                    height: Some(request.height),
                     error: None,
                 })
             })
@@ -1241,18 +1139,6 @@ mod tests {
         ) -> futures_util::future::BoxFuture<
             '_,
             Result<Option<String>, crate::registry::pipeline::PipelineError>,
-        > {
-            unreachable!()
-        }
-        fn llm_plan(
-            &self,
-            _request: &str,
-        ) -> futures_util::future::BoxFuture<
-            '_,
-            Result<
-                Option<crate::registry::pipeline::PlannedEdit>,
-                crate::registry::pipeline::PipelineError,
-            >,
         > {
             unreachable!()
         }
@@ -1268,7 +1154,9 @@ mod tests {
             .expect("dummy lora should write");
         let defaults = GenerationDefaults {
             sizes: Default::default(),
-            steps: 4,
+            steps: 25,
+            cfg_scale: crate::generation::DEFAULT_CFG_SCALE,
+            sample_method: crate::generation::DEFAULT_SAMPLE_METHOD.to_owned(),
             loras: crate::registry::LoraBindings {
                 dir: lora_dir,
                 ..Default::default()
@@ -1289,7 +1177,7 @@ mod tests {
     }
 
     /// A registry exercising every §10 table: variants, a composed beat
-    /// with layers, revisions with masks, drafts, and the operation log.
+    /// with layers, revisions, drafts, and the operation log.
     fn sample_registry() -> ArtifactRegistry {
         let mut registry = ArtifactRegistry::default();
         apply(
@@ -1393,7 +1281,7 @@ mod tests {
     }
 
     #[test]
-    fn revisions_masks_and_drafts_survive() {
+    fn revisions_and_drafts_survive() {
         let (path, db) = temp_db();
         let mut registry = sample_registry();
         let mia = registry
@@ -1406,16 +1294,9 @@ mod tests {
             asset_path: Some("assets/generated/mia.png".to_owned()),
             status: RevisionStatus::Completed,
             seed: Some(42),
-            model: Some("krea-2-q4".to_owned()),
+            model: Some("qwen-image-2.1".to_owned()),
             error: None,
             origin: crate::registry::RevisionOrigin::Experiment,
-            masks: vec![StoredMask {
-                id: Uuid::new_v4(),
-                asset_path: "assets/generated/mia-mask.png".to_owned(),
-                source: MaskSource::Auto,
-                prompt: Some("her hair".to_owned()),
-                score: Some(0.92),
-            }],
         });
         mia.active_revision_id = mia.revisions.last().map(|revision| revision.id);
         let story = registry
@@ -1436,7 +1317,7 @@ mod tests {
         let stored = db.load().expect("load should succeed");
         assert_eq!(
             stored.registry, registry,
-            "revisions/masks/drafts must round-trip"
+            "revisions/drafts must round-trip"
         );
         clean_up(&path);
     }

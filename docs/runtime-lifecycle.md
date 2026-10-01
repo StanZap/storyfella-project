@@ -1,171 +1,141 @@
 # Runtime lifecycle
 
-Rust supervises two child processes and one external service:
+Rust supervises one child process and one external service:
 
 | Process | Rust owner | Port | Started when |
 | --- | --- | --- | --- |
-| `apps/vision/main.py` (uvicorn) | `PythonRuntime` (`crates/core/src/runtime/mod.rs`) | `127.0.0.1:8765` | First generation request, or manually from Settings |
 | `sd-server` (stable-diffusion.cpp) | `GenerationRuntime` (`crates/core/src/runtime/generation_runtime.rs`) | `127.0.0.1:7861` | First generation request, or manually from Settings |
 | LM Studio | external, user-run | user-configured (`config/app.toml`) | external |
 
-The desktop app does **not** start either child at launch. The shell reports
-the vision runtime as idle until a generation request triggers
-`CreativeRuntime::ensure_ready`. This keeps a quiet app quiet and delays
-multi-GiB model loads until they are needed.
+The desktop app does **not** start `sd-server` at launch. The shell reports it as
+idle until a generation request triggers `CreativeRuntime::ensure_ready`. This
+keeps a quiet app quiet and delays the multi-GiB model load until it is needed.
 
 ## `CreativeRuntime` facade
 
 `CreativeRuntime` (`crates/core/src/runtime/creative_runtime.rs`) is the single entry point
 used by the UI. It owns:
 
-- a `VisionClient` for the Python runtime,
-- a shared `PythonRuntime`,
+- a `GenerationClient` for the native `sd-server`,
 - a shared `GenerationRuntime`,
-- the configured `KreaQuantization` profile,
 - the generated-asset directory (`<asset_dir>/generated`).
 
-### Readiness — `ensure_ready`
+### Readiness — `ensure_profile_ready`
 
 ```text
-ensure_ready()
+ensure_profile_ready()
     │
-    ├─ Already healthy AND /generation/capabilities == "ready"?  ──▶ return Ok
+    ├─ GET /sdcpp/v1/capabilities answers, and the resident model matches?  ──▶ Ok
+    │    (a mismatched server this process owns is stopped and restarted; a
+    │     mismatched server owned by another session → ProfileMismatch)
     │
-    ├─ generation.is_running()? no → GenerationRuntime::start(profile, 127.0.0.1, 7861)
-    ├─ python.is_running()?      no → PythonRuntime::start("127.0.0.1", 8765)
+    ├─ GenerationRuntime::ensure_running("127.0.0.1", 7861)
     │
-    └─ Poll /health + /generation/capabilities every 200 ms
-         until both succeed, or 90 s deadline → ReadinessTimeout
+    └─ Poll /sdcpp/v1/capabilities every 500 ms until the model matches,
+       or a 600 s deadline → ReadinessTimeout
 ```
 
-The two-phase check matters: `/health` answers "is the HTTP server up", while
-`/generation/capabilities` answers "is the resident model actually loaded".
-Capabilities reports `status: "unavailable"` while sd.cpp is still loading its
-weights, and `"ready"` once the model is resident. The Rust side never treats
-process creation as readiness.
+The model check is two-phase: capabilities answer "is the HTTP server up" and
+"is the right model actually resident". Loading ≈17.3 GiB of weights takes
+minutes, so the readiness cap stays generous (600 s). The Rust side never treats
+process creation as readiness. A `ProfileMismatch` names the loaded model
+(compared by file name or stem) and the fix (`svs runtime serve --force` or
+`pkill -f "sd-server --diffusion"`).
 
 ### Job waiting — `wait_for_job`
 
-After `POST /generation/jobs` returns a `queued`/`generating` job, the facade
-polls `GET /generation/jobs/{id}` every 150 ms until the job reaches a terminal
-state or the 180-second deadline expires. `failed` and `cancelled` map to
+After `POST /sdcpp/v1/img_gen` returns a `queued`/`generating` job, the facade
+polls `GET /sdcpp/v1/jobs/{id}` every 150 ms until the job reaches a terminal
+state or the 20-minute deadline expires. `failed` and `cancelled` map to
 `CreativeRuntimeError::Job` with the backend's message.
 
-### Asset import — `import_asset`
+### Asset import
 
-Completed jobs reference files in `SVS_GENERATED_DIR` (the Python adapter's
-scratch space). The facade copies the result into
-`<asset_dir>/generated/<uuid>.png` and returns the **canonical absolute path**,
-which the UI stores on the frame/revision and serves back through the
-`generated` asset handler (`/generated/<file>`).
-
-## `PythonRuntime`
-
-`PythonRuntime` resolves the interpreter at `<python_runtime>/.venv/bin/python`
-(or `Scripts/python.exe` on Windows), then spawns:
-
-```text
-python main.py --host 127.0.0.1 --port 8765
-```
-
-The runtime directory is absolutized at spawn time, so relative config paths
-(like `paths.python_runtime = "apps/vision"`) work regardless of the process
-working directory (they resolve against the project root — see
-`crates/core/src/paths.rs`). Without this, a relative executable path would be
-resolved against the child's *changed* working directory and fail with `ENOENT`
-even though the venv exists.
-
-Details:
-
-- Child `stdout`/`stderr` are inherited, so the runtime's logs appear in the
-  app's terminal.
-- `kill_on_drop(true)` plus an explicit `stop()` (SIGKILL + wait) owns the
-  child's lifetime.
-- `is_running()` uses `try_wait()` and clears the slot if the child exited, so
-  a crashed runtime is detected on the next readiness check and restarted.
-- Rust sets `SVS_SD_CPP_URL` from `generation.base_url` so the Python adapter
-  finds sd.cpp without hardcoding the port.
+On completion the facade base64-decodes `result.images[0].b64_json`, writes it
+as `<asset_dir>/generated/<uuid>.png`, and returns the **canonical absolute
+path**, which the registry stores on the revision and the UI serves back through
+the `generated` asset handler (`/generated/<file>`). `import_asset` copies an
+already-produced file into that directory the same way (a path already inside it
+is returned unchanged).
 
 ## `GenerationRuntime` (sd.cpp)
 
-`GenerationRuntime::start(profile, host, port)` is defensive:
+`GenerationRuntime::start(host, port)` is defensive:
 
 1. Refuses to start twice (`AlreadyRunning`).
 2. Verifies the `sd-server` executable exists.
-3. Verifies all three artifacts for the profile exist under
-   `<model_dir>/krea-2/` (diffusion GGUF, Qwen3-VL encoder GGUF, Wan VAE).
-4. Creates the LoRA directory.
+3. Verifies all three artifacts for the Qwen-Image-2.1 profile exist under
+   `<model_dir>/qwen-image-2.1/` (diffusion safetensors, text encoder, VAE).
+4. Creates the LoRA directory and runs `prepare_lora_links` (sd.cpp registers
+   only the *top-level* files of its lora directory, so subdirectory adapters are
+   symlinked to the top level as `<subdir>-<basename>` before the server's
+   startup scan).
 5. Spawns with explicit arguments:
 
 ```text
 sd-server \
-  --diffusion-model <model_dir>/krea-2/<diffusion.gguf> \
-  --llm           <model_dir>/krea-2/Qwen3VL-4B-Instruct-Q4_K_M.gguf \
-  --vae           <model_dir>/krea-2/wan_2.1_vae.safetensors \
-  --lora-model-dir <model_dir>/loras \
-  --lora-apply-mode at_runtime \
+  --diffusion-model <model_dir>/qwen-image-2.1/qwen-image-2.1-UC-int8_convrot.safetensors \
+  --llm             <model_dir>/qwen-image-2.1/qwen3vl_8b_int8_convrot.safetensors \
+  --vae             <model_dir>/qwen-image-2.1/qwen_image_2.1_vae_bf16.safetensors \
+  --model-args qwen_image_2_1_prefix_cache_type=q8_0 \
   --diffusion-fa \
+  --lora-model-dir <model_dir>/loras \
   --listen-ip 127.0.0.1 --listen-port 7861
 ```
 
-`--diffusion-fa` enables diffusion flash attention; CPU offloading and VAE
-tiling are deliberately not enabled (see
-[`docs/poc/native-generation/README.md`](poc/native-generation/README.md) for
-the measured trade-off).
+`--model-args qwen_image_2_1_prefix_cache_type=q8_0` pins an explicit quantized
+prefix cache (the `auto` default would pick f32); `--diffusion-fa` enables
+diffusion flash attention. Child `stdin` is nulled and `stdout`/`stderr` are
+inherited, so the server's logs appear in the app's terminal; `kill_on_drop(true)`
+plus an explicit `stop()` owns the child's lifetime. `is_running()` uses
+`try_wait()` and clears the slot if the child exited, so a crashed server is
+detected on the next readiness check and restarted.
 
-### Residency and profile switching
+### Residency and VRAM
 
 The diffusion model, encoder, and VAE stay loaded across prompts; normal
-generation never unloads them. One server context owns one diffusion
-checkpoint, so changing Q2 ↔ Q4 stops and restarts **only** the native server
-(`switch_profile`). The Python adapter detects a mismatch via
-`StableDiffusionCppClient::assert_profile` and refuses jobs rather than
-generating with the wrong weights.
-
-Profiles:
-
-| Profile | Diffusion artifact | Approx. weights |
-| --- | --- | --- |
-| `krea-2-turbo-q2` | `krea2_turbo-q2_k.gguf` | 6.5 GiB on disk |
-| `krea-2-turbo-q4` | `krea2_turbo-iq4_xs.gguf` | 8.9 GiB on disk |
-
-Both share the Qwen3-VL 4B Q4_K_M encoder and `wan_2.1_vae.safetensors`.
-Manifests are pinned with repository, revision, exact size, and SHA-256 in both
-`crates/core/src/runtime/generation_runtime.rs` (Rust) and `apps/vision/runtime/model_manifest.py`
-(Python), so the two sides cannot silently diverge.
+generation never unloads them. There is a single generation profile —
+`qwen-image-2.1` — so there is no profile switching. Qwen-Image-2.1 peaks at
+≈23.4 GiB on a 24 GiB card (weights resident ≈15.9 GB), so the LM Studio
+planner/VLM **cannot be resident during a generation**: free VRAM, then generate.
 
 ## `ModelStore` — provisioning
 
-`ModelStore` (`crates/core/src/runtime/model_store.rs`) downloads and verifies the profile
-artifacts from Hugging Face:
+`ModelStore` (`crates/core/src/runtime/model_store.rs`) downloads and verifies the
+Qwen-Image-2.1 artifacts from Hugging Face:
 
 - Resumable: an existing `<file>.part` continues with a `Range` request.
 - Verified: after download, size and SHA-256 are checked before the `.part` is
-  renamed into place. Verified shared artifacts (encoder, VAE) are reused
-  across profiles.
+  renamed into place (a profile whose checksum has not been recorded yet
+  verifies by size only).
 - Progress: a `FnMut(DownloadProgress)` callback reports filename and byte
   counts; `model_setup` prints percent updates.
 
 The `model_setup` binary drives it:
 
 ```bash
-cargo run -p svs-cli --bin model_setup -- --profile q2 --accept-krea-license
+cargo run -p svs-cli --bin model_setup            # into paths.model_dir
+cargo run -p svs-cli --bin model_setup -- --model-dir <dir>
 ```
+
+> The manifests' Hugging Face `remote_path`s are best-effort: the SHA-256 and
+> size are pinned, but the exact repository path has not been re-confirmed
+> against the live repo. Verify a download before relying on it.
 
 Expected layout below the configured model directory:
 
 ```text
 models/
-  krea-2/
-    krea2_turbo-q2_k.gguf
-    krea2_turbo-iq4_xs.gguf
-    Qwen3VL-4B-Instruct-Q4_K_M.gguf
-    wan_2.1_vae.safetensors
+  qwen-image-2.1/
+    qwen-image-2.1-UC-int8_convrot.safetensors
+    qwen3vl_8b_int8_convrot.safetensors
+    qwen_image_2.1_vae_bf16.safetensors
   loras/
 ```
 
-LoRA paths in generation requests are relative to the LoRA directory; absolute
-paths and parent traversal are rejected (see [`http-api.md`](http-api.md)).
+LoRA paths in generation requests are the registered top-level names within the
+LoRA directory; absolute paths and parent traversal are rejected (see
+[`architecture.md`](architecture.md)).
 
 ## Health status checks
 
@@ -184,34 +154,20 @@ anything. Each probe runs with a short timeout and reports one of four states:
 | Service | Probe | Reported as |
 | --- | --- | --- |
 | LM Studio | `GET /v1/models` | `Online` when reachable **and** the configured model is loaded; `Degraded` when reachable but the model is not; `Offline` when unreachable |
-| Vision runtime | process state + `GET /health` | `Online` when the API answers; `Idle` when the process is not running; `Offline` when the process is running but the API is unhealthy |
-| Image generation | `sd-server` binary, profile artifacts on disk, process state, `GET /generation/capabilities` | `Online` when the resident backend reports `ready`; `Degraded` when artifacts are missing, the backend is loading, or the native server is resident without the vision runtime; `Idle` when both it and the vision runtime are on-demand ("follows the vision runtime"); `Offline` when the binary is missing or the vision runtime is unavailable |
-| Segmentation (SAM 2 + DINO) | `GET /capabilities` via the vision runtime | `Online` when torch is available (reports the recommended device); `Degraded` when the torch extras are not installed; otherwise follows the vision runtime state |
+| Image generation (Qwen-Image-2.1) | `sd-server` binary, profile artifacts on disk, process state, `GET /sdcpp/v1/capabilities` | `Offline` when the binary is missing or the resident server is unreachable; `Degraded` when the model artifacts are missing (`run model_setup`); `Online` when the resident backend reports the profile's model; `Idle` when the process is on-demand and not started |
 
-All four checks run in parallel (`tokio::join!`); the Status section shows the
+The checks run in parallel (`tokio::join!`); the Status section shows the
 last-checked time and can be re-run with **Check now** or the **Test
-connection** button in Intelligence. The header status dot in the shell stays
-`Idle` because the vision runtime is intentionally on-demand.
-
-The generation and segmentation probes reach their backends *through* the
-vision runtime, so a down vision runtime is never misreported as a broken
-backend: those rows gate on the vision runtime's state first and only probe
-when it is reachable.
+connection** button in Intelligence.
 
 ### On-demand start and stop
 
-The Status section also controls the two local runtimes (`apps/desktop/src/ui/settings.rs`,
+The Status section controls the local runtime (`apps/desktop/src/ui/settings.rs`,
 `operate_service`):
 
-- **Vision runtime** — `Start` launches the Python service and waits up to 30 s
-  for `/health`; `Stop` kills it; `Restart` does both. Segmentation and the
-  generation adapter come back with it.
-- **Image generation** — `Start` runs `ensure_ready` (starts sd-server and, if
-  needed, the vision runtime; waits up to 90 s for the model to be resident);
-  `Stop` kills only the native server. The vision runtime is left running so
-  segmentation keeps working.
-- **LM Studio** and **Segmentation** have no controls: the former is external,
-  the latter lives inside the vision runtime.
+- **Image generation** — `Start` runs `ensure_profile_ready` (starts `sd-server`
+  and waits for the model to be resident); `Stop` kills the native server.
+- **LM Studio** has no controls: it is external.
 
 While an operation runs, its row shows a spinner and the other buttons are
 disabled. When it finishes — successfully or not — a fresh health check runs
@@ -219,20 +175,9 @@ immediately; failures appear in an error banner above the list. The controls
 use the same `CreativeRuntime` methods as generation, so manual starts and
 automatic starts behave identically.
 
-## Environment variables
-
-The Python runtime reads these (set by the Rust parent or for manual runs):
-
-| Variable | Purpose | Default |
-| --- | --- | --- |
-| `SVS_SD_CPP_URL` | sd.cpp base URL | `http://127.0.0.1:7861` |
-| `SVS_GENERATED_DIR` | Where completed jobs write PNGs | `<repo>/cache/generated` |
-| `SVS_MASK_DIR` | Where `/segment` writes masks (the app sets it to `<asset_dir>/masks`, served by the `mask` asset handler) | `<repo>/cache/masks` |
-
 ## Known gaps
 
-- Application shutdown does not yet gracefully stop children (Rust relies on
-  `kill_on_drop`); wiring graceful shutdown is planned with session
-  management.
+- Application shutdown does not yet gracefully stop the child (Rust relies on
+  `kill_on_drop`); wiring graceful shutdown is planned with session management.
 - Download progress is not surfaced in the Settings UI; `model_setup` is the
   only progress consumer.
