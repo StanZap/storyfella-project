@@ -1,6 +1,6 @@
 You are working on **Smart Visual Sequencer**, a desktop-only Dioxus 0.7 application for planning, generating, and arranging visual stories. Rust owns the UI, state, models, persistence, process lifecycle, the native image-generation client, and the LM Studio client. Image generation runs through a native `stable-diffusion.cpp` process serving **Qwen-Image-2.1**; Rust talks to it directly over its `sdcpp` HTTP API. There is no Python in this project.
 
-Current shape: the artifact registry + typed operation layer (`crates/core/src/registry/`), the SQLite project store, the native generation client (`crates/core/src/generation/`), and the canvas are implemented and driven by the `svs` CLI and the desktop app (see `# Current status` below). Read `docs/ROADMAP.md` §12 (the feature/status tracker) before planning changes.
+Current shape: the artifact registry + typed operation layer (`crates/core/src/registry/`), the SQLite project store, the native generation runtime (`crates/core/src/runtime/`, adapting the shared `clipforge-inference` crate), and the canvas are implemented and driven by the `svs` CLI and the desktop app (see `# Current status` below). Read `docs/ROADMAP.md` §12 (the feature/status tracker) before planning changes.
 
 # Layout
 
@@ -8,7 +8,7 @@ A Cargo workspace: four packages.
 
 | Path | Package | Owns |
 | :--- | :--- | :--- |
-| `crates/core` | `svs-core` | the domain layer — artifact registry and typed ops (`registry/`), the native `sd-server` client (`generation/`), `persistence/`, `llm/`, `runtime/`, `errors.rs`, `config.rs`, `assets/`, `paths.rs`. **No GUI dependency** |
+| `crates/core` | `svs-core` | the domain layer — artifact registry and typed ops (`registry/`), `persistence/`, `llm/`, `runtime/` (the `CreativeRuntime` adapter over the shared `clipforge-inference` crate), `errors.rs`, `config.rs`, `assets/`, `paths.rs`. **No GUI dependency** |
 | `apps/desktop` | `smart-visual-sequencer` | the Dioxus app — `ui/`, `state/`, `commands.rs`, `driver/`, `app/`, plus `Dioxus.toml`, `tailwind.css`, `assets/`, `package.json` |
 | `apps/cli` | `svs-cli` | `svs`, `model_setup`, `vlm_probe`, the VLM fixture example and its fixtures |
 | `xtask` | `xtask` | `cargo xtask` — the developer task runner (build/run/bundle/check/test); not part of any shipped artifact |
@@ -16,6 +16,31 @@ A Cargo workspace: four packages.
 `crates/core` never depends on the GUI. `apps/desktop` and `apps/cli` both depend on
 `svs-core`, and the desktop crate names `svs_core::…` explicitly rather than re-exporting
 it, so the boundary stays visible at every call site.
+
+### The shared inference runtime (`clipforge-inference`)
+
+The native-inference runtime is **not** owned by this workspace — it is the
+sibling `clipforge` project's crate, package **`clipforge-inference`**, pulled in
+as a **path dependency** (`clipforge-inference = { path = "../clipforge/crates/inference" }`
+in the root `[workspace.dependencies]`, used here as `clipforge-inference.workspace = true`).
+It owns the served profile (`sd::Profile` / `sd::qwen_image_2_1()`), the resident
+`sd-server` process (`sd::Runtime`), the `sdcpp` HTTP client (`sd::Client`,
+`sd::GenerateRequest`, `sd::LoraSelection`), the LoRA top-level symlinking
+(`sd::prepare_lora_links`), model provisioning (`ModelStore`), and the sampling /
+layout defaults (`sd::DEFAULT_STEPS`, `sd::DEFAULT_CFG_SCALE`,
+`sd::DEFAULT_SAMPLE_METHOD`, `sd::DEFAULT_MODEL_DIR`, `sd::DEFAULT_EXECUTABLE`,
+`sd::DEFAULT_LORA_DIR`, `sd::DEFAULT_BASE_URL`).
+
+What storyfella keeps is the **adapter**: `crates/core/src/runtime/`
+(`CreativeRuntime` binds the shared `sd::Runtime` + `sd::Client` to `AppConfig`,
+waits on jobs via `Client::wait`, imports generated assets, and maps the shared
+errors into `CodedError`), the storyfella-owned `config/` + `config.rs`, and the
+`registry/pipeline.rs` `GenerateResponse` that the pipeline consumes.
+
+**Build implication:** the sibling checkout must be present at the relative path
+`../clipforge/crates/inference` — storyfella does not build without it. The
+crate is **not** a member of this workspace, so `cargo`/`dx` resolve it from the
+sibling tree.
 
 ## Where paths come from
 
@@ -32,7 +57,7 @@ Never reintroduce a working-directory-relative path or a `parents[N]` walk.
 - **No stale/dead code; no backward-compatibility shims.** We are pre-1.0 and not in production — formats, models, and APIs change freely. When a change replaces an older shape, remove the old one **in the same change**: no deprecated aliases, no "keep for old files" parse/import paths, no unused fields, no `#[allow(dead_code)]` for hypothetical future use, no leaving a superseded implementation around "for reference". A one-time import of a legacy format is sanctioned only while real files exist that need it (and must be removed once they're migrated or abandoned — SQLite schema migrations are the way to evolve the current format in place). Deferred vocabulary is allowed only when a roadmap item explicitly names it (e.g. slice-1 pipeline steps marked "vocabulary, not executable"); mark it with a doc comment naming the deferred item, never with `allow(dead_code)`. Concrete implication: when the canvas (roadmap item 4) replaces the storyboard model, delete `StoryboardFrame`/`project_json` rather than keeping them alongside.
 - **Reusable components before repetition.** Isolate repeated patterns into small shared components/modules and reuse them everywhere. The UI vocabulary in `apps/desktop/src/ui/components.rs` (`SettingRow`, `EmptyVisual`, `StatusDot`, …) and `apps/desktop/src/ui/icons.rs` is the model; apply the same instinct outside the UI (registry ops, pipeline steps, persistence helpers, config). When a new use case needs a variant, extend the shared component instead of copy-pasting a near-identical one, and keep similar use cases looking and behaving the same. A new control for a case an existing control already covers is a code smell.
 - **No perl for code edits.** Never use `perl -i` (or similar opaque one-liner rewrites) to modify source files — they are hard to review and have corrupted code before. Make edits with the file editing tools (`edit_file`/`write_file`), which produce reviewable diffs; `cargo fmt` is the only bulk formatter allowed.
-- **Rust talks to the generation backend over HTTP.** The native `sd-server` client (`GenerationClient` in `crates/core/src/generation/mod.rs`) speaks the server's `sdcpp` API (`POST /sdcpp/v1/img_gen`, `GET /sdcpp/v1/jobs/{id}`, `GET /sdcpp/v1/capabilities`). Keep the request/response types in sync with `stable-diffusion.cpp/examples/server/api.md` (the checked-out revision is authoritative). There is no Python in this project — do not reintroduce one.
+- **Rust talks to the generation backend over HTTP.** The native `sd-server` client lives in the shared `clipforge-inference` crate (`clipforge_inference::sd::Client`, with `GenerateRequest` and the job types) and is consumed through `CreativeRuntime`; do not re-implement it here. It speaks the server's `sdcpp` API (`POST /sdcpp/v1/img_gen`, `GET /sdcpp/v1/jobs/{id}`, `GET /sdcpp/v1/capabilities`). Keep the request/response types in sync with `stable-diffusion.cpp/examples/server/api.md` (the checked-out revision is authoritative). There is no Python in this project — do not reintroduce one.
 - **No ML frameworks in Rust.** Rust must never depend on or know about PyTorch, Transformers, or any other ML framework. Inference is the native `stable-diffusion.cpp` process; Rust is only its HTTP client.
 - **LM Studio is external** and never bundled or started by the app; `crates/core/src/llm/` is the client only. The planner vocabulary (typed operations + pipelines) lives in `crates/core/src/registry/`; LLM steps are soft dependencies that degrade to manual input, never hard-fail.
 - **UI styling** is Tailwind CSS 4 utility classes in RSX (`apps/desktop/tailwind.css` is generated output; regenerate with `npm run css:build` from `apps/desktop`). Prefer the small shared component vocabulary in `apps/desktop/src/ui/components.rs` (`SettingRow`, `EmptyVisual`, `StatusDot`, …) and icons from `apps/desktop/src/ui/icons.rs`.
@@ -73,7 +98,7 @@ error-code registry (item 7) are implemented and validated:
 - **LoRA registry** (§12 item 6): project-level entries (SQLite `lora_registry`, round-tripped) with per-artifact bindings (`/attach-lora`, `/lora-scale`, `/lora-remove` — slash, CLI, LLM vocabulary), config use-case bindings (`[lora]`: per-kind defaults, shared multiplier), discovery from `lora_dir`, and auto-injection into every generation (artifact-bound → kind default; missing-on-disk adapters warn and skip).
 - **Error codes + reporting** (§12 item 7): `crates/core/src/errors.rs` is the central registry — every `thiserror` type implements `CodedError` mapping to a stable `SVS-<DOMAIN>-<NNN>` code (code, short message, remediation hint); `CodedError::report` builds the `ReportedError` payload the UI shows (a global toast, Workspace-owned `Signal<Option<ReportedError>>` context, with a Details modal: full text + context + hint + copy via `document::eval`). `ReportedError` carries a `context` list (operation, generation prompt, model, size, steps, seed, job id, work dir) attached at the failure site (`PipelineError::Backend` carries it up from `CreativeBackend::generate`) — surfaces emit the single coded log line with `report.log()`. The CLI's op paths report the same way (svs.rs inits a tracing subscriber).
 - **The automation driver** (`apps/desktop/src/driver/` + `apps/desktop/src/commands.rs`): the intent seam — `apps/desktop/src/commands.rs` owns the app's action language (project create/open/save, slash-command parse→execute via `ExecutionUi`); the composer, the operation-log rerun, and the driver all call the same entry points. `apps/desktop/src/driver/` runs YAML plans from `config/plans/` (plan = steps in app vocabulary: `create_project`, `compose:` — types visibly into the canvas composer and submits like a user — `command: "/create …"`, `expect_artifact`, …; no selectors) in **Guide** mode (narrated by the floating assistant card, Plans rail → "Plans" screen) or **Check** mode (fast, per-step report, exit code; `smart-visual-sequencer --plan <file> --mode check`, final registry persisted before exit). The driver observes the same signals the UI uses (activity/error), never the DOM; checkpoints are auto-rejected.
-- 217 Rust lib + bin tests pass (137 in `svs-core`, 77 in the desktop crate, plus the CLI bins' 3). The only generation profile is `qwen-image-2.1`; its t2i / instruction-edit / RGBA-cutout behaviour was measured on a CUDA `sd-server` (RTX 3090) in the 2026-09-30 spike — see `.svs-e2e/logs/2026-09-30-quality-evals.md`. LLM `draft`, `stack propose`, LoRA injection, and the size/step controls still await live validation.
+- 211 Rust lib + bin tests pass (131 in `svs-core`, 77 in the desktop crate, plus the CLI bins' 3). The only generation profile is `qwen-image-2.1`; its t2i / instruction-edit / RGBA-cutout behaviour was measured on a CUDA `sd-server` (RTX 3090) in the 2026-09-30 spike — see `.svs-e2e/logs/2026-09-30-quality-evals.md`. LLM `draft`, `stack propose`, LoRA injection, and the size/step controls still await live validation.
 - Next per §12: Studio integration (item 8) — **deferred** by user
   reprioritization (generation quality + LoRA registry landed first; the
   tracker is authoritative).

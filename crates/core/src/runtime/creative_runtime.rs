@@ -1,42 +1,43 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
+use clipforge_inference::sd::{Client, ClientError, JobSubmission, Runtime, RuntimeError};
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
     config::AppConfig,
     errors::{CodedError, ErrorCode},
-    generation::{
-        GenerationClient, GenerationClientError, GenerationJob, JobSubmission, ModelInfo,
-    },
 };
-
-use super::{generation_profile, GenerationProfile, GenerationRuntime, GenerationRuntimeError};
 
 /// The native server is a single resident process on loopback; the client's
 /// base URL and these must agree (both come from `config/app.toml`).
 const GENERATION_HOST: &str = "127.0.0.1";
 const GENERATION_PORT: u16 = 7861;
+/// How long a submitted job may run before the wait gives up.
+const JOB_DEADLINE: Duration = Duration::from_secs(1200);
 
+/// The app's handle on the shared native-inference runtime: the resident
+/// `sd-server` process, an `sdcpp` client for it, and the asset directory
+/// generated images are stored in.
 #[derive(Clone)]
 pub struct CreativeRuntime {
-    client: GenerationClient,
-    generation: Arc<GenerationRuntime>,
+    client: Client,
+    runtime: Arc<Runtime>,
     asset_directory: PathBuf,
 }
 
 impl PartialEq for CreativeRuntime {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.generation, &other.generation)
+        Arc::ptr_eq(&self.runtime, &other.runtime)
     }
 }
 
 #[derive(Debug, Error)]
 pub enum CreativeRuntimeError {
     #[error("could not start the generation server: {0}")]
-    Generation(#[from] GenerationRuntimeError),
+    Runtime(#[from] RuntimeError),
     #[error("generation server did not answer: {0}")]
-    Client(#[from] GenerationClientError),
+    Client(#[from] ClientError),
     #[error("generation server did not become ready within {0:?}")]
     ReadinessTimeout(Duration),
     #[error("generation job failed: {0}")]
@@ -61,7 +62,7 @@ pub enum CreativeRuntimeError {
 impl CodedError for CreativeRuntimeError {
     fn code(&self) -> ErrorCode {
         match self {
-            Self::Generation(error) => error.code(),
+            Self::Runtime(error) => error.code(),
             Self::Client(error) => error.code(),
             Self::ReadinessTimeout(_) => ErrorCode::RuntimeReadinessTimeout,
             Self::Job(_) => ErrorCode::RuntimeJobFailed,
@@ -75,8 +76,8 @@ impl CodedError for CreativeRuntimeError {
 impl CreativeRuntime {
     pub fn new(config: &AppConfig) -> Self {
         Self {
-            client: GenerationClient::new(&config.generation.base_url),
-            generation: Arc::new(GenerationRuntime::new(
+            client: Client::new(&config.generation.base_url),
+            runtime: Arc::new(Runtime::new(
                 &config.generation.executable,
                 &config.model_dir,
                 &config.generation.lora_dir,
@@ -87,16 +88,18 @@ impl CreativeRuntime {
 
     /// The native generation client (the Settings screen and the backend
     /// share the same server through it).
-    pub fn client(&self) -> GenerationClient {
+    pub fn client(&self) -> Client {
         self.client.clone()
     }
 
-    pub fn profile(&self) -> GenerationProfile {
-        generation_profile()
+    /// Whether every artifact the served profile loads exists on disk.
+    pub fn has_artifacts(&self) -> bool {
+        self.runtime.has_artifacts()
     }
 
-    pub(crate) fn generation_runtime(&self) -> &GenerationRuntime {
-        &self.generation
+    /// Whether the resident server this app started is still alive.
+    pub fn is_running(&self) -> bool {
+        self.runtime.is_running()
     }
 
     pub async fn ensure_ready(&self) -> Result<(), CreativeRuntimeError> {
@@ -108,57 +111,29 @@ impl CreativeRuntime {
     /// started by another session cannot be restarted from here and is reported
     /// as [`CreativeRuntimeError::ProfileMismatch`].
     pub async fn ensure_profile_ready(&self) -> Result<(), CreativeRuntimeError> {
-        let expected = generation_profile().diffusion.filename;
-
-        if let Ok(capabilities) = self.client.capabilities().await {
-            if model_matches(&capabilities.model, expected) {
-                return Ok(());
-            }
-            if !self.generation.is_running() {
-                return Err(CreativeRuntimeError::ProfileMismatch {
-                    loaded: capabilities.model.name,
-                    requested: expected.to_owned(),
-                });
-            }
-            // Ours is resident but reports another model; restart it.
-            self.generation.stop().await?;
-        }
-
-        self.generation
-            .ensure_running(GENERATION_HOST, GENERATION_PORT)
-            .await?;
-
-        // Loading ~17.3 GiB of weights takes minutes; the cap must stay generous.
-        let timeout = Duration::from_secs(600);
-        let deadline = tokio::time::Instant::now() + timeout;
-        let mut last_error = None;
-        while tokio::time::Instant::now() < deadline {
-            match self.client.capabilities().await {
-                Ok(capabilities) if model_matches(&capabilities.model, expected) => return Ok(()),
-                Ok(capabilities) => {
-                    // A foreign server answered — ours could not bind.
-                    return Err(CreativeRuntimeError::ProfileMismatch {
-                        loaded: capabilities.model.name,
-                        requested: expected.to_owned(),
-                    });
+        self.runtime
+            .ensure_ready(GENERATION_HOST, GENERATION_PORT)
+            .await
+            .map_err(|error| match error {
+                // The shared runtime's profile mismatch carries the loaded and
+                // requested model names; carry them into the app's own wording.
+                RuntimeError::ProfileMismatch {
+                    loaded, requested, ..
+                } => CreativeRuntimeError::ProfileMismatch { loaded, requested },
+                RuntimeError::ReadinessTimeout(timeout) => {
+                    CreativeRuntimeError::ReadinessTimeout(timeout)
                 }
-                Err(error) => last_error = Some(error),
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-        if let Some(error) = last_error {
-            tracing::warn!(%error, "generation server readiness timed out");
-        }
-        Err(CreativeRuntimeError::ReadinessTimeout(timeout))
+                other => CreativeRuntimeError::Runtime(other),
+            })
     }
 
     /// Stops the resident generation server.
     pub async fn stop_generation_runtime(&self) -> Result<(), CreativeRuntimeError> {
-        self.generation.stop().await?;
+        self.runtime.stop().await?;
         Ok(())
     }
 
-    /// Polls a submitted job to completion and stores its image in the asset
+    /// Waits for a submitted job to complete and stores its image in the asset
     /// directory, returning the stored path.
     pub async fn wait_for_job(
         &self,
@@ -169,30 +144,22 @@ impl CreativeRuntime {
                 "the generation job was rejected on submission".to_owned(),
             ));
         }
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(1200);
-        while tokio::time::Instant::now() < deadline {
-            let job = self.client.job(&initial.id).await?;
-            match job.status.as_str() {
-                "completed" => return self.store_image(&job).await,
-                "failed" | "cancelled" => {
-                    return Err(CreativeRuntimeError::Job(
-                        job.error
-                            .map(|error| error.message)
-                            .unwrap_or_else(|| job.status.clone()),
-                    ));
-                }
-                _ => tokio::time::sleep(Duration::from_millis(150)).await,
-            }
-        }
-        Err(CreativeRuntimeError::Job(
-            "generation exceeded twenty minutes".to_owned(),
-        ))
+        let bytes =
+            self.client
+                .wait(&initial.id, JOB_DEADLINE)
+                .await
+                .map_err(|error| match error {
+                    ClientError::JobFailed(message) => CreativeRuntimeError::Job(message),
+                    ClientError::WaitTimeout(_) => {
+                        CreativeRuntimeError::Job("generation exceeded twenty minutes".to_owned())
+                    }
+                    other => CreativeRuntimeError::Client(other),
+                })?;
+        self.store_image(&bytes).await
     }
 
-    /// Decodes a completed job's first image and writes it as a PNG in the
-    /// generated-asset directory.
-    async fn store_image(&self, job: &GenerationJob) -> Result<PathBuf, CreativeRuntimeError> {
-        let bytes = job.first_image().map_err(CreativeRuntimeError::Client)?;
+    /// Writes a completed job's PNG bytes into the generated-asset directory.
+    async fn store_image(&self, bytes: &[u8]) -> Result<PathBuf, CreativeRuntimeError> {
         tokio::fs::create_dir_all(&self.asset_directory)
             .await
             .map_err(|source| CreativeRuntimeError::CreateAssetDirectory {
@@ -200,7 +167,7 @@ impl CreativeRuntime {
                 source,
             })?;
         let destination = self.asset_directory.join(format!("{}.png", Uuid::new_v4()));
-        tokio::fs::write(&destination, &bytes)
+        tokio::fs::write(&destination, bytes)
             .await
             .map_err(|source| CreativeRuntimeError::ImportAsset {
                 path: destination.clone(),
@@ -243,15 +210,4 @@ impl CreativeRuntime {
             })?;
         Ok(absolute.display().to_string())
     }
-}
-
-/// Whether the resident model is the profile's diffusion artifact. sd.cpp
-/// reports the file name or its stem, so both are accepted.
-fn model_matches(model: &ModelInfo, expected_filename: &str) -> bool {
-    let expected_stem = expected_filename
-        .strip_suffix(".safetensors")
-        .unwrap_or(expected_filename);
-    [model.name.as_str(), model.stem.as_str()]
-        .iter()
-        .any(|name| *name == expected_filename || *name == expected_stem)
 }

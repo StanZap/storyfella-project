@@ -27,6 +27,10 @@ authors = ["Stanley <Zapata>"]
 anyhow = "1.0.104"
 base64 = "0.23.0"
 clap = { version = "4.6.5", features = ["derive"] }
+# The shared native-inference runtime (stable-diffusion.cpp `sd-server`): the
+# model store, the served profile, the resident process, and the `sdcpp` HTTP
+# client. Owned by the sibling `clipforge` workspace.
+clipforge-inference = { path = "../clipforge/crates/inference" }
 directories = "6.0.0"
 dioxus = { version = "0.7.10", features = [] }
 futures-util = "0.3.33"

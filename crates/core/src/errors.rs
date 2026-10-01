@@ -756,6 +756,37 @@ impl fmt::Display for ReportedError {
 
 impl std::error::Error for ReportedError {}
 
+/// The shared native-inference crate's errors map onto the same registry as the
+/// runtime adapter's, so a failure is coded identically whether it is wrapped in
+/// [`crate::runtime::CreativeRuntimeError`] or surfaced directly (the CLI's
+/// `runtime serve` path).
+impl CodedError for clipforge_inference::sd::RuntimeError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::AlreadyRunning => ErrorCode::RuntimeGenerationAlreadyRunning,
+            Self::MissingExecutable(_) => ErrorCode::RuntimeGenerationMissingExecutable,
+            Self::MissingArtifact(_) => ErrorCode::RuntimeGenerationMissingArtifact,
+            Self::CreateLoraDirectory { .. } => ErrorCode::RuntimeGenerationCreateLoraDirectory,
+            Self::Start(_) => ErrorCode::RuntimeGenerationStart,
+            Self::Stop(_) => ErrorCode::RuntimeGenerationStop,
+            Self::ReadinessTimeout(_) => ErrorCode::RuntimeReadinessTimeout,
+            Self::ProfileMismatch { .. } => ErrorCode::RuntimeProfileMismatch,
+        }
+    }
+}
+
+impl CodedError for clipforge_inference::sd::ClientError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::Request(_) => ErrorCode::GenRequest,
+            Self::Status { .. } => ErrorCode::GenStatus,
+            Self::ReferenceImage { .. } => ErrorCode::GenReference,
+            Self::ImagePayload(_) => ErrorCode::GenImage,
+            Self::JobFailed(_) | Self::WaitTimeout(_) => ErrorCode::RuntimeJobFailed,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CodedError, ErrorCode};

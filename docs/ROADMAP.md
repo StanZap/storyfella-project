@@ -106,7 +106,8 @@ Consequences:
 
 - **LoRA registry.** Existing plumbing: `--lora-model-dir` on `sd-server`, up to
   eight `LoraSelection { path, multiplier }` per generation request
-  (`crates/core/src/generation/mod.rs`). The project-level registry (name, file,
+  (`clipforge_inference::sd::LoraSelection`, in the shared crate). The project-level
+  registry (name, file,
   base model, tags), binding a LoRA to an artifact, and auto-injection into
   every generation referencing that artifact are implemented (§12 item 6).
 - **Character/environment consistency** is achieved by injecting canonical
@@ -321,7 +322,8 @@ is for provenance, not replay.
    `GenerationBackend`; assert request bodies (prompt, reference, LoRA, size) and
    revision state transitions. The VLLM step is injectable the same way.
 3. **Wire serialization tests:** the `sdcpp` request/job types
-   (`crates/core/src/generation/`) round-trip.
+   (the shared `clipforge-inference` crate, `../clipforge/crates/inference/src/sd/`)
+   round-trip.
 4. **Manual golden runs:** a scripted harness executes one pipeline against
    the real backend and drops the output image into a folder
    for human review.
@@ -664,10 +666,14 @@ registry, and UX fixes.
 - `apps/desktop/src/state/mod.rs` — AppState: registry, selection, undo/redo stacks.
 - `crates/core/src/persistence/mod.rs` — `ProjectDb` (§10 schema; v3 dropped the legacy
   `project_json` column, v8 dropped the `masks` table).
-- `crates/core/src/generation/mod.rs` — `GenerationClient`, the typed client for the
-  native `sd-server` `sdcpp` API; `GenerateRequest` is the domain shape.
-- `crates/core/src/runtime/creative_runtime.rs`, `crates/core/src/runtime/generation_runtime.rs` —
-  process lifecycle + job orchestration the pipeline builder wraps.
+- The shared `clipforge-inference` crate (`../clipforge/crates/inference`) —
+  `sd::Client`, the typed client for the
+  native `sd-server` `sdcpp` API; `GenerateRequest` is the wire shape. Also owns
+  `sd::Runtime` (the resident process), `sd::qwen_image_2_1()` (the served profile),
+  and `ModelStore` (provisioning). storyfella depends on it as a path dependency.
+- `crates/core/src/runtime/creative_runtime.rs` — `CreativeRuntime`, the adapter over
+  the shared runtime + client (readiness, job wait, asset import) the pipeline
+  builder wraps; `health.rs` probes the dependent services.
 - `crates/core/src/llm/` — LM Studio client; the operation registry is the planner
   business logic it will serve.
 

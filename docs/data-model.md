@@ -98,9 +98,11 @@ clears `has_unsaved_changes`.
 
 ## The generation request
 
-A generation is a `GenerateRequest` (`crates/core/src/generation/mod.rs`) — the
-app-level shape the pipeline builds and the client maps onto the `sd-server`
-wire body (see [`architecture.md`](architecture.md)):
+A generation request is `GenerateRequest`
+(`clipforge_inference::sd::GenerateRequest`, the request type of the shared
+native-inference crate) — the shape `CreativeBackend::generate`
+(`crates/core/src/registry/backend.rs`) builds and the shared `sd::Client` maps
+onto the `sd-server` wire body (see [`architecture.md`](architecture.md)):
 
 | Field | Meaning |
 | --- | --- |
@@ -111,12 +113,14 @@ wire body (see [`architecture.md`](architecture.md)):
 | `cfg_scale` | text-guidance scale |
 | `sample_method` | sampler (`euler` by default) |
 | `seed` | `None` lets the server pick a random seed |
-| `model` | the profile id (`qwen-image-2.1`), carried for provenance |
-| `device` | boundary metadata; the native backend runs on its launch device |
 | `loras: Vec<LoraSelection>` | adapters as `{ path, multiplier }`, `path` being the server-registered name |
 
 There is no mask, init-image, or reference-strength field: an edit is the
-reference image plus the instruction.
+reference image plus the instruction. The request carries no `model`/`device`
+either — the profile is implied by the resident server. The pipeline's own
+`GenerationParams` (`crates/core/src/registry/pipeline.rs`) keeps the profile id
+(`DEFAULT_MODEL`) and records it on the revision for provenance; the pipeline's
+`GenerateResponse` (also `registry/pipeline.rs`) is what the backend returns.
 
 ## Known gaps
 

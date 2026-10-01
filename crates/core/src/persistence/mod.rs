@@ -1112,20 +1112,22 @@ mod tests {
     impl crate::registry::pipeline::GenerationBackend for VisualBackend {
         fn generate(
             &self,
-            request: &crate::generation::GenerateRequest,
+            request: &clipforge_inference::sd::GenerateRequest,
         ) -> futures_util::future::BoxFuture<
             '_,
-            Result<crate::generation::GenerateResponse, crate::registry::pipeline::PipelineError>,
+            Result<
+                crate::registry::pipeline::GenerateResponse,
+                crate::registry::pipeline::PipelineError,
+            >,
         > {
             let request = request.clone();
             Box::pin(async move {
                 let path =
                     std::env::temp_dir().join(format!("svs-persist-gen-{}.png", Uuid::new_v4()));
                 std::fs::write(&path, b"png").expect("dummy image should write");
-                Ok(crate::generation::GenerateResponse {
+                Ok(crate::registry::pipeline::GenerateResponse {
                     status: "completed".to_owned(),
                     image_path: Some(path.display().to_string()),
-                    model: request.model.clone(),
                     seed: request.seed,
                     width: Some(request.width),
                     height: Some(request.height),
@@ -1155,8 +1157,8 @@ mod tests {
         let defaults = GenerationDefaults {
             sizes: Default::default(),
             steps: 25,
-            cfg_scale: crate::generation::DEFAULT_CFG_SCALE,
-            sample_method: crate::generation::DEFAULT_SAMPLE_METHOD.to_owned(),
+            cfg_scale: clipforge_inference::sd::DEFAULT_CFG_SCALE,
+            sample_method: clipforge_inference::sd::DEFAULT_SAMPLE_METHOD.to_owned(),
             loras: crate::registry::LoraBindings {
                 dir: lora_dir,
                 ..Default::default()

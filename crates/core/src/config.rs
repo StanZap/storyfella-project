@@ -4,13 +4,13 @@ use std::{
     time::Duration,
 };
 
+use clipforge_inference::sd;
 use directories::ProjectDirs;
 use serde::Deserialize;
 use thiserror::Error;
 
 use crate::{
     errors::{CodedError, ErrorCode},
-    generation::{DEFAULT_CFG_SCALE, DEFAULT_SAMPLE_METHOD},
     llm::LmStudioConfig,
     paths,
     registry::{GenerationDefaults, KindLoraBindings, LoraBinding, LoraBindings, SizeDefaults},
@@ -104,7 +104,7 @@ struct FileConfig {
 struct GenerationFileConfig {
     #[serde(default = "default_generation_url")]
     base_url: String,
-    #[serde(default = "default_generation_profile")]
+    #[serde(default = "default_profile")]
     profile: String,
     #[serde(default = "default_steps")]
     steps: u32,
@@ -122,7 +122,7 @@ impl Default for GenerationFileConfig {
     fn default() -> Self {
         Self {
             base_url: default_generation_url(),
-            profile: default_generation_profile(),
+            profile: default_profile(),
             steps: default_steps(),
             cfg_scale: default_cfg_scale(),
             sample_method: default_sample_method(),
@@ -235,10 +235,10 @@ impl AppConfig {
             .generation
             .lora_dir
             .map(paths::resolve)
-            .unwrap_or_else(|| model_dir.join("loras"));
+            .unwrap_or_else(|| model_dir.join(sd::DEFAULT_LORA_DIR));
         // A single profile is served; a configured name that does not match
         // is logged rather than rejected, since it cannot change the model.
-        let expected_profile = crate::runtime::generation_profile().id;
+        let expected_profile = sd::qwen_image_2_1().id;
         if file.generation.profile != expected_profile {
             tracing::warn!(
                 configured = %file.generation.profile,
@@ -252,13 +252,7 @@ impl AppConfig {
                 .generation
                 .executable
                 .map(paths::resolve)
-                .unwrap_or_else(|| {
-                    model_dir
-                        .join("runtime")
-                        .join("stable-diffusion.cpp")
-                        .join("bin")
-                        .join("sd-server")
-                }),
+                .unwrap_or_else(|| model_dir.join(sd::DEFAULT_EXECUTABLE)),
             lora_dir: lora_dir.clone(),
             profile: file.generation.profile,
         };
@@ -579,15 +573,15 @@ const fn default_timeout() -> u64 {
 }
 
 const fn default_steps() -> u32 {
-    25
+    sd::DEFAULT_STEPS
 }
 
 fn default_cfg_scale() -> f32 {
-    DEFAULT_CFG_SCALE
+    sd::DEFAULT_CFG_SCALE
 }
 
 fn default_sample_method() -> String {
-    DEFAULT_SAMPLE_METHOD.to_owned()
+    sd::DEFAULT_SAMPLE_METHOD.to_owned()
 }
 
 const fn default_lora_multiplier() -> f32 {
@@ -632,11 +626,11 @@ fn parse_size_config(path: &Path, key: &str, value: &str) -> Result<(u32, u32), 
 }
 
 fn default_generation_url() -> String {
-    "http://127.0.0.1:7861".to_owned()
+    sd::DEFAULT_BASE_URL.to_owned()
 }
 
-fn default_generation_profile() -> String {
-    "qwen-image-2.1".to_owned()
+fn default_profile() -> String {
+    sd::qwen_image_2_1().id.to_owned()
 }
 
 #[cfg(test)]
@@ -756,8 +750,8 @@ mod tests {
         let mut defaults = GenerationDefaults {
             sizes: Default::default(),
             steps: 5,
-            cfg_scale: DEFAULT_CFG_SCALE,
-            sample_method: DEFAULT_SAMPLE_METHOD.to_owned(),
+            cfg_scale: sd::DEFAULT_CFG_SCALE,
+            sample_method: sd::DEFAULT_SAMPLE_METHOD.to_owned(),
             loras: Default::default(),
         };
         defaults.sizes.beat = Some((1024, 576));
@@ -811,8 +805,8 @@ mod tests {
         let mut defaults = GenerationDefaults {
             sizes: Default::default(),
             steps: 25,
-            cfg_scale: DEFAULT_CFG_SCALE,
-            sample_method: DEFAULT_SAMPLE_METHOD.to_owned(),
+            cfg_scale: sd::DEFAULT_CFG_SCALE,
+            sample_method: sd::DEFAULT_SAMPLE_METHOD.to_owned(),
             loras: Default::default(),
         };
         defaults.loras.kinds.character = Some(LoraBinding {

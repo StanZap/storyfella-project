@@ -44,6 +44,15 @@ the core tests never compile the toolkit or the WebKit stack. `apps/desktop`
 `model_setup`, and `vlm_probe` binaries. Both application crates depend on
 `svs-core` and name it explicitly (`svs_core::…`) rather than re-exporting it.
 
+The native-inference runtime is **not** owned by this workspace: it is the
+sibling `clipforge` project's crate, package **`clipforge-inference`**, pulled in
+as a **path dependency** (`clipforge-inference = { path = "../clipforge/crates/inference" }`
+in the root `[workspace.dependencies]`). It owns the `sd-server` process,
+the `sdcpp` client, the served profile, and model provisioning. The sibling
+checkout must be present at `../clipforge/crates/inference` or the workspace will
+not build; the crate is not a member here, so `cargo test --workspace` does not
+run its tests.
+
 `apps/vision` was the Python vision runtime; it was removed with the Krea/SAM
 migration — the project is pure Rust plus the native `sd-server`. Data —
 `config/` and `assets/generated/` — stays at the workspace root, because project
@@ -275,13 +284,14 @@ port 7861. Only the `qwen-image-2.1` profile is served. See
 cargo test --workspace
 ```
 
-The workspace runs 137 tests in `svs-core` plus 77 in the desktop crate, and 3
-in the CLI binaries (217 total). They cover state transitions
-(`apps/desktop/src/state/`), request serialization
-(`crates/core/src/generation/`), multimodal message shape
-(`crates/core/src/llm/`), and profile manifests (`crates/core/src/runtime/`).
-They do not require a running `sd-server` or LM Studio. `cargo xtask test` runs
-the same command.
+The workspace runs 131 tests in `svs-core` plus 77 in the desktop crate, and 3
+in the CLI binaries (211 total). They cover state transitions
+(`apps/desktop/src/state/`), the runtime adapter and health probes
+(`crates/core/src/runtime/`), and multimodal message shape
+(`crates/core/src/llm/`). They do not require a running `sd-server` or LM Studio.
+The `sdcpp` wire serialization tests (request body + job decoding) live in the
+shared `clipforge-inference` crate (`../clipforge/crates/inference/src/sd/`) and
+are not part of this workspace's run. `cargo xtask test` runs the same command.
 
 ### End-to-end: plans (the app's own regression suite)
 
@@ -397,8 +407,10 @@ ancestor of the working directory (then of the executable) that holds
 The checked-in `config/app.toml` raises `generation.sizes.character` to
 `1024x1536` (the full Qwen portrait canvas).
 
-An invalid `generation.profile` value is a hard configuration error and the app
-shows the error screen on launch. The checked-in `config/app.toml` sets
+A `generation.profile` value that is not the served profile (`qwen-image-2.1`)
+is logged and ignored: the profile id is pinned by the shared crate's
+`sd::qwen_image_2_1()` and a configured name cannot change the resident model.
+The checked-in `config/app.toml` sets
 `lm_studio.model` to `prism-ml/bonsai-27b` — point it at
 the model id your LM Studio serves (`curl http://localhost:1234/v1/models`).
 

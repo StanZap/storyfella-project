@@ -14,6 +14,7 @@ desktop = ["dioxus/desktop"]
 [dependencies]
 svs-core = { path = "../../crates/core" }
 anyhow.workspace = true
+clipforge-inference.workspace = true
 dioxus.workspace = true
 futures-util.workspace = true
 image.workspace = true

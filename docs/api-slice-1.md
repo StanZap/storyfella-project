@@ -58,9 +58,9 @@ surfaces the artifact registry in the GUI.
 | --- | --- |
 | `crates/core/src/registry/mod.rs` | Artifact model (kinds, variants, scenes, beats, layers, revisions, drafts), one id space, `c:` ref resolution, parent/kind invariants, snapshot/restore undo |
 | `crates/core/src/registry/ops.rs` | Typed operation set (slice 1: create, variant, regenerate, compose, draft, modify), closed JSON vocabulary (`op`-tagged), compiler (`compile`), executor (`execute`), operation log |
-| `crates/core/src/registry/pipeline.rs` | Linear fail-fast pipeline builder: closed `Step` vocabulary (`LoadImage`, `Checkpoint`, `Generate`, `Llm`), typed handles (`ImageHandle`, `PromptHandle`, `FeedbackHandle`), static validation at `build()`, `GenerationBackend` trait, checkpoints, approval policies, `RunOptions` |
+| `crates/core/src/registry/pipeline.rs` | Linear fail-fast pipeline builder: closed `Step` vocabulary (`LoadImage`, `Checkpoint`, `Generate`, `Llm`), typed handles (`ImageHandle`, `PromptHandle`, `FeedbackHandle`), static validation at `build()`, `GenerationBackend` trait, `GenerateResponse`, checkpoints, approval policies, `RunOptions` |
 | `crates/core/src/registry/backend.rs` | `CreativeBackend` — the live backend (`CreativeRuntime` + `LmStudioClient`); LLM steps are soft dependencies that degrade to manual input |
-| `crates/core/src/generation/mod.rs` | `GenerationClient` — the typed client for the native `sd-server` `sdcpp` API (see `architecture.md`) |
+| `clipforge-inference` (`../clipforge/crates/inference`) | The shared native-inference crate: `sd::Client` — the typed `sdcpp` client for the native `sd-server` — plus `sd::Runtime` (the resident process), `sd::qwen_image_2_1()` (the served profile), and `ModelStore` (provisioning). storyfella's `crates/core/src/runtime/` adapts it as `CreativeRuntime` (see `architecture.md`) |
 | `crates/core/src/persistence/mod.rs` | SQLite project store (`ProjectDb`): §10 schema, versioned migrations, WAL, snapshot save/load of the registry |
 | `apps/cli/src/bin/svs.rs` | The `svs` CLI (clap, a binary of the `svs-cli` package) |
 
@@ -249,5 +249,6 @@ config points at the larger planner model used on the dev machine.
 - Execution tests with a fake backend: request bodies (prompt, reference,
   LoRA, size, seed), revision state transitions, checkpoint
   accept/reject/degrade.
-- Serialization tests (`crates/core/src/generation/`): the `sdcpp` wire body
+- Serialization tests (the shared `clipforge-inference` crate,
+  `../clipforge/crates/inference/src/sd/`): the `sdcpp` wire body
   (sampling controls, reference, LoRA, VAE tiling) and job decoding.

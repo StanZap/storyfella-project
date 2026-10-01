@@ -1312,8 +1312,8 @@ mod tests {
             &svs_core::registry::GenerationDefaults {
                 sizes: Default::default(),
                 steps: 4,
-                cfg_scale: svs_core::generation::DEFAULT_CFG_SCALE,
-                sample_method: svs_core::generation::DEFAULT_SAMPLE_METHOD.to_owned(),
+                cfg_scale: clipforge_inference::sd::DEFAULT_CFG_SCALE,
+                sample_method: clipforge_inference::sd::DEFAULT_SAMPLE_METHOD.to_owned(),
                 loras: Default::default(),
             },
         );

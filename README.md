@@ -58,10 +58,12 @@ Cargo.toml            Virtual workspace manifest ([workspace] members only)
 crates/core/          svs-core — the domain layer (no GUI dependency):
   src/registry/         Artifact registry, typed ops + pipelines, slash parser,
                         CreativeBackend
-  src/generation/       Native sd-server (sdcpp) HTTP client
   src/persistence/      SQLite project store (versioned migrations)
   src/llm/              LM Studio OpenAI-compatible client
-  src/runtime/          sd-server lifecycle and model storage/download
+  src/runtime/          CreativeRuntime — adapter over the shared
+                        clipforge-inference crate (path dependency)
+                        (sd-server lifecycle, sdcpp client, model store live
+                        in ../clipforge/crates/inference)
   src/assets/           Asset catalog boundary
   src/errors.rs         Error-code registry
   src/config.rs         Configuration loading

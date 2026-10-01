@@ -30,7 +30,8 @@
 
 use std::{collections::HashMap, fmt, str::FromStr};
 
-use crate::generation::LoraSelection;
+use clipforge_inference::sd::LoraSelection;
+
 use crate::registry::{ops::Operation, pipeline::is_valid_size, ArtifactKind, Ref, VariantAxis};
 
 /// A slash command that failed to parse; the message is user-facing.

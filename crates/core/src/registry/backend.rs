@@ -1,18 +1,18 @@
 //! The live [`GenerationBackend`]: `CreativeRuntime` for generation,
 //! `LmStudioClient` for the soft LLM steps.
 
+use clipforge_inference::sd::GenerateRequest;
 use futures_util::future::BoxFuture;
 
 use crate::{
     config::AppConfig,
-    generation::{GenerateRequest, GenerateResponse},
     llm::{strip_json_fence, ChatMessage, ChatOptions, LmStudioClient},
     runtime::{CreativeRuntime, CreativeRuntimeError},
 };
 
 use super::{
     ops::OperationStack,
-    pipeline::{GenerationBackend, PipelineError},
+    pipeline::{GenerateResponse, GenerationBackend, PipelineError},
     Artifact, ArtifactRegistry, GenerationDefaults,
 };
 use crate::registry::discover_loras;
@@ -28,9 +28,6 @@ fn generate_context(
 ) -> Vec<(&'static str, String)> {
     let mut context = Vec::new();
     context.push(("prompt", request.prompt.clone()));
-    if let Some(model) = &request.model {
-        context.push(("model", model.clone()));
-    }
     context.push(("width", request.width.to_string()));
     context.push(("height", request.height.to_string()));
     context.push(("steps", request.steps.to_string()));
@@ -528,7 +525,6 @@ impl GenerationBackend for CreativeBackend {
             Ok(GenerateResponse {
                 status: "completed".to_owned(),
                 image_path: Some(imported),
-                model: request.model.clone(),
                 seed: request.seed,
                 width: Some(request.width),
                 height: Some(request.height),
@@ -799,8 +795,8 @@ mod tests {
         GenerationDefaults {
             sizes: Default::default(),
             steps: 25,
-            cfg_scale: crate::generation::DEFAULT_CFG_SCALE,
-            sample_method: crate::generation::DEFAULT_SAMPLE_METHOD.to_owned(),
+            cfg_scale: clipforge_inference::sd::DEFAULT_CFG_SCALE,
+            sample_method: clipforge_inference::sd::DEFAULT_SAMPLE_METHOD.to_owned(),
             loras: Default::default(),
         }
     }

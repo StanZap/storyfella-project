@@ -1,5 +1,7 @@
 use std::{fmt::Display, future::Future, time::Duration};
 
+use clipforge_inference::sd::qwen_image_2_1;
+
 use crate::{config::AppConfig, llm::LmStudioClient};
 
 use super::CreativeRuntime;
@@ -66,7 +68,8 @@ impl ServiceHealth {
 /// Probes every service the application depends on. The checks are read-only:
 /// nothing is started, stopped, or downloaded as a side effect.
 pub async fn check_all(config: &AppConfig, runtime: &CreativeRuntime) -> Vec<ServiceHealth> {
-    let (lm_studio, generation) = tokio::join!(check_lm_studio(config), check_generation(runtime),);
+    let (lm_studio, generation) =
+        tokio::join!(check_lm_studio(config), check_generation(config, runtime),);
     vec![lm_studio, generation]
 }
 
@@ -111,33 +114,30 @@ async fn check_lm_studio(config: &AppConfig) -> ServiceHealth {
     }
 }
 
-async fn check_generation(runtime: &CreativeRuntime) -> ServiceHealth {
-    let generation = runtime.generation_runtime();
-    if !generation.executable().is_file() {
+async fn check_generation(config: &AppConfig, runtime: &CreativeRuntime) -> ServiceHealth {
+    let executable = &config.generation.executable;
+    if !executable.is_file() {
         return ServiceHealth::new(
             ServiceId::ImageGeneration,
             HealthStatus::Offline,
-            format!(
-                "sd-server binary not found at {}",
-                generation.executable().display()
-            ),
+            format!("sd-server binary not found at {}", executable.display()),
         );
     }
-    if !generation.has_profile_artifacts() {
+    if !runtime.has_artifacts() {
         return ServiceHealth::new(
             ServiceId::ImageGeneration,
             HealthStatus::Degraded,
             "model artifacts missing · run `cargo run --bin model_setup`".to_owned(),
         );
     }
-    let process_running = generation.is_running();
+    let process_running = runtime.is_running();
     match with_timeout(runtime.client().capabilities(), CHECK_TIMEOUT_SECONDS).await {
         Ok(capabilities) => ServiceHealth::new(
             ServiceId::ImageGeneration,
             HealthStatus::Online,
             format!(
                 "{} ready · {} resident",
-                runtime.profile().id,
+                qwen_image_2_1().id,
                 capabilities.model.name
             ),
         ),

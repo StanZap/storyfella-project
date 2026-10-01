@@ -17,11 +17,11 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use clipforge_inference::sd::{self, LoraSelection};
 use uuid::Uuid;
 
 use svs_core::config::AppConfig;
 use svs_core::errors::{CodedError, ErrorCode, ReportedError};
-use svs_core::generation::LoraSelection;
 use svs_core::llm::{ChatMessage, ChatOptions, LmStudioClient};
 use svs_core::persistence::ProjectDb;
 use svs_core::registry::backend::CreativeBackend;
@@ -33,7 +33,6 @@ use svs_core::registry::pipeline::{
     OutputKind, PipelineRun, RunOptions,
 };
 use svs_core::registry::{ArtifactKind, ArtifactRegistry, GenerationDefaults, Ref, VariantAxis};
-use svs_core::runtime::generation_profile;
 
 #[derive(Parser)]
 #[command(
@@ -362,7 +361,7 @@ fn parse_lora(value: &str) -> Result<LoraSelection, String> {
 }
 
 fn parse_model(value: &str) -> Result<String, String> {
-    let profile = generation_profile();
+    let profile = sd::qwen_image_2_1();
     if value == profile.id {
         Ok(value.to_owned())
     } else {
@@ -464,15 +463,22 @@ async fn run(cli: Cli) -> Result<()> {
                     kill_resident_generation_servers()?;
                 }
                 let config = AppConfig::load().context("could not load config/app.toml")?;
-                let backend = CreativeBackend::new(&config);
-                backend
-                    .ensure_ready()
+                // The listen address the shared runtime starts the server on;
+                // `CreativeRuntime` uses the same one, and it must match the
+                // client base URL in `config/app.toml`.
+                let runtime = sd::Runtime::new(
+                    &config.generation.executable,
+                    &config.model_dir,
+                    &config.generation.lora_dir,
+                );
+                runtime
+                    .ensure_ready("127.0.0.1", 7861)
                     .await
                     .map_err(|error| anyhow!(error.report().log()))?;
                 println!("generation runtime ready with {model}; Ctrl-C to stop");
                 let _ = tokio::signal::ctrl_c().await;
-                backend
-                    .stop_generation()
+                runtime
+                    .stop()
                     .await
                     .map_err(|error| anyhow!(error.report().log()))?;
                 println!("generation runtime stopped");

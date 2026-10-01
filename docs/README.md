@@ -12,10 +12,10 @@ current product code.
 
 | Document | Purpose |
 | --- | --- |
-| [`architecture.md`](architecture.md) | System boundaries, the Rust → `sd-server` (`sdcpp`) contract, process model, and the creative data flow from prompt to revision. |
+| [`architecture.md`](architecture.md) | System boundaries, the Rust → `sd-server` (`sdcpp`) contract (the client lives in the shared `clipforge-inference` crate), process model, and the creative data flow from prompt to revision. |
 | [`development.md`](development.md) | Prerequisites, build/run/test commands (including end-to-end plans), configuration, and troubleshooting. |
 | [`api-slice-1.md`](api-slice-1.md) | The artifact registry, the typed operation/pipeline layer, and the `svs` CLI — the vocabulary shared by the CLI and the canvas. |
-| [`runtime-lifecycle.md`](runtime-lifecycle.md) | How Rust launches and supervises the native Qwen-Image-2.1 `sd-server`, plus model provisioning and residency. |
+| [`runtime-lifecycle.md`](runtime-lifecycle.md) | How the app launches and supervises the native Qwen-Image-2.1 `sd-server` (through the shared `clipforge-inference` crate), plus model provisioning and residency. |
 | [`data-model.md`](data-model.md) | The artifact-registry domain model, the persistence format, and known gaps. |
 | [`ROADMAP.md`](ROADMAP.md) | Product design and the feature/status tracker (§12): every planned feature with its status. |
 

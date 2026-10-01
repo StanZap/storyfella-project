@@ -8,8 +8,9 @@ the project's only generation backend is a native process Rust talks to over
 HTTP.
 
 - **Rust** owns the Dioxus UI, application state, domain models, project
-  persistence, model download/provisioning, process lifecycle, directory
-  resolution, the native generation client, and the LM Studio client.
+  persistence, process lifecycle, directory resolution, the native generation
+  runtime (the `CreativeRuntime` adapter over the shared `clipforge-inference`
+  crate), and the LM Studio client.
 - **`stable-diffusion.cpp`** (`sd-server`) is a separate native process owned by
   Rust that keeps the **Qwen-Image-2.1** diffusion model resident. Rust never
   links an ML framework; it is only HTTP client to the server's `sdcpp` API.
@@ -25,11 +26,10 @@ HTTP.
 │  crates/core/src/  — the domain layer (no GUI dependency)                          │
 │    registry/      Artifact model, typed ops + pipelines, slash parser,             │
 │                   CreativeBackend (live backend)                                   │
-│    generation/    GenerationClient (typed client for the sd-server sdcpp API)      │
 │    persistence/   ProjectDb (SQLite, versioned migrations)                         │
 │    llm/           LmStudioClient (OpenAI-compatible chat completions)              │
-│    runtime/       CreativeRuntime facade + GenerationRuntime + ModelStore          │
-│                   (download, resume, checksum verify)                             │
+│    runtime/       CreativeRuntime adapter over the shared clipforge-inference      │
+│                   crate (asset import, job wait, health, error mapping)            │
 │    assets/        AssetCatalog (import/index boundary; currently minimal)          │
 │                                                                                    │
 │  apps/desktop/src/  — the Dioxus application                                       │
@@ -55,13 +55,25 @@ and serves only on loopback; the client's `generation.base_url` and the port the
 runtime binds must agree (both come from `config/app.toml`). See
 [`runtime-lifecycle.md`](runtime-lifecycle.md).
 
+### The shared inference runtime
+
+The `sd-server` profile, the resident process, the `sdcpp` client, and weight
+provisioning do **not** live in this workspace: they are in the sibling
+`clipforge` project's crate, package **`clipforge-inference`**, pulled in as a
+**path dependency** (`clipforge-inference = { path = "../clipforge/crates/inference" }`
+in the root `[workspace.dependencies]`). storyfella keeps only the adapter —
+`crates/core/src/runtime/` (`CreativeRuntime`), `config.rs`, and the pipeline's
+`GenerateResponse` (`crates/core/src/registry/pipeline.rs`). The sibling checkout
+at `../clipforge/crates/inference` must be present for storyfella to build;
+the crate is not a workspace member.
+
 ## The `sd-server` (`sdcpp`) HTTP contract
 
-Rust consumes the native server's async `sdcpp` API directly through
-`GenerationClient` (`crates/core/src/generation/mod.rs`). The authoritative
-field list is `stable-diffusion.cpp/examples/server/api.md` at the checked-out
-revision — read it before adding a field, because anything the server does not
-name in its JSON parser is dropped silently.
+Rust consumes the native server's async `sdcpp` API through the shared crate's
+client, `clipforge_inference::sd::Client` (called via `CreativeRuntime::client`).
+The authoritative field list is `stable-diffusion.cpp/examples/server/api.md` at
+the checked-out revision — read it before adding a field, because anything the
+server does not name in its JSON parser is dropped silently.
 
 ### Endpoints
 
@@ -75,8 +87,8 @@ The base URL is `generation.base_url` (`http://127.0.0.1:7861` by default).
 
 ### Request body (`POST /sdcpp/v1/img_gen`)
 
-The client maps [`GenerateRequest`] onto this body. Fields the app does not
-vary keep the server defaults.
+The client maps `GenerateRequest` (`clipforge_inference::sd::GenerateRequest`)
+onto this body. Fields the app does not vary keep the server defaults.
 
 | Field | Type | Value sent |
 | --- | --- | --- |
@@ -120,7 +132,7 @@ Polled job (`GET /sdcpp/v1/jobs/{id}`):
 ```
 
 `status` is one of `queued`, `generating`, `completed`, `failed`, `cancelled`.
-A failed job carries `error: { code, message }`. `GenerationJob::first_image`
+A failed job carries `error: { code, message }`. `sd::Job::first_image`
 base64-decodes `result.images[0].b64_json`.
 
 Capabilities (`GET /sdcpp/v1/capabilities`) is a large document; only the
@@ -152,9 +164,9 @@ ops::execute (crates/core/src/registry/ops.rs)
          ▼
        CreativeBackend::generate (crates/core/src/registry/backend.rs)
          │  CreativeRuntime::ensure_profile_ready (cold start: sd-server)
-         │  GenerationClient::generate (POST /sdcpp/v1/img_gen)
+         │  sd::Client::generate (POST /sdcpp/v1/img_gen)
          ▼
-       CreativeRuntime::wait_for_job polls GET /sdcpp/v1/jobs/{id},
+       CreativeRuntime::wait_for_job → sd::Client::wait polls GET /sdcpp/v1/jobs/{id},
        then decodes result.images[0].b64_json and writes
        <asset_dir>/generated/<uuid>.png (the canonical asset path)
          ▼
@@ -199,7 +211,7 @@ look becomes its own artifact.
 | Process | Owner | Lifetime | Purpose |
 | --- | --- | --- | --- |
 | Dioxus desktop app | Rust | Application session | UI, state, orchestration |
-| `sd-server` | Rust (`GenerationRuntime`) | On demand, resident | Persistent Qwen-Image-2.1 inference |
+| `sd-server` | Rust (shared `clipforge-inference` `sd::Runtime`) | On demand, resident | Persistent Qwen-Image-2.1 inference |
 | LM Studio | User (external) | External | LLM planning/grounding and VLM evaluation |
 
 Rust does not start `sd-server` at app launch; the shell reports it as idle

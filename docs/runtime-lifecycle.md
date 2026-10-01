@@ -4,20 +4,28 @@ Rust supervises one child process and one external service:
 
 | Process | Rust owner | Port | Started when |
 | --- | --- | --- | --- |
-| `sd-server` (stable-diffusion.cpp) | `GenerationRuntime` (`crates/core/src/runtime/generation_runtime.rs`) | `127.0.0.1:7861` | First generation request, or manually from Settings |
+| `sd-server` (stable-diffusion.cpp) | `sd::Runtime` in the shared `clipforge-inference` crate (`../clipforge/crates/inference/src/sd/runtime.rs`) | `127.0.0.1:7861` | First generation request, or manually from Settings |
 | LM Studio | external, user-run | user-configured (`config/app.toml`) | external |
 
 The desktop app does **not** start `sd-server` at launch. The shell reports it as
 idle until a generation request triggers `CreativeRuntime::ensure_ready`. This
 keeps a quiet app quiet and delays the multi-GiB model load until it is needed.
 
+The process, client, model store, and profile are all owned by the sibling
+`clipforge` project's crate, package **`clipforge-inference`**, pulled in as a
+**path dependency** (`clipforge-inference = { path = "../clipforge/crates/inference" }`
+in the root `[workspace.dependencies]`); the sibling checkout must be present at
+that relative path for storyfella to build, and the crate is not a workspace
+member. `crates/core/src/runtime/` holds only the adapter: `CreativeRuntime`
+(`creative_runtime.rs`), the health probes (`health.rs`), and `mod.rs`.
+
 ## `CreativeRuntime` facade
 
 `CreativeRuntime` (`crates/core/src/runtime/creative_runtime.rs`) is the single entry point
 used by the UI. It owns:
 
-- a `GenerationClient` for the native `sd-server`,
-- a shared `GenerationRuntime`,
+- an `sd::Client` for the native `sd-server` (from the shared `clipforge-inference` crate),
+- a shared `sd::Runtime` (the resident process supervisor),
 - the generated-asset directory (`<asset_dir>/generated`).
 
 ### Readiness — `ensure_profile_ready`
@@ -29,7 +37,7 @@ ensure_profile_ready()
     │    (a mismatched server this process owns is stopped and restarted; a
     │     mismatched server owned by another session → ProfileMismatch)
     │
-    ├─ GenerationRuntime::ensure_running("127.0.0.1", 7861)
+    ├─ sd::Runtime::ensure_ready("127.0.0.1", 7861)
     │
     └─ Poll /sdcpp/v1/capabilities every 500 ms until the model matches,
        or a 600 s deadline → ReadinessTimeout
@@ -58,9 +66,11 @@ the `generated` asset handler (`/generated/<file>`). `import_asset` copies an
 already-produced file into that directory the same way (a path already inside it
 is returned unchanged).
 
-## `GenerationRuntime` (sd.cpp)
+## `Runtime` (sd.cpp, shared crate)
 
-`GenerationRuntime::start(host, port)` is defensive:
+`sd::Runtime` (in the shared `clipforge-inference` crate —
+`../clipforge/crates/inference/src/sd/runtime.rs`) starts the process. It is
+defensive:
 
 1. Refuses to start twice (`AlreadyRunning`).
 2. Verifies the `sd-server` executable exists.
@@ -101,7 +111,8 @@ planner/VLM **cannot be resident during a generation**: free VRAM, then generate
 
 ## `ModelStore` — provisioning
 
-`ModelStore` (`crates/core/src/runtime/model_store.rs`) downloads and verifies the
+`ModelStore` (in the shared `clipforge-inference` crate —
+`../clipforge/crates/inference/src/model_store.rs`) downloads and verifies the
 Qwen-Image-2.1 artifacts from Hugging Face:
 
 - Resumable: an existing `<file>.part` continues with a `Range` request.
@@ -109,9 +120,11 @@ Qwen-Image-2.1 artifacts from Hugging Face:
   renamed into place (a profile whose checksum has not been recorded yet
   verifies by size only).
 - Progress: a `FnMut(DownloadProgress)` callback reports filename and byte
-  counts; `model_setup` prints percent updates.
+  counts.
 
-The `model_setup` binary drives it:
+storyfella drives it through the `model_setup` binary
+(`apps/cli/src/bin/model_setup.rs`), which resolves the profile with
+`sd::qwen_image_2_1()` and provisions into `model_root_dir(model_dir)`:
 
 ```bash
 cargo run -p svs-cli --bin model_setup            # into paths.model_dir

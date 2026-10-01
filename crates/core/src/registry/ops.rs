@@ -23,8 +23,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+use clipforge_inference::sd::LoraSelection;
+
 use crate::errors::{CodedError, ErrorCode, ReportedError};
-use crate::generation::LoraSelection;
 
 use super::{
     pipeline::{
@@ -1592,8 +1593,8 @@ mod tests {
     };
 
     use super::*;
-    use crate::generation::{DEFAULT_CFG_SCALE, DEFAULT_SAMPLE_METHOD};
     use crate::registry::pipeline::Decision;
+    use clipforge_inference::sd::{DEFAULT_CFG_SCALE, DEFAULT_SAMPLE_METHOD};
 
     /// A fresh temp folder for generated asset paths in tests (the pipeline
     /// checks reference images exist on disk).
@@ -2987,10 +2988,10 @@ mod tests {
     impl GenerationBackend for DraftBackend {
         fn generate(
             &self,
-            _request: &crate::generation::GenerateRequest,
+            _request: &clipforge_inference::sd::GenerateRequest,
         ) -> futures_util::future::BoxFuture<
             '_,
-            Result<crate::generation::GenerateResponse, PipelineError>,
+            Result<crate::registry::pipeline::GenerateResponse, PipelineError>,
         > {
             unreachable!()
         }
@@ -3006,7 +3007,7 @@ mod tests {
     /// image path for every generate call.
     struct VisualBackend {
         generated: PathBuf,
-        requests: Mutex<Vec<crate::generation::GenerateRequest>>,
+        requests: Mutex<Vec<clipforge_inference::sd::GenerateRequest>>,
     }
 
     impl VisualBackend {
@@ -3017,7 +3018,7 @@ mod tests {
             }
         }
 
-        fn requests(&self) -> Vec<crate::generation::GenerateRequest> {
+        fn requests(&self) -> Vec<clipforge_inference::sd::GenerateRequest> {
             self.requests.lock().unwrap().clone()
         }
     }
@@ -3025,10 +3026,10 @@ mod tests {
     impl GenerationBackend for VisualBackend {
         fn generate(
             &self,
-            request: &crate::generation::GenerateRequest,
+            request: &clipforge_inference::sd::GenerateRequest,
         ) -> futures_util::future::BoxFuture<
             '_,
-            Result<crate::generation::GenerateResponse, PipelineError>,
+            Result<crate::registry::pipeline::GenerateResponse, PipelineError>,
         > {
             let request = request.clone();
             let generated = self.generated.clone();
@@ -3040,10 +3041,9 @@ mod tests {
                     let _ = std::fs::create_dir_all(parent);
                 }
                 std::fs::write(&generated, b"png").expect("dummy image should write");
-                Ok(crate::generation::GenerateResponse {
+                Ok(crate::registry::pipeline::GenerateResponse {
                     status: "completed".to_owned(),
                     image_path: Some(generated.display().to_string()),
-                    model: request.model.clone(),
                     seed: request.seed,
                     width: Some(request.width),
                     height: Some(request.height),

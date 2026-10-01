@@ -24,20 +24,17 @@
 
 use std::path::PathBuf;
 
+use clipforge_inference::sd::{self, GenerateRequest, LoraSelection};
 use futures_util::future::BoxFuture;
 use thiserror::Error;
 
 use crate::errors::{CodedError, ErrorCode, ReportedError};
-use crate::generation::{
-    ComputeDevice, GenerateRequest, LoraSelection, DEFAULT_CFG_SCALE, DEFAULT_SAMPLE_METHOD,
-};
 
 /// The generation model.
-pub const DEFAULT_MODEL: &str = "qwen-image-2.1";
+pub const DEFAULT_MODEL: &str = sd::qwen_image_2_1().id;
 /// The interactive draft profile used by the UI and the CLI defaults.
 pub const DEFAULT_WIDTH: u32 = 768;
 pub const DEFAULT_HEIGHT: u32 = 448;
-pub const DEFAULT_STEPS: u32 = 25;
 
 /// Generation parameters shared by every `Generate` step in a pipeline.
 #[derive(Clone, Debug, PartialEq)]
@@ -60,9 +57,9 @@ impl Default for GenerationParams {
             model: DEFAULT_MODEL.to_owned(),
             width: DEFAULT_WIDTH,
             height: DEFAULT_HEIGHT,
-            steps: DEFAULT_STEPS,
-            cfg_scale: DEFAULT_CFG_SCALE,
-            sample_method: DEFAULT_SAMPLE_METHOD.to_owned(),
+            steps: sd::DEFAULT_STEPS,
+            cfg_scale: sd::DEFAULT_CFG_SCALE,
+            sample_method: sd::DEFAULT_SAMPLE_METHOD.to_owned(),
             seed: None,
             loras: Vec::new(),
         }
@@ -297,8 +294,6 @@ impl Pipeline {
                         cfg_scale: self.params.cfg_scale,
                         sample_method: self.params.sample_method.clone(),
                         seed,
-                        model: Some(self.params.model.clone()),
-                        device: Some(ComputeDevice::Auto),
                         loras: self.params.loras.clone(),
                     };
                     let response = backend.generate(&request).await?;
@@ -640,6 +635,19 @@ pub struct StepOutput {
     pub text: Option<String>,
 }
 
+/// The result of a generation step: the stored image path, or the failure
+/// reason. The live backend fills it from the shared runtime's job result;
+/// the pipeline reads `status`, `image_path`, and `error`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GenerateResponse {
+    pub status: String,
+    pub image_path: Option<String>,
+    pub seed: Option<u64>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub error: Option<String>,
+}
+
 /// The backend the pipeline executes against. The live implementation wraps
 /// `CreativeRuntime` + `LmStudioClient` (see `backend.rs`); tests inject a
 /// fake to assert request bodies and state transitions.
@@ -647,7 +655,7 @@ pub trait GenerationBackend: Send + Sync {
     fn generate(
         &self,
         request: &GenerateRequest,
-    ) -> BoxFuture<'_, Result<crate::generation::GenerateResponse, PipelineError>>;
+    ) -> BoxFuture<'_, Result<GenerateResponse, PipelineError>>;
     /// Returns `None` when no LLM is available (soft dependency).
     fn llm_draft(&self, request: &str) -> BoxFuture<'_, Result<Option<String>, PipelineError>>;
     /// Rewrites a terse edit instruction into a grounded one. Returns
@@ -1040,7 +1048,7 @@ mod tests {
         fn generate(
             &self,
             request: &GenerateRequest,
-        ) -> BoxFuture<'_, Result<crate::generation::GenerateResponse, PipelineError>> {
+        ) -> BoxFuture<'_, Result<GenerateResponse, PipelineError>> {
             let request = request.clone();
             let image = self.generated_image.lock().unwrap().clone();
             Box::pin(async move {
@@ -1049,19 +1057,17 @@ mod tests {
                     .unwrap()
                     .push(CapturedRequest::Generate(request.clone()));
                 match image {
-                    Some(path) => Ok(crate::generation::GenerateResponse {
+                    Some(path) => Ok(GenerateResponse {
                         status: "completed".to_owned(),
                         image_path: Some(path.display().to_string()),
-                        model: request.model.clone(),
                         seed: request.seed,
                         width: Some(request.width),
                         height: Some(request.height),
                         error: None,
                     }),
-                    None => Ok(crate::generation::GenerateResponse {
+                    None => Ok(GenerateResponse {
                         status: "failed".to_owned(),
                         image_path: None,
-                        model: request.model.clone(),
                         seed: None,
                         width: None,
                         height: None,
@@ -1173,9 +1179,8 @@ mod tests {
                 && request.height == 448
                 && request.steps == 25
                 && request.seed == Some(7)
-                && request.cfg_scale == DEFAULT_CFG_SCALE
-                && request.sample_method == DEFAULT_SAMPLE_METHOD
-                && request.model.as_deref() == Some(DEFAULT_MODEL)
+                && request.cfg_scale == sd::DEFAULT_CFG_SCALE
+                && request.sample_method == sd::DEFAULT_SAMPLE_METHOD
                 && request.loras.is_empty()
             )
         );
