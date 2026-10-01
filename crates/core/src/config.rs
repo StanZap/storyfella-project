@@ -1,11 +1,11 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::Duration,
 };
 
-use clipforge_inference::{sd, Capability, ImageDeployment, ProviderError, Providers};
-use directories::ProjectDirs;
+use clipforge_inference::{
+    sd, Capability, ChatDeployment, ImageDeployment, ProviderError, Providers,
+};
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -18,7 +18,20 @@ use crate::{
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppConfig {
-    pub llm: LlmConfig,
+    /// The `text` deployment resolved from `providers.toml` — the planner's
+    /// OpenAI-compatible endpoint, model, key and timeout. `None` when no
+    /// provider serves `text`: the planner is a soft dependency, so the app
+    /// still runs and its LLM steps degrade to manual input.
+    pub text: Option<ChatDeployment>,
+    /// The `vision` deployment resolved from `providers.toml` — what `svs eval`
+    /// and future vision steps call. `None` when no provider serves `vision`.
+    pub vision: Option<ChatDeployment>,
+    /// The provider id serving `text`, kept so Settings can persist a model
+    /// choice under the right `[providers.<id>]` section. `None` when the
+    /// capability is unconfigured.
+    pub text_provider_id: Option<String>,
+    /// The provider id serving `vision`. `None` when unconfigured.
+    pub vision_provider_id: Option<String>,
     /// The image-generation deployment resolved from `providers.toml`: the
     /// `sd-server` executable, model tree, LoRA root, endpoint, and weights.
     pub image: ImageDeployment,
@@ -26,6 +39,11 @@ pub struct AppConfig {
     pub asset_dir: PathBuf,
     /// Where the GUI keeps `.svs-project.db` files (the Projects screen).
     pub project_dir: PathBuf,
+    /// The user-level config layered over `config/app.toml` (see
+    /// [`paths::user_config_path`]). `None` when the platform has no config
+    /// directory, or the config was read from an explicit path. The Settings
+    /// screen shows it so machine-local secrets have a known home.
+    pub user_config_path: Option<PathBuf>,
     /// The configurable sizes, step count, and LoRA bindings that shape
     /// every generation (editable in Settings, persisted to this file).
     pub generation_defaults: GenerationDefaults,
@@ -64,6 +82,8 @@ pub enum ConfigError {
         key: String,
         value: String,
     },
+    #[error("failed to assemble the providers registry: {source}")]
+    Serialize { source: toml::ser::Error },
     #[error(transparent)]
     Providers(#[from] ProviderError),
 }
@@ -77,15 +97,14 @@ impl CodedError for ConfigError {
             Self::Write { .. } => ErrorCode::ConfigWrite,
             Self::InvalidSize { .. } => ErrorCode::ConfigInvalidSize,
             Self::MalformedSize { .. } => ErrorCode::ConfigMalformedSize,
+            Self::Serialize { .. } => ErrorCode::ConfigSerialize,
             Self::Providers(_) => ErrorCode::ConfigProviders,
         }
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct FileConfig {
-    #[serde(default)]
-    llm: LlmFileConfig,
     #[serde(default)]
     paths: PathOverrides,
     #[serde(default)]
@@ -152,29 +171,6 @@ impl Default for LoraFileConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct LlmFileConfig {
-    #[serde(default = "default_llm_url")]
-    base_url: String,
-    #[serde(default = "default_llm_model")]
-    model: String,
-    #[serde(default)]
-    api_key: Option<String>,
-    #[serde(default = "default_timeout")]
-    timeout_seconds: u64,
-}
-
-impl Default for LlmFileConfig {
-    fn default() -> Self {
-        Self {
-            base_url: default_llm_url(),
-            model: default_llm_model(),
-            api_key: None,
-            timeout_seconds: default_timeout(),
-        }
-    }
-}
-
 #[derive(Debug, Default, Deserialize)]
 struct PathOverrides {
     cache_dir: Option<PathBuf>,
@@ -183,34 +179,67 @@ struct PathOverrides {
 }
 
 impl AppConfig {
-    /// Loads `config/app.toml` beneath the project root (see [`crate::paths`]).
+    /// Loads the effective config: `config/app.toml` beneath the project root
+    /// (see [`crate::paths`]), with the user config layered over it.
     pub fn load() -> Result<Self, ConfigError> {
-        Self::load_from(paths::config_path())
+        Self::load_layered(paths::config_path(), paths::user_config_path())
     }
 
+    /// Loads exactly one file, with no user layer. The path is explicit, so a
+    /// caller that names the file itself (tests, tooling) gets only that file.
     pub fn load_from(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
-        let path = path.as_ref();
-        let file = if path.exists() {
-            let contents = fs::read_to_string(path).map_err(|source| ConfigError::Read {
-                path: path.to_path_buf(),
-                source,
-            })?;
-            toml::from_str(&contents).map_err(|source| ConfigError::Parse {
-                path: path.to_path_buf(),
-                source,
-            })?
-        } else {
-            FileConfig::default()
-        };
+        Self::load_layered(path.as_ref().to_path_buf(), None)
+    }
 
-        // The image deployment — the `sd-server` executable, model tree,
-        // LoRA root, endpoint and weights — comes from the providers
-        // registry at the project root (`providers.toml`).
-        let providers = Providers::load_or_built_in(&paths::providers_path())?;
+    /// The planner's [`LlmConfig`] — the `text` provider deployment, or `None`
+    /// when no provider serves `text` (the planner then degrades to manual
+    /// input rather than failing).
+    pub fn planner_config(&self) -> Option<LlmConfig> {
+        self.text.as_ref().map(LlmConfig::from)
+    }
+
+    /// The vision [`LlmConfig`] — the `vision` provider deployment, or `None`.
+    pub fn vision_config(&self) -> Option<LlmConfig> {
+        self.vision.as_ref().map(LlmConfig::from)
+    }
+
+    /// Reads `base`, merges `user` over it (deeply; see [`merge_toml`]), and
+    /// resolves the result. A missing file contributes nothing rather than
+    /// failing, so the default config needs neither file to exist.
+    fn load_layered(base: PathBuf, user: Option<PathBuf>) -> Result<Self, ConfigError> {
+        let path = base.as_path();
+        let mut value = read_config_value(path)?;
+        if let Some(overlay) = user.as_deref() {
+            if overlay != path {
+                merge_toml(&mut value, read_config_value(overlay)?);
+            }
+        }
+        // A type error in the merged tree is most likely in the overlay — the
+        // file the user just edited — so blame the user path when there is one.
+        let parse_path = user.clone().unwrap_or_else(|| base.clone());
+        let file: FileConfig = value.try_into().map_err(|source| ConfigError::Parse {
+            path: parse_path,
+            source,
+        })?;
+
+        // The deployments — the `sd-server` image backend and the chat
+        // (`text`/`vision`) endpoints — come from the providers registry at
+        // the project root (`providers.toml`), with the user-level providers
+        // file layered over it.
+        let providers = load_providers()?;
         let image = providers.image_deployment(Capability::T2i)?;
+        // The chat capabilities are optional: an unconfigured planner or vision
+        // endpoint leaves the app fully usable, with those features degraded.
+        let text = providers.chat_deployment(Capability::Text).ok();
+        let vision = providers.chat_deployment(Capability::Vision).ok();
+        let text_provider_id = providers
+            .default_provider(Capability::Text)
+            .map(str::to_owned);
+        let vision_provider_id = providers
+            .default_provider(Capability::Vision)
+            .map(str::to_owned);
 
-        let dirs = ProjectDirs::from("dev", "Smart Visual Sequencer", "Smart Visual Sequencer")
-            .ok_or(ConfigError::PlatformDirectories)?;
+        let dirs = paths::project_dirs().ok_or(ConfigError::PlatformDirectories)?;
         let data_dir = dirs.data_dir();
 
         let size_override =
@@ -241,12 +270,10 @@ impl AppConfig {
             multiplier: file_lora.multiplier,
         };
         Ok(Self {
-            llm: LlmConfig {
-                base_url: file.llm.base_url,
-                model: file.llm.model,
-                api_key: file.llm.api_key,
-                timeout: Duration::from_secs(file.llm.timeout_seconds),
-            },
+            text,
+            vision,
+            text_provider_id,
+            vision_provider_id,
             image,
             cache_dir: file
                 .paths
@@ -263,6 +290,7 @@ impl AppConfig {
                 .project_dir
                 .map(paths::resolve)
                 .unwrap_or_else(|| data_dir.join("projects")),
+            user_config_path: user,
             generation_defaults: GenerationDefaults {
                 sizes,
                 steps: file.generation.steps,
@@ -273,18 +301,31 @@ impl AppConfig {
         })
     }
 
-    /// Persists the planner model to `config/app.toml` (the Settings
-    /// picker writes here so the choice survives restarts). Every other key
-    /// in the file is left untouched.
-    pub fn persist_llm_model(&self, model: &str) -> Result<(), ConfigError> {
-        Self::persist_llm_model_to(paths::config_path(), model)
+    /// Persists the planner model to the user providers file (see
+    /// [`paths::user_providers_path`]) — the Settings picker writes here so the
+    /// choice survives restarts without touching the checked-in
+    /// `providers.toml`. Every other line in the file is left untouched.
+    pub fn persist_text_model(&self, model: &str) -> Result<(), ConfigError> {
+        let path = paths::user_providers_path().ok_or(ConfigError::PlatformDirectories)?;
+        let provider_id = self
+            .text_provider_id
+            .as_deref()
+            .ok_or(ConfigError::Providers(ProviderError::NoProvider(
+                Capability::Text,
+            )))?;
+        Self::persist_text_model_to(path, provider_id, model)
     }
 
-    /// Testable variant of [`AppConfig::persist_llm_model`] that targets an
-    /// arbitrary path; creates the file when it does not exist yet. The
-    /// write is line-preserving: only the `model` key under `[llm]`
-    /// changes, so comments and key order elsewhere survive.
-    pub fn persist_llm_model_to(path: impl AsRef<Path>, model: &str) -> Result<(), ConfigError> {
+    /// Testable variant of [`AppConfig::persist_text_model`] that targets an
+    /// arbitrary path and provider id; creates the file when it does not exist
+    /// yet. The write is line-preserving: only the `model` key under
+    /// `[providers.<provider_id>]` changes, so comments and key order
+    /// elsewhere survive.
+    pub fn persist_text_model_to(
+        path: impl AsRef<Path>,
+        provider_id: &str,
+        model: &str,
+    ) -> Result<(), ConfigError> {
         let path = path.as_ref();
         let contents = if path.exists() {
             fs::read_to_string(path).map_err(|source| ConfigError::Read {
@@ -295,61 +336,19 @@ impl AppConfig {
             String::new()
         };
         let mut lines: Vec<String> = contents.lines().map(str::to_owned).collect();
-
-        // Find the `model = "..."` line inside the `[llm]` section.
-        let mut in_llm = false;
-        let mut section_index = None;
-        let mut model_line_index = None;
-        for (index, line) in lines.iter().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.starts_with('[') {
-                in_llm = trimmed == "[llm]";
-                if in_llm {
-                    section_index = Some(index);
-                }
-                continue;
-            }
-            if in_llm {
-                if let Some(rest) = trimmed.strip_prefix("model") {
-                    if rest.trim_start().starts_with('=') {
-                        model_line_index = Some(index);
-                    }
-                }
-            }
-        }
-
-        let replacement = format!("model = {model:?}");
-        match model_line_index {
-            Some(index) => {
-                let indent: String = lines[index]
-                    .chars()
-                    .take_while(|character| character.is_whitespace())
-                    .collect();
-                lines[index] = format!("{indent}{replacement}");
-            }
-            None => match section_index {
-                Some(index) => lines.insert(index + 1, replacement),
-                None => {
-                    lines.push("[llm]".to_owned());
-                    lines.push(replacement);
-                }
-            },
-        }
-
-        let mut output = lines.join("\n");
-        output.push('\n');
-        fs::write(path, output).map_err(|source| ConfigError::Write {
-            path: path.to_path_buf(),
-            source,
-        })
+        let section = format!("providers.{provider_id}");
+        write_key(&mut lines, &section, "model", Some(format!("{model:?}")));
+        write_config_file(path, lines.join("\n"))
     }
 
-    /// Persists the generation defaults (steps, per-kind sizes, LoRA
-    /// bindings) to `config/app.toml` — the Settings screen writes here so
-    /// the choices survive restarts. Line-preserving like
-    /// [`AppConfig::persist_llm_model`]: only the touched keys change.
+    /// Persists the generation defaults (steps, per-kind sizes, LoRA bindings)
+    /// to the user config (see [`paths::user_config_path`]) — the Settings
+    /// screen writes here so the choices survive restarts without touching the
+    /// checked-in `config/app.toml`. Line-preserving: only the touched keys
+    /// change.
     pub fn persist_generation_defaults(&self) -> Result<(), ConfigError> {
-        Self::persist_generation_defaults_to(paths::config_path(), &self.generation_defaults)
+        let path = paths::user_config_path().ok_or(ConfigError::PlatformDirectories)?;
+        Self::persist_generation_defaults_to(path, &self.generation_defaults)
     }
 
     /// Testable variant of [`AppConfig::persist_generation_defaults`].
@@ -447,13 +446,94 @@ impl AppConfig {
             Some(format!("{:?}", defaults.loras.multiplier)),
         );
 
-        let mut output = lines.join("\n");
-        output.push('\n');
-        fs::write(path, output).map_err(|source| ConfigError::Write {
-            path: path.to_path_buf(),
-            source,
-        })
+        write_config_file(path, lines.join("\n"))
     }
+}
+
+/// Reads a config file as a TOML value; a missing file is an empty table, so
+/// the merge treats it as contributing nothing.
+fn read_config_value(path: &Path) -> Result<toml::Value, ConfigError> {
+    if !path.exists() {
+        return Ok(toml::Value::Table(toml::Table::new()));
+    }
+    let contents = fs::read_to_string(path).map_err(|source| ConfigError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    toml::from_str(&contents).map_err(|source| ConfigError::Parse {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Deep-merges `overlay` into `base`: tables merge key by key, and every other
+/// value replaces what was there. The user config can therefore set one nested
+/// key (say `[generation.sizes] character`) without discarding the rest of the
+/// checked-in file.
+fn merge_toml(base: &mut toml::Value, overlay: toml::Value) {
+    match (base, overlay) {
+        (toml::Value::Table(base), toml::Value::Table(overlay)) => {
+            for (key, value) in overlay {
+                match base.get_mut(key.as_str()) {
+                    Some(existing) => merge_toml(existing, value),
+                    None => {
+                        base.insert(key, value);
+                    }
+                }
+            }
+        }
+        (base, overlay) => *base = overlay,
+    }
+}
+
+/// The providers registry: the checked-in `providers.toml` at the project root
+/// with the user-level providers file (see [`paths::user_providers_path`])
+/// layered over it, key by key. The two files are merged as TOML and the
+/// assembled text is parsed by the shared registry, so a user override only
+/// needs the keys it changes.
+fn load_providers() -> Result<Providers, ConfigError> {
+    providers_from_files(
+        &paths::providers_path(),
+        paths::user_providers_path().as_deref(),
+    )
+}
+
+/// The testable core of [`load_providers`]: merges `user` (when present) over
+/// `base` and parses the result. Relative paths resolve against the project
+/// root.
+fn providers_from_files(base: &Path, user: Option<&Path>) -> Result<Providers, ConfigError> {
+    let root = paths::root();
+    let mut value = read_config_value(base)?;
+    if let Some(user) = user {
+        if user != base && user.exists() {
+            merge_toml(&mut value, read_config_value(user)?);
+        }
+    }
+    let contents = toml::to_string(&value).map_err(|source| ConfigError::Serialize { source })?;
+    let providers = Providers::from_toml(&contents, &root).map_err(ConfigError::Providers)?;
+    // An absent (or empty) registry still serves the built-in image provider;
+    // only the `text`/`vision` capabilities need an explicit declaration.
+    if providers.list().next().is_none() {
+        return Ok(Providers::built_in());
+    }
+    Ok(providers)
+}
+
+/// Writes a config file, creating its directory first — the user config lives
+/// in a platform directory that may not exist yet.
+fn write_config_file(path: &Path, contents: String) -> Result<(), ConfigError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| ConfigError::Write {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    let mut output = contents;
+    output.push('\n');
+    fs::write(path, output).map_err(|source| ConfigError::Write {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 /// Line-preserving key writer: replaces the `key = …` line inside
@@ -516,19 +596,7 @@ fn write_key(lines: &mut Vec<String>, section: &str, key: &str, value: Option<St
     }
 }
 
-fn default_llm_url() -> String {
-    "http://localhost:1234/v1".to_owned()
-}
-
-fn default_llm_model() -> String {
-    "local-model".to_owned()
-}
-
-const fn default_timeout() -> u64 {
-    60
-}
-
-const fn default_steps() -> u32 {
+fn default_steps() -> u32 {
     sd::DEFAULT_STEPS
 }
 
@@ -638,7 +706,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir should create");
         let path = dir.join("app.toml");
-        std::fs::write(&path, "# keep me\n[llm]\nmodel = \"old-model\"\n")
+        std::fs::write(&path, "# keep me\n[paths]\ncache_dir = \"cache\"\n")
             .expect("fixture should write");
 
         let mut defaults = GenerationDefaults {
@@ -675,11 +743,10 @@ mod tests {
             Some("mia-v2.safetensors")
         );
         assert_eq!(reloaded.generation_defaults.loras.multiplier, 0.8);
-        // Untouched keys survive.
-        assert_eq!(reloaded.llm.model, "old-model");
+        // Untouched content survives.
         let contents = std::fs::read_to_string(&path).expect("file should read");
         assert!(contents.contains("# keep me"), "{contents}");
-        assert!(contents.contains("model = \"old-model\""), "{contents}");
+        assert!(contents.contains("cache_dir = \"cache\""), "{contents}");
     }
 
     #[test]
@@ -687,7 +754,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir should create");
         let path = dir.join("app.toml");
-        std::fs::write(&path, "[llm]\nmodel = \"m\"\n").expect("fixture should write");
+        std::fs::write(&path, "[paths]\ncache_dir = \"cache\"\n").expect("fixture should write");
 
         let mut defaults = GenerationDefaults {
             sizes: Default::default(),
@@ -718,23 +785,90 @@ mod tests {
     }
 
     #[test]
-    fn persist_llm_model_updates_only_the_model_key() {
+    fn text_and_vision_deployments_come_from_the_providers_registry() {
         let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir should create");
         let path = dir.join("app.toml");
-        let config = AppConfig::load_from(&path).expect("defaults load from a missing file");
-        assert_eq!(config.llm.model, "local-model");
+        let config = AppConfig::load_from(&path).expect("config should load from a missing file");
 
-        AppConfig::persist_llm_model_to(&path, "google/gemma-3-27b-it")
-            .expect("persist should write");
-        let reloaded = AppConfig::load_from(&path).expect("persisted file should load");
-        assert_eq!(reloaded.llm.model, "google/gemma-3-27b-it");
-        // The provider-resolved deployment survives the round trip.
-        assert_eq!(reloaded.image.architecture, "qwen-image-2.1");
+        assert_eq!(config.text_provider_id.as_deref(), Some("planner"));
+        let text = config.text.as_ref().expect("text deployment");
+        assert_eq!(text.base_url, "http://localhost:8080/v1");
+        assert_eq!(text.model, "prism-ml/bonsai-27b");
+        assert_eq!(config.vision_provider_id.as_deref(), Some("vision"));
+        let vision = config.vision.as_ref().expect("vision deployment");
+        assert_eq!(vision.base_url, "http://localhost:8080/v1");
+        assert_eq!(vision.model, "google/gemma-4-e4b");
+        // The image deployment resolves from the same registry.
+        assert_eq!(config.image.architecture, "qwen-image-2.1");
+        // The derived `LlmConfig`s carry the same endpoints.
         assert_eq!(
-            reloaded.llm.base_url, "http://localhost:1234/v1",
-            "base_url must not be clobbered by the model write"
+            config.planner_config().expect("planner config").model,
+            text.model
         );
+        assert_eq!(
+            config.vision_config().expect("vision config").base_url,
+            vision.base_url
+        );
+    }
+
+    #[test]
+    fn an_image_only_registry_leaves_chat_capabilities_unconfigured() {
+        // The planner and vision endpoints are soft dependencies: a registry
+        // that serves only images resolves no `text`/`vision` deployment rather
+        // than failing, so the app still loads and those features degrade.
+        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir should create");
+        let base = dir.join("providers.toml");
+        std::fs::write(
+            &base,
+            "[defaults]\nt2i = \"img\"\n\
+             [providers.img]\nkind = \"sdcpp\"\narchitecture = \"qwen-image-2.1\"\n\
+             capabilities = [\"t2i\"]\nbase_url = \"http://127.0.0.1:7861\"\n",
+        )
+        .expect("fixture should write");
+
+        let providers = providers_from_files(&base, None).expect("image-only registry loads");
+        assert!(providers.image_deployment(Capability::T2i).is_ok());
+        assert!(
+            providers.chat_deployment(Capability::Text).is_err(),
+            "no text provider resolves no deployment"
+        );
+        assert!(providers.chat_deployment(Capability::Vision).is_err());
+    }
+
+    #[test]
+    fn a_user_providers_overlay_overrides_a_provider_model() {
+        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir should create");
+        let base = dir.join("providers.toml");
+        let user = dir.join("user-providers.toml");
+        std::fs::write(
+            &base,
+            "[defaults]\ntext = \"planner\"\nvision = \"vision\"\n\
+             [providers.planner]\nkind = \"openai\"\ncapabilities = [\"text\"]\n\
+             base_url = \"http://localhost:8080/v1\"\nmodel = \"prism-ml/bonsai-27b\"\n\
+             [providers.vision]\nkind = \"openai\"\ncapabilities = [\"vision\"]\n\
+             base_url = \"http://localhost:8080/v1\"\nmodel = \"google/gemma-4-e4b\"\n",
+        )
+        .expect("base fixture should write");
+        std::fs::write(
+            &user,
+            "[providers.planner]\nmodel = \"deepseek-chat\"\napi_key_env = \"DEEPSEEK_API_KEY\"\n",
+        )
+        .expect("user fixture should write");
+
+        let providers = providers_from_files(&base, Some(&user)).expect("providers should merge");
+        let text = providers
+            .chat_deployment(Capability::Text)
+            .expect("text resolves");
+        assert_eq!(text.model, "deepseek-chat");
+        assert_eq!(text.base_url, "http://localhost:8080/v1");
+        // The untouched vision provider survives the merge.
+        let vision = providers
+            .chat_deployment(Capability::Vision)
+            .expect("vision resolves");
+        assert_eq!(vision.model, "google/gemma-4-e4b");
     }
 
     #[test]
@@ -742,7 +876,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir should create");
         let path = dir.join("app.toml");
-        std::fs::write(&path, "[llm]\nmodel = \"m\"\n").expect("fixture should write");
+        std::fs::write(&path, "[paths]\ncache_dir = \"cache\"\n").expect("fixture should write");
 
         let mut defaults = GenerationDefaults {
             sizes: Default::default(),
@@ -771,49 +905,124 @@ mod tests {
     }
 
     #[test]
-    fn persist_llm_model_preserves_unrelated_keys_in_an_existing_file() {
+    fn persist_text_model_writes_under_the_provider_section_line_preservingly() {
         let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir should create");
-        let path = dir.join("app.toml");
+        let path = dir.join("providers.toml");
         std::fs::write(
             &path,
-            "# api_key = \"lm-studio\"\n[llm]\nbase_url = \"http://localhost:1234/v1\"\nmodel = \"old-model\"\n\n\
-             [generation]\nsteps = 25\n",
+            "# keep me\n[providers.planner]\nkind = \"openai\"\nmodel = \"old-model\"\n\n\
+             [providers.vision]\nmodel = \"google/gemma-4-e4b\"\n",
         )
         .expect("fixture should write");
 
-        AppConfig::persist_llm_model_to(&path, "new-model").expect("persist should write");
+        AppConfig::persist_text_model_to(&path, "planner", "deepseek-chat")
+            .expect("persist should write");
         let contents = std::fs::read_to_string(&path).expect("file should read");
-        assert!(contents.contains("old-model") == false, "{contents}");
-        assert!(contents.contains("new-model"), "{contents}");
+        assert!(!contents.contains("old-model"), "{contents}");
+        assert!(contents.contains("model = \"deepseek-chat\""), "{contents}");
         assert!(
-            contents.contains("steps = 25"),
-            "generation steps must survive: {contents}"
+            contents.contains("kind = \"openai\""),
+            "unrelated keys must survive: {contents}"
         );
         assert!(
-            contents.contains("http://localhost:1234/v1"),
-            "base_url must survive: {contents}"
+            contents.contains("model = \"google/gemma-4-e4b\""),
+            "a sibling provider must be untouched: {contents}"
         );
         assert!(
-            contents.contains("# api_key = \"lm-studio\""),
-            "comments must survive the targeted write: {contents}"
+            contents.contains("# keep me"),
+            "comments must survive: {contents}"
         );
         assert!(
-            contents.find("[llm]") < contents.find("[generation]"),
-            "section order must survive the targeted write: {contents}"
+            contents.find("[providers.planner]") < contents.find("[providers.vision]"),
+            "section order must survive: {contents}"
         );
     }
 
     #[test]
-    fn persist_llm_model_adds_the_section_when_missing() {
+    fn persist_text_model_adds_the_provider_section_when_missing() {
         let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir should create");
-        let path = dir.join("app.toml");
-        std::fs::write(&path, "[generation]\nsteps = 25\n").expect("fixture should write");
+        let path = dir.join("providers.toml");
+        std::fs::write(&path, "[defaults]\ntext = \"planner\"\n").expect("fixture should write");
 
-        AppConfig::persist_llm_model_to(&path, "new-model").expect("persist should write");
-        let reloaded = AppConfig::load_from(&path).expect("persisted file should load");
-        assert_eq!(reloaded.llm.model, "new-model");
-        assert_eq!(reloaded.generation_defaults.steps, 25);
+        AppConfig::persist_text_model_to(&path, "planner", "new-model")
+            .expect("persist should write");
+        let contents = std::fs::read_to_string(&path).expect("file should read");
+        assert!(contents.contains("[providers.planner]"), "{contents}");
+        assert!(contents.contains("model = \"new-model\""), "{contents}");
+        assert!(
+            contents.contains("text = \"planner\""),
+            "defaults must survive: {contents}"
+        );
+    }
+
+    #[test]
+    fn the_user_config_layers_over_the_base_file() {
+        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir should create");
+        let base = dir.join("app.toml");
+        let user = dir.join("user.toml");
+        std::fs::write(
+            &base,
+            "[generation]\nsteps = 25\n\
+             [generation.sizes]\nenvironment = \"1024x576\"\n",
+        )
+        .expect("base fixture should write");
+        std::fs::write(
+            &user,
+            "[generation]\ncfg_scale = 7.5\n\
+             [generation.sizes]\ncharacter = \"384x576\"\n",
+        )
+        .expect("user fixture should write");
+
+        let config =
+            AppConfig::load_layered(base, Some(user.clone())).expect("layered config should load");
+        // The user file sets one nested key without clobbering the base's.
+        assert_eq!(config.generation_defaults.steps, 25);
+        assert_eq!(config.generation_defaults.cfg_scale, 7.5);
+        assert_eq!(
+            config.generation_defaults.sizes.environment,
+            Some((1024, 576))
+        );
+        assert_eq!(config.generation_defaults.sizes.character, Some((384, 576)));
+        assert_eq!(config.user_config_path.as_deref(), Some(user.as_path()));
+    }
+
+    #[test]
+    fn the_user_config_wins_on_a_conflicting_key() {
+        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir should create");
+        let base = dir.join("app.toml");
+        let user = dir.join("user.toml");
+        std::fs::write(&base, "[generation]\nsteps = 25\n").expect("base fixture");
+        std::fs::write(&user, "[generation]\nsteps = 8\n").expect("user fixture");
+
+        let config = AppConfig::load_layered(base, Some(user)).expect("layered config should load");
+        assert_eq!(config.generation_defaults.steps, 8);
+    }
+
+    #[test]
+    fn a_missing_user_file_is_not_an_error() {
+        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir should create");
+        let base = dir.join("app.toml");
+        std::fs::write(&base, "[generation]\nsteps = 10\n").expect("base fixture");
+
+        let config = AppConfig::load_layered(base, Some(dir.join("absent.toml")))
+            .expect("a missing user config is fine");
+        assert_eq!(config.generation_defaults.steps, 10);
+    }
+
+    #[test]
+    fn persisting_creates_the_user_config_directory() {
+        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("nested").join("providers.toml");
+
+        AppConfig::persist_text_model_to(&path, "planner", "deepseek-chat")
+            .expect("persist should create the directory and write");
+        let contents = std::fs::read_to_string(&path).expect("file should read");
+        assert!(contents.contains("[providers.planner]"), "{contents}");
+        assert!(contents.contains("model = \"deepseek-chat\""), "{contents}");
     }
 }

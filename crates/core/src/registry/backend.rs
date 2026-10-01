@@ -73,7 +73,9 @@ impl CreativeBackend {
     pub fn new(config: &AppConfig) -> Self {
         Self {
             runtime: CreativeRuntime::new(config),
-            llm: LlmClient::new(config.llm.clone()).ok(),
+            llm: config
+                .planner_config()
+                .and_then(|config| LlmClient::new(config).ok()),
         }
     }
 

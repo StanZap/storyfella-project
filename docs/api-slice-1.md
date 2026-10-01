@@ -151,11 +151,17 @@ svs --project p.db runtime serve --force   # Ctrl-C to stop
   `ProfileMismatch` message naming the fix (`svs runtime serve --force` or
   `pkill -f "sd-server --diffusion"`).
 
-### LLM endpoint
+### LLM endpoints
 
-`llm.model` in `config/app.toml` must match a model id the endpoint
-serves (`curl http://localhost:1234/v1/models` lists them). The checked-in
-config points at the larger planner model used on the dev machine.
+Text (planning/grounding) and vision (`svs eval`) resolve from `providers.toml`
+as separate capabilities (`text`/`vision`), so the planner can be a remote,
+text-only model — DeepSeek, say — while vision stays on a local multimodal
+endpoint. Each provider's `model` must match a model id its endpoint serves
+(`curl http://localhost:1234/v1/models` lists them); the checked-in
+`providers.toml` points `text` at the larger planner model and `vision` at the
+vision model used on the dev machine. A machine-local secret or override goes in
+the user providers overlay (`~/.config/smartvisualsequencer/providers.toml`,
+`$SVS_USER_PROVIDERS` overrides).
 
 ### Platform notes (measured)
 

@@ -155,10 +155,13 @@ enum ProbeStatus {
 async fn main() -> Result<()> {
     let args = Args::parse();
     let app_config = AppConfig::load().context("load application config")?;
-    let base_url = args
-        .base_url
-        .clone()
-        .unwrap_or_else(|| app_config.llm.base_url.clone());
+    let base_url = match &args.base_url {
+        Some(url) => url.clone(),
+        None => app_config
+            .planner_config()
+            .map(|config| config.base_url)
+            .context("no `text` provider is configured; pass --base-url")?,
+    };
 
     if args.list_models {
         list_models(&app_config, &base_url, args.timeout_seconds).await?;
@@ -204,7 +207,10 @@ async fn list_models(config: &AppConfig, base_url: &str, timeout_seconds: u64) -
     let client = client_for(
         config,
         base_url,
-        &config.llm.model,
+        &config
+            .planner_config()
+            .context("no `text` provider is configured")?
+            .model,
         Duration::from_secs(timeout_seconds),
     )?;
     let mut models = client
@@ -228,7 +234,7 @@ fn client_for(
     LlmClient::new(LlmConfig {
         base_url: base_url.to_owned(),
         model: model.to_owned(),
-        api_key: config.llm.api_key.clone(),
+        api_key: config.planner_config().and_then(|config| config.api_key),
         timeout,
     })
     .context("construct the LLM client")

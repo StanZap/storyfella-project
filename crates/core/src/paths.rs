@@ -16,11 +16,30 @@
 //!    which is how a packaged bundle resolves the resources shipped beside it;
 //! 4. the working directory, which leaves a config-less run on the platform
 //!    application directories, exactly as it behaved before anchoring.
+//!
+//! Layered over that root config is one **user config** file in the platform
+//! application *config* directory (see [`user_config_path`]). It is only read —
+//! never searched for — so it cannot move the root; it exists so a machine can
+//! keep an API key or a different endpoint out of the repository.
 
 use std::path::{Path, PathBuf};
 
+use directories::ProjectDirs;
+
+/// The `directories` identity every platform path the app resolves shares: the
+/// config, cache, and data (assets/projects) directories.
+pub const APP_QUALIFIER: &str = "dev";
+pub const APP_ORGANIZATION: &str = "Smart Visual Sequencer";
+pub const APP_APPLICATION: &str = "Smart Visual Sequencer";
+
 /// The config file, relative to the project root.
 pub const CONFIG_FILE: &str = "config/app.toml";
+
+/// The user config's file name, inside [`user_config_path`]'s directory.
+pub const USER_CONFIG_FILE: &str = "app.toml";
+
+/// The user providers file name, inside [`user_providers_path`]'s directory.
+pub const USER_PROVIDERS_FILE: &str = "providers.toml";
 
 /// Where plans live, relative to the project root.
 pub const PLANS_DIR: &str = "config/plans";
@@ -62,6 +81,48 @@ pub fn plans_dir() -> PathBuf {
 /// The resolved providers registry file.
 pub fn providers_path() -> PathBuf {
     root().join(PROVIDERS_FILE)
+}
+
+/// The platform application directories, or `None` where the platform has no
+/// home directory. One identity for every `ProjectDirs` the app builds.
+pub fn project_dirs() -> Option<ProjectDirs> {
+    ProjectDirs::from(APP_QUALIFIER, APP_ORGANIZATION, APP_APPLICATION)
+}
+
+/// The user-level config file layered over [`config_path`] — the platform
+/// application *config* directory (on Linux,
+/// `~/.config/smartvisualsequencer/app.toml`).
+///
+/// `$SVS_USER_CONFIG` overrides the location when set and non-empty, which
+/// lets tests and scratch runs point it at a temporary file. `None` when it is
+/// unset and the platform has no config directory, meaning there is no user
+/// layer.
+pub fn user_config_path() -> Option<PathBuf> {
+    if let Some(value) = std::env::var_os("SVS_USER_CONFIG") {
+        let path = PathBuf::from(value);
+        if !path.as_os_str().is_empty() {
+            return Some(path);
+        }
+    }
+    project_dirs().map(|dirs| dirs.config_dir().join(USER_CONFIG_FILE))
+}
+
+/// The user-level providers file layered over [`providers_path`] — the platform
+/// application *config* directory (on Linux,
+/// `~/.config/smartvisualsequencer/providers.toml`).
+///
+/// `$SVS_USER_PROVIDERS` overrides the location when set and non-empty, which
+/// lets tests and scratch runs point it at a temporary file. `None` when it is
+/// unset and the platform has no config directory, meaning there is no user
+/// layer.
+pub fn user_providers_path() -> Option<PathBuf> {
+    if let Some(value) = std::env::var_os("SVS_USER_PROVIDERS") {
+        let path = PathBuf::from(value);
+        if !path.as_os_str().is_empty() {
+            return Some(path);
+        }
+    }
+    project_dirs().map(|dirs| dirs.config_dir().join(USER_PROVIDERS_FILE))
 }
 
 /// `path` made absolute against [`root`] — unless it already is absolute, so a
@@ -132,5 +193,32 @@ mod tests {
         assert!(Path::new(CONFIG_FILE).is_relative());
         assert!(Path::new(PLANS_DIR).is_relative());
         assert!(Path::new(PROVIDERS_FILE).is_relative());
+        assert!(Path::new(USER_CONFIG_FILE).is_relative());
+        assert!(Path::new(USER_PROVIDERS_FILE).is_relative());
+    }
+
+    #[test]
+    fn the_user_config_lives_in_the_platform_config_dir() {
+        if std::env::var_os("SVS_USER_CONFIG").is_some() {
+            return; // an explicit override is the user's choice; nothing to assert
+        }
+        let dirs = project_dirs().expect("the platform exposes application directories");
+        let path = user_config_path().expect("the platform exposes a config directory");
+        assert_eq!(path, dirs.config_dir().join(USER_CONFIG_FILE));
+        assert!(path.ends_with("smartvisualsequencer/app.toml"), "{path:?}");
+    }
+
+    #[test]
+    fn the_user_providers_lives_in_the_platform_config_dir() {
+        if std::env::var_os("SVS_USER_PROVIDERS").is_some() {
+            return; // an explicit override is the user's choice; nothing to assert
+        }
+        let dirs = project_dirs().expect("the platform exposes application directories");
+        let path = user_providers_path().expect("the platform exposes a config directory");
+        assert_eq!(path, dirs.config_dir().join(USER_PROVIDERS_FILE));
+        assert!(
+            path.ends_with("smartvisualsequencer/providers.toml"),
+            "{path:?}"
+        );
     }
 }

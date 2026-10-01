@@ -657,6 +657,14 @@ model — the GUI is the artifact registry; the `svs` CLI shares the same
 deferred by user reprioritization in favor of generation quality, the LoRA
 registry, and UX fixes.
 
+Text and vision are now capability-routed providers: the single `[llm]` section
+is gone, replaced by `text` and `vision` capabilities resolved from
+`providers.toml` (layered with a user providers overlay, so a key stays out of
+git) — so a remote, text-only planner no longer blinds `svs eval`. The
+`clipforge-inference` runtime is generalized to a shared native-server
+supervisor, and a `llamacpp` provider can start a managed `llama-server` on
+demand; weights are never bundled.
+
 ### Entry points (existing code)
 
 - `crates/core/src/registry/` — artifact kinds, variants, scenes/beats, revisions,

@@ -52,7 +52,7 @@ impl ServiceAction {
 
 fn action_for(service: ServiceId, status: HealthStatus) -> Option<ServiceAction> {
     match (service, status) {
-        (ServiceId::Llm, _) => None,
+        (ServiceId::Llm | ServiceId::Vision, _) => None,
         (ServiceId::ImageGeneration, HealthStatus::Online) => Some(ServiceAction::Stop),
         (ServiceId::ImageGeneration, _) => Some(ServiceAction::Start),
     }
@@ -66,6 +66,7 @@ mod tests {
     #[test]
     fn external_services_have_no_controls() {
         assert_eq!(action_for(ServiceId::Llm, HealthStatus::Online), None);
+        assert_eq!(action_for(ServiceId::Vision, HealthStatus::Online), None);
     }
 
     #[test]
@@ -101,10 +102,13 @@ pub fn Settings(
     let checking = use_signal(|| false);
     let checked_at = use_signal(|| None::<String>);
     let lm_model = use_signal(|| {
-        backend
-            .read()
-            .llm_model()
-            .unwrap_or_else(|| config.llm.model.clone())
+        backend.read().llm_model().unwrap_or_else(|| {
+            config
+                .text
+                .as_ref()
+                .map(|deployment| deployment.model.clone())
+                .unwrap_or_default()
+        })
     });
     let models_state = use_signal(|| ModelListState::Empty);
     let busy = use_signal(|| None::<ServiceId>);
@@ -199,7 +203,9 @@ fn run_checks(
     }
     checking.set(true);
     let mut check_config = config;
-    check_config.llm.model = lm_model();
+    if let Some(text) = check_config.text.as_mut() {
+        text.model = lm_model();
+    }
     spawn(async move {
         let services = check_services(&check_config, &runtime).await;
         health.set(services);
@@ -212,14 +218,15 @@ fn fetch_models(config: AppConfig, mut state: Signal<ModelListState>) {
     if *state.read() == ModelListState::Loading {
         return;
     }
+    let Some(mut lm_config) = config.planner_config() else {
+        // No planner endpoint: nothing to discover, and no failure to report.
+        state.set(ModelListState::Empty);
+        return;
+    };
+    lm_config.timeout = Duration::from_secs(5);
     state.set(ModelListState::Loading);
     spawn(async move {
-        let result = async {
-            let mut lm_config = config.llm.clone();
-            lm_config.timeout = Duration::from_secs(5);
-            LlmClient::new(lm_config)?.list_models().await
-        }
-        .await;
+        let result = async { LlmClient::new(lm_config)?.list_models().await }.await;
         match result {
             Ok(models) => {
                 let mut ids: Vec<String> = models.data.into_iter().map(|model| model.id).collect();
@@ -255,7 +262,7 @@ fn operate_service(
             (ServiceId::ImageGeneration, ServiceAction::Stop) => {
                 runtime.stop_generation_runtime().await
             }
-            (ServiceId::Llm, _) => Ok(()),
+            (ServiceId::Llm | ServiceId::Vision, _) => Ok(()),
         };
         busy.set(None);
         match result {
@@ -423,7 +430,7 @@ fn IntelligenceSettings(
         Some(service) => (service.status, service.detail),
         None => (HealthStatus::Idle, "Not checked yet".to_owned()),
     };
-    // Applying a pick: swap the live client, persist to config/app.toml,
+    // Applying a pick: swap the live client, persist to the user config,
     // and re-check so the Status screen reflects the new model.
     let persist_config = config.clone();
     let on_select = move |model: String| {
@@ -432,15 +439,37 @@ fn IntelligenceSettings(
         }
         lm_model.set(model.clone());
         backend.write().set_llm_model(model.clone());
-        if let Err(error) = persist_config.persist_llm_model(&model) {
+        if let Err(error) = persist_config.persist_text_model(&model) {
             tracing::error!("could not persist planner model to config: {error}");
         }
     };
+    // Where a machine-local secret (an API key, a different endpoint) belongs:
+    // the user config layered over the checked-in `config/app.toml`.
+    let user_config = config
+        .user_config_path
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "platform config directory unavailable".to_owned());
+    let text_endpoint = config
+        .text
+        .as_ref()
+        .map(|deployment| deployment.base_url.clone())
+        .unwrap_or_else(|| "not configured".to_owned());
+    let vision_endpoint = config
+        .vision
+        .as_ref()
+        .map(|deployment| deployment.base_url.clone())
+        .unwrap_or_else(|| "not configured".to_owned());
+    let text_timeout = config
+        .text
+        .as_ref()
+        .map(|deployment| deployment.timeout.as_secs().to_string())
+        .unwrap_or_else(|| "—".to_owned());
     rsx! {
         SectionHeading {
             eyebrow: "Planner & vision",
             title: "Intelligence",
-            description: "The LLM endpoint handles planning and visual understanding. It remains an external service and is never bundled with the app."
+            description: "Planning (`text`) and visual understanding (`vision`) resolve from providers in providers.toml. An external endpoint is never bundled or started by the app; a managed native server is started on demand."
         }
         div { class: "mb-8 flex items-center justify-between border-y border-white/[0.06] py-4",
             div { class: "flex items-center gap-3",
@@ -450,17 +479,23 @@ fn IntelligenceSettings(
             button { class: "rounded-lg bg-white/[0.05] px-3 py-2 text-[10px] font-medium text-zinc-400 transition hover:text-white", onclick: move |event| on_check.call(event), "Test connection" }
         }
         div { class: "border-y border-white/[0.06]",
-            SettingRow { title: "Base URL", description: "OpenAI-compatible API endpoint.",
-                input { class: "setting-control", value: "{config.llm.base_url}", readonly: true }
+            SettingRow { title: "Base URL", description: "OpenAI-compatible API endpoint serving the `text` provider.",
+                input { class: "setting-control", value: "{text_endpoint}", readonly: true }
             }
-            SettingRow { title: "Planner model", description: "Model identifier loaded in the endpoint. Picking one applies it immediately and saves it to config/app.toml.",
+            SettingRow { title: "Planner model", description: "Model identifier loaded in the endpoint. Picking one applies it immediately and saves it to the user providers file.",
                 ModelPicker { config: config.clone(), lm_model, models_state, on_select }
             }
-            SettingRow { title: "Request timeout", description: "Maximum wait for planning and visual analysis.", last: true,
-                div { class: "flex items-center gap-3", input { class: "setting-control", value: "{config.llm.timeout.as_secs()}", readonly: true } span { class: "text-[10px] text-zinc-700", "seconds" } }
+            SettingRow { title: "Vision endpoint", description: "OpenAI-compatible API endpoint serving the `vision` provider (`svs eval`).",
+                input { class: "setting-control", value: "{vision_endpoint}", readonly: true }
+            }
+            SettingRow { title: "Request timeout", description: "Maximum wait for planning and visual analysis.",
+                div { class: "flex items-center gap-3", input { class: "setting-control", value: "{text_timeout}", readonly: true } span { class: "text-[10px] text-zinc-700", "seconds" } }
+            }
+            SettingRow { title: "User config", description: "Layered over config/app.toml. Put an api_key or a per-machine override here — it is not checked into the repository.", last: true,
+                input { class: "setting-control", value: "{user_config}", readonly: true }
             }
         }
-        p { class: "mt-4 text-[10px] leading-5 text-zinc-700", "Model discovery connects to the configured Base URL. The selection is saved to config/app.toml and applies immediately — no restart needed." }
+        p { class: "mt-4 text-[10px] leading-5 text-zinc-700", "Model discovery connects to the configured Base URL. Model, generation, and secret choices are saved to the user config and apply immediately — no restart needed." }
     }
 }
 
@@ -627,12 +662,17 @@ fn GenerationSettings(config: AppConfig, mut defaults: Signal<GenerationDefaults
     }
 }
 
-/// Writes the live defaults back to `config/app.toml` (line-preserving).
+/// Writes the live defaults back to the user config (line-preserving).
 fn persist_defaults(defaults: Signal<GenerationDefaults>) {
     let snapshot = defaults.read().clone();
-    if let Err(error) =
-        AppConfig::persist_generation_defaults_to(svs_core::paths::config_path(), &snapshot)
-    {
+    let path = match svs_core::paths::user_config_path() {
+        Some(path) => path,
+        None => {
+            tracing::error!("could not resolve the user config path; defaults not saved");
+            return;
+        }
+    };
+    if let Err(error) = AppConfig::persist_generation_defaults_to(path, &snapshot) {
         tracing::error!("could not persist generation defaults: {error}");
     }
 }

@@ -86,7 +86,7 @@ docs/ models/ cache/ stable-diffusion.cpp/ .svs-e2e/
 
 `crates/core` never depends on the GUI; `apps/desktop` and `apps/cli` both depend on `svs-core`, and the desktop crate names `svs_core::…` explicitly rather than re-exporting it.
 
-Self-resolved paths anchor to a **project root** instead of the working directory (see `crates/core/src/paths.rs`): `$SVS_HOME` wins, otherwise the nearest ancestor of the working directory (then of the executable) holding `config/app.toml`. Relative paths in `config/app.toml` resolve against that root, and unset values fall back to platform-appropriate application directories via the Rust `directories` crate.
+Self-resolved paths anchor to a **project root** instead of the working directory (see `crates/core/src/paths.rs`): `$SVS_HOME` wins, otherwise the nearest ancestor of the working directory (then of the executable) holding `config/app.toml`. Relative paths in `config/app.toml` resolve against that root, and unset values fall back to platform-appropriate application directories via the Rust `directories` crate. A user-level `app.toml` in that platform config directory (`paths::user_config_path()`) is layered over the checked-in file for machine-local secrets and overrides.
 
 ## Documentation
 

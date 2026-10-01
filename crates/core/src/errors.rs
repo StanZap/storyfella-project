@@ -82,6 +82,7 @@ pub enum ErrorCode {
     ConfigInvalidSize,
     ConfigMalformedSize,
     ConfigProviders,
+    ConfigSerialize,
 
     // ---- LLM endpoint client (src/llm/mod.rs) ----
     LlmBuild,
@@ -445,6 +446,12 @@ impl ErrorCode {
                 "providers.toml could not be read or declares no usable image \
                  provider. Check the file at the project root, or remove it to \
                  fall back to the built-in provider.",
+            ),
+            Self::ConfigSerialize => (
+                "SVS-CFG-109",
+                "Could not assemble the providers registry",
+                "Combining the checked-in providers.toml with the user overlay \
+                 failed. Check both files for conflicting values.",
             ),
             Self::LlmBuild => (
                 "SVS-LLM-101",
@@ -827,7 +834,7 @@ mod tests {
     /// the count so any change to the registry is deliberate.
     #[test]
     fn registry_size_is_pinned() {
-        assert_eq!(codes().len(), 85, "error codes must never be renumbered");
+        assert_eq!(codes().len(), 86, "error codes must never be renumbered");
     }
 
     #[test]
@@ -948,6 +955,7 @@ mod tests {
             ErrorCode::ConfigInvalidSize,
             ErrorCode::ConfigMalformedSize,
             ErrorCode::ConfigProviders,
+            ErrorCode::ConfigSerialize,
             ErrorCode::LlmBuild,
             ErrorCode::LlmRequest,
             ErrorCode::LlmStatus,

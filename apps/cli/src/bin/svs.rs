@@ -490,12 +490,27 @@ async fn run(cli: Cli) -> Result<()> {
 /// test script.
 async fn run_eval(eval: EvalArgs) -> Result<()> {
     let config = AppConfig::load().context("could not load config/app.toml")?;
-    let mut lm_config = config.llm.clone();
+    let mut vision_config = config
+        .vision_config()
+        .context("no `vision` provider is configured in providers.toml")?;
     if let Some(model) = &eval.model {
-        lm_config.model = model.clone();
+        vision_config.model = model.clone();
+    }
+    // A managed (`llamacpp`) vision provider is started on demand; an `openai`
+    // provider has no server and is called as-is.
+    if let Some(server) = config
+        .vision
+        .as_ref()
+        .and_then(|deployment| deployment.server.as_ref())
+    {
+        server
+            .runtime()
+            .ensure_ready(&server.host, server.port)
+            .await
+            .context("could not start the managed vision server")?;
     }
     let client =
-        LlmClient::new(lm_config.clone()).map_err(|error| anyhow!(error.report().log()))?;
+        LlmClient::new(vision_config.clone()).map_err(|error| anyhow!(error.report().log()))?;
 
     // Read every image up front so a missing file fails before any model
     // round trips. Large canvases are downscaled to a fixed maximum
@@ -571,7 +586,7 @@ async fn run_eval(eval: EvalArgs) -> Result<()> {
             .and_then(|choice| choice.message.content.clone())
             .unwrap_or_else(|| "(no answer)".to_owned());
 
-        println!("model: {}", lm_config.model);
+        println!("model: {}", vision_config.model);
         println!("question: {prompt}");
         println!("{text}");
         println!("----");

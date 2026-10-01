@@ -1,9 +1,29 @@
 # The providers this app's backends are resolved from. A provider may change
 # *where* a model comes from, not *which* model it is: `architecture` must be a
 # profile the app serves.
+#
+# `kind = "openai"` providers are external endpoints the app calls but never
+# starts (the default, so the app runs no LLM unless one is already up).
+# `kind = "llamacpp"` providers are native `llama-server` processes the app
+# starts on demand; weights are never bundled with it.
+#
+# Machine overrides and secrets belong in a user-level overlay, not in this
+# checked-in file. Layer one at
+#   ~/.config/smartvisualsequencer/providers.toml   ($SVS_USER_PROVIDERS overrides the path)
+# to point `text` at a remote planner (keeping the GPU free for generation):
+#   [defaults]
+#   text = "deepseek"
+#   [providers.deepseek]
+#   kind = "openai"
+#   capabilities = ["text"]
+#   base_url = "https://api.deepseek.com/v1"
+#   model = "deepseek-chat"
+#   api_key_env = "DEEPSEEK_API_KEY"
 [defaults]
 t2i = "qwen-image"
 edit = "qwen-image"
+text = "planner"
+vision = "vision"
 
 [providers.qwen-image]
 kind = "sdcpp"
@@ -16,3 +36,22 @@ model_dir = "models"
 # encoder and VAE from the model tree above.
 [providers.qwen-image.weights]
 diffusion = "/home/dev/Far/models/diffusion_models/qwen-image-2.1-UC-int8_convrot.safetensors"
+
+# Instruction grounding for `modify` is a subtraction task — restate the
+# artifact's traits as invariants, minus the one the edit changes — and it is
+# model-sensitive. Measured 2026-08-10 on the same prompt: gemma-4-e4b kept
+# "long dark hair" while the edit asked for auburn (rendering both, splitting
+# the hair down the middle) and in one phrasing invented a colour outright;
+# bonsai-27b updated the trait to "long auburn hair" and got the haircut and
+# outfit cases right too. Prefer a larger planner here.
+[providers.planner]
+kind = "openai"
+capabilities = ["text"]
+base_url = "http://localhost:8080/v1"
+model = "prism-ml/bonsai-27b"
+
+[providers.vision]
+kind = "openai"
+capabilities = ["vision"]
+base_url = "http://localhost:8080/v1"
+model = "google/gemma-4-e4b"

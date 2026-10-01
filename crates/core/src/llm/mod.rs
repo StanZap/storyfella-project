@@ -15,6 +15,17 @@ pub struct LlmConfig {
     pub timeout: Duration,
 }
 
+impl From<&clipforge_inference::ChatDeployment> for LlmConfig {
+    fn from(deployment: &clipforge_inference::ChatDeployment) -> Self {
+        Self {
+            base_url: deployment.base_url.clone(),
+            model: deployment.model.clone(),
+            api_key: deployment.api_key.clone(),
+            timeout: deployment.timeout,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct LlmClient {
     http: Client,
@@ -399,6 +410,22 @@ impl LlmClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chat_deployment_maps_to_the_llm_config() {
+        let deployment = clipforge_inference::ChatDeployment {
+            base_url: "http://localhost:8080/v1".to_owned(),
+            model: "prism-ml/bonsai-27b".to_owned(),
+            api_key: Some("sk-test".to_owned()),
+            timeout: Duration::from_secs(42),
+            server: None,
+        };
+        let config = LlmConfig::from(&deployment);
+        assert_eq!(config.base_url, deployment.base_url);
+        assert_eq!(config.model, deployment.model);
+        assert_eq!(config.api_key, deployment.api_key);
+        assert_eq!(config.timeout, Duration::from_secs(42));
+    }
 
     #[test]
     fn tool_messages_serialize_to_the_openai_wire_shape() {

@@ -14,9 +14,12 @@ HTTP.
 - **`stable-diffusion.cpp`** (`sd-server`) is a separate native process owned by
   Rust that keeps the **Qwen-Image-2.1** diffusion model resident. Rust never
   links an ML framework; it is only HTTP client to the server's `sdcpp` API.
-- **The LLM endpoint** is an external OpenAI-compatible service accessed
-  directly from Rust. `crates/core/src/llm/` is the client; the planner
-  business logic lives in `crates/core/src/registry/`.
+- **The LLM endpoints** (text and vision) are OpenAI-compatible services
+  accessed directly from Rust and resolved from `providers.toml` as separate
+  capabilities. An `openai` provider is external and never started; a
+  `llamacpp` provider is a managed `llama-server` the app starts on demand.
+  `crates/core/src/llm/` is the client; the planner business logic lives in
+  `crates/core/src/registry/`.
 
 ## Component map
 
@@ -45,9 +48,9 @@ HTTP.
   │
   │ OpenAI-compatible HTTP (crates/core/src/llm/)
   ▼
-┌──────────────────────────────┐
-│ LLM endpoint (external, user) │
-└──────────────────────────────┘
+┌───────────────────────────────┐
+│ text/vision endpoints (LLM)   │
+└───────────────────────────────┘
 ```
 
 The generation server is started with `--listen-ip 127.0.0.1 --listen-port 7861`
@@ -213,7 +216,7 @@ look becomes its own artifact.
 | --- | --- | --- | --- |
 | Dioxus desktop app | Rust | Application session | UI, state, orchestration |
 | `sd-server` | Rust (shared `clipforge-inference` `sd::Runtime`) | On demand, resident | Persistent Qwen-Image-2.1 inference |
-| LLM endpoint | User (external) | External | LLM planning/grounding and VLM evaluation |
+| text/vision endpoint | openai (external) or `llama-server` (managed) | External, or on demand | LLM planning/grounding and VLM evaluation |
 
 Rust does not start `sd-server` at app launch; the shell reports it as idle
 until a generation request triggers `ensure_profile_ready` — or until it is
@@ -233,6 +236,9 @@ ancestor of the working directory (then of the executable) holding
 resolve against that root, and unset values fall back to platform-appropriate
 application directories via the `directories` crate
 (`ProjectDirs::from("dev", "Smart Visual Sequencer", "Smart Visual Sequencer")`).
+The config itself is layered: a user-level `app.toml` in that same platform
+config directory (`paths::user_config_path()`) is deep-merged over the root file
+key by key, so machine-local secrets and overrides stay out of the repository.
 The image deployment — the `sd-server` executable, model tree, LoRA root,
 endpoint, and weights — is resolved from [`providers.toml`](../providers.toml) at
 that same root (also via `paths::providers_path()`); the deployment's
@@ -251,8 +257,8 @@ repository for development, while `providers.toml` roots the model tree at
   modal → executed through the same worker machinery as slash commands).
 - **No Python and no ML framework.** There is no FastAPI vision runtime, no
   segmentation, and no Diffusers pipeline. Generation is the native
-  `stable-diffusion.cpp` process; the only other model service is the external
-  LLM endpoint.
+  `stable-diffusion.cpp` process; the text/vision endpoints are separate
+  providers (external, or a managed `llama-server`).
 - **No ComfyUI.** Image generation is the native `sd-server`; ComfyUI is not a
   dependency.
 - **No web/mobile targets.** The app is desktop-only; `cargo` features are

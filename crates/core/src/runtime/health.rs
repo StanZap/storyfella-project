@@ -2,7 +2,10 @@ use std::{fmt::Display, future::Future, time::Duration};
 
 use clipforge_inference::sd::qwen_image_2_1;
 
-use crate::{config::AppConfig, llm::LlmClient};
+use crate::{
+    config::AppConfig,
+    llm::{LlmClient, LlmConfig},
+};
 
 use super::CreativeRuntime;
 
@@ -33,8 +36,10 @@ impl HealthStatus {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceId {
-    /// The OpenAI-compatible LLM endpoint (llama.cpp, LM Studio, …).
+    /// The OpenAI-compatible text/planner endpoint (llama.cpp, LM Studio, …).
     Llm,
+    /// The OpenAI-compatible vision endpoint (`svs eval`).
+    Vision,
     /// The native stable-diffusion.cpp generation server.
     ImageGeneration,
 }
@@ -43,6 +48,7 @@ impl ServiceId {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Llm => "LLM endpoint",
+            Self::Vision => "Vision endpoint",
             Self::ImageGeneration => "Image generation (Qwen-Image-2.1)",
         }
     }
@@ -68,29 +74,67 @@ impl ServiceHealth {
 /// Probes every service the application depends on. The checks are read-only:
 /// nothing is started, stopped, or downloaded as a side effect.
 pub async fn check_all(config: &AppConfig, runtime: &CreativeRuntime) -> Vec<ServiceHealth> {
-    let (llm, generation) = tokio::join!(check_llm(config), check_generation(config, runtime),);
-    vec![llm, generation]
+    let (llm, vision, generation) = tokio::join!(
+        check_llm(config),
+        check_vision(config),
+        check_generation(config, runtime),
+    );
+    vec![llm, vision, generation]
 }
 
 async fn check_llm(config: &AppConfig) -> ServiceHealth {
-    let mut lm_config = config.llm.clone();
+    match &config.text {
+        Some(deployment) => {
+            check_chat(
+                ServiceId::Llm,
+                LlmConfig::from(deployment),
+                &deployment.model,
+            )
+            .await
+        }
+        None => unconfigured(ServiceId::Llm, "text"),
+    }
+}
+
+async fn check_vision(config: &AppConfig) -> ServiceHealth {
+    match &config.vision {
+        Some(deployment) => {
+            check_chat(
+                ServiceId::Vision,
+                LlmConfig::from(deployment),
+                &deployment.model,
+            )
+            .await
+        }
+        None => unconfigured(ServiceId::Vision, "vision"),
+    }
+}
+
+/// A capability no provider serves: a soft, expected state the app degrades
+/// around, not a failure.
+fn unconfigured(id: ServiceId, capability: &str) -> ServiceHealth {
+    ServiceHealth::new(
+        id,
+        HealthStatus::Idle,
+        format!("not configured · no provider serves `{capability}`"),
+    )
+}
+
+/// Probes one OpenAI-compatible chat endpoint, reporting whether its
+/// configured model is among the ones it serves.
+async fn check_chat(id: ServiceId, mut lm_config: LlmConfig, configured: &str) -> ServiceHealth {
     lm_config.timeout = Duration::from_secs(CHECK_TIMEOUT_SECONDS);
     let client = match LlmClient::new(lm_config) {
         Ok(client) => client,
         Err(error) => {
-            return ServiceHealth::new(
-                ServiceId::Llm,
-                HealthStatus::Offline,
-                format!("client error: {error}"),
-            );
+            return ServiceHealth::new(id, HealthStatus::Offline, format!("client error: {error}"));
         }
     };
     match with_timeout(client.list_models(), CHECK_TIMEOUT_SECONDS + 5).await {
         Ok(models) => {
-            let configured = &config.llm.model;
-            if models.data.iter().any(|model| &model.id == configured) {
+            if models.data.iter().any(|model| model.id == configured) {
                 ServiceHealth::new(
-                    ServiceId::Llm,
+                    id,
                     HealthStatus::Online,
                     format!(
                         "reachable · {} model(s) · '{configured}' loaded",
@@ -99,14 +143,14 @@ async fn check_llm(config: &AppConfig) -> ServiceHealth {
                 )
             } else {
                 ServiceHealth::new(
-                    ServiceId::Llm,
+                    id,
                     HealthStatus::Degraded,
                     format!("reachable · model '{configured}' is not loaded"),
                 )
             }
         }
         Err(error) => ServiceHealth::new(
-            ServiceId::Llm,
+            id,
             HealthStatus::Offline,
             format!("unreachable: {}", truncate(&error)),
         ),
@@ -182,6 +226,7 @@ mod tests {
     #[test]
     fn service_ids_have_display_labels() {
         assert_eq!(ServiceId::Llm.label(), "LLM endpoint");
+        assert_eq!(ServiceId::Vision.label(), "Vision endpoint");
         assert_eq!(
             ServiceId::ImageGeneration.label(),
             "Image generation (Qwen-Image-2.1)"

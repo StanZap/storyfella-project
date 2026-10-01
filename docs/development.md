@@ -376,13 +376,13 @@ touch the generation backend.
 Configuration lives in [`config/app.toml`](../config/app.toml) and is loaded by
 `crates/core/src/config.rs`. Missing sections fall back to defaults. Relative
 paths in the file resolve against the project root (see the `paths` note below).
+That file is checked in and shared, so a **user config** is layered over it, key
+by key, for machine-local choices and secrets (see the `user config` note below).
+The `text`/`vision` LLM endpoints are **not** here: they resolve from
+[`providers.toml`](#providerstoml) (see below).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `llm.base_url` | `http://localhost:1234/v1` | OpenAI-compatible LLM endpoint (llama.cpp, LM Studio, …) |
-| `llm.model` | `local-model` | Model identifier loaded in the endpoint (editable in Settings → Intelligence; the picker applies it immediately and saves it back to this file) |
-| `llm.api_key` | none | Optional bearer token |
-| `llm.timeout_seconds` | `60` | Request timeout for planning/vision calls |
 | `generation.steps` | `25` | Default steps per generation (Settings → Image generation; Qwen-Image-2.1 has no few-step turbo path) |
 | `generation.cfg_scale` | `6.0` | Text-guidance scale (`sample_params.guidance.txt_cfg`) |
 | `generation.sample_method` | `euler` | Sampler (`sample_params.sample_method`) |
@@ -406,9 +406,32 @@ of the executable) that holds `config/app.toml`, so commands do not need to be
 run from the repository root. The checked-in `config/app.toml` raises
 `generation.sizes.character` to `1024x1536` (the full Qwen portrait canvas).
 
-The checked-in `config/app.toml` sets `llm.model` to `prism-ml/bonsai-27b` —
-point it at the model id your LLM endpoint serves
-(`curl http://localhost:1234/v1/models`).
+### User config
+
+A second, user-level file is read after `config/app.toml` and merged over it
+(deep merge: tables combine key by key, every other value replaces). It lives in
+the platform application config directory resolved by `directories::ProjectDirs`
+(`paths::user_config_path`) — on Linux `~/.config/smartvisualsequencer/app.toml`
+(`$XDG_CONFIG_HOME`), on macOS
+`~/Library/Application Support/dev.Smart-Visual-Sequencer.Smart-Visual-Sequencer/app.toml`,
+and on Windows `%APPDATA%\Smart Visual Sequencer\Smart Visual Sequencer\config\app.toml`.
+`$SVS_USER_CONFIG` overrides the path, which is how tests and scratch roots keep
+it out of the picture; when it is unset and the platform has no config directory
+there is no user layer.
+
+Because it is merged rather than substituted, it only needs the keys it changes:
+
+```toml
+# ~/.config/smartvisualsequencer/app.toml
+[generation.sizes]
+character = "1024x1536"
+```
+
+The Settings generation pickers write here (never to the checked-in file), which
+keeps the per-machine generation defaults. This file is outside the checkout, so
+it is not gitignored — it is simply not in the repository to begin with. The
+planner-model picker writes to the **user providers overlay** instead (see
+[`providers.toml`](#providerstoml)).
 
 ### providers.toml
 
@@ -442,10 +465,64 @@ diffusion = "/abs/path/to/qwen-image-2.1-UC-int8_convrot.safetensors"
 change *where* a model comes from, not *which* model it is, and any other value
 is rejected at load. Relative paths in the file (`model_dir`, `lora_dir`,
 `executable`, and the `weights` entries) resolve against the file's directory.
-Removing the file falls back to the built-in provider (the standard
-Qwen-Image-2.1 tree under `models/`). `model_setup` provisions through this same
+An absent file falls back to the built-in image provider (the standard
+Qwen-Image-2.1 tree under `models/`). The `text` and `vision` capabilities have
+no built-in default: when no provider serves one, `AppConfig` leaves it `None`
+and the app **degrades** rather than failing to start — the planner falls back
+to manual slash commands and `svs eval` reports that no `vision` provider is
+configured. `model_setup` provisions through this same
 deployment: it downloads the artifacts whose `needs_download()` is true and
 prints the local override it skips for the rest.
+
+The same registry routes the LLM capabilities. `text` (the planner) and
+`vision` (`svs eval`, future vision steps) each name a provider:
+
+```toml
+[defaults]
+text = "planner"
+vision = "vision"
+
+[providers.planner]
+kind = "openai"                  # external endpoint the app calls but never starts
+capabilities = ["text"]
+base_url = "http://localhost:8080/v1"
+model = "prism-ml/bonsai-27b"
+
+[providers.vision]
+kind = "openai"
+capabilities = ["vision"]
+base_url = "http://localhost:8080/v1"
+model = "google/gemma-4-e4b"
+```
+
+Two provider kinds serve chat: `openai` is an external OpenAI-compatible service
+the app never starts (the default); `llamacpp` is a managed native `llama-server`
+the app starts on demand from `executable` + `model_path` (plus `mmproj` for a
+vision model). Because text and vision are separate capabilities, the planner can
+point at a remote, text-only model — for example DeepSeek — while vision keeps a
+local multimodal endpoint. `api_key` is an inline secret; prefer `api_key_env`,
+which reads it from the named environment variable at load time.
+
+A **user providers overlay** layers over this file exactly like `app.toml`:
+`paths::user_providers_path()` (on Linux
+`~/.config/smartvisualsequencer/providers.toml`, `$SVS_USER_PROVIDERS` overrides).
+Because the files are deep-merged, the overlay only needs what it changes:
+
+```toml
+# ~/.config/smartvisualsequencer/providers.toml
+[defaults]
+text = "deepseek"
+
+[providers.deepseek]
+kind = "openai"
+capabilities = ["text"]
+base_url = "https://api.deepseek.com/v1"
+model = "deepseek-chat"
+api_key_env = "DEEPSEEK_API_KEY"
+```
+This keeps the key out of the checked-in file. Settings → Intelligence shows both
+resolved endpoints and persists the planner-model pick under
+`[providers.<id>]` in this overlay.
 
 ## Common issues
 
@@ -460,4 +537,7 @@ prints the local override it skips for the rest.
   another session needs `svs runtime serve --force` (or
   `pkill -f "sd-server --diffusion"`), then rerun.
 - **LLM endpoint calls fail** — confirm the endpoint is running, the configured
-  model is loaded, and `llm.base_url` matches its `/v1` endpoint.
+  model is loaded, and the relevant provider's `base_url` in `providers.toml`
+  matches its `/v1` endpoint (planning uses `text`, `svs eval` uses `vision`).
+  A managed `llamacpp` provider must have `model_path` (and `mmproj` for vision)
+  on disk.
