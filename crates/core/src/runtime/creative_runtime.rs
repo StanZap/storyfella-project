@@ -9,7 +9,7 @@ use crate::{
     errors::{CodedError, ErrorCode},
 };
 
-use super::servers::{marker_path, server_log_path, ServerMarker};
+use clipforge_inference::servers::{marker_path, server_log_path, ServerMarker};
 
 /// How long a submitted job may run before the wait gives up.
 const JOB_DEADLINE: Duration = Duration::from_secs(1200);
