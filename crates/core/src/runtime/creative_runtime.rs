@@ -9,6 +9,8 @@ use crate::{
     errors::{CodedError, ErrorCode},
 };
 
+use super::servers::{marker_path, server_log_path, ServerMarker};
+
 /// How long a submitted job may run before the wait gives up.
 const JOB_DEADLINE: Duration = Duration::from_secs(1200);
 
@@ -20,6 +22,10 @@ pub struct CreativeRuntime {
     client: Client,
     runtime: Arc<Runtime>,
     asset_directory: PathBuf,
+    /// Where the process marker is written, so a later process can stop a
+    /// leftover server this one leaves behind (see [`super::servers`]).
+    cache_dir: PathBuf,
+    executable: PathBuf,
     /// The deployment's listen address — readiness and the mismatch message
     /// both name it.
     host: String,
@@ -84,9 +90,35 @@ impl CreativeRuntime {
             client: Client::new(format!("http://{}:{}", image.host, image.port)),
             runtime: Arc::new(image.runtime()),
             asset_directory: config.asset_dir.join("generated"),
+            cache_dir: config.cache_dir.clone(),
+            executable: image.executable.clone(),
             host: image.host.clone(),
             port: image.port,
         }
+    }
+
+    /// A runtime whose server is **detached**: it logs to the cache directory
+    /// and is not killed when this process exits, so `svs runtime start` leaves
+    /// a resident server behind.
+    pub fn detached(config: &AppConfig) -> Self {
+        let image = &config.image;
+        let runtime = image
+            .runtime()
+            .keep_alive(server_log_path(&config.cache_dir, image.port));
+        Self {
+            client: Client::new(format!("http://{}:{}", image.host, image.port)),
+            runtime: Arc::new(runtime),
+            asset_directory: config.asset_dir.join("generated"),
+            cache_dir: config.cache_dir.clone(),
+            executable: image.executable.clone(),
+            host: image.host.clone(),
+            port: image.port,
+        }
+    }
+
+    /// The pid of the server this process started, when it owns one.
+    pub fn pid(&self) -> Option<u32> {
+        self.runtime.pid()
     }
 
     /// The native generation client (the Settings screen and the backend
@@ -131,13 +163,42 @@ impl CreativeRuntime {
                     CreativeRuntimeError::ReadinessTimeout(timeout)
                 }
                 other => CreativeRuntimeError::Runtime(other),
-            })
+            })?;
+        self.record_marker();
+        Ok(())
     }
 
-    /// Stops the resident generation server.
+    /// Stops the resident generation server this process owns.
     pub async fn stop_generation_runtime(&self) -> Result<(), CreativeRuntimeError> {
         self.runtime.stop().await?;
+        self.clear_marker();
         Ok(())
+    }
+
+    /// Restarts the resident generation server (stop, then start). A server
+    /// this process does not own cannot be restarted — stopping it is a no-op,
+    /// and the restart fails with the profile mismatch.
+    pub async fn restart_generation_runtime(&self) -> Result<(), CreativeRuntimeError> {
+        self.stop_generation_runtime().await?;
+        self.ensure_profile_ready().await
+    }
+
+    /// Records the running server's pid so a *later* process (a fresh CLI, the
+    /// app after a crash) can stop an orphan. Best-effort: a marker that cannot
+    /// be written only costs that later cleanup.
+    fn record_marker(&self) {
+        if let Some(pid) = self.runtime.pid() {
+            let marker = ServerMarker {
+                pid,
+                port: self.port,
+                executable: self.executable.clone(),
+            };
+            let _ = marker.write(&marker_path(&self.cache_dir, self.port));
+        }
+    }
+
+    fn clear_marker(&self) {
+        let _ = std::fs::remove_file(marker_path(&self.cache_dir, self.port));
     }
 
     /// Waits for a submitted job to complete and stores its image in the asset

@@ -33,6 +33,7 @@ use svs_core::registry::pipeline::{
     OutputKind, PipelineRun, RunOptions,
 };
 use svs_core::registry::{ArtifactKind, ArtifactRegistry, GenerationDefaults, Ref, VariantAxis};
+use svs_core::runtime::{marker_path, CreativeRuntime, ServerMarker};
 
 #[derive(Parser)]
 #[command(
@@ -258,9 +259,34 @@ enum StackCommand {
 
 #[derive(Subcommand)]
 enum RuntimeCommand {
-    /// Start (or restart) the native generation server with the Qwen-Image-2.1
-    /// profile and keep it resident in this terminal; ops in other terminals
-    /// reuse it. Ctrl-C stops it.
+    /// Start the generation server in the background and return; it stays
+    /// resident after this command exits (its log goes to the cache directory).
+    Start {
+        #[arg(long, default_value = "qwen-image-2.1", value_parser = parse_model)]
+        model: String,
+        /// Stop whatever holds the port first, even a server this app did not
+        /// start.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Stop the generation server this app started (a recorded pid).
+    /// `--force` also kills a server on the port that was not recorded.
+    Stop {
+        #[arg(long)]
+        force: bool,
+    },
+    /// Stop then start the generation server in the background.
+    Restart {
+        #[arg(long, default_value = "qwen-image-2.1", value_parser = parse_model)]
+        model: String,
+        /// Force-stop first, even a server this app did not start.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Report whether the generation server is up, and whether this app owns it.
+    Status,
+    /// Start (or reuse) the native generation server and keep it resident in
+    /// this terminal; ops in other terminals reuse it. Ctrl-C stops it.
     Serve {
         #[arg(long, default_value = "qwen-image-2.1", value_parser = parse_model)]
         model: String,
@@ -458,29 +484,61 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Eval { eval } => run_eval(eval).await,
-        Command::Runtime { runtime } => match runtime {
-            RuntimeCommand::Serve { model, force } => {
-                if force {
-                    kill_resident_generation_servers()?;
+        Command::Runtime { runtime } => {
+            let config = AppConfig::load().context("could not load config/app.toml")?;
+            match runtime {
+                RuntimeCommand::Serve { model, force } => {
+                    if force {
+                        kill_resident_generation_servers()?;
+                    }
+                    // The address the provider declares is the one both the
+                    // runtime and the client use.
+                    let runtime = config.image.runtime();
+                    runtime
+                        .ensure_ready(&config.image.host, config.image.port)
+                        .await
+                        .map_err(|error| anyhow!(error.report().log()))?;
+                    println!("generation runtime ready with {model}; Ctrl-C to stop");
+                    let _ = tokio::signal::ctrl_c().await;
+                    runtime
+                        .stop()
+                        .await
+                        .map_err(|error| anyhow!(error.report().log()))?;
+                    println!("generation runtime stopped");
+                    Ok(())
                 }
-                let config = AppConfig::load().context("could not load config/app.toml")?;
-                // The address the provider declares is the one both the
-                // runtime and the client use.
-                let runtime = config.image.runtime();
-                runtime
-                    .ensure_ready(&config.image.host, config.image.port)
-                    .await
-                    .map_err(|error| anyhow!(error.report().log()))?;
-                println!("generation runtime ready with {model}; Ctrl-C to stop");
-                let _ = tokio::signal::ctrl_c().await;
-                runtime
-                    .stop()
-                    .await
-                    .map_err(|error| anyhow!(error.report().log()))?;
-                println!("generation runtime stopped");
-                Ok(())
+                RuntimeCommand::Start { model, force } => {
+                    if force {
+                        stop_generation_server(&config, true)?;
+                    }
+                    let runtime = CreativeRuntime::detached(&config);
+                    runtime
+                        .ensure_ready()
+                        .await
+                        .map_err(|error| anyhow!(error.report().log()))?;
+                    println!(
+                        "generation runtime started with {model} (pid {}); `svs runtime stop` stops it",
+                        runtime.pid().unwrap_or_default()
+                    );
+                    Ok(())
+                }
+                RuntimeCommand::Stop { force } => stop_generation_server(&config, force),
+                RuntimeCommand::Restart { model, force } => {
+                    stop_generation_server(&config, force)?;
+                    let runtime = CreativeRuntime::detached(&config);
+                    runtime
+                        .ensure_ready()
+                        .await
+                        .map_err(|error| anyhow!(error.report().log()))?;
+                    println!(
+                        "generation runtime restarted with {model} (pid {})",
+                        runtime.pid().unwrap_or_default()
+                    );
+                    Ok(())
+                }
+                RuntimeCommand::Status => generation_status(&config).await,
             }
-        },
+        }
     }
 }
 
@@ -497,15 +555,17 @@ async fn run_eval(eval: EvalArgs) -> Result<()> {
         vision_config.model = model.clone();
     }
     // A managed (`llamacpp`) vision provider is started on demand; an `openai`
-    // provider has no server and is called as-is.
-    if let Some(server) = config
+    // provider has no server and is called as-is. The runtime is bound, not a
+    // temporary: it kills its child when dropped, and `svs eval` is the process
+    // that owns the server for the whole evaluation.
+    let managed_vision = config
         .vision
         .as_ref()
         .and_then(|deployment| deployment.server.as_ref())
-    {
-        server
-            .runtime()
-            .ensure_ready(&server.host, server.port)
+        .map(|server| (server.runtime(), server.host.clone(), server.port));
+    if let Some((runtime, host, port)) = &managed_vision {
+        runtime
+            .ensure_ready(host, *port)
             .await
             .context("could not start the managed vision server")?;
     }
@@ -618,12 +678,71 @@ async fn run_eval(eval: EvalArgs) -> Result<()> {
 /// Kills sd-server processes this CLI does not own (stale instances from
 /// interrupted sessions hold the port and cannot be restarted by the
 /// runtime). `pkill` exits 1 when nothing matched, which is fine.
+/// Stops the generation server on the provider's port. A server this app
+/// started is found by its recorded marker; `force` also shells out to `pkill`
+/// for one it did not start (a hand-launched or otherwise unrecorded server).
+fn stop_generation_server(config: &AppConfig, force: bool) -> Result<()> {
+    let port = config.image.port;
+    let path = marker_path(&config.cache_dir, port);
+    match ServerMarker::read(&path) {
+        Some(marker) if marker.is_live() => {
+            marker
+                .kill()
+                .with_context(|| format!("could not stop the server recorded on :{port}"))?;
+            let _ = std::fs::remove_file(&path);
+            println!(
+                "stopped the generation server on :{port} (pid {})",
+                marker.pid
+            );
+            return Ok(());
+        }
+        // A marker whose process is gone: clear it so nothing keeps pointing at
+        // a dead pid, and fall through to the force/kill path.
+        Some(marker) => {
+            let _ = std::fs::remove_file(&path);
+            println!(
+                "cleared a stale marker for :{port} (pid {} is gone)",
+                marker.pid
+            );
+        }
+        None => {}
+    }
+    if force {
+        kill_resident_generation_servers()?;
+    } else {
+        println!(
+            "no generation server recorded on :{port} — a server this app did not start needs `--force`"
+        );
+    }
+    Ok(())
+}
+
+/// Reports whether the generation server is up, and whether this app started it.
+async fn generation_status(config: &AppConfig) -> Result<()> {
+    let port = config.image.port;
+    let marker =
+        ServerMarker::read(&marker_path(&config.cache_dir, port)).filter(ServerMarker::is_live);
+    let up = CreativeRuntime::new(config)
+        .client()
+        .capabilities()
+        .await
+        .is_ok();
+    match (up, marker) {
+        (true, Some(marker)) => println!(":{port} up · started by this app (pid {})", marker.pid),
+        (true, None) => {
+            println!(":{port} up · not started by this app — `svs runtime stop --force` kills it")
+        }
+        (false, _) => println!(":{port} down"),
+    }
+    Ok(())
+}
+
 fn kill_resident_generation_servers() -> Result<()> {
     let status = std::process::Command::new("pkill")
         .args(["-f", "sd-server --diffusion"])
         .status()
         .context("could not run pkill")?;
-    println!("killed stale generation servers (pkill exit {status})");
+    println!("killed resident generation servers (pkill exit {status})");
     Ok(())
 }
 

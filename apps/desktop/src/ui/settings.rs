@@ -39,6 +39,7 @@ enum ModelListState {
 enum ServiceAction {
     Start,
     Stop,
+    Restart,
 }
 
 impl ServiceAction {
@@ -46,46 +47,50 @@ impl ServiceAction {
         match self {
             Self::Start => "Start",
             Self::Stop => "Stop",
+            Self::Restart => "Restart",
         }
     }
 }
 
-fn action_for(service: ServiceId, status: HealthStatus) -> Option<ServiceAction> {
+/// The controls a service offers at a given status. The resident generation
+/// server can be started when it is down, and restarted or stopped while it is
+/// up. External (text/vision) endpoints are never started or stopped here.
+fn actions_for(service: ServiceId, status: HealthStatus) -> Vec<ServiceAction> {
     match (service, status) {
-        (ServiceId::Llm | ServiceId::Vision, _) => None,
-        (ServiceId::ImageGeneration, HealthStatus::Online) => Some(ServiceAction::Stop),
-        (ServiceId::ImageGeneration, _) => Some(ServiceAction::Start),
+        (ServiceId::Llm | ServiceId::Vision, _) => Vec::new(),
+        (ServiceId::ImageGeneration, HealthStatus::Online) => {
+            vec![ServiceAction::Restart, ServiceAction::Stop]
+        }
+        (ServiceId::ImageGeneration, _) => vec![ServiceAction::Start],
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{action_for, ServiceAction};
+    use super::{actions_for, ServiceAction};
     use svs_core::runtime::{HealthStatus, ServiceId};
 
     #[test]
     fn external_services_have_no_controls() {
-        assert_eq!(action_for(ServiceId::Llm, HealthStatus::Online), None);
-        assert_eq!(action_for(ServiceId::Vision, HealthStatus::Online), None);
+        assert!(actions_for(ServiceId::Llm, HealthStatus::Online).is_empty());
+        assert!(actions_for(ServiceId::Vision, HealthStatus::Online).is_empty());
     }
 
     #[test]
-    fn the_resident_runtime_offers_start_stop_by_state() {
+    fn the_resident_runtime_offers_start_stop_and_restart() {
+        for status in [
+            HealthStatus::Idle,
+            HealthStatus::Degraded,
+            HealthStatus::Offline,
+        ] {
+            assert_eq!(
+                actions_for(ServiceId::ImageGeneration, status),
+                vec![ServiceAction::Start]
+            );
+        }
         assert_eq!(
-            action_for(ServiceId::ImageGeneration, HealthStatus::Idle),
-            Some(ServiceAction::Start)
-        );
-        assert_eq!(
-            action_for(ServiceId::ImageGeneration, HealthStatus::Degraded),
-            Some(ServiceAction::Start)
-        );
-        assert_eq!(
-            action_for(ServiceId::ImageGeneration, HealthStatus::Offline),
-            Some(ServiceAction::Start)
-        );
-        assert_eq!(
-            action_for(ServiceId::ImageGeneration, HealthStatus::Online),
-            Some(ServiceAction::Stop)
+            actions_for(ServiceId::ImageGeneration, HealthStatus::Online),
+            vec![ServiceAction::Restart, ServiceAction::Stop]
         );
     }
 }
@@ -262,6 +267,9 @@ fn operate_service(
             (ServiceId::ImageGeneration, ServiceAction::Stop) => {
                 runtime.stop_generation_runtime().await
             }
+            (ServiceId::ImageGeneration, ServiceAction::Restart) => {
+                runtime.restart_generation_runtime().await
+            }
             (ServiceId::Llm | ServiceId::Vision, _) => Ok(()),
         };
         busy.set(None);
@@ -356,15 +364,17 @@ fn StatusSettings(
                         div { class: "flex items-center justify-end gap-3",
                             if busy_service == Some(service.id) {
                                 span { class: "size-3 animate-spin rounded-full border border-zinc-600 border-t-white" }
-                            } else if let Some(action) = action_for(service.id, service.status) {
-                                button {
-                                    class: "h-7 rounded-md bg-white/[0.06] px-2.5 text-[10px] font-medium text-zinc-400 transition hover:bg-white/[0.1] hover:text-white disabled:cursor-not-allowed disabled:opacity-40",
-                                    disabled: is_busy,
-                                    onclick: {
-                                        let service = service.id;
-                                        move |_| on_operate.call((service, action))
-                                    },
-                                    "{action.label()}"
+                            } else {
+                                for action in actions_for(service.id, service.status) {
+                                    button {
+                                        class: "h-7 rounded-md bg-white/[0.06] px-2.5 text-[10px] font-medium text-zinc-400 transition hover:bg-white/[0.1] hover:text-white disabled:cursor-not-allowed disabled:opacity-40",
+                                        disabled: is_busy,
+                                        onclick: {
+                                            let id = service.id;
+                                            move |_| on_operate.call((id, action))
+                                        },
+                                        "{action.label()}"
+                                    }
                                 }
                             }
                             StatusDot { status: service.status }
