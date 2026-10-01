@@ -25,6 +25,9 @@ pub const CONFIG_FILE: &str = "config/app.toml";
 /// Where plans live, relative to the project root.
 pub const PLANS_DIR: &str = "config/plans";
 
+/// The providers registry file, relative to the project root.
+pub const PROVIDERS_FILE: &str = "providers.toml";
+
 /// The project root — see the module comment for the search order.
 pub fn root() -> PathBuf {
     if let Some(value) = std::env::var_os("SVS_HOME") {
@@ -54,6 +57,11 @@ pub fn config_path() -> PathBuf {
 /// The resolved plans directory.
 pub fn plans_dir() -> PathBuf {
     root().join(PLANS_DIR)
+}
+
+/// The resolved providers registry file.
+pub fn providers_path() -> PathBuf {
+    root().join(PROVIDERS_FILE)
 }
 
 /// `path` made absolute against [`root`] — unless it already is absolute, so a
@@ -120,7 +128,9 @@ mod tests {
         // here would make every search fail silently.
         assert_eq!(config_path(), root().join("config/app.toml"));
         assert_eq!(plans_dir(), root().join("config/plans"));
+        assert_eq!(providers_path(), root().join("providers.toml"));
         assert!(Path::new(CONFIG_FILE).is_relative());
         assert!(Path::new(PLANS_DIR).is_relative());
+        assert!(Path::new(PROVIDERS_FILE).is_relative());
     }
 }

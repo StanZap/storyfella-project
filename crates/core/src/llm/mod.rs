@@ -8,7 +8,7 @@ use thiserror::Error;
 use crate::errors::{CodedError, ErrorCode};
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct LmStudioConfig {
+pub struct LlmConfig {
     pub base_url: String,
     pub model: String,
     pub api_key: Option<String>,
@@ -16,9 +16,9 @@ pub struct LmStudioConfig {
 }
 
 #[derive(Clone, Debug)]
-pub struct LmStudioClient {
+pub struct LlmClient {
     http: Client,
-    config: LmStudioConfig,
+    config: LlmConfig,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -69,7 +69,7 @@ pub struct ChatOptions {
     pub seed: Option<u64>,
     pub response_format: Option<Value>,
     /// OpenAI-style function tools the model may call (multi-round
-    /// planning); see [`LmStudioClient::chat_with_tools`].
+    /// planning); see [`LlmClient::chat_with_tools`].
     pub tools: Option<Vec<ToolDefinition>>,
 }
 
@@ -142,18 +142,18 @@ pub struct Model {
 }
 
 #[derive(Debug, Error)]
-pub enum LmStudioError {
+pub enum LlmError {
     #[error("failed to construct HTTP client: {0}")]
     Build(#[source] reqwest::Error),
-    #[error("LM Studio request failed: {0}")]
+    #[error("LLM request failed: {0}")]
     Request(#[source] reqwest::Error),
-    #[error("LM Studio returned HTTP {status}: {body}")]
+    #[error("LLM returned HTTP {status}: {body}")]
     Status { status: StatusCode, body: String },
-    #[error("LM Studio planning did not finish: {0}")]
+    #[error("LLM planning did not finish: {0}")]
     Planner(String),
 }
 
-impl CodedError for LmStudioError {
+impl CodedError for LlmError {
     fn code(&self) -> ErrorCode {
         match self {
             Self::Build(_) => ErrorCode::LlmBuild,
@@ -273,16 +273,16 @@ pub fn strip_json_fence(value: &str) -> &str {
         .trim()
 }
 
-impl LmStudioClient {
-    pub fn new(config: LmStudioConfig) -> Result<Self, LmStudioError> {
+impl LlmClient {
+    pub fn new(config: LlmConfig) -> Result<Self, LlmError> {
         let http = Client::builder()
             .timeout(config.timeout)
             .build()
-            .map_err(LmStudioError::Build)?;
+            .map_err(LlmError::Build)?;
         Ok(Self { http, config })
     }
 
-    /// The model identifier every request carries (what LM Studio routes to).
+    /// The model identifier every request carries (what the endpoint routes to).
     pub fn model(&self) -> &str {
         &self.config.model
     }
@@ -293,14 +293,14 @@ impl LmStudioClient {
         self.config.model = model;
     }
 
-    pub async fn list_models(&self) -> Result<ModelList, LmStudioError> {
+    pub async fn list_models(&self) -> Result<ModelList, LlmError> {
         let url = format!("{}/models", self.config.base_url.trim_end_matches('/'));
         let request = self.authorize(self.http.get(url));
-        let response = request.send().await.map_err(LmStudioError::Request)?;
+        let response = request.send().await.map_err(LlmError::Request)?;
         Self::decode(response).await
     }
 
-    pub async fn chat(&self, messages: &[ChatMessage]) -> Result<ChatCompletion, LmStudioError> {
+    pub async fn chat(&self, messages: &[ChatMessage]) -> Result<ChatCompletion, LlmError> {
         self.chat_with_options(messages, &ChatOptions::default())
             .await
     }
@@ -309,7 +309,7 @@ impl LmStudioClient {
         &self,
         messages: &[ChatMessage],
         options: &ChatOptions,
-    ) -> Result<ChatCompletion, LmStudioError> {
+    ) -> Result<ChatCompletion, LlmError> {
         let url = format!(
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
@@ -325,7 +325,7 @@ impl LmStudioClient {
             tools: options.tools.as_deref(),
         });
 
-        let response = request.send().await.map_err(LmStudioError::Request)?;
+        let response = request.send().await.map_err(LlmError::Request)?;
         Self::decode(response).await
     }
 
@@ -343,7 +343,7 @@ impl LmStudioClient {
         response_format: Option<Value>,
         run_tool: impl Fn(&str, &str) -> String,
         max_rounds: usize,
-    ) -> Result<ChatCompletion, LmStudioError> {
+    ) -> Result<ChatCompletion, LlmError> {
         let mut conversation = messages.to_vec();
         for _ in 0..max_rounds {
             let options = ChatOptions {
@@ -356,9 +356,7 @@ impl LmStudioClient {
                 .choices
                 .first()
                 .map(|choice| choice.message.clone())
-                .ok_or_else(|| {
-                    LmStudioError::Planner("completion carried no message".to_owned())
-                })?;
+                .ok_or_else(|| LlmError::Planner("completion carried no message".to_owned()))?;
             let Some(calls) = message.tool_calls.clone() else {
                 return Ok(completion);
             };
@@ -371,7 +369,7 @@ impl LmStudioClient {
                 conversation.push(ChatMessage::tool_result(&call.id, result));
             }
         }
-        Err(LmStudioError::Planner(
+        Err(LlmError::Planner(
             "tool-calling round limit reached".to_owned(),
         ))
     }
@@ -385,16 +383,16 @@ impl LmStudioClient {
 
     async fn decode<T: for<'de> Deserialize<'de>>(
         response: reqwest::Response,
-    ) -> Result<T, LmStudioError> {
+    ) -> Result<T, LlmError> {
         let status = response.status();
         if !status.is_success() {
             let body = response
                 .text()
                 .await
                 .unwrap_or_else(|_| "unreadable response".to_owned());
-            return Err(LmStudioError::Status { status, body });
+            return Err(LlmError::Status { status, body });
         }
-        response.json().await.map_err(LmStudioError::Request)
+        response.json().await.map_err(LlmError::Request)
     }
 }
 

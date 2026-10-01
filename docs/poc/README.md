@@ -8,7 +8,7 @@ surface. For how the pieces fit together today, start at
 
 | POC | What it validated | Status |
 | --- | --- | --- |
-| [`vlm/README.md`](vlm/README.md) | Vision-capable models through LM Studio's chat-completions API | Current (`vlm_probe` / `svs eval`) |
+| [`vlm/README.md`](vlm/README.md) | Vision-capable models through the LLM endpoint's chat-completions API | Current (`vlm_probe` / `svs eval`) |
 | [`image-generation/README.md`](image-generation/README.md) | SANA Sprint Diffusers pipeline behind the Python `/generate` contract | Removed (Qwen-Image-2.1 migration) |
 | [`native-generation/README.md`](native-generation/README.md) | Resident generation via `stable-diffusion.cpp` | Superseded — now Qwen-Image-2.1 |
 | [`segmentation/README.md`](segmentation/README.md) | SAM 2.1 Tiny behind the Python `/segment` contract | Removed (Qwen-Image-2.1 migration) |

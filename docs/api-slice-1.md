@@ -59,7 +59,7 @@ surfaces the artifact registry in the GUI.
 | `crates/core/src/registry/mod.rs` | Artifact model (kinds, variants, scenes, beats, layers, revisions, drafts), one id space, `c:` ref resolution, parent/kind invariants, snapshot/restore undo |
 | `crates/core/src/registry/ops.rs` | Typed operation set (slice 1: create, variant, regenerate, compose, draft, modify), closed JSON vocabulary (`op`-tagged), compiler (`compile`), executor (`execute`), operation log |
 | `crates/core/src/registry/pipeline.rs` | Linear fail-fast pipeline builder: closed `Step` vocabulary (`LoadImage`, `Checkpoint`, `Generate`, `Llm`), typed handles (`ImageHandle`, `PromptHandle`, `FeedbackHandle`), static validation at `build()`, `GenerationBackend` trait, `GenerateResponse`, checkpoints, approval policies, `RunOptions` |
-| `crates/core/src/registry/backend.rs` | `CreativeBackend` — the live backend (`CreativeRuntime` + `LmStudioClient`); LLM steps are soft dependencies that degrade to manual input |
+| `crates/core/src/registry/backend.rs` | `CreativeBackend` — the live backend (`CreativeRuntime` + `LlmClient`); LLM steps are soft dependencies that degrade to manual input |
 | `clipforge-inference` (`../clipforge/crates/inference`) | The shared native-inference crate: `sd::Client` — the typed `sdcpp` client for the native `sd-server` — plus `sd::Runtime` (the resident process), `sd::qwen_image_2_1()` (the served profile), and `ModelStore` (provisioning). storyfella's `crates/core/src/runtime/` adapts it as `CreativeRuntime` (see `architecture.md`) |
 | `crates/core/src/persistence/mod.rs` | SQLite project store (`ProjectDb`): §10 schema, versioned migrations, WAL, snapshot save/load of the registry |
 | `apps/cli/src/bin/svs.rs` | The `svs` CLI (clap, a binary of the `svs-cli` package) |
@@ -100,9 +100,9 @@ svs --project p.db op draft c:<story> "write the opening" --text "…"   # manua
 svs --project p.db op modify c:<char> "give her a short bob haircut"   # instruction edit
 svs --project p.db op describe c:<char> "Mia, a lighthouse keeper, short bob"  # make an edit canonical
 svs --project p.db stack run stack.json --approve auto             # the VLLM contract test bed
-svs --project p.db stack propose "Add a rainy variant of the kitchen scene"   # LM Studio → JSON
+svs --project p.db stack propose "Add a rainy variant of the kitchen scene"   # LLM → JSON
 svs --project p.db runtime serve --force                           # resident generation server
-svs eval -i image.png -p "answer YES or NO: …"                     # LM Studio vision judge
+svs eval -i image.png -p "answer YES or NO: …"                     # LLM vision judge
 svs --project p.db log [c:<ref>]
 ```
 
@@ -128,10 +128,10 @@ can stay light (or run on another machine) without the generation backend:
 | Tier | Needs running | Ops |
 | --- | --- | --- |
 | Model-only | nothing — any machine, even a fresh checkout | `create` of text-only kinds (story/scene/beat), `compose`, `draft --text`, `log`, `project`, `stack run` of model-only stacks |
-| LLM-assisted | LM Studio (see below) | `draft` (propose + approve), `modify` (the LLM grounds the instruction), `stack propose`, free-form canvas messages (proposed stacks shown for approval) |
+| LLM-assisted | LLM endpoint (see below) | `draft` (propose + approve), `modify` (the LLM grounds the instruction), `stack propose`, free-form canvas messages (proposed stacks shown for approval) |
 | Generation | provisioned Qwen-Image-2.1 profile + resident `sd-server` | `create`/`variant` of visual kinds (first image), `regenerate`, `modify` |
 
-LLM steps are soft dependencies: with LM Studio off, `draft`/`modify`
+LLM steps are soft dependencies: with the LLM endpoint off, `draft`/`modify`
 degrade to deterministic/manual behaviour instead of failing the stack.
 
 ### Keeping the generation server resident
@@ -151,9 +151,9 @@ svs --project p.db runtime serve --force   # Ctrl-C to stop
   `ProfileMismatch` message naming the fix (`svs runtime serve --force` or
   `pkill -f "sd-server --diffusion"`).
 
-### LM Studio
+### LLM endpoint
 
-`lm_studio.model` in `config/app.toml` must match a model id LM Studio
+`llm.model` in `config/app.toml` must match a model id the endpoint
 serves (`curl http://localhost:1234/v1/models` lists them). The checked-in
 config points at the larger planner model used on the dev machine.
 
@@ -165,8 +165,8 @@ config points at the larger planner model used on the dev machine.
   peak ≈23.4 GiB. Qwen-Image-2.1 has no few-step turbo path.
 - The 20-minute job cap in `CreativeRuntime::wait_for_job` only matters on
   slow hardware.
-- `model_setup` runs once per machine (artifacts land in `paths.model_dir`,
-  `models/` in this checkout).
+- `model_setup` runs once per machine (artifacts land in the image provider's
+  `model_dir` from `providers.toml`, `models/` in this checkout).
 
 ## Divergences from the design doc (deferred, by directive)
 
@@ -180,7 +180,7 @@ config points at the larger planner model used on the dev machine.
   slash-command composer (`/create`, `/variant`, `/regenerate`,
   `/modify`), undo/redo via registry snapshots. `modify` runs unattended (an
   instruction edit has no checkpoint). Free-form composer
-  messages (no leading `/`) are proposed as operation stacks by LM Studio
+  messages (no leading `/`) are proposed as operation stacks by the LLM
   (`CreativeBackend::propose_stack`, shared with `svs stack propose`) and
   shown in an approval modal with per-op toggles; approved stacks run in
   order through the same worker-thread machinery, so intra-op checkpoints
@@ -203,7 +203,7 @@ config points at the larger planner model used on the dev machine.
   Image generation, persisted line-preserving): `[generation] steps`,
   `[generation] cfg_scale`/`sample_method`, `[generation.sizes]` per kind
   (`WxH` strings), and `[lora]` bindings (`character`, `environment`,
-  `object` file names within `generation.lora_dir` plus a shared
+  `object` file names within the provider's `lora_dir` plus a shared
   `multiplier`; discovery is recursive (subfolders and symlinked model
   trees) with a refresh icon in Settings). The
   canvas ops read a
@@ -223,7 +223,7 @@ config points at the larger planner model used on the dev machine.
   multi-round tool session (`list_artifacts`, `list_loras` — the model
   discovers the registry and the adapters itself) with the strict JSON
   schema riding every round so the final stack stays in the closed
-  vocabulary (validated live against LM Studio). Servers that reject
+  vocabulary (validated live against the LLM endpoint). Servers that reject
   `tools` fall back to the static listing + strict schema.
 - **`variant --name`** — explicit naming for variants (auto-naming
   `{base}-{axis}` remains the fallback).

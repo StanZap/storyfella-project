@@ -273,7 +273,7 @@ Rules:
 - The builder validates statically at `build()` (sizes within contract bounds,
   step counts, LoRA count); runtime failures surface as job
   statuses, unchanged.
-- The VLLM (LM Studio) never produces code — it emits operation stacks as
+- The VLLM (the LLM endpoint) never produces code — it emits operation stacks as
   structured JSON (function calling against a schema Rust defines); Rust
   deserializes, validates, and only *proposes* for approval before executing.
 - Slice 1 keeps stacks linear (a sequence of steps); parallel execution
@@ -296,9 +296,9 @@ vocabulary is `LoadImage`, `Checkpoint`, `Generate`, `Llm`.
 
 **The VLLM is also a pipeline primitive.** Besides proposing whole stacks it
 can be a step inside one: `describe(image) -> caption/prompt`, `plan(text) ->
-stack`, `critique(image, prompt) -> feedback`. LM Studio is external and may
-be offline, so LLM steps are soft dependencies: they degrade to manual input
-and never hard-fail a stack.
+stack`, `critique(image, prompt) -> feedback`. The LLM endpoint is external
+and may be offline, so LLM steps are soft dependencies: they degrade to
+manual input and never hard-fail a stack.
 
 **Closed vocabulary.** The VLLM combines step kinds, it never invents them.
 Step kinds are a Rust enum; the JSON schema for stacks contains only
@@ -342,7 +342,7 @@ pipeline → executes — one code path shared with the UI and the VLLM.
   `svs op modify <ref> <description>`
 - `svs stack run <stack.json>` — execute a serialized op-stack; doubles as
   the VLLM contract test bed, since the model emits the same JSON. `svs stack
-  propose <message>` drives LM Studio to produce a stack from free text.
+  propose <message>` drives the LLM endpoint to produce a stack from free text.
 - `--out <dir>` on any op drops the output image into a folder for human
   review — the manual validation tier.
 - `svs log <ref>` — show an artifact's operation log.
@@ -674,8 +674,8 @@ registry, and UX fixes.
 - `crates/core/src/runtime/creative_runtime.rs` — `CreativeRuntime`, the adapter over
   the shared runtime + client (readiness, job wait, asset import) the pipeline
   builder wraps; `health.rs` probes the dependent services.
-- `crates/core/src/llm/` — LM Studio client; the operation registry is the planner
-  business logic it will serve.
+- `crates/core/src/llm/` — LLM endpoint client; the operation registry is the
+  planner business logic it will serve.
 
 ### Open decisions to settle first (with the user)
 

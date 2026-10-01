@@ -1,6 +1,6 @@
 # Visual LLM proof of concept
 
-This probe exercises image understanding through LM Studio's OpenAI-compatible API. It is deliberately separate from application business logic while reusing the production `LmStudioClient`.
+This probe exercises image understanding through the LLM endpoint's OpenAI-compatible API. It is deliberately separate from application business logic while reusing the production `LlmClient`.
 
 Generate the deterministic fixtures:
 
@@ -8,7 +8,7 @@ Generate the deterministic fixtures:
 cargo run -p svs-cli --example generate_vlm_fixtures
 ```
 
-List models visible through LM Studio:
+List models visible through the LLM endpoint:
 
 ```bash
 cargo run -p svs-cli --bin vlm_probe -- --list-models
@@ -24,4 +24,4 @@ cargo run -p svs-cli --bin vlm_probe -- \
 
 The probe writes `latest/results.json` for programmatic inspection and `latest/report.md` for a concise comparison. Its score checks fixture-specific semantic invariants such as object color, position, and aggregate count in a schema-valid response. It is a regression signal, not a substitute for human visual-quality evaluation.
 
-LM Studio may JIT-load downloaded models. The first request can therefore take materially longer than later requests and is included in the reported latency.
+The endpoint may JIT-load downloaded models. The first request can therefore take materially longer than later requests and is included in the reported latency.

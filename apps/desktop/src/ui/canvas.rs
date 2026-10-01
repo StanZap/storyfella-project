@@ -393,7 +393,7 @@ struct StackProposal {
 /// Free-form composer text → the LLM proposes an operation stack against
 /// the closed vocabulary; the proposal is validated and shown for approval
 /// (LLM proposals are gated, per the execution model). A soft dependency:
-/// without LM Studio this degrades to a hint, never a hard failure.
+/// without the endpoint this degrades to a hint, never a hard failure.
 fn propose_operations(
     app_state: Signal<AppState>,
     backend: CreativeBackend,
@@ -407,7 +407,7 @@ fn propose_operations(
         error_report.set(Some(
             ReportedError::plain(
                 ErrorCode::AppLlmUnavailable,
-                "LM Studio is not configured or reachable — use slash commands instead \
+                "The LLM endpoint is not configured or reachable — use slash commands instead \
                  (/create, /variant, /regenerate, /modify, /describe, /attach-lora)",
             )
             .with_context("message", message)

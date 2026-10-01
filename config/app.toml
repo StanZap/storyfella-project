@@ -5,13 +5,14 @@ character = "1024x1536"
 
 [lora]
 multiplier = 1.0
-# Per-kind adapters (file names in generation.lora_dir):
+# Per-kind adapters (file names in the provider's lora_dir, see providers.toml):
 # character = "mia-v2.safetensors"
 # environment = "sea-shore.safetensors"
 # object = "brass-lantern.safetensors"
 
-[lm_studio]
-base_url = "http://localhost:1234/v1"
+[llm]
+# llama.cpp's `llama-server` on this machine (any OpenAI-compatible endpoint works).
+base_url = "http://localhost:8080/v1"
 # Instruction grounding for `modify` is a subtraction task — restate the
 # artifact's traits as invariants, minus the one the edit changes — and it
 # is model-sensitive. Measured 2026-08-10 on the same prompt: gemma-4-e4b
@@ -27,15 +28,10 @@ timeout_seconds = 60
 steps = 25
 cfg_scale = 6.0
 sample_method = "euler"
-base_url = "http://127.0.0.1:7861"
-profile = "qwen-image-2.1"
-# executable and lora_dir default beneath model_dir.
-# executable = "models/runtime/stable-diffusion.cpp/bin/sd-server"
-# lora_dir = "models/loras"
 
 [paths]
-# Development uses the model artifacts already provisioned in this checkout.
+# Development uses the assets and cache already set up in this checkout.
 # Packaged builds may omit these overrides to use platform application directories.
-model_dir = "models"
+# The model tree itself is named by the image provider in providers.toml.
 cache_dir = "cache"
 asset_dir = "assets"

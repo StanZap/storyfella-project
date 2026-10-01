@@ -271,7 +271,7 @@ pub fn matching(options: &[String], query: &str) -> Vec<String> {
 ///
 /// A native `select` is right for a handful of fixed options (`Autosave`); it
 /// is wrong for a list discovered at runtime that can run to dozens of entries
-/// — the LM Studio model ids, a LoRA directory. The interaction is deliberately
+/// — the LLM endpoint's model ids, a LoRA directory. The interaction is deliberately
 /// the command palette's: type to filter, arrows to move, Enter to pick, Esc or
 /// a click away to dismiss. One search idiom, not two.
 ///

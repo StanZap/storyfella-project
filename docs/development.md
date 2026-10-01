@@ -8,7 +8,7 @@ Rust application.
 - Rust stable
 - The current stable Dioxus CLI (`dx`) — see <https://dioxuslabs.com>
 - Node.js/npm (Tailwind CSS 4 toolchain, pinned in `apps/desktop/package-lock.json`)
-- LM Studio, running separately, only when LLM features are exercised
+- An OpenAI-compatible LLM endpoint (llama.cpp / LM Studio), running separately, only when LLM features are exercised
 - A CUDA toolchain and an NVIDIA GPU to build and run `sd-server` (see below)
 - Linux desktop builds: the WebKitGTK/GTK development packages (see below)
 
@@ -148,8 +148,10 @@ cd ..
 The app spawns the `sd-server` binary from the vendored
 `stable-diffusion.cpp` checkout (it is git-ignored, like `models/`). Qwen-Image-2.1
 support landed upstream in `3f8527a` (`master-929-3f8527a`), so check the tree
-out at least that revision before building. Build it once and place it where
-`generation.executable` points:
+out at least that revision before building. Build it once and place it where the
+image provider's `executable` points (default
+`<model_dir>/runtime/stable-diffusion.cpp/bin/sd-server`, see the
+[`providers.toml`](#providerstoml) section below):
 
 ```bash
 # CUDA build for NVIDIA GPUs — the Qwen-Image-2.1 int8 convrot weights need it.
@@ -259,8 +261,8 @@ Two inputs are still missing before a bundle is more than an empty shell (see
 - **The runtime payload.** `sd-server` is bundled with `[bundle] external_bin`
   (sidecar binaries) and/or `[bundle] resources` (data files); both keys are inert
   until the file exists. Shipping it also needs the code change named in item 11:
-  resolve it relative to the bundle root instead of `generation.executable` in
-  `config/app.toml`.
+  resolve it relative to the bundle root instead of the provider's `executable`
+  in `providers.toml`.
 
 ## Run the generation backend
 
@@ -273,7 +275,8 @@ cargo run -p svs-cli --bin svs -- runtime serve --force   # Ctrl-C to stop
 ```
 
 `--force` kills stale `sd-server` processes from interrupted sessions that hold
-port 7861. Only the `qwen-image-2.1` profile is served. See
+the configured port (7861 in the checked-in `providers.toml`). Only the
+`qwen-image-2.1` profile is served. See
 [`runtime-lifecycle.md`](runtime-lifecycle.md).
 
 ## Tests
@@ -288,7 +291,8 @@ The workspace runs 131 tests in `svs-core` plus 77 in the desktop crate, and 3
 in the CLI binaries (211 total). They cover state transitions
 (`apps/desktop/src/state/`), the runtime adapter and health probes
 (`crates/core/src/runtime/`), and multimodal message shape
-(`crates/core/src/llm/`). They do not require a running `sd-server` or LM Studio.
+(`crates/core/src/llm/`). They do not require a running `sd-server` or an LLM
+endpoint.
 The `sdcpp` wire serialization tests (request body + job decoding) live in the
 shared `clipforge-inference` crate (`../clipforge/crates/inference/src/sd/`) and
 are not part of this workspace's run. `cargo xtask test` runs the same command.
@@ -355,14 +359,15 @@ checkout rather than `/tmp`.
 
 | Command | Purpose |
 | --- | --- |
-| `cargo run -p svs-cli --bin model_setup [-- --model-dir <dir>]` | Download, resume, and checksum-verify the Qwen-Image-2.1 profile (diffusion + text encoder + VAE) |
-| `cargo run -p svs-cli --bin vlm_probe -- --list-models` | List models visible through LM Studio |
+| `cargo run -p svs-cli --bin model_setup` | Download, resume, and checksum-verify the Qwen-Image-2.1 profile (diffusion + text encoder + VAE) into the image provider's model tree |
+| `cargo run -p svs-cli --bin vlm_probe -- --list-models` | List models visible through the LLM endpoint |
 | `cargo run -p svs-cli --bin vlm_probe -- --model <id>` | Run the visual-LLM probe against one model |
 | `cargo run -p svs-cli --example generate_vlm_fixtures` | Regenerate the deterministic probe fixtures |
 | `cargo run -p svs-cli --bin svs -- --help` | Operation CLI (typed ops, stacks, runtime serve, log, eval) — see [`api-slice-1.md`](api-slice-1.md) for the command reference and the light/LLM/generation session split |
 
-`model_setup` provisions into `paths.model_dir` (the `--model-dir` override
-wins). The `svs` CLI needs no provisioned models for the model-only and
+`model_setup` provisions into the image provider's model tree (the
+`model_dir` named in `providers.toml`, rooted at `models/` in this checkout).
+The `svs` CLI needs no provisioned models for the model-only and
 LLM-assisted tiers; only the visual ops (`create`/`variant`/`regenerate`/`modify`)
 touch the generation backend.
 
@@ -374,14 +379,10 @@ paths in the file resolve against the project root (see the `paths` note below).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `lm_studio.base_url` | `http://localhost:1234/v1` | LM Studio OpenAI-compatible endpoint |
-| `lm_studio.model` | `local-model` | Model identifier loaded in LM Studio (editable in Settings → Intelligence; the picker applies it immediately and saves it back to this file) |
-| `lm_studio.api_key` | none | Optional bearer token |
-| `lm_studio.timeout_seconds` | `60` | Request timeout for planning/vision calls |
-| `generation.base_url` | `http://127.0.0.1:7861` | The native `sd-server` endpoint the client calls |
-| `generation.profile` | `qwen-image-2.1` | The resident profile id; `qwen-image-2.1` is the only value served |
-| `generation.executable` | `<model_dir>/runtime/stable-diffusion.cpp/bin/sd-server` | Path to `sd-server` |
-| `generation.lora_dir` | `<model_dir>/loras` | LoRA root; adapter files are discovered here (subfolders and symlinked folders included) |
+| `llm.base_url` | `http://localhost:1234/v1` | OpenAI-compatible LLM endpoint (llama.cpp, LM Studio, …) |
+| `llm.model` | `local-model` | Model identifier loaded in the endpoint (editable in Settings → Intelligence; the picker applies it immediately and saves it back to this file) |
+| `llm.api_key` | none | Optional bearer token |
+| `llm.timeout_seconds` | `60` | Request timeout for planning/vision calls |
 | `generation.steps` | `25` | Default steps per generation (Settings → Image generation; Qwen-Image-2.1 has no few-step turbo path) |
 | `generation.cfg_scale` | `6.0` | Text-guidance scale (`sample_params.guidance.txt_cfg`) |
 | `generation.sample_method` | `euler` | Sampler (`sample_params.sample_method`) |
@@ -394,25 +395,57 @@ paths in the file resolve against the project root (see the `paths` note below).
 | `lora.environment` | none | Adapter file applied to environment generations without a project binding |
 | `lora.object` | none | Adapter file applied to object generations without a project binding |
 | `lora.multiplier` | `1.0` | Weight for the bindings above (per-artifact bindings carry their own) |
-| `paths.model_dir` | platform data dir + `models` | Model artifacts root |
 | `paths.cache_dir` | platform cache dir | Disposable cache data |
 | `paths.asset_dir` | platform data dir + `assets` | Imported/generated assets |
 | `paths.project_dir` | platform data dir + `projects` | Where the Projects screen keeps `.svs-project.db` files |
 
-Configured relative paths (the `paths.*` directories and the plan directory)
-resolve against the **project root**, not the working directory:
-`crates/core/src/paths.rs` picks `$SVS_HOME` first, otherwise the nearest
-ancestor of the working directory (then of the executable) that holds
-`config/app.toml`, so commands do not need to be run from the repository root.
-The checked-in `config/app.toml` raises `generation.sizes.character` to
-`1024x1536` (the full Qwen portrait canvas).
+Configured relative paths (`paths.*` and the plan directory) resolve against the
+**project root**, not the working directory: `crates/core/src/paths.rs` picks
+`$SVS_HOME` first, otherwise the nearest ancestor of the working directory (then
+of the executable) that holds `config/app.toml`, so commands do not need to be
+run from the repository root. The checked-in `config/app.toml` raises
+`generation.sizes.character` to `1024x1536` (the full Qwen portrait canvas).
 
-A `generation.profile` value that is not the served profile (`qwen-image-2.1`)
-is logged and ignored: the profile id is pinned by the shared crate's
-`sd::qwen_image_2_1()` and a configured name cannot change the resident model.
-The checked-in `config/app.toml` sets
-`lm_studio.model` to `prism-ml/bonsai-27b` — point it at
-the model id your LM Studio serves (`curl http://localhost:1234/v1/models`).
+The checked-in `config/app.toml` sets `llm.model` to `prism-ml/bonsai-27b` —
+point it at the model id your LLM endpoint serves
+(`curl http://localhost:1234/v1/models`).
+
+### providers.toml
+
+The image backend — the `sd-server` executable, its model tree, LoRA root,
+endpoint, and weights — is resolved from `<root>/providers.toml`, anchored to the
+project root like every other path (`crates/core/src/paths.rs`,
+`providers_path()`). `crates/core/src/config.rs` loads it through the shared
+`clipforge_inference::Providers` registry and keeps the resolved
+`ImageDeployment` on `AppConfig::image`; the LoRA root shown in Settings is the
+provider's `lora_dir`.
+
+```toml
+[defaults]                       # capability → provider id
+t2i = "qwen-image"
+edit = "qwen-image"
+
+[providers.qwen-image]
+kind = "sdcpp"                   # the native sd.cpp server
+architecture = "qwen-image-2.1"  # must be a profile the app serves
+capabilities = ["t2i", "edit"]
+base_url = "http://127.0.0.1:7861"
+model_dir = "models"             # relative to this file (the repo root)
+# lora_dir / executable default beneath model_dir.
+
+# Override any artifact with a local file instead of downloading it.
+[providers.qwen-image.weights]
+diffusion = "/abs/path/to/qwen-image-2.1-UC-int8_convrot.safetensors"
+```
+
+`architecture` is validated against the served profile list: a provider may
+change *where* a model comes from, not *which* model it is, and any other value
+is rejected at load. Relative paths in the file (`model_dir`, `lora_dir`,
+`executable`, and the `weights` entries) resolve against the file's directory.
+Removing the file falls back to the built-in provider (the standard
+Qwen-Image-2.1 tree under `models/`). `model_setup` provisions through this same
+deployment: it downloads the artifacts whose `needs_download()` is true and
+prints the local override it skips for the rest.
 
 ## Common issues
 
@@ -420,11 +453,11 @@ the model id your LM Studio serves (`curl http://localhost:1234/v1/models`).
   `.cargo/config.toml` target-dir redirect is the fix, do not remove it.
 - **Generation says the runtime is not ready / job fails** — the `sd-server`
   binary or model artifacts are missing. Run `cargo run -p svs-cli --bin model_setup`
-  and confirm `generation.executable` in `config/app.toml`.
-- **`generation server on :7861 has … loaded; … needs the server restarted`** —
+  and confirm the provider's `executable` in `providers.toml`.
+- **`generation server on 127.0.0.1:7861 has … loaded; … needs the server restarted`** —
   the resident `sd-server` has a different model loaded than the requested
   profile. Ops restart their own server automatically; a stale server from
   another session needs `svs runtime serve --force` (or
   `pkill -f "sd-server --diffusion"`), then rerun.
-- **LM Studio calls fail** — confirm LM Studio is running, the configured model
-  is loaded, and `lm_studio.base_url` matches the server's `/v1` endpoint.
+- **LLM endpoint calls fail** — confirm the endpoint is running, the configured
+  model is loaded, and `llm.base_url` matches its `/v1` endpoint.

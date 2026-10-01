@@ -2,15 +2,15 @@
 
 Smart Visual Sequencer is a cross-platform Dioxus desktop application for planning, generating, and arranging visual stories. The first product workflow includes project creation, the artifact canvas (characters, environments, objects, scenes with typed operations, variants, revisions), resident local Qwen-Image-2.1 generation, and sectioned runtime settings. The typed operation/planner layer is shared by the `svs` CLI and the canvas; Studio sequencing and presentation/export orchestration are not wired yet.
 
-The validated target is Linux with an NVIDIA GPU (CUDA). Image generation runs on a CUDA build of `stable-diffusion.cpp`'s `sd-server` serving Qwen-Image-2.1. LM Studio is an external prerequisite and is never installed or bundled by this project.
+The validated target is Linux with an NVIDIA GPU (CUDA). Image generation runs on a CUDA build of `stable-diffusion.cpp`'s `sd-server` serving Qwen-Image-2.1. The LLM endpoint is an external prerequisite and is never installed or bundled by this project.
 
 This is intentionally a desktop-only application. Web, mobile, and WASM targets are not supported. There is no Python in the project: the old FastAPI vision runtime and its SAM/segmentation stack were removed with the Qwen migration.
 
 ## Architecture
 
-- **Rust** owns the Dioxus UI, application state, the artifact registry, project persistence boundary, model-download boundary, directory resolution, process lifecycle, the LM Studio client, and the native generation client. Rust never links an ML framework.
+- **Rust** owns the Dioxus UI, application state, the artifact registry, project persistence boundary, model-download boundary, directory resolution, process lifecycle, the LLM client, and the native generation client. Rust never links an ML framework.
 - **`stable-diffusion.cpp`** (`sd-server`) is a separate native process owned by Rust that keeps the Qwen-Image-2.1 diffusion model resident. Rust talks to it directly over the server's async `sdcpp` HTTP API; it is not ComfyUI and there is no Python adapter in between.
-- **LM Studio** is accessed directly from Rust through its OpenAI-compatible `/v1/chat/completions` endpoint. The typed planner vocabulary (operations + pipelines) lives in `crates/core/src/registry/`; `crates/core/src/llm/` is the client only.
+- The **LLM endpoint** is accessed directly from Rust through its OpenAI-compatible `/v1/chat/completions` endpoint. The typed planner vocabulary (operations + pipelines) lives in `crates/core/src/registry/`; `crates/core/src/llm/` is the client only.
 
 ## Product surface
 
@@ -27,11 +27,11 @@ This is intentionally a desktop-only application. Web, mobile, and WASM targets 
 - **Variants** are first-class artifacts (`c:mia-outfit`), created with the
   `/variant` command or the detail-pane action; axes (outfit, weather, …)
   are tags for organization.
-- **Settings** separates service status, general behavior, LM Studio
-  configuration, image generation, and storage. A Status section probes LM
-  Studio and the native generation backend on demand, reports readiness and
-  model residency, and can start or stop the resident runtime. The
-  Intelligence section discovers LM Studio's model list into a searchable
+- **Settings** separates service status, general behavior, LLM endpoint
+  configuration, image generation, and storage. A Status section probes the
+  LLM endpoint and the native generation backend on demand, reports readiness
+  and model residency, and can start or stop the resident runtime. The
+  Intelligence section discovers the endpoint's model list into a searchable
   planner picker (`SearchSelect` — filter, arrows, Enter; selection applies
   immediately and `config/app.toml` holds the default).
 
@@ -46,7 +46,7 @@ The shell deliberately uses a small reusable component vocabulary, low-contrast 
 5. Keep an edit: `/describe c:mia "Mia, a lighthouse keeper, short bob"` — edits produce revisions but never change what the artifact *is*, so the next `/modify` re-anchors to the description and an earlier change washes out. `describe` promotes a change to canonical; `/variant` turns one into its own artifact.
 6. Browse revisions in the detail pane; click any completed revision to show it; undo/redo in the header.
 
-Because `modify` re-states the artifact's description as the list of things to hold constant, **descriptions are worth writing carefully** — they are the edit's contract. An edit that contradicts the description ("long dark hair" + "dye it auburn") is reconciled by the configured LM Studio planner; without one, a deterministic fallback keeps the description verbatim and the contradiction can show up in the image.
+Because `modify` re-states the artifact's description as the list of things to hold constant, **descriptions are worth writing carefully** — they are the edit's contract. An edit that contradicts the description ("long dark hair" + "dye it auburn") is reconciled by the configured LLM planner; without one, a deterministic fallback keeps the description verbatim and the contradiction can show up in the image.
 
 The configured defaults favor Qwen's single quality profile — 25 steps, CFG 6.0, `euler`, and a 1024×1536 character canvas in this checkout. Qwen-Image-2.1 has no few-step turbo path, so iteration is slower than the retired Krea Turbo loop; the settings are editable per kind in Settings → Image generation.
 
@@ -59,7 +59,7 @@ crates/core/          svs-core — the domain layer (no GUI dependency):
   src/registry/         Artifact registry, typed ops + pipelines, slash parser,
                         CreativeBackend
   src/persistence/      SQLite project store (versioned migrations)
-  src/llm/              LM Studio OpenAI-compatible client
+  src/llm/              OpenAI-compatible LLM client
   src/runtime/          CreativeRuntime — adapter over the shared
                         clipforge-inference crate (path dependency)
                         (sd-server lifecycle, sdcpp client, model store live
@@ -97,7 +97,7 @@ In-depth material lives in [`docs/`](docs/README.md): a system [architecture ove
 - Rust stable
 - The current stable Dioxus CLI (`dx`)
 - Node.js/npm (for the pinned Tailwind CSS 4 toolchain)
-- LM Studio, running separately when LLM features are exercised
+- An LLM endpoint (llama.cpp `llama-server` or LM Studio), running separately when LLM features are exercised
 - A CUDA toolchain and an NVIDIA GPU to build and run `sd-server`
 - Linux desktop builds: the system packages required by Dioxus/WebKitGTK
 
@@ -148,7 +148,7 @@ cargo check --workspace --all-targets
 
 This checkout includes `.cargo/config.toml` because its current parent directory contains a literal `:`. On macOS and Linux that character conflicts with dynamic-library path lists, so build artifacts are placed under `/tmp/smart-visual-sequencer-target`.
 
-Configuration lives in `config/app.toml`. The default LM Studio URL is `http://localhost:1234/v1`; update `model` to the identifier loaded in LM Studio. `api_key` is optional.
+Configuration lives in `config/app.toml`. The default LLM endpoint URL is `http://localhost:1234/v1`; update `model` to the identifier loaded in the endpoint. `api_key` is optional.
 
 ## How generation runs
 
@@ -161,12 +161,12 @@ there is no profile switching. See
 [`docs/runtime-lifecycle.md`](docs/runtime-lifecycle.md) for the launch line
 and readiness rules.
 
-Only one model fits on a 24 GiB card: generation peaks at ≈23.4 GiB, so the LM
-Studio planner must not be resident during a generation.
+Only one model fits on a 24 GiB card: generation peaks at ≈23.4 GiB, so the
+LLM planner must not be resident during a generation.
 
 ## Visual LLM probe
 
-The isolated proof of concept exercises vision-capable models through LM Studio's OpenAI-compatible chat-completions endpoint. It uses deterministic synthetic fixtures, structured JSON output, per-request latency and token capture, and machine-readable results. See [`docs/poc/vlm/README.md`](docs/poc/vlm/README.md) for commands and scoring limitations.
+The isolated proof of concept exercises vision-capable models through the LLM endpoint's OpenAI-compatible chat-completions API. It uses deterministic synthetic fixtures, structured JSON output, per-request latency and token capture, and machine-readable results. See [`docs/poc/vlm/README.md`](docs/poc/vlm/README.md) for commands and scoring limitations.
 
 ## Native generation
 
@@ -181,7 +181,7 @@ contract and the launch line; the earlier Krea 2 native validation is recorded
 
 ## Visual evaluation (`svs eval`)
 
-The local LM Studio vision model doubles as an automated image reviewer —
+The local LLM endpoint's vision model doubles as an automated image reviewer —
 "eyes" for evaluating generations, edits, and regressions without a
 human at the screen. `svs eval` attaches images, asks questions, prints the
 model's verdict, and can gate a script's exit code on the answer:
@@ -200,7 +200,7 @@ svs eval -i a.png -i b.png -p "Same person in both?" -p "Which is sharper?"
 ```
 
 The default model is the configured planner model, which must have vision
-support. Images are downscaled to a 1024px maximum before sending (LM Studio
+support. Images are downscaled to a 1024px maximum before sending (the endpoint
 rejects oversized payloads), and the default token budget is 2048 because the
 model reasons before answering. The `--expect`/`--expect-not` checks are
 case-insensitive substrings — craft prompts that elicit a strict YES/NO to gate
@@ -211,7 +211,7 @@ reliably.
 The ordered backlog with statuses lives in `docs/ROADMAP.md` §12
 (this is the tracker). Upcoming work in brief:
 
-1. Connect free-form Canvas messages to LM Studio proposals (the vocabulary
+1. Connect free-form Canvas messages to LLM proposals (the vocabulary
    exists; `svs stack propose` is the contract test bed) and add
    `c:` autocomplete.
 2. Add the interactive-first job scheduler and Studio sequencing (scenes

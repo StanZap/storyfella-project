@@ -1,27 +1,39 @@
-use std::path::PathBuf;
-
 use anyhow::{Context, Result};
 use clap::Parser;
-use clipforge_inference::{sd::qwen_image_2_1, ModelStore};
-use svs_core::config::AppConfig;
+use clipforge_inference::{Capability, ModelStore, Providers};
+use svs_core::paths;
 
 #[derive(Debug, Parser)]
 #[command(about = "Download and verify the Qwen-Image-2.1 model artifacts")]
-struct Arguments {
-    #[arg(long)]
-    model_dir: Option<PathBuf>,
-}
+struct Arguments {}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let arguments = Arguments::parse();
-    let config = AppConfig::load().context("failed to load application configuration")?;
-    let model_dir = arguments.model_dir.unwrap_or(config.model_dir);
-    let profile = qwen_image_2_1();
-    let store = ModelStore::new(profile.model_root_dir(&model_dir));
+    Arguments::parse();
+    let providers = Providers::load_or_built_in(&paths::providers_path())
+        .context("failed to load the providers registry")?;
+    let deployment = providers
+        .image_deployment(Capability::T2i)
+        .context("failed to resolve the image generation provider")?;
+
+    // The provider names the model tree; artifacts it overrides with a local
+    // file are never downloaded.
+    let store = ModelStore::new(deployment.model_root());
+    let mut artifacts = Vec::new();
+    for entry in deployment.artifact_plan() {
+        match entry.local_override {
+            Some(path) => println!(
+                "{}: using local override {}",
+                entry.artifact.filename,
+                path.display()
+            ),
+            None => artifacts.push(entry.artifact),
+        }
+    }
+
     let mut previous = (String::new(), u64::MAX);
     store
-        .ensure_all(&profile.artifacts(), |progress| {
+        .ensure_all(&artifacts, |progress| {
             let percent = progress
                 .downloaded_bytes
                 .saturating_mul(100)

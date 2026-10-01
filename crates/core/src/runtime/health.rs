@@ -2,7 +2,7 @@ use std::{fmt::Display, future::Future, time::Duration};
 
 use clipforge_inference::sd::qwen_image_2_1;
 
-use crate::{config::AppConfig, llm::LmStudioClient};
+use crate::{config::AppConfig, llm::LlmClient};
 
 use super::CreativeRuntime;
 
@@ -33,8 +33,8 @@ impl HealthStatus {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceId {
-    /// The LM Studio / llama.cpp OpenAI-compatible LLM endpoint.
-    LmStudio,
+    /// The OpenAI-compatible LLM endpoint (llama.cpp, LM Studio, …).
+    Llm,
     /// The native stable-diffusion.cpp generation server.
     ImageGeneration,
 }
@@ -42,7 +42,7 @@ pub enum ServiceId {
 impl ServiceId {
     pub const fn label(self) -> &'static str {
         match self {
-            Self::LmStudio => "LM Studio",
+            Self::Llm => "LLM endpoint",
             Self::ImageGeneration => "Image generation (Qwen-Image-2.1)",
         }
     }
@@ -68,19 +68,18 @@ impl ServiceHealth {
 /// Probes every service the application depends on. The checks are read-only:
 /// nothing is started, stopped, or downloaded as a side effect.
 pub async fn check_all(config: &AppConfig, runtime: &CreativeRuntime) -> Vec<ServiceHealth> {
-    let (lm_studio, generation) =
-        tokio::join!(check_lm_studio(config), check_generation(config, runtime),);
-    vec![lm_studio, generation]
+    let (llm, generation) = tokio::join!(check_llm(config), check_generation(config, runtime),);
+    vec![llm, generation]
 }
 
-async fn check_lm_studio(config: &AppConfig) -> ServiceHealth {
-    let mut lm_config = config.lm_studio.clone();
+async fn check_llm(config: &AppConfig) -> ServiceHealth {
+    let mut lm_config = config.llm.clone();
     lm_config.timeout = Duration::from_secs(CHECK_TIMEOUT_SECONDS);
-    let client = match LmStudioClient::new(lm_config) {
+    let client = match LlmClient::new(lm_config) {
         Ok(client) => client,
         Err(error) => {
             return ServiceHealth::new(
-                ServiceId::LmStudio,
+                ServiceId::Llm,
                 HealthStatus::Offline,
                 format!("client error: {error}"),
             );
@@ -88,10 +87,10 @@ async fn check_lm_studio(config: &AppConfig) -> ServiceHealth {
     };
     match with_timeout(client.list_models(), CHECK_TIMEOUT_SECONDS + 5).await {
         Ok(models) => {
-            let configured = &config.lm_studio.model;
+            let configured = &config.llm.model;
             if models.data.iter().any(|model| &model.id == configured) {
                 ServiceHealth::new(
-                    ServiceId::LmStudio,
+                    ServiceId::Llm,
                     HealthStatus::Online,
                     format!(
                         "reachable · {} model(s) · '{configured}' loaded",
@@ -100,14 +99,14 @@ async fn check_lm_studio(config: &AppConfig) -> ServiceHealth {
                 )
             } else {
                 ServiceHealth::new(
-                    ServiceId::LmStudio,
+                    ServiceId::Llm,
                     HealthStatus::Degraded,
                     format!("reachable · model '{configured}' is not loaded"),
                 )
             }
         }
         Err(error) => ServiceHealth::new(
-            ServiceId::LmStudio,
+            ServiceId::Llm,
             HealthStatus::Offline,
             format!("unreachable: {}", truncate(&error)),
         ),
@@ -115,7 +114,7 @@ async fn check_lm_studio(config: &AppConfig) -> ServiceHealth {
 }
 
 async fn check_generation(config: &AppConfig, runtime: &CreativeRuntime) -> ServiceHealth {
-    let executable = &config.generation.executable;
+    let executable = &config.image.executable;
     if !executable.is_file() {
         return ServiceHealth::new(
             ServiceId::ImageGeneration,
@@ -182,7 +181,7 @@ mod tests {
 
     #[test]
     fn service_ids_have_display_labels() {
-        assert_eq!(ServiceId::LmStudio.label(), "LM Studio");
+        assert_eq!(ServiceId::Llm.label(), "LLM endpoint");
         assert_eq!(
             ServiceId::ImageGeneration.label(),
             "Image generation (Qwen-Image-2.1)"

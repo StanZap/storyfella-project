@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 
 use svs_core::config::AppConfig;
 use svs_core::errors::{CodedError, ReportedError};
-use svs_core::llm::LmStudioClient;
+use svs_core::llm::LlmClient;
 use svs_core::registry::{
     backend::CreativeBackend, discover_loras, GenerationDefaults, LoraBinding,
 };
@@ -52,7 +52,7 @@ impl ServiceAction {
 
 fn action_for(service: ServiceId, status: HealthStatus) -> Option<ServiceAction> {
     match (service, status) {
-        (ServiceId::LmStudio, _) => None,
+        (ServiceId::Llm, _) => None,
         (ServiceId::ImageGeneration, HealthStatus::Online) => Some(ServiceAction::Stop),
         (ServiceId::ImageGeneration, _) => Some(ServiceAction::Start),
     }
@@ -65,7 +65,7 @@ mod tests {
 
     #[test]
     fn external_services_have_no_controls() {
-        assert_eq!(action_for(ServiceId::LmStudio, HealthStatus::Online), None);
+        assert_eq!(action_for(ServiceId::Llm, HealthStatus::Online), None);
     }
 
     #[test]
@@ -104,7 +104,7 @@ pub fn Settings(
         backend
             .read()
             .llm_model()
-            .unwrap_or_else(|| config.lm_studio.model.clone())
+            .unwrap_or_else(|| config.llm.model.clone())
     });
     let models_state = use_signal(|| ModelListState::Empty);
     let busy = use_signal(|| None::<ServiceId>);
@@ -199,7 +199,7 @@ fn run_checks(
     }
     checking.set(true);
     let mut check_config = config;
-    check_config.lm_studio.model = lm_model();
+    check_config.llm.model = lm_model();
     spawn(async move {
         let services = check_services(&check_config, &runtime).await;
         health.set(services);
@@ -215,9 +215,9 @@ fn fetch_models(config: AppConfig, mut state: Signal<ModelListState>) {
     state.set(ModelListState::Loading);
     spawn(async move {
         let result = async {
-            let mut lm_config = config.lm_studio.clone();
+            let mut lm_config = config.llm.clone();
             lm_config.timeout = Duration::from_secs(5);
-            LmStudioClient::new(lm_config)?.list_models().await
+            LlmClient::new(lm_config)?.list_models().await
         }
         .await;
         match result {
@@ -255,7 +255,7 @@ fn operate_service(
             (ServiceId::ImageGeneration, ServiceAction::Stop) => {
                 runtime.stop_generation_runtime().await
             }
-            (ServiceId::LmStudio, _) => Ok(()),
+            (ServiceId::Llm, _) => Ok(()),
         };
         busy.set(None);
         match result {
@@ -414,12 +414,12 @@ fn IntelligenceSettings(
     models_state: Signal<ModelListState>,
     on_check: EventHandler<MouseEvent>,
 ) -> Element {
-    let lm_studio = health
+    let llm = health
         .read()
         .iter()
-        .find(|service| service.id == ServiceId::LmStudio)
+        .find(|service| service.id == ServiceId::Llm)
         .cloned();
-    let (status, detail) = match lm_studio {
+    let (status, detail) = match llm {
         Some(service) => (service.status, service.detail),
         None => (HealthStatus::Idle, "Not checked yet".to_owned()),
     };
@@ -432,7 +432,7 @@ fn IntelligenceSettings(
         }
         lm_model.set(model.clone());
         backend.write().set_llm_model(model.clone());
-        if let Err(error) = persist_config.persist_lm_model(&model) {
+        if let Err(error) = persist_config.persist_llm_model(&model) {
             tracing::error!("could not persist planner model to config: {error}");
         }
     };
@@ -440,24 +440,24 @@ fn IntelligenceSettings(
         SectionHeading {
             eyebrow: "Planner & vision",
             title: "Intelligence",
-            description: "LM Studio handles planning and visual understanding. It remains an external service and is never bundled with the app."
+            description: "The LLM endpoint handles planning and visual understanding. It remains an external service and is never bundled with the app."
         }
         div { class: "mb-8 flex items-center justify-between border-y border-white/[0.06] py-4",
             div { class: "flex items-center gap-3",
                 span { class: "grid size-9 place-items-center rounded-xl bg-white/[0.035]", StatusDot { status } }
-                div { p { class: "text-[12px] font-medium text-zinc-200", "LM Studio" } p { class: "mt-0.5 text-[10px] text-zinc-600", "{detail}" } }
+                div { p { class: "text-[12px] font-medium text-zinc-200", "LLM endpoint" } p { class: "mt-0.5 text-[10px] text-zinc-600", "{detail}" } }
             }
             button { class: "rounded-lg bg-white/[0.05] px-3 py-2 text-[10px] font-medium text-zinc-400 transition hover:text-white", onclick: move |event| on_check.call(event), "Test connection" }
         }
         div { class: "border-y border-white/[0.06]",
             SettingRow { title: "Base URL", description: "OpenAI-compatible API endpoint.",
-                input { class: "setting-control", value: "{config.lm_studio.base_url}", readonly: true }
+                input { class: "setting-control", value: "{config.llm.base_url}", readonly: true }
             }
-            SettingRow { title: "Planner model", description: "Model identifier loaded in LM Studio. Picking one applies it immediately and saves it to config/app.toml.",
+            SettingRow { title: "Planner model", description: "Model identifier loaded in the endpoint. Picking one applies it immediately and saves it to config/app.toml.",
                 ModelPicker { config: config.clone(), lm_model, models_state, on_select }
             }
             SettingRow { title: "Request timeout", description: "Maximum wait for planning and visual analysis.", last: true,
-                div { class: "flex items-center gap-3", input { class: "setting-control", value: "{config.lm_studio.timeout.as_secs()}", readonly: true } span { class: "text-[10px] text-zinc-700", "seconds" } }
+                div { class: "flex items-center gap-3", input { class: "setting-control", value: "{config.llm.timeout.as_secs()}", readonly: true } span { class: "text-[10px] text-zinc-700", "seconds" } }
             }
         }
         p { class: "mt-4 text-[10px] leading-5 text-zinc-700", "Model discovery connects to the configured Base URL. The selection is saved to config/app.toml and applies immediately — no restart needed." }
@@ -487,7 +487,7 @@ fn ModelPicker(
                 ModelListState::Ready(models) => {
                     let current = lm_model();
                     let has_current = models.iter().any(|model| model == &current);
-                    // The loaded model may not be one LM Studio reports (a
+                    // The loaded model may not be one the endpoint reports (a
                     // renamed or already-unloaded id), so it is offered as well
                     // — the control's value must never go blank just because
                     // discovery did not name it.
@@ -497,7 +497,7 @@ fn ModelPicker(
                     }
                     rsx! {
                         if !has_current {
-                            span { class: "shrink-0 text-[9px] text-amber-300/70", "not in LM Studio's list" }
+                            span { class: "shrink-0 text-[9px] text-amber-300/70", "not in the endpoint's list" }
                         }
                         SearchSelect {
                             options: options,
@@ -541,7 +541,7 @@ fn GenerationSettings(config: AppConfig, mut defaults: Signal<GenerationDefaults
     let size_error = use_signal(|| None::<String>);
     let mut steps_error = use_signal(|| None::<String>);
     // The lora dir shown here and the bindings share the same defaults.
-    let lora_dir = config.generation.lora_dir.clone();
+    let lora_dir = config.image.lora_dir.clone();
     // Discovered adapters, reloadable: symlinked or newly dropped files
     // appear after pressing the refresh icon next to the directory.
     let mut discovered = use_signal(|| discover_loras(&lora_dir));
@@ -555,10 +555,10 @@ fn GenerationSettings(config: AppConfig, mut defaults: Signal<GenerationDefaults
         }
         div { class: "border-y border-white/[0.06]",
             SettingRow { title: "Profile", description: "The resident generation model.",
-                input { class: "setting-control", value: "{config.generation.profile}", readonly: true }
+                input { class: "setting-control", value: "{config.image.architecture}", readonly: true }
             }
             SettingRow { title: "Runtime endpoint", description: "Resident stable-diffusion.cpp service.",
-                input { class: "setting-control", value: "{config.generation.base_url}", readonly: true }
+                input { class: "setting-control", value: "http://{config.image.host}:{config.image.port}", readonly: true }
             }
             SettingRow { title: "Steps per image", description: "Quality vs. speed of every generation. The default is 25 at CFG {cfg_scale:.1} (Qwen-Image-2.1); fewer steps is faster and rougher.",
                 div { class: "flex items-center gap-3",
@@ -868,7 +868,7 @@ fn StorageSettings(config: AppConfig) -> Element {
             description: "Platform-appropriate directories keep generated assets, model weights, and disposable cache data separate."
         }
         div { class: "border-y border-white/[0.06]",
-            PathRow { title: "Models", path: config.model_dir.display().to_string() }
+            PathRow { title: "Models", path: config.image.model_dir.display().to_string() }
             PathRow { title: "Generated assets", path: config.asset_dir.display().to_string() }
             PathRow { title: "Cache", path: config.cache_dir.display().to_string(), last: true }
         }

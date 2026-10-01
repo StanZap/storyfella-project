@@ -1,12 +1,12 @@
 //! The live [`GenerationBackend`]: `CreativeRuntime` for generation,
-//! `LmStudioClient` for the soft LLM steps.
+//! `LlmClient` for the soft LLM steps.
 
 use clipforge_inference::sd::GenerateRequest;
 use futures_util::future::BoxFuture;
 
 use crate::{
     config::AppConfig,
-    llm::{strip_json_fence, ChatMessage, ChatOptions, LmStudioClient},
+    llm::{strip_json_fence, ChatMessage, ChatOptions, LlmClient},
     runtime::{CreativeRuntime, CreativeRuntimeError},
 };
 
@@ -58,7 +58,7 @@ fn generate_context(
 #[derive(Clone)]
 pub struct CreativeBackend {
     runtime: CreativeRuntime,
-    llm: Option<LmStudioClient>,
+    llm: Option<LlmClient>,
 }
 
 impl PartialEq for CreativeBackend {
@@ -73,7 +73,7 @@ impl CreativeBackend {
     pub fn new(config: &AppConfig) -> Self {
         Self {
             runtime: CreativeRuntime::new(config),
-            llm: LmStudioClient::new(config.lm_studio.clone()).ok(),
+            llm: LlmClient::new(config.llm.clone()).ok(),
         }
     }
 
@@ -101,10 +101,7 @@ impl CreativeBackend {
     /// The model identifier the planner currently requests (the Settings
     /// picker shows this; `None` when no LLM client was built).
     pub fn llm_model(&self) -> Option<String> {
-        self.llm
-            .as_ref()
-            .map(LmStudioClient::model)
-            .map(str::to_owned)
+        self.llm.as_ref().map(LlmClient::model).map(str::to_owned)
     }
 
     /// Swaps the planner model at runtime. The backend lives in app state
@@ -364,7 +361,7 @@ impl CreativeBackend {
     ) -> Result<OperationStack, String> {
         let Some(client) = &self.llm else {
             return Err(
-                "LM Studio is not configured or unreachable — use slash commands instead"
+                "The LLM endpoint is not configured or unreachable — use slash commands instead"
                     .to_owned(),
             );
         };
@@ -383,9 +380,9 @@ impl CreativeBackend {
 
     /// The tool-calling planner: multi-round discovery, then the final JSON
     /// stack. `ToolsUnsupported` when the server rejects `tools` outright
-    /// (older LM Studio builds), so the caller can fall back.
+    /// (older builds), so the caller can fall back.
     async fn propose_with_tools(
-        client: &LmStudioClient,
+        client: &LlmClient,
         registry: &ArtifactRegistry,
         defaults: &GenerationDefaults,
         viewing: Option<&Artifact>,
@@ -401,7 +398,7 @@ impl CreativeBackend {
                 Self::planner_tools(),
                 // The strict schema rides every round: the model may call
                 // discovery tools, but its final answer stays inside the
-                // closed vocabulary (validated live against LM Studio).
+                // closed vocabulary (validated live against the endpoint).
                 Some(Self::stack_response_format()),
                 |name, _arguments| match name {
                     "list_artifacts" => Self::artifact_listing(registry),
@@ -412,22 +409,22 @@ impl CreativeBackend {
             )
             .await
             .map_err(|error| match error {
-                crate::llm::LmStudioError::Status { .. } => {
+                crate::llm::LlmError::Status { .. } => {
                     ProposeError::ToolsUnsupported(error.to_string())
                 }
-                other => ProposeError::Failed(format!("LM Studio request failed: {other}")),
+                other => ProposeError::Failed(format!("LLM request failed: {other}")),
             })?;
         let content = completion
             .choices
             .first()
             .and_then(|choice| choice.message.content.clone())
-            .ok_or_else(|| ProposeError::Failed("LM Studio returned no content".to_owned()))?;
+            .ok_or_else(|| ProposeError::Failed("the LLM returned no content".to_owned()))?;
         Self::parse_stack(&content)
     }
 
     /// The static planner: one strict-schema call with the listings inline.
     async fn propose_static(
-        client: &LmStudioClient,
+        client: &LlmClient,
         registry: &ArtifactRegistry,
         defaults: &GenerationDefaults,
         viewing: Option<&Artifact>,
@@ -449,12 +446,12 @@ impl CreativeBackend {
                 &options,
             )
             .await
-            .map_err(|error| format!("LM Studio request failed: {error}"))?;
+            .map_err(|error| format!("LLM request failed: {error}"))?;
         let content = completion
             .choices
             .first()
             .and_then(|choice| choice.message.content.clone())
-            .ok_or_else(|| "LM Studio returned no content".to_owned())?;
+            .ok_or_else(|| "the LLM returned no content".to_owned())?;
         Self::parse_stack(&content).map_err(|error| match error {
             ProposeError::Failed(message) => message,
             ProposeError::ToolsUnsupported(_) => unreachable!("the static path has no tools"),
@@ -600,10 +597,10 @@ impl GenerationBackend for CreativeBackend {
 }
 
 impl CreativeBackend {
-    /// The OpenAI-style structured-output format LM Studio accepts (newer
+    /// The OpenAI-style structured-output format the endpoint accepts (newer
     /// builds reject the legacy `{"type": "json_object"}`). `strict` makes
     /// the server constrain the output to the schema (validated live
-    /// against LM Studio); the lenient serde parse still tolerates the
+    /// against the endpoint); the lenient serde parse still tolerates the
     /// optional fields the model omits.
     fn json_schema_response_format(name: &str, schema: serde_json::Value) -> serde_json::Value {
         serde_json::json!({
@@ -614,7 +611,7 @@ impl CreativeBackend {
 
     /// The closed-vocabulary op shape: `{"operations": [...]}` with a
     /// oneOf union per op so strict mode enforces each op's own required
-    /// fields (validated live against LM Studio).
+    /// fields (validated live against the endpoint).
     fn stack_response_format() -> serde_json::Value {
         Self::json_schema_response_format(
             "operation_stack",
@@ -773,7 +770,7 @@ mod tests {
         let schema = CreativeBackend::stack_response_format();
         assert_eq!(
             schema["type"], "json_schema",
-            "newer LM Studio builds reject the legacy json_object format"
+            "newer builds reject the legacy json_object format"
         );
         assert_eq!(schema["json_schema"]["strict"], true);
         let items = &schema["json_schema"]["schema"]["properties"]["operations"]["items"]["oneOf"];

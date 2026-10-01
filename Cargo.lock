@@ -472,6 +472,7 @@ name = "clipforge-inference"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.0",
+ "directories",
  "futures-util",
  "parking_lot",
  "reqwest",
@@ -479,6 +480,8 @@ dependencies = [
  "sha2",
  "thiserror 2.0.19",
  "tokio",
+ "toml 1.1.4+spec-1.1.0",
+ "url",
 ]
 
 [[package]]

@@ -9,10 +9,6 @@ use crate::{
     errors::{CodedError, ErrorCode},
 };
 
-/// The native server is a single resident process on loopback; the client's
-/// base URL and these must agree (both come from `config/app.toml`).
-const GENERATION_HOST: &str = "127.0.0.1";
-const GENERATION_PORT: u16 = 7861;
 /// How long a submitted job may run before the wait gives up.
 const JOB_DEADLINE: Duration = Duration::from_secs(1200);
 
@@ -24,6 +20,10 @@ pub struct CreativeRuntime {
     client: Client,
     runtime: Arc<Runtime>,
     asset_directory: PathBuf,
+    /// The deployment's listen address — readiness and the mismatch message
+    /// both name it.
+    host: String,
+    port: u16,
 }
 
 impl PartialEq for CreativeRuntime {
@@ -43,10 +43,14 @@ pub enum CreativeRuntimeError {
     #[error("generation job failed: {0}")]
     Job(String),
     #[error(
-        "generation server on :7861 has {loaded} loaded; {requested} needs the server restarted. \
+        "generation server on {address} has {loaded} loaded; {requested} needs the server restarted. \
          Stop stale instances first (`svs runtime serve --force` or `pkill -f \"sd-server --diffusion\"`)"
     )]
-    ProfileMismatch { loaded: String, requested: String },
+    ProfileMismatch {
+        address: String,
+        loaded: String,
+        requested: String,
+    },
     #[error("could not create generated asset directory {path}: {source}")]
     CreateAssetDirectory {
         path: PathBuf,
@@ -75,14 +79,13 @@ impl CodedError for CreativeRuntimeError {
 
 impl CreativeRuntime {
     pub fn new(config: &AppConfig) -> Self {
+        let image = &config.image;
         Self {
-            client: Client::new(&config.generation.base_url),
-            runtime: Arc::new(Runtime::new(
-                &config.generation.executable,
-                &config.model_dir,
-                &config.generation.lora_dir,
-            )),
+            client: Client::new(format!("http://{}:{}", image.host, image.port)),
+            runtime: Arc::new(image.runtime()),
             asset_directory: config.asset_dir.join("generated"),
+            host: image.host.clone(),
+            port: image.port,
         }
     }
 
@@ -112,14 +115,18 @@ impl CreativeRuntime {
     /// as [`CreativeRuntimeError::ProfileMismatch`].
     pub async fn ensure_profile_ready(&self) -> Result<(), CreativeRuntimeError> {
         self.runtime
-            .ensure_ready(GENERATION_HOST, GENERATION_PORT)
+            .ensure_ready(&self.host, self.port)
             .await
             .map_err(|error| match error {
                 // The shared runtime's profile mismatch carries the loaded and
                 // requested model names; carry them into the app's own wording.
                 RuntimeError::ProfileMismatch {
                     loaded, requested, ..
-                } => CreativeRuntimeError::ProfileMismatch { loaded, requested },
+                } => CreativeRuntimeError::ProfileMismatch {
+                    address: format!("{}:{}", self.host, self.port),
+                    loaded,
+                    requested,
+                },
                 RuntimeError::ReadinessTimeout(timeout) => {
                     CreativeRuntimeError::ReadinessTimeout(timeout)
                 }

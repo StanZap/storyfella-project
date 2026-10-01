@@ -81,8 +81,9 @@ pub enum ErrorCode {
     ConfigWrite,
     ConfigInvalidSize,
     ConfigMalformedSize,
+    ConfigProviders,
 
-    // ---- LLM · LM Studio client (src/llm/mod.rs) ----
+    // ---- LLM endpoint client (src/llm/mod.rs) ----
     LlmBuild,
     LlmRequest,
     LlmStatus,
@@ -438,28 +439,35 @@ impl ErrorCode {
                 "A generation size in config/app.toml is not in WxH form (e.g. \
                  512x768). Fix the entry and retry.",
             ),
+            Self::ConfigProviders => (
+                "SVS-CFG-108",
+                "Could not resolve the image provider",
+                "providers.toml could not be read or declares no usable image \
+                 provider. Check the file at the project root, or remove it to \
+                 fall back to the built-in provider.",
+            ),
             Self::LlmBuild => (
                 "SVS-LLM-101",
                 "Could not build HTTP client",
-                "The LM Studio HTTP client could not be constructed. \
+                "The LLM HTTP client could not be constructed. \
                  This is an internal error; check the logs.",
             ),
             Self::LlmRequest => (
                 "SVS-LLM-102",
-                "LM Studio request failed",
-                "The request to LM Studio failed. Check that LM Studio is \
+                "LLM request failed",
+                "The request to the LLM endpoint failed. Check that it is \
                  running and the Base URL in Settings is correct.",
             ),
             Self::LlmStatus => (
                 "SVS-LLM-103",
-                "LM Studio returned an error",
-                "LM Studio answered with an error status. Check that the \
-                 planner model is loaded and the request is valid.",
+                "LLM returned an error",
+                "The LLM endpoint answered with an error status. Check that \
+                 the planner model is loaded and the request is valid.",
             ),
             Self::LlmPlanner => (
                 "SVS-LLM-104",
-                "LM Studio planning did not finish",
-                "LM Studio did not produce a usable plan. Retry, or use slash \
+                "LLM planning did not finish",
+                "The LLM did not produce a usable plan. Retry, or use slash \
                  commands directly.",
             ),
             Self::GenRequest => (
@@ -596,9 +604,9 @@ impl ErrorCode {
             ),
             Self::AppLlmUnavailable => (
                 "SVS-APP-101",
-                "LM Studio unavailable",
-                "LM Studio is not configured or reachable. Start it (and load a \
-                 planner model), or use slash commands instead.",
+                "LLM endpoint unavailable",
+                "The LLM endpoint is not configured or reachable. Start it (and \
+                 load a planner model), or use slash commands instead.",
             ),
             Self::AppProposalFailed => (
                 "SVS-APP-102",
@@ -819,7 +827,7 @@ mod tests {
     /// the count so any change to the registry is deliberate.
     #[test]
     fn registry_size_is_pinned() {
-        assert_eq!(codes().len(), 84, "error codes must never be renumbered");
+        assert_eq!(codes().len(), 85, "error codes must never be renumbered");
     }
 
     #[test]
@@ -939,6 +947,7 @@ mod tests {
             ErrorCode::ConfigWrite,
             ErrorCode::ConfigInvalidSize,
             ErrorCode::ConfigMalformedSize,
+            ErrorCode::ConfigProviders,
             ErrorCode::LlmBuild,
             ErrorCode::LlmRequest,
             ErrorCode::LlmStatus,

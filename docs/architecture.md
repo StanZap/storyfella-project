@@ -10,13 +10,13 @@ HTTP.
 - **Rust** owns the Dioxus UI, application state, domain models, project
   persistence, process lifecycle, directory resolution, the native generation
   runtime (the `CreativeRuntime` adapter over the shared `clipforge-inference`
-  crate), and the LM Studio client.
+  crate), and the LLM client.
 - **`stable-diffusion.cpp`** (`sd-server`) is a separate native process owned by
   Rust that keeps the **Qwen-Image-2.1** diffusion model resident. Rust never
   links an ML framework; it is only HTTP client to the server's `sdcpp` API.
-- **LM Studio** is an external OpenAI-compatible service accessed directly from
-  Rust. `crates/core/src/llm/` is the client; the planner business logic lives
-  in `crates/core/src/registry/`.
+- **The LLM endpoint** is an external OpenAI-compatible service accessed
+  directly from Rust. `crates/core/src/llm/` is the client; the planner
+  business logic lives in `crates/core/src/registry/`.
 
 ## Component map
 
@@ -27,7 +27,7 @@ HTTP.
 │    registry/      Artifact model, typed ops + pipelines, slash parser,             │
 │                   CreativeBackend (live backend)                                   │
 │    persistence/   ProjectDb (SQLite, versioned migrations)                         │
-│    llm/           LmStudioClient (OpenAI-compatible chat completions)              │
+│    llm/           LlmClient (OpenAI-compatible chat completions)                   │
 │    runtime/       CreativeRuntime adapter over the shared clipforge-inference      │
 │                   crate (asset import, job wait, health, error mapping)            │
 │    assets/        AssetCatalog (import/index boundary; currently minimal)          │
@@ -46,14 +46,14 @@ HTTP.
   │ OpenAI-compatible HTTP (crates/core/src/llm/)
   ▼
 ┌──────────────────────────────┐
-│ LM Studio (external, user)   │
+│ LLM endpoint (external, user) │
 └──────────────────────────────┘
 ```
 
 The generation server is started with `--listen-ip 127.0.0.1 --listen-port 7861`
-and serves only on loopback; the client's `generation.base_url` and the port the
-runtime binds must agree (both come from `config/app.toml`). See
-[`runtime-lifecycle.md`](runtime-lifecycle.md).
+and serves only on loopback; the image provider's `base_url` in
+`providers.toml` names both the address the client calls and the port the
+runtime binds. See [`runtime-lifecycle.md`](runtime-lifecycle.md).
 
 ### The shared inference runtime
 
@@ -83,7 +83,8 @@ server does not name in its JSON parser is dropped silently.
 | `GET` | `/sdcpp/v1/jobs/{id}` | Poll a submitted job |
 | `GET` | `/sdcpp/v1/capabilities` | Report the resident model |
 
-The base URL is `generation.base_url` (`http://127.0.0.1:7861` by default).
+The base URL is the image provider's `base_url` in `providers.toml`
+(`http://127.0.0.1:7861` in the checked-in file).
 
 ### Request body (`POST /sdcpp/v1/img_gen`)
 
@@ -186,7 +187,7 @@ Grounding is why it holds together. A terse instruction under-specifies the
 render and it collapses toward base-model priors, so the instruction is
 rewritten to name the medium and re-state the artifact's own description as the
 traits to keep. `ground_instruction` (`crates/core/src/registry/ops.rs`)
-does that deterministically; when LM Studio is configured, `llm_ground`
+does that deterministically; when the LLM endpoint is configured, `llm_ground`
 refines it by dropping the traits the edit overrides. The LLM is a soft
 dependency — it never blocks, and a missing one falls back to the template.
 
@@ -212,7 +213,7 @@ look becomes its own artifact.
 | --- | --- | --- | --- |
 | Dioxus desktop app | Rust | Application session | UI, state, orchestration |
 | `sd-server` | Rust (shared `clipforge-inference` `sd::Runtime`) | On demand, resident | Persistent Qwen-Image-2.1 inference |
-| LM Studio | User (external) | External | LLM planning/grounding and VLM evaluation |
+| LLM endpoint | User (external) | External | LLM planning/grounding and VLM evaluation |
 
 Rust does not start `sd-server` at app launch; the shell reports it as idle
 until a generation request triggers `ensure_profile_ready` — or until it is
@@ -221,7 +222,7 @@ started manually from the Settings Status section (see
 
 Only one model can be resident: Qwen-Image-2.1 peaks at ≈23.4 GiB on a 24 GiB
 card, so the planner/LLM cannot run concurrently with a generation. Free VRAM
-— stop the LM Studio model — before a generation on this hardware.
+— stop the LLM model — before a generation on this hardware.
 
 ## Directory resolution
 
@@ -232,8 +233,13 @@ ancestor of the working directory (then of the executable) holding
 resolve against that root, and unset values fall back to platform-appropriate
 application directories via the `directories` crate
 (`ProjectDirs::from("dev", "Smart Visual Sequencer", "Smart Visual Sequencer")`).
-The checked-in config points everything at the repository (`models/`, `cache/`,
-`assets/`) for development.
+The image deployment — the `sd-server` executable, model tree, LoRA root,
+endpoint, and weights — is resolved from [`providers.toml`](../providers.toml) at
+that same root (also via `paths::providers_path()`); the deployment's
+`AppConfig::image` is what the runtime, the health probe, `model_setup`, and
+Settings read. The checked-in config points `cache/` and `assets/` at the
+repository for development, while `providers.toml` roots the model tree at
+`models/`.
 
 ## What is deliberately absent
 
@@ -246,7 +252,7 @@ The checked-in config points everything at the repository (`models/`, `cache/`,
 - **No Python and no ML framework.** There is no FastAPI vision runtime, no
   segmentation, and no Diffusers pipeline. Generation is the native
   `stable-diffusion.cpp` process; the only other model service is the external
-  LM Studio endpoint.
+  LLM endpoint.
 - **No ComfyUI.** Image generation is the native `sd-server`; ComfyUI is not a
   dependency.
 - **No web/mobile targets.** The app is desktop-only; `cargo` features are

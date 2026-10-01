@@ -11,19 +11,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use svs_core::{
     config::AppConfig,
-    llm::{strip_json_fence, ChatMessage, ChatOptions, LmStudioClient, LmStudioConfig},
+    llm::{strip_json_fence, ChatMessage, ChatOptions, LlmClient, LlmConfig},
 };
 
 const ANALYSIS_PROMPT: &str = "Analyze this synthetic storyboard frame. Identify only what is visibly present. Use simple color and spatial language. Do not invent text or hidden details.";
 
 #[derive(Debug, Parser)]
-#[command(about = "Benchmark local vision-language models exposed by LM Studio")]
+#[command(about = "Benchmark local vision-language models exposed by the configured LLM endpoint")]
 struct Args {
     /// Model identifiers. Repeat the flag or provide comma-separated identifiers.
     #[arg(short, long, value_delimiter = ',')]
     model: Vec<String>,
 
-    /// Print the model identifiers visible through LM Studio and exit.
+    /// Print the model identifiers visible through the endpoint and exit.
     #[arg(long)]
     list_models: bool,
 
@@ -158,14 +158,14 @@ async fn main() -> Result<()> {
     let base_url = args
         .base_url
         .clone()
-        .unwrap_or_else(|| app_config.lm_studio.base_url.clone());
+        .unwrap_or_else(|| app_config.llm.base_url.clone());
 
     if args.list_models {
         list_models(&app_config, &base_url, args.timeout_seconds).await?;
         return Ok(());
     }
     if args.model.is_empty() {
-        bail!("provide at least one --model; use --list-models to inspect LM Studio");
+        bail!("provide at least one --model; use --list-models to inspect the endpoint");
     }
 
     validate_fixtures(&args.fixtures)?;
@@ -204,13 +204,13 @@ async fn list_models(config: &AppConfig, base_url: &str, timeout_seconds: u64) -
     let client = client_for(
         config,
         base_url,
-        &config.lm_studio.model,
+        &config.llm.model,
         Duration::from_secs(timeout_seconds),
     )?;
     let mut models = client
         .list_models()
         .await
-        .context("list models from LM Studio")?
+        .context("list models from the endpoint")?
         .data;
     models.sort_by(|a, b| a.id.cmp(&b.id));
     for model in models {
@@ -224,18 +224,18 @@ fn client_for(
     base_url: &str,
     model: &str,
     timeout: Duration,
-) -> Result<LmStudioClient> {
-    LmStudioClient::new(LmStudioConfig {
+) -> Result<LlmClient> {
+    LlmClient::new(LlmConfig {
         base_url: base_url.to_owned(),
         model: model.to_owned(),
-        api_key: config.lm_studio.api_key.clone(),
+        api_key: config.llm.api_key.clone(),
         timeout,
     })
-    .context("construct LM Studio client")
+    .context("construct the LLM client")
 }
 
 async fn probe_fixture(
-    client: &LmStudioClient,
+    client: &LlmClient,
     model: &str,
     fixture: &Fixture,
     args: &Args,

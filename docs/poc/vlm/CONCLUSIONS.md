@@ -18,7 +18,7 @@ The tested `gemma-4-12b-it-uncensored` build was slower (approximately 32.9 seco
 ## Limits of this result
 
 - The fixtures are intentionally synthetic and establish contract correctness, counting, color, and spatial grounding—not photographic understanding.
-- Latency includes model switching and possible LM Studio JIT loading; it is not a controlled throughput benchmark.
+- Latency includes model switching and possible endpoint JIT loading; it is not a controlled throughput benchmark.
 - The run did not measure peak memory or tokens per second because those metrics are not exposed by the OpenAI-compatible response used by the production client.
 - The remaining downloaded vision models have not yet been compared.
 

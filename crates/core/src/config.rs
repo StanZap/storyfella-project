@@ -4,40 +4,31 @@ use std::{
     time::Duration,
 };
 
-use clipforge_inference::sd;
+use clipforge_inference::{sd, Capability, ImageDeployment, ProviderError, Providers};
 use directories::ProjectDirs;
 use serde::Deserialize;
 use thiserror::Error;
 
 use crate::{
     errors::{CodedError, ErrorCode},
-    llm::LmStudioConfig,
+    llm::LlmConfig,
     paths,
     registry::{GenerationDefaults, KindLoraBindings, LoraBinding, LoraBindings, SizeDefaults},
 };
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppConfig {
-    pub lm_studio: LmStudioConfig,
-    pub model_dir: PathBuf,
+    pub llm: LlmConfig,
+    /// The image-generation deployment resolved from `providers.toml`: the
+    /// `sd-server` executable, model tree, LoRA root, endpoint, and weights.
+    pub image: ImageDeployment,
     pub cache_dir: PathBuf,
     pub asset_dir: PathBuf,
     /// Where the GUI keeps `.svs-project.db` files (the Projects screen).
     pub project_dir: PathBuf,
-    pub generation: GenerationConfig,
     /// The configurable sizes, step count, and LoRA bindings that shape
     /// every generation (editable in Settings, persisted to this file).
     pub generation_defaults: GenerationDefaults,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct GenerationConfig {
-    pub base_url: String,
-    pub executable: PathBuf,
-    pub lora_dir: PathBuf,
-    /// The configured generation profile id. Only `qwen-image-2.1` is
-    /// served; the value is kept for display and a mismatch is logged.
-    pub profile: String,
 }
 
 #[derive(Debug, Error)]
@@ -73,6 +64,8 @@ pub enum ConfigError {
         key: String,
         value: String,
     },
+    #[error(transparent)]
+    Providers(#[from] ProviderError),
 }
 
 impl CodedError for ConfigError {
@@ -84,6 +77,7 @@ impl CodedError for ConfigError {
             Self::Write { .. } => ErrorCode::ConfigWrite,
             Self::InvalidSize { .. } => ErrorCode::ConfigInvalidSize,
             Self::MalformedSize { .. } => ErrorCode::ConfigMalformedSize,
+            Self::Providers(_) => ErrorCode::ConfigProviders,
         }
     }
 }
@@ -91,7 +85,7 @@ impl CodedError for ConfigError {
 #[derive(Debug, Default, Deserialize)]
 struct FileConfig {
     #[serde(default)]
-    lm_studio: LmStudioFileConfig,
+    llm: LlmFileConfig,
     #[serde(default)]
     paths: PathOverrides,
     #[serde(default)]
@@ -102,10 +96,6 @@ struct FileConfig {
 
 #[derive(Debug, Deserialize)]
 struct GenerationFileConfig {
-    #[serde(default = "default_generation_url")]
-    base_url: String,
-    #[serde(default = "default_profile")]
-    profile: String,
     #[serde(default = "default_steps")]
     steps: u32,
     #[serde(default = "default_cfg_scale")]
@@ -114,21 +104,15 @@ struct GenerationFileConfig {
     sample_method: String,
     #[serde(default)]
     sizes: SizeFileConfig,
-    executable: Option<PathBuf>,
-    lora_dir: Option<PathBuf>,
 }
 
 impl Default for GenerationFileConfig {
     fn default() -> Self {
         Self {
-            base_url: default_generation_url(),
-            profile: default_profile(),
             steps: default_steps(),
             cfg_scale: default_cfg_scale(),
             sample_method: default_sample_method(),
             sizes: SizeFileConfig::default(),
-            executable: None,
-            lora_dir: None,
         }
     }
 }
@@ -145,7 +129,8 @@ struct SizeFileConfig {
 }
 
 /// `[lora]` — the config-level adapter bindings: "use this adapter for
-/// that kind of work". Values are file names within `generation.lora_dir`.
+/// that kind of work". Values are file names within the provider's LoRA
+/// directory.
 #[derive(Debug, Deserialize)]
 struct LoraFileConfig {
     character: Option<String>,
@@ -168,10 +153,10 @@ impl Default for LoraFileConfig {
 }
 
 #[derive(Debug, Deserialize)]
-struct LmStudioFileConfig {
-    #[serde(default = "default_lm_url")]
+struct LlmFileConfig {
+    #[serde(default = "default_llm_url")]
     base_url: String,
-    #[serde(default = "default_lm_model")]
+    #[serde(default = "default_llm_model")]
     model: String,
     #[serde(default)]
     api_key: Option<String>,
@@ -179,11 +164,11 @@ struct LmStudioFileConfig {
     timeout_seconds: u64,
 }
 
-impl Default for LmStudioFileConfig {
+impl Default for LlmFileConfig {
     fn default() -> Self {
         Self {
-            base_url: default_lm_url(),
-            model: default_lm_model(),
+            base_url: default_llm_url(),
+            model: default_llm_model(),
             api_key: None,
             timeout_seconds: default_timeout(),
         }
@@ -192,7 +177,6 @@ impl Default for LmStudioFileConfig {
 
 #[derive(Debug, Default, Deserialize)]
 struct PathOverrides {
-    model_dir: Option<PathBuf>,
     cache_dir: Option<PathBuf>,
     asset_dir: Option<PathBuf>,
     project_dir: Option<PathBuf>,
@@ -219,43 +203,16 @@ impl AppConfig {
             FileConfig::default()
         };
 
+        // The image deployment — the `sd-server` executable, model tree,
+        // LoRA root, endpoint and weights — comes from the providers
+        // registry at the project root (`providers.toml`).
+        let providers = Providers::load_or_built_in(&paths::providers_path())?;
+        let image = providers.image_deployment(Capability::T2i)?;
+
         let dirs = ProjectDirs::from("dev", "Smart Visual Sequencer", "Smart Visual Sequencer")
             .ok_or(ConfigError::PlatformDirectories)?;
         let data_dir = dirs.data_dir();
 
-        // Configured paths are written relative to the project root
-        // (`model_dir = "models"`), so they mean the same thing however the
-        // process was launched. Absolute values pass through untouched.
-        let model_dir = file
-            .paths
-            .model_dir
-            .map(paths::resolve)
-            .unwrap_or_else(|| data_dir.join("models"));
-        let lora_dir = file
-            .generation
-            .lora_dir
-            .map(paths::resolve)
-            .unwrap_or_else(|| model_dir.join(sd::DEFAULT_LORA_DIR));
-        // A single profile is served; a configured name that does not match
-        // is logged rather than rejected, since it cannot change the model.
-        let expected_profile = sd::qwen_image_2_1().id;
-        if file.generation.profile != expected_profile {
-            tracing::warn!(
-                configured = %file.generation.profile,
-                expected = expected_profile,
-                "[generation] profile is not the served profile; using {expected_profile}",
-            );
-        }
-        let generation = GenerationConfig {
-            base_url: file.generation.base_url,
-            executable: file
-                .generation
-                .executable
-                .map(paths::resolve)
-                .unwrap_or_else(|| model_dir.join(sd::DEFAULT_EXECUTABLE)),
-            lora_dir: lora_dir.clone(),
-            profile: file.generation.profile,
-        };
         let size_override =
             |key: &str, value: Option<String>| -> Result<Option<(u32, u32)>, ConfigError> {
                 match value {
@@ -272,7 +229,7 @@ impl AppConfig {
         };
         let file_lora = &file.lora;
         let lora_bindings = LoraBindings {
-            dir: lora_dir,
+            dir: image.lora_dir.clone(),
             kinds: KindLoraBindings {
                 character: file_lora.character.clone().map(|file| LoraBinding { file }),
                 environment: file_lora
@@ -284,13 +241,13 @@ impl AppConfig {
             multiplier: file_lora.multiplier,
         };
         Ok(Self {
-            lm_studio: LmStudioConfig {
-                base_url: file.lm_studio.base_url,
-                model: file.lm_studio.model,
-                api_key: file.lm_studio.api_key,
-                timeout: Duration::from_secs(file.lm_studio.timeout_seconds),
+            llm: LlmConfig {
+                base_url: file.llm.base_url,
+                model: file.llm.model,
+                api_key: file.llm.api_key,
+                timeout: Duration::from_secs(file.llm.timeout_seconds),
             },
-            model_dir,
+            image,
             cache_dir: file
                 .paths
                 .cache_dir
@@ -306,7 +263,6 @@ impl AppConfig {
                 .project_dir
                 .map(paths::resolve)
                 .unwrap_or_else(|| data_dir.join("projects")),
-            generation,
             generation_defaults: GenerationDefaults {
                 sizes,
                 steps: file.generation.steps,
@@ -320,15 +276,15 @@ impl AppConfig {
     /// Persists the planner model to `config/app.toml` (the Settings
     /// picker writes here so the choice survives restarts). Every other key
     /// in the file is left untouched.
-    pub fn persist_lm_model(&self, model: &str) -> Result<(), ConfigError> {
-        Self::persist_lm_model_to(paths::config_path(), model)
+    pub fn persist_llm_model(&self, model: &str) -> Result<(), ConfigError> {
+        Self::persist_llm_model_to(paths::config_path(), model)
     }
 
-    /// Testable variant of [`AppConfig::persist_lm_model`] that targets an
+    /// Testable variant of [`AppConfig::persist_llm_model`] that targets an
     /// arbitrary path; creates the file when it does not exist yet. The
-    /// write is line-preserving: only the `model` key under `[lm_studio]`
+    /// write is line-preserving: only the `model` key under `[llm]`
     /// changes, so comments and key order elsewhere survive.
-    pub fn persist_lm_model_to(path: impl AsRef<Path>, model: &str) -> Result<(), ConfigError> {
+    pub fn persist_llm_model_to(path: impl AsRef<Path>, model: &str) -> Result<(), ConfigError> {
         let path = path.as_ref();
         let contents = if path.exists() {
             fs::read_to_string(path).map_err(|source| ConfigError::Read {
@@ -340,20 +296,20 @@ impl AppConfig {
         };
         let mut lines: Vec<String> = contents.lines().map(str::to_owned).collect();
 
-        // Find the `model = "..."` line inside the `[lm_studio]` section.
-        let mut in_lm_studio = false;
+        // Find the `model = "..."` line inside the `[llm]` section.
+        let mut in_llm = false;
         let mut section_index = None;
         let mut model_line_index = None;
         for (index, line) in lines.iter().enumerate() {
             let trimmed = line.trim();
             if trimmed.starts_with('[') {
-                in_lm_studio = trimmed == "[lm_studio]";
-                if in_lm_studio {
+                in_llm = trimmed == "[llm]";
+                if in_llm {
                     section_index = Some(index);
                 }
                 continue;
             }
-            if in_lm_studio {
+            if in_llm {
                 if let Some(rest) = trimmed.strip_prefix("model") {
                     if rest.trim_start().starts_with('=') {
                         model_line_index = Some(index);
@@ -374,7 +330,7 @@ impl AppConfig {
             None => match section_index {
                 Some(index) => lines.insert(index + 1, replacement),
                 None => {
-                    lines.push("[lm_studio]".to_owned());
+                    lines.push("[llm]".to_owned());
                     lines.push(replacement);
                 }
             },
@@ -391,7 +347,7 @@ impl AppConfig {
     /// Persists the generation defaults (steps, per-kind sizes, LoRA
     /// bindings) to `config/app.toml` — the Settings screen writes here so
     /// the choices survive restarts. Line-preserving like
-    /// [`AppConfig::persist_lm_model`]: only the touched keys change.
+    /// [`AppConfig::persist_llm_model`]: only the touched keys change.
     pub fn persist_generation_defaults(&self) -> Result<(), ConfigError> {
         Self::persist_generation_defaults_to(paths::config_path(), &self.generation_defaults)
     }
@@ -560,11 +516,11 @@ fn write_key(lines: &mut Vec<String>, section: &str, key: &str, value: Option<St
     }
 }
 
-fn default_lm_url() -> String {
+fn default_llm_url() -> String {
     "http://localhost:1234/v1".to_owned()
 }
 
-fn default_lm_model() -> String {
+fn default_llm_model() -> String {
     "local-model".to_owned()
 }
 
@@ -625,14 +581,6 @@ fn parse_size_config(path: &Path, key: &str, value: &str) -> Result<(u32, u32), 
     Ok((width, height))
 }
 
-fn default_generation_url() -> String {
-    sd::DEFAULT_BASE_URL.to_owned()
-}
-
-fn default_profile() -> String {
-    sd::qwen_image_2_1().id.to_owned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -690,11 +638,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir should create");
         let path = dir.join("app.toml");
-        std::fs::write(
-            &path,
-            "# keep me\n[generation]\nbase_url = \"http://127.0.0.1:7861\"\nprofile = \"qwen-image-2.1\"\n",
-        )
-        .expect("fixture should write");
+        std::fs::write(&path, "# keep me\n[llm]\nmodel = \"old-model\"\n")
+            .expect("fixture should write");
 
         let mut defaults = GenerationDefaults {
             sizes: Default::default(),
@@ -731,13 +676,10 @@ mod tests {
         );
         assert_eq!(reloaded.generation_defaults.loras.multiplier, 0.8);
         // Untouched keys survive.
-        assert_eq!(reloaded.generation.base_url, "http://127.0.0.1:7861");
+        assert_eq!(reloaded.llm.model, "old-model");
         let contents = std::fs::read_to_string(&path).expect("file should read");
         assert!(contents.contains("# keep me"), "{contents}");
-        assert!(
-            contents.contains("profile = \"qwen-image-2.1\""),
-            "{contents}"
-        );
+        assert!(contents.contains("model = \"old-model\""), "{contents}");
     }
 
     #[test]
@@ -745,7 +687,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir should create");
         let path = dir.join("app.toml");
-        std::fs::write(&path, "[lm_studio]\nmodel = \"m\"\n").expect("fixture should write");
+        std::fs::write(&path, "[llm]\nmodel = \"m\"\n").expect("fixture should write");
 
         let mut defaults = GenerationDefaults {
             sizes: Default::default(),
@@ -776,21 +718,21 @@ mod tests {
     }
 
     #[test]
-    fn persist_lm_model_updates_only_the_model_key() {
+    fn persist_llm_model_updates_only_the_model_key() {
         let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir should create");
         let path = dir.join("app.toml");
         let config = AppConfig::load_from(&path).expect("defaults load from a missing file");
-        assert_eq!(config.lm_studio.model, "local-model");
+        assert_eq!(config.llm.model, "local-model");
 
-        AppConfig::persist_lm_model_to(&path, "google/gemma-3-27b-it")
+        AppConfig::persist_llm_model_to(&path, "google/gemma-3-27b-it")
             .expect("persist should write");
         let reloaded = AppConfig::load_from(&path).expect("persisted file should load");
-        assert_eq!(reloaded.lm_studio.model, "google/gemma-3-27b-it");
-        // The other sections survive the round trip.
-        assert_eq!(reloaded.generation.profile, "qwen-image-2.1");
+        assert_eq!(reloaded.llm.model, "google/gemma-3-27b-it");
+        // The provider-resolved deployment survives the round trip.
+        assert_eq!(reloaded.image.architecture, "qwen-image-2.1");
         assert_eq!(
-            reloaded.lm_studio.base_url, "http://localhost:1234/v1",
+            reloaded.llm.base_url, "http://localhost:1234/v1",
             "base_url must not be clobbered by the model write"
         );
     }
@@ -800,7 +742,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir should create");
         let path = dir.join("app.toml");
-        std::fs::write(&path, "[lm_studio]\nmodel = \"m\"\n").expect("fixture should write");
+        std::fs::write(&path, "[llm]\nmodel = \"m\"\n").expect("fixture should write");
 
         let mut defaults = GenerationDefaults {
             sizes: Default::default(),
@@ -829,24 +771,24 @@ mod tests {
     }
 
     #[test]
-    fn persist_lm_model_preserves_unrelated_keys_in_an_existing_file() {
+    fn persist_llm_model_preserves_unrelated_keys_in_an_existing_file() {
         let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir should create");
         let path = dir.join("app.toml");
         std::fs::write(
             &path,
-            "# api_key = \"lm-studio\"\n[lm_studio]\nbase_url = \"http://localhost:1234/v1\"\nmodel = \"old-model\"\n\n\
-             [generation]\nprofile = \"qwen-image-2.1\"\n",
+            "# api_key = \"lm-studio\"\n[llm]\nbase_url = \"http://localhost:1234/v1\"\nmodel = \"old-model\"\n\n\
+             [generation]\nsteps = 25\n",
         )
         .expect("fixture should write");
 
-        AppConfig::persist_lm_model_to(&path, "new-model").expect("persist should write");
+        AppConfig::persist_llm_model_to(&path, "new-model").expect("persist should write");
         let contents = std::fs::read_to_string(&path).expect("file should read");
         assert!(contents.contains("old-model") == false, "{contents}");
         assert!(contents.contains("new-model"), "{contents}");
         assert!(
-            contents.contains("qwen-image-2.1"),
-            "generation profile must survive: {contents}"
+            contents.contains("steps = 25"),
+            "generation steps must survive: {contents}"
         );
         assert!(
             contents.contains("http://localhost:1234/v1"),
@@ -857,22 +799,21 @@ mod tests {
             "comments must survive the targeted write: {contents}"
         );
         assert!(
-            contents.find("[lm_studio]") < contents.find("[generation]"),
+            contents.find("[llm]") < contents.find("[generation]"),
             "section order must survive the targeted write: {contents}"
         );
     }
 
     #[test]
-    fn persist_lm_model_adds_the_section_when_missing() {
+    fn persist_llm_model_adds_the_section_when_missing() {
         let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir should create");
         let path = dir.join("app.toml");
-        std::fs::write(&path, "[generation]\nprofile = \"qwen-image-2.1\"\n")
-            .expect("fixture should write");
+        std::fs::write(&path, "[generation]\nsteps = 25\n").expect("fixture should write");
 
-        AppConfig::persist_lm_model_to(&path, "new-model").expect("persist should write");
+        AppConfig::persist_llm_model_to(&path, "new-model").expect("persist should write");
         let reloaded = AppConfig::load_from(&path).expect("persisted file should load");
-        assert_eq!(reloaded.lm_studio.model, "new-model");
-        assert_eq!(reloaded.generation.profile, "qwen-image-2.1");
+        assert_eq!(reloaded.llm.model, "new-model");
+        assert_eq!(reloaded.generation_defaults.steps, 25);
     }
 }

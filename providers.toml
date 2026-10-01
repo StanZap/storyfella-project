@@ -1,0 +1,18 @@
+# The providers this app's backends are resolved from. A provider may change
+# *where* a model comes from, not *which* model it is: `architecture` must be a
+# profile the app serves.
+[defaults]
+t2i = "qwen-image"
+edit = "qwen-image"
+
+[providers.qwen-image]
+kind = "sdcpp"
+architecture = "qwen-image-2.1"
+capabilities = ["t2i", "edit"]
+base_url = "http://127.0.0.1:7861"
+model_dir = "models"
+
+# Local weights: the uncensored int8 DiT on disk, with the standard text
+# encoder and VAE from the model tree above.
+[providers.qwen-image.weights]
+diffusion = "/home/dev/Far/models/diffusion_models/qwen-image-2.1-UC-int8_convrot.safetensors"

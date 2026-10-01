@@ -4,8 +4,8 @@ Rust supervises one child process and one external service:
 
 | Process | Rust owner | Port | Started when |
 | --- | --- | --- | --- |
-| `sd-server` (stable-diffusion.cpp) | `sd::Runtime` in the shared `clipforge-inference` crate (`../clipforge/crates/inference/src/sd/runtime.rs`) | `127.0.0.1:7861` | First generation request, or manually from Settings |
-| LM Studio | external, user-run | user-configured (`config/app.toml`) | external |
+| `sd-server` (stable-diffusion.cpp) | `sd::Runtime` in the shared `clipforge-inference` crate (`../clipforge/crates/inference/src/sd/runtime.rs`) | the image provider's `base_url` (`127.0.0.1:7861` in the checked-in `providers.toml`) | First generation request, or manually from Settings |
+| LLM endpoint | external, user-run | user-configured (`config/app.toml`) | external |
 
 The desktop app does **not** start `sd-server` at launch. The shell reports it as
 idle until a generation request triggers `CreativeRuntime::ensure_ready`. This
@@ -37,7 +37,8 @@ ensure_profile_ready()
     │    (a mismatched server this process owns is stopped and restarted; a
     │     mismatched server owned by another session → ProfileMismatch)
     │
-    ├─ sd::Runtime::ensure_ready("127.0.0.1", 7861)
+    ├─ sd::Runtime::ensure_ready(<host>, <port>)
+    │    (the image provider's `base_url` in providers.toml)
     │
     └─ Poll /sdcpp/v1/capabilities every 500 ms until the model matches,
        or a 600 s deadline → ReadinessTimeout
@@ -74,8 +75,9 @@ defensive:
 
 1. Refuses to start twice (`AlreadyRunning`).
 2. Verifies the `sd-server` executable exists.
-3. Verifies all three artifacts for the Qwen-Image-2.1 profile exist under
-   `<model_dir>/qwen-image-2.1/` (diffusion safetensors, text encoder, VAE).
+3. Verifies the artifacts the provider's architecture loads exist — under
+   `<model_dir>/<model_root>/` by default, or at the local file the provider
+   declares under `weights` (diffusion safetensors, text encoder, VAE).
 4. Creates the LoRA directory and runs `prepare_lora_links` (sd.cpp registers
    only the *top-level* files of its lora directory, so subdirectory adapters are
    symlinked to the top level as `<subdir>-<basename>` before the server's
@@ -84,14 +86,20 @@ defensive:
 
 ```text
 sd-server \
-  --diffusion-model <model_dir>/qwen-image-2.1/qwen-image-2.1-UC-int8_convrot.safetensors \
+  --diffusion-model <model_dir>/qwen-image-2.1/qwen_image_2.1_int8_convrot.safetensors \
   --llm             <model_dir>/qwen-image-2.1/qwen3vl_8b_int8_convrot.safetensors \
   --vae             <model_dir>/qwen-image-2.1/qwen_image_2.1_vae_bf16.safetensors \
   --model-args qwen_image_2_1_prefix_cache_type=q8_0 \
   --diffusion-fa \
-  --lora-model-dir <model_dir>/loras \
-  --listen-ip 127.0.0.1 --listen-port 7861
+  --lora-model-dir <lora_dir> \
+  --listen-ip <host> --listen-port <port>
 ```
+
+`<model_dir>`, `<lora_dir>`, and the listen address are the image provider's
+`model_dir`, `lora_dir`, and `base_url` from [`providers.toml`](../providers.toml).
+A provider that declares a `weights.diffusion` override — the checked-in file
+points at the uncensored int8 DiT — has the server load that local file as
+`--diffusion-model` instead of the profile's own tree.
 
 `--model-args qwen_image_2_1_prefix_cache_type=q8_0` pins an explicit quantized
 prefix cache (the `auto` default would pick f32); `--diffusion-fa` enables
@@ -106,7 +114,7 @@ detected on the next readiness check and restarted.
 The diffusion model, encoder, and VAE stay loaded across prompts; normal
 generation never unloads them. There is a single generation profile —
 `qwen-image-2.1` — so there is no profile switching. Qwen-Image-2.1 peaks at
-≈23.4 GiB on a 24 GiB card (weights resident ≈15.9 GB), so the LM Studio
+≈23.4 GiB on a 24 GiB card (weights resident ≈15.9 GB), so the LLM
 planner/VLM **cannot be resident during a generation**: free VRAM, then generate.
 
 ## `ModelStore` — provisioning
@@ -123,24 +131,25 @@ Qwen-Image-2.1 artifacts from Hugging Face:
   counts.
 
 storyfella drives it through the `model_setup` binary
-(`apps/cli/src/bin/model_setup.rs`), which resolves the profile with
-`sd::qwen_image_2_1()` and provisions into `model_root_dir(model_dir)`:
+(`apps/cli/src/bin/model_setup.rs`), which loads the providers registry and
+provisions each artifact of the image deployment's `model_root()` whose
+`needs_download()` is true (a `weights` override is reported and skipped):
 
 ```bash
-cargo run -p svs-cli --bin model_setup            # into paths.model_dir
-cargo run -p svs-cli --bin model_setup -- --model-dir <dir>
+cargo run -p svs-cli --bin model_setup
 ```
 
 > The manifests' Hugging Face `remote_path`s are best-effort: the SHA-256 and
 > size are pinned, but the exact repository path has not been re-confirmed
 > against the live repo. Verify a download before relying on it.
 
-Expected layout below the configured model directory:
+Expected layout below the image provider's `model_dir` (the checked-in
+`providers.toml` roots it at `models/`):
 
 ```text
 models/
   qwen-image-2.1/
-    qwen-image-2.1-UC-int8_convrot.safetensors
+    qwen_image_2.1_int8_convrot.safetensors   # or the provider's weights.diffusion override
     qwen3vl_8b_int8_convrot.safetensors
     qwen_image_2.1_vae_bf16.safetensors
   loras/
@@ -166,7 +175,7 @@ anything. Each probe runs with a short timeout and reports one of four states:
 
 | Service | Probe | Reported as |
 | --- | --- | --- |
-| LM Studio | `GET /v1/models` | `Online` when reachable **and** the configured model is loaded; `Degraded` when reachable but the model is not; `Offline` when unreachable |
+| LLM endpoint | `GET /v1/models` | `Online` when reachable **and** the configured model is loaded; `Degraded` when reachable but the model is not; `Offline` when unreachable |
 | Image generation (Qwen-Image-2.1) | `sd-server` binary, profile artifacts on disk, process state, `GET /sdcpp/v1/capabilities` | `Offline` when the binary is missing or the resident server is unreachable; `Degraded` when the model artifacts are missing (`run model_setup`); `Online` when the resident backend reports the profile's model; `Idle` when the process is on-demand and not started |
 
 The checks run in parallel (`tokio::join!`); the Status section shows the
@@ -180,7 +189,7 @@ The Status section controls the local runtime (`apps/desktop/src/ui/settings.rs`
 
 - **Image generation** — `Start` runs `ensure_profile_ready` (starts `sd-server`
   and waits for the model to be resident); `Stop` kills the native server.
-- **LM Studio** has no controls: it is external.
+- **LLM endpoint** has no controls: it is external.
 
 While an operation runs, its row shows a spinner and the other buttons are
 disabled. When it finishes — successfully or not — a fresh health check runs

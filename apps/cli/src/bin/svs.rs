@@ -17,12 +17,12 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use clipforge_inference::sd::{self, LoraSelection};
+use clipforge_inference::sd::LoraSelection;
 use uuid::Uuid;
 
 use svs_core::config::AppConfig;
 use svs_core::errors::{CodedError, ErrorCode, ReportedError};
-use svs_core::llm::{ChatMessage, ChatOptions, LmStudioClient};
+use svs_core::llm::{ChatMessage, ChatOptions, LlmClient};
 use svs_core::persistence::ProjectDb;
 use svs_core::registry::backend::CreativeBackend;
 use svs_core::registry::ops::{
@@ -67,7 +67,7 @@ enum Command {
         #[command(subcommand)]
         runtime: RuntimeCommand,
     },
-    /// Ask the local vision model (LM Studio) to judge images — the
+    /// Ask the local LLM to judge images — the
     /// automated reviewer's eyes for evaluating generations, edits, and
     /// regressions. Attach images, ask questions, and optionally gate an
     /// exit code on the answer.
@@ -82,7 +82,7 @@ enum Command {
     },
 }
 
-/// The image-evaluation workflow against the local LM Studio vision model.
+/// The image-evaluation workflow against the local vision model.
 #[derive(Args)]
 struct EvalArgs {
     /// Image paths to attach (repeatable; the model sees them in order and
@@ -96,7 +96,7 @@ struct EvalArgs {
         default_value = "Describe these images concisely, then note any visual defects, artifacts, or inconsistencies."
     )]
     prompts: Vec<String>,
-    /// The LM Studio model id (defaults to the configured planner model,
+    /// The LLM model id (defaults to the configured planner model,
     /// which must have vision support).
     #[arg(long = "model")]
     model: Option<String>,
@@ -248,7 +248,7 @@ enum StackCommand {
         #[arg(long, value_enum, default_value = "interactive")]
         approve: ApprovalArg,
     },
-    /// Drive LM Studio to produce an operation stack from free text.
+    /// Drive the LLM to produce an operation stack from free text.
     Propose {
         message: String,
         #[arg(long)]
@@ -361,13 +361,14 @@ fn parse_lora(value: &str) -> Result<LoraSelection, String> {
 }
 
 fn parse_model(value: &str) -> Result<String, String> {
-    let profile = sd::qwen_image_2_1();
-    if value == profile.id {
+    let architecture = AppConfig::load()
+        .map(|config| config.image.architecture)
+        .map_err(|error| error.to_string())?;
+    if value == architecture {
         Ok(value.to_owned())
     } else {
         Err(format!(
-            "unknown generation profile {value:?}; expected {}",
-            profile.id
+            "unknown generation profile {value:?}; expected {architecture}"
         ))
     }
 }
@@ -463,16 +464,11 @@ async fn run(cli: Cli) -> Result<()> {
                     kill_resident_generation_servers()?;
                 }
                 let config = AppConfig::load().context("could not load config/app.toml")?;
-                // The listen address the shared runtime starts the server on;
-                // `CreativeRuntime` uses the same one, and it must match the
-                // client base URL in `config/app.toml`.
-                let runtime = sd::Runtime::new(
-                    &config.generation.executable,
-                    &config.model_dir,
-                    &config.generation.lora_dir,
-                );
+                // The address the provider declares is the one both the
+                // runtime and the client use.
+                let runtime = config.image.runtime();
                 runtime
-                    .ensure_ready("127.0.0.1", 7861)
+                    .ensure_ready(&config.image.host, config.image.port)
                     .await
                     .map_err(|error| anyhow!(error.report().log()))?;
                 println!("generation runtime ready with {model}; Ctrl-C to stop");
@@ -488,22 +484,22 @@ async fn run(cli: Cli) -> Result<()> {
     }
 }
 
-/// Asks the local LM Studio vision model to judge images — the automated
+/// Asks the local vision model to judge images — the automated
 /// reviewer's eyes. One round per `--prompt`, all images attached in order;
 /// `--expect`/`--expect-not` gate the exit code so evaluation can gate a
 /// test script.
 async fn run_eval(eval: EvalArgs) -> Result<()> {
     let config = AppConfig::load().context("could not load config/app.toml")?;
-    let mut lm_config = config.lm_studio.clone();
+    let mut lm_config = config.llm.clone();
     if let Some(model) = &eval.model {
         lm_config.model = model.clone();
     }
     let client =
-        LmStudioClient::new(lm_config.clone()).map_err(|error| anyhow!(error.report().log()))?;
+        LlmClient::new(lm_config.clone()).map_err(|error| anyhow!(error.report().log()))?;
 
     // Read every image up front so a missing file fails before any model
     // round trips. Large canvases are downscaled to a fixed maximum
-    // dimension before encoding — LM Studio rejects oversized image
+    // dimension before encoding — the endpoint rejects oversized image
     // payloads (two full 1024×1536 PNGs reliably come back empty).
     const MAX_EVAL_DIMENSION: u32 = 1024;
     let mut images: Vec<(String, String)> = Vec::new();
