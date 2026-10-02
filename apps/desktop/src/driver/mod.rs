@@ -616,6 +616,9 @@ pub fn run_plan(
                 );
             }
             report.print();
+            // `std::process::exit` runs no destructors, so stop the server the
+            // app owns here or the check run would orphan it.
+            crate::shutdown::run();
             std::process::exit(exit_code);
         }
         session.with_mut(|slot| {

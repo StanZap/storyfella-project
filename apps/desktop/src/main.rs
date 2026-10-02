@@ -29,4 +29,8 @@ fn main() {
         .with_cfg(dioxus::desktop::Config::new().with_window(window))
         .with_context(plan_launch)
         .launch(smart_visual_sequencer::app::App);
+
+    // The window closed and the event loop returned: stop the generation
+    // server the app started rather than leaving it to outlive the process.
+    smart_visual_sequencer::shutdown::run();
 }

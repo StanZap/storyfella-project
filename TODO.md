@@ -106,12 +106,6 @@ Optional Settings → Image generation toggle to start `sd-server` on project op
 so the first generation isn't a multi-minute wait. Must be **off** while any
 local model shares the card — pairs with §1.
 
-## 6. Graceful shutdown
-
-App exit relies on `kill_on_drop` and does not cleanly stop the child (documented
-gap). Stop `sd-server` with a bounded timeout on exit so a mid-generation quit
-doesn't orphan or half-kill it. The shared `server::Server` now owns the child, so
-this is a single place to add a bounded `stop()` on exit.
 
 ## 7. Take over a stale/foreign server instead of `pkill`
 

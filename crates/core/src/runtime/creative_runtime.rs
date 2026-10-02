@@ -183,6 +183,19 @@ impl CreativeRuntime {
         self.ensure_profile_ready().await
     }
 
+    /// Stops the resident generation server this process owns without an async
+    /// runtime, waiting up to `timeout` for it to exit, and clears its marker.
+    ///
+    /// For the app's exit paths, which run outside the async runtime — and, for
+    /// a check-mode run, through `std::process::exit`, where destructors never
+    /// run and `kill_on_drop` never fires, so the server would be orphaned.
+    /// Returns `false` when the server did not exit within `timeout`.
+    pub fn stop_generation_runtime_blocking(&self, timeout: Duration) -> bool {
+        let stopped = self.runtime.stop_blocking(timeout);
+        self.clear_marker();
+        stopped
+    }
+
     /// Records the running server's pid so a *later* process (a fresh CLI, the
     /// app after a crash) can stop an orphan. Best-effort: a marker that cannot
     /// be written only costs that later cleanup.
