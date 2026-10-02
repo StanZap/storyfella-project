@@ -472,7 +472,6 @@ name = "clipforge-inference"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.0",
- "directories",
  "futures-util",
  "parking_lot",
  "reqwest",
