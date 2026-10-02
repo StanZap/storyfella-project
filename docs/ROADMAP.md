@@ -634,7 +634,11 @@ plan to ship, with its status; update it when work lands.
    is resolving `sd-server` relative to the bundle root instead of the
    config-relative path. Model weights stay out of
    any bundle (multi-GiB, licensed) and keep provisioning through
-   `model_setup`. Explicitly out: embedding sd.cpp into the Rust process —
+   `model_setup` — or, in the app, Settings → Image generation → "Model
+   files", which drives the same `ModelStore` download with byte-level
+   progress. The pinned manifest was verified against the live Hugging Face
+   repo (2026-10-01): the three `Comfy-Org/Qwen-Image-2.1` remote paths,
+   sizes, and SHA-256 digests all match. Explicitly out: embedding sd.cpp into the Rust process —
    the C API exists, but in-process inference would rework the entire
    runtime-lifecycle machinery for no user-facing gain. **Bundling mechanism
    (verified 2026-09-30):** the CLI itself bundles Linux AppImages —

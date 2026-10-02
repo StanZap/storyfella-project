@@ -92,13 +92,6 @@ args passthrough — a change in the sibling `clipforge-inference` crate. The sh
 `server::Server` supervisor is where a residency mode would be applied.
 
 
-## 4. Surface provisioning and first run
-
-`model_setup` is CLI-only and shows no progress in the app (documented gap in
-`docs/runtime-lifecycle.md`). Reuse `ModelStore`'s `DownloadProgress` callback for
-a first-run "Prepare image model" action with byte counts. Also confirm the
-manifest `remote_path`s against the live Hugging Face repo — the docs flag them
-as best-effort/unverified.
 
 
 

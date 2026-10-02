@@ -139,9 +139,14 @@ provisions each artifact of the image deployment's `model_root()` whose
 cargo run -p svs-cli --bin model_setup
 ```
 
-> The manifests' Hugging Face `remote_path`s are best-effort: the SHA-256 and
-> size are pinned, but the exact repository path has not been re-confirmed
-> against the live repo. Verify a download before relying on it.
+The app drives the same call from Settings → Image generation → **Model files**
+(`svs_core::runtime::provision_image_model`, over the same `ModelStore`), listing
+each artifact with its size, presence, and a byte-counted progress bar — so a
+first run does not need a terminal.
+
+> The manifests' Hugging Face `remote_path`s were verified against the live
+> `Comfy-Org/Qwen-Image-2.1` repository on 2026-10-01: all three remote paths,
+> sizes, and SHA-256 digests match.
 
 Expected layout below the image provider's `model_dir` (the checked-in
 `providers.toml` roots it at `models/`):
@@ -199,7 +204,6 @@ automatic starts behave identically.
 
 ## Known gaps
 
-- Application shutdown does not yet gracefully stop the child (Rust relies on
-  `kill_on_drop`); wiring graceful shutdown is planned with session management.
-- Download progress is not surfaced in the Settings UI; `model_setup` is the
-  only progress consumer.
+- Application shutdown stops the child with a bounded blocking kill, but only
+  from the app's own exit points; a `SIGKILL`ed app still leaves the server to
+  be adopted or replaced (see TODO §7).

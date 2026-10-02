@@ -9,7 +9,8 @@ use svs_core::registry::{
     backend::CreativeBackend, discover_loras, GenerationDefaults, LoraBinding,
 };
 use svs_core::runtime::{
-    check_all as check_services, CreativeRuntime, HealthStatus, ServiceHealth, ServiceId,
+    check_all as check_services, image_artifacts, provision_image_model, CreativeRuntime,
+    HealthStatus, ModelArtifactStatus, ServiceHealth, ServiceId,
 };
 
 use super::{
@@ -40,6 +41,19 @@ enum ServiceAction {
     Start,
     Stop,
     Restart,
+}
+
+/// The state of an in-app model download.
+#[derive(Clone, Debug, PartialEq)]
+enum ModelPrepState {
+    Idle,
+    Running {
+        filename: String,
+        downloaded_bytes: u64,
+        total_bytes: u64,
+    },
+    Done,
+    Failed(ReportedError),
 }
 
 impl ServiceAction {
@@ -578,6 +592,13 @@ fn ModelPicker(
 #[component]
 fn GenerationSettings(config: AppConfig, mut defaults: Signal<GenerationDefaults>) -> Element {
     let mut prewarm = use_context::<Signal<bool>>();
+    let persist_config = config.clone();
+    let on_prewarm = move |enabled: bool| {
+        prewarm.set(enabled);
+        if let Err(error) = persist_config.persist_prewarm(enabled) {
+            tracing::error!("could not persist prewarm: {error}");
+        }
+    };
     let sizes = defaults.read().sizes;
     let steps = defaults.read().steps;
     let cfg_scale = defaults.read().cfg_scale;
@@ -659,18 +680,13 @@ fn GenerationSettings(config: AppConfig, mut defaults: Signal<GenerationDefaults
                 }
             }
             SettingRow { title: "Prewarm on project open", description: "Start the resident server as soon as a project opens, so the first generation is not a multi-minute weight load. Leave it off while another local model shares the card.",
-                Toggle { enabled: prewarm(), onchange: move |enabled| {
-                    prewarm.set(enabled);
-                    if let Err(error) = config.persist_prewarm(enabled) {
-                        tracing::error!("could not persist prewarm: {error}");
-                    }
-                }
-                }
+                Toggle { enabled: prewarm(), onchange: on_prewarm }
             }
             SettingRow { title: "Residency policy", description: "Avoid unloading between interactive requests.", last: true,
                 select { class: "setting-control", option { "Keep active model loaded" } option { "Release when idle" } }
             }
         }
+        ModelFiles { config: config.clone() }
         LoRASettings { defaults, discovered }
         div { class: "mt-5 flex items-start gap-3 rounded-xl bg-amber-400/[0.035] px-4 py-3 ring-1 ring-inset ring-amber-300/[0.08]",
             Icon { name: IconName::Sparkles, class: "mt-0.5 size-3.5 shrink-0 text-amber-200/50" }
@@ -749,6 +765,155 @@ fn SizeField(
                         }
                     }
                 },
+            }
+        }
+    }
+}
+
+/// A byte count in binary units (`1.5 GiB`).
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// Where one artifact is loaded from, for the model-files list.
+fn artifact_detail(status: &ModelArtifactStatus) -> String {
+    match &status.local_override {
+        Some(path) => format!("Local override · {}", path.display()),
+        None => status.path.display().to_string(),
+    }
+}
+
+/// The image profile's weight files and the in-app download that fills the
+/// gaps, so a first run does not need a terminal.
+#[component]
+fn ModelFiles(config: AppConfig) -> Element {
+    let artifacts = image_artifacts(&config);
+    let mut state = use_signal(|| ModelPrepState::Idle);
+    let current = state();
+    let running = matches!(current, ModelPrepState::Running { .. });
+    let missing = artifacts
+        .iter()
+        .filter(|status| status.needs_download())
+        .count();
+
+    let prepare_config = config.clone();
+    let on_prepare = move |_event: MouseEvent| {
+        if matches!(state(), ModelPrepState::Running { .. }) {
+            return;
+        }
+        let config = prepare_config.clone();
+        state.set(ModelPrepState::Running {
+            filename: String::new(),
+            downloaded_bytes: 0,
+            total_bytes: 0,
+        });
+        spawn(async move {
+            let mut progress_signal = state;
+            let result = provision_image_model(&config, move |progress| {
+                progress_signal.set(ModelPrepState::Running {
+                    filename: progress.filename,
+                    downloaded_bytes: progress.downloaded_bytes,
+                    total_bytes: progress.total_bytes,
+                });
+            })
+            .await;
+            match result {
+                Ok(()) => state.set(ModelPrepState::Done),
+                Err(error) => state.set(ModelPrepState::Failed(error.report().log())),
+            }
+        });
+    };
+
+    rsx! {
+        SectionHeading {
+            eyebrow: "Weights",
+            title: "Model files",
+            description: "Qwen-Image-2.1 loads three weight files. Provision them once here — they are several gigabytes and verified by size and SHA-256."
+        }
+        div { class: "border-y border-white/[0.06]",
+            for (index, status) in artifacts.iter().enumerate() {
+                SettingRow {
+                    title: status.filename.clone(),
+                    description: artifact_detail(status),
+                    last: index + 1 == artifacts.len(),
+                    div { class: "flex items-center gap-3",
+                        span { class: "text-[10px] text-zinc-600", "{human_bytes(status.size_bytes)}" }
+                        if status.is_present() {
+                            span { class: "rounded-md bg-emerald-400/10 px-2 py-1 text-[9px] text-emerald-300", "ready" }
+                        } else {
+                            span { class: "rounded-md bg-amber-400/10 px-2 py-1 text-[9px] text-amber-300", "missing" }
+                        }
+                    }
+                }
+            }
+        }
+        div { class: "mt-5 flex items-start justify-between gap-4",
+            div { class: "min-w-0 flex-1",
+                match current {
+                    ModelPrepState::Running { filename, downloaded_bytes, total_bytes } => {
+                        let percent = downloaded_bytes
+                            .saturating_mul(100)
+                            .checked_div(total_bytes)
+                            .unwrap_or(0)
+                            .min(100);
+                        rsx! {
+                            div { class: "mb-2 h-1 w-full overflow-hidden rounded-full bg-white/[0.06]",
+                                div { class: "h-full rounded-full bg-violet-400 transition-all", style: "width: {percent}%" }
+                            }
+                            p { class: "truncate text-[10px] text-zinc-500",
+                                if filename.is_empty() {
+                                    "Starting…"
+                                } else {
+                                    "{filename} · {human_bytes(downloaded_bytes)} / {human_bytes(total_bytes)}"
+                                }
+                            }
+                        }
+                    }
+                    ModelPrepState::Done => rsx! {
+                        p { class: "text-[10px] text-emerald-300/80", "Model files are downloaded and verified." }
+                    },
+                    ModelPrepState::Failed(error) => rsx! {
+                        div { class: "flex items-start gap-3",
+                            div { class: "min-w-0 flex-1",
+                                p { class: "font-mono text-[9px] text-rose-300/70", "{error.code.code()}" }
+                                p { class: "mt-0.5 text-[10px] leading-4 text-rose-200/80", "{error.code.message()}" }
+                            }
+                            ErrorDetailsButton { error: error.clone() }
+                        }
+                    },
+                    ModelPrepState::Idle => rsx! {
+                        p { class: "text-[10px] text-zinc-600",
+                            if missing == 0 {
+                                "All model files are present."
+                            } else {
+                                "{missing} of {artifacts.len()} files still to download."
+                            }
+                        }
+                    },
+                }
+            }
+            button {
+                class: "shrink-0 rounded-lg bg-white/[0.06] px-3.5 py-2 text-[10px] font-medium text-zinc-300 transition hover:bg-white/[0.1] hover:text-white disabled:cursor-not-allowed disabled:opacity-40",
+                disabled: running || missing == 0,
+                onclick: on_prepare,
+                if running {
+                    "Preparing…"
+                } else if missing == 0 {
+                    "Model ready"
+                } else {
+                    "Prepare model"
+                }
             }
         }
     }
@@ -945,7 +1110,7 @@ fn PathRow(title: String, path: String, #[props(default)] last: bool) -> Element
 }
 
 #[component]
-fn Toggle(enabled: bool, #[props(default)] onchange: Option<EventHandler<bool>>) -> Element {
+fn Toggle(enabled: bool, #[props(default)] onchange: EventHandler<bool>) -> Element {
     let track = if enabled {
         "bg-violet-500/70"
     } else {
@@ -961,11 +1126,7 @@ fn Toggle(enabled: bool, #[props(default)] onchange: Option<EventHandler<bool>>)
             class: "relative ml-auto h-5 w-10 rounded-full {track} transition disabled:cursor-not-allowed disabled:opacity-40",
             role: "switch",
             aria_checked: "{enabled}",
-            onclick: move |_| {
-                if let Some(handler) = &onchange {
-                    handler.call(!enabled);
-                }
-            },
+            onclick: move |_| onchange.call(!enabled),
             span { class: "absolute left-0 top-0.5 size-4 rounded-full bg-white shadow-sm transition {knob}" }
         }
     }

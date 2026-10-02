@@ -279,7 +279,7 @@ pub fn Workspace(
         let backend = prewarm_backend.read().clone();
         spawn(async move {
             if let Err(error) = backend.ensure_ready().await {
-                tracing::warn!("prewarm failed: {}", error.report().log());
+                let _ = error.report().log();
             }
         });
     });

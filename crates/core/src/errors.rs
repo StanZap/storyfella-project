@@ -790,6 +790,20 @@ impl CodedError for clipforge_inference::sd::RuntimeError {
     }
 }
 
+impl CodedError for clipforge_inference::ModelStoreError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::CreateDirectory { .. } => ErrorCode::RuntimeModelCreateDirectory,
+            Self::Inspect { .. } => ErrorCode::RuntimeModelInspect,
+            Self::Request(_) => ErrorCode::RuntimeModelRequest,
+            Self::DownloadStatus { .. } => ErrorCode::RuntimeModelDownloadStatus,
+            Self::Write { .. } => ErrorCode::RuntimeModelWrite,
+            Self::Size { .. } => ErrorCode::RuntimeModelSize,
+            Self::Checksum { .. } => ErrorCode::RuntimeModelChecksum,
+        }
+    }
+}
+
 impl CodedError for clipforge_inference::sd::ClientError {
     fn code(&self) -> ErrorCode {
         match self {
