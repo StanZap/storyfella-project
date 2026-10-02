@@ -355,6 +355,34 @@ output and generation logs, and `.svs-e2e/quality/` for the images a run
 produced. See `AGENTS.md` for why experiment scratch stays inside the
 checkout rather than `/tmp`.
 
+### End-to-end: the grounding suite (planner quality)
+
+Planner quality is model-sensitive: the `modify`/`variant` grounding is a
+subtraction task (restate the artifact's traits as invariants, minus the one the
+edit changes), and a weaker planner either keeps the old trait or invents one.
+`.svs-e2e/scripts/grounding_suite.py` runs a fixed base image through a fixed
+set of instructions against one or more planner models and judges each result
+with `svs eval --expect`, so "is DeepSeek as good as bonsai at grounding?" is
+one command:
+
+```bash
+python3 .svs-e2e/scripts/grounding_suite.py --model prism-ml/bonsai-27b \
+  --model deepseek-chat --base-url https://api.deepseek.com/v1 \
+  --api-key-env DEEPSEEK_API_KEY
+```
+
+It needs a resident generation backend (`svs runtime start`) and a `vision`
+provider for `svs eval`, and refuses up front without them (so a missing judge
+does not fail every case after the generations were already paid for). Each
+model runs against its own copy of a freshly bootstrapped base project, so every
+model sees the identical base revision; the planner is aimed at the model
+through a scratch providers overlay (`$SVS_USER_PROVIDERS`) with
+`$SVS_USER_CONFIG` emptied, so runs are comparable across sessions and never
+touch the real user config. `--dry-run` prints every command without running
+anything. The report lands in `.svs-e2e/logs/<date>-grounding-suite.md` (and
+`.json`). Note that overriding `model` selects the served model only for an
+`openai` provider — a managed `llamacpp` provider serves `model_path`.
+
 ## CLI tools
 
 | Command | Purpose |

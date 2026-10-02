@@ -589,6 +589,9 @@ plan to ship, with its status; update it when work lands.
    holding the port that the app did not start is reported as `Degraded` (the
    resident model is named) and cleared with **Take over** on the image service
    — identified by the served executable and listen port, not a `pkill` pattern.
+   A grounding regression harness (`.svs-e2e/scripts/grounding_suite.py`) runs a
+   fixed edit suite against one or more planner models and judges each with
+   `svs eval --expect`, so planner quality is comparable by command.
    — **✅ implemented**
 6. **LoRA registry:** project-level adapter registry (SQLite
    `lora_registry` table, round-tripped) with per-artifact bindings
