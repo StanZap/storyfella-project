@@ -3,6 +3,9 @@ use tracing::Level;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let plan_launch = smart_visual_sequencer::driver::PlanLaunch::from_args(&args);
+    // A plan run is hermetic: it reads and writes scratch config under
+    // `.svs-e2e/`, never the developer's real user config.
+    plan_launch.make_hermetic();
 
     let level = if cfg!(debug_assertions) {
         Level::DEBUG

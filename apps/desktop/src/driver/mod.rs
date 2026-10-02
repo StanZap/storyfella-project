@@ -446,6 +446,32 @@ impl PlanLaunch {
         }
         Self { path, mode }
     }
+
+    /// Points a `--plan` run at scratch user-level config files under
+    /// `.svs-e2e/hermetic/`, so the driver never reads or writes the
+    /// developer's real `~/.config/smartvisualsequencer/{app,providers}.toml`.
+    ///
+    /// The files need not exist: a missing overlay contributes nothing, so the
+    /// run sees exactly the checked-in `config/app.toml` and `providers.toml`.
+    /// An explicit `$SVS_USER_CONFIG` / `$SVS_USER_PROVIDERS` already in the
+    /// environment wins, so a run can still be aimed at a specific config.
+    pub fn make_hermetic(&self) {
+        if self.path.is_none() {
+            return;
+        }
+        let dir = svs_core::paths::root().join(".svs-e2e/hermetic");
+        set_env_unless_set("SVS_USER_CONFIG", dir.join("app.toml"));
+        set_env_unless_set("SVS_USER_PROVIDERS", dir.join("providers.toml"));
+    }
+}
+
+/// Sets `key` to `value` unless the environment already defines it (an empty
+/// value counts as unset, matching `paths::*_path`).
+fn set_env_unless_set(key: &str, value: PathBuf) {
+    match std::env::var_os(key) {
+        Some(existing) if !existing.is_empty() => {}
+        _ => std::env::set_var(key, value),
+    }
 }
 
 /// Per-step outcome of a run.

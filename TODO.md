@@ -91,13 +91,6 @@ llama backend); a launch profile needs either new fields on the provider or an
 args passthrough — a change in the sibling `clipforge-inference` crate. The shared
 `server::Server` supervisor is where a residency mode would be applied.
 
-## 3. Hermetic runs for tests and the plan driver
-
-We added `$SVS_USER_CONFIG` (and, with the provider split, `$SVS_USER_PROVIDERS`),
-but nothing sets them, so `--plan` runs and e2e pick up the developer's real
-`~/.config/smartvisualsequencer/{app,providers}.toml`. Point the driver and
-`cargo xtask` at scratch files under `.svs-e2e/` so check runs are deterministic
-and personal config stays personal. Small.
 
 ## 4. Surface provisioning and first run
 
