@@ -41,6 +41,9 @@ enum ServiceAction {
     Start,
     Stop,
     Restart,
+    /// Stop whatever holds the port — a server this app did not start included
+    /// — and start ours.
+    TakeOver,
 }
 
 /// The state of an in-app model download.
@@ -62,20 +65,23 @@ impl ServiceAction {
             Self::Start => "Start",
             Self::Stop => "Stop",
             Self::Restart => "Restart",
+            Self::TakeOver => "Take over",
         }
     }
 }
 
 /// The controls a service offers at a given status. The resident generation
 /// server can be started when it is down, and restarted or stopped while it is
-/// up. External (text/vision) endpoints are never started or stopped here.
+/// up; when it is not ours (a foreign server holds the port, or it is down),
+/// Take over clears the port and starts ours. External (text/vision) endpoints
+/// are never started or stopped here.
 fn actions_for(service: ServiceId, status: HealthStatus) -> Vec<ServiceAction> {
     match (service, status) {
         (ServiceId::Llm | ServiceId::Vision, _) => Vec::new(),
         (ServiceId::ImageGeneration, HealthStatus::Online) => {
             vec![ServiceAction::Restart, ServiceAction::Stop]
         }
-        (ServiceId::ImageGeneration, _) => vec![ServiceAction::Start],
+        (ServiceId::ImageGeneration, _) => vec![ServiceAction::Start, ServiceAction::TakeOver],
     }
 }
 
@@ -99,7 +105,7 @@ mod tests {
         ] {
             assert_eq!(
                 actions_for(ServiceId::ImageGeneration, status),
-                vec![ServiceAction::Start]
+                vec![ServiceAction::Start, ServiceAction::TakeOver]
             );
         }
         assert_eq!(
@@ -283,6 +289,9 @@ fn operate_service(
             }
             (ServiceId::ImageGeneration, ServiceAction::Restart) => {
                 runtime.restart_generation_runtime().await
+            }
+            (ServiceId::ImageGeneration, ServiceAction::TakeOver) => {
+                runtime.take_over_generation_runtime().await
             }
             (ServiceId::Llm | ServiceId::Vision, _) => Ok(()),
         };

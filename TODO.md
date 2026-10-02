@@ -32,13 +32,6 @@ should not require manual process juggling.**
 
 
 
-## 7. Take over a stale/foreign server instead of `pkill`
-
-A server on the provider's port that we don't own can only be cleared by hand
-(`pkill -f "sd-server --diffusion"`). Record the child PID (and a small marker
-file) so the runtime can identify, adopt, or kill it automatically, and give a
-better message than a regex. Detection exists (`ServerError::Foreign` →
-`ProfileMismatch`); ownership does not.
 
 ## 8. Grounding/variant quality regression harness
 

@@ -551,9 +551,9 @@ impl ErrorCode {
             Self::RuntimeProfileMismatch => (
                 "SVS-RTE-123",
                 "Generation server has a different model loaded",
-                "The generation server on :7861 has a different model profile \
-                 loaded than requested. Stop stale instances first \
-                 (`svs runtime serve --force` or pkill sd-server).",
+                "Another server holds the generation port with a different model \
+                 loaded. Use Take over on the image service in Settings (or \
+                 `svs runtime serve --force`) to stop it and start ours.",
             ),
             Self::RuntimeCreateAssetDirectory => (
                 "SVS-RTE-124",

@@ -534,8 +534,9 @@ resolved endpoints and persists the planner-model pick under
 - **`generation server on 127.0.0.1:7861 has … loaded; … needs the server restarted`** —
   the resident `sd-server` has a different model loaded than the requested
   profile. Ops restart their own server automatically; a stale server from
-  another session needs `svs runtime serve --force` (or
-  `pkill -f "sd-server --diffusion"`), then rerun.
+  another session is cleared with **Take over** on the image service in
+  Settings (or `svs runtime serve --force`), which stops the process holding
+  the port and starts ours, then rerun.
 - **LLM endpoint calls fail** — confirm the endpoint is running, the configured
   model is loaded, and the relevant provider's `base_url` in `providers.toml`
   matches its `/v1` endpoint (planning uses `text`, `svs eval` uses `vision`).

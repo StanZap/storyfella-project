@@ -1,6 +1,6 @@
 use std::{fmt::Display, future::Future, time::Duration};
 
-use clipforge_inference::sd::qwen_image_2_1;
+use clipforge_inference::sd::{model_matches, qwen_image_2_1};
 
 use crate::{
     config::AppConfig,
@@ -175,6 +175,18 @@ async fn check_generation(config: &AppConfig, runtime: &CreativeRuntime) -> Serv
     }
     let process_running = runtime.is_running();
     match with_timeout(runtime.client().capabilities(), CHECK_TIMEOUT_SECONDS).await {
+        // Reachable but serving another model: a server this app did not start
+        // holds the port. Flag it so the UI offers a take-over.
+        Ok(capabilities) if !model_matches(&capabilities.model, &runtime.expected_model()) => {
+            ServiceHealth::new(
+                ServiceId::ImageGeneration,
+                HealthStatus::Degraded,
+                format!(
+                    "{} is resident on the port — this app did not start it · Take over to replace it",
+                    capabilities.model.name
+                ),
+            )
+        }
         Ok(capabilities) => ServiceHealth::new(
             ServiceId::ImageGeneration,
             HealthStatus::Online,

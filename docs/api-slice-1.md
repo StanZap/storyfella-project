@@ -144,12 +144,14 @@ session, keep the profile resident in one terminal:
 svs --project p.db runtime serve --force   # Ctrl-C to stop
 ```
 
-- `--force` kills stale `sd-server` processes from interrupted sessions —
-  they hold port 7861 and cannot be restarted by the runtime.
+- `--force` stops stale servers from interrupted sessions — they hold port
+  7861 and cannot be restarted by the runtime. It matches the served
+  executable and listen port (`servers::find_servers`), not a `pkill` pattern,
+  so another model's server is left alone.
 - Only the `qwen-image-2.1` profile is served.
 - A mismatched server that another session owns errors with a
-  `ProfileMismatch` message naming the fix (`svs runtime serve --force` or
-  `pkill -f "sd-server --diffusion"`).
+  `ProfileMismatch` message naming the fix: **Take over** on the image service
+  in Settings, or `svs runtime serve --force`.
 
 ### LLM endpoints
 

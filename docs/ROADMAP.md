@@ -585,7 +585,10 @@ plan to ship, with its status; update it when work lands.
    profile per `sdcpp` provider (`resident` / `lowvram` = `--offload-to-cpu`),
    selectable in Settings → Image generation and validated at config load; the
    measured tradeoff (lowvram ≈9/16 GiB peak for +7%/+0.5% sampling; `--max-vram`
-   rejected as too costly for edits) is in `docs/runtime-lifecycle.md`.
+   rejected as too costly for edits) is in `docs/runtime-lifecycle.md`. A server
+   holding the port that the app did not start is reported as `Degraded` (the
+   resident model is named) and cleared with **Take over** on the image service
+   — identified by the served executable and listen port, not a `pkill` pattern.
    — **✅ implemented**
 6. **LoRA registry:** project-level adapter registry (SQLite
    `lora_registry` table, round-tripped) with per-artifact bindings

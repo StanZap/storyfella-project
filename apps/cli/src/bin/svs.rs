@@ -33,7 +33,7 @@ use svs_core::registry::pipeline::{
     OutputKind, PipelineRun, RunOptions,
 };
 use svs_core::registry::{ArtifactKind, ArtifactRegistry, GenerationDefaults, Ref, VariantAxis};
-use svs_core::runtime::{marker_path, CreativeRuntime, ServerMarker};
+use svs_core::runtime::{kill_servers, marker_path, CreativeRuntime, ServerMarker};
 
 #[derive(Parser)]
 #[command(
@@ -489,7 +489,7 @@ async fn run(cli: Cli) -> Result<()> {
             match runtime {
                 RuntimeCommand::Serve { model, force } => {
                     if force {
-                        kill_resident_generation_servers()?;
+                        kill_foreign_generation_servers(&config)?;
                     }
                     // The address the provider declares is the one both the
                     // runtime and the client use.
@@ -675,12 +675,9 @@ async fn run_eval(eval: EvalArgs) -> Result<()> {
     Ok(())
 }
 
-/// Kills sd-server processes this CLI does not own (stale instances from
-/// interrupted sessions hold the port and cannot be restarted by the
-/// runtime). `pkill` exits 1 when nothing matched, which is fine.
 /// Stops the generation server on the provider's port. A server this app
-/// started is found by its recorded marker; `force` also shells out to `pkill`
-/// for one it did not start (a hand-launched or otherwise unrecorded server).
+/// started is found by its recorded marker; `force` also stops one it did not
+/// start, identified precisely by the served executable and listen port.
 fn stop_generation_server(config: &AppConfig, force: bool) -> Result<()> {
     let port = config.image.port;
     let path = marker_path(&config.cache_dir, port);
@@ -708,7 +705,7 @@ fn stop_generation_server(config: &AppConfig, force: bool) -> Result<()> {
         None => {}
     }
     if force {
-        kill_resident_generation_servers()?;
+        kill_foreign_generation_servers(config)?;
     } else {
         println!(
             "no generation server recorded on :{port} — a server this app did not start needs `--force`"
@@ -729,20 +726,26 @@ async fn generation_status(config: &AppConfig) -> Result<()> {
         .is_ok();
     match (up, marker) {
         (true, Some(marker)) => println!(":{port} up · started by this app (pid {})", marker.pid),
-        (true, None) => {
-            println!(":{port} up · not started by this app — `svs runtime stop --force` kills it")
-        }
+        (true, None) => println!(
+            ":{port} up · not started by this app — `svs runtime stop --force` (or Take over in Settings) stops it"
+        ),
         (false, _) => println!(":{port} down"),
     }
     Ok(())
 }
 
-fn kill_resident_generation_servers() -> Result<()> {
-    let status = std::process::Command::new("pkill")
-        .args(["-f", "sd-server --diffusion"])
-        .status()
-        .context("could not run pkill")?;
-    println!("killed resident generation servers (pkill exit {status})");
+/// Stops every server holding the provider's port, including one this app did
+/// not start. Identified by the served executable and listen port — not a
+/// `pkill` pattern, so another model's server is left alone.
+fn kill_foreign_generation_servers(config: &AppConfig) -> Result<()> {
+    let port = config.image.port;
+    let killed =
+        kill_servers(&config.image.executable, port).map_err(|error| anyhow!(error.to_string()))?;
+    if killed.is_empty() {
+        println!("no generation server is running on :{port}");
+    } else {
+        println!("stopped the generation server on :{port} (pid {killed:?})");
+    }
     Ok(())
 }
 

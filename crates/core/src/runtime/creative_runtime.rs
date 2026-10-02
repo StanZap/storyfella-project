@@ -12,7 +12,7 @@ use crate::{
     errors::{CodedError, ErrorCode},
 };
 
-use clipforge_inference::servers::{marker_path, server_log_path, ServerMarker};
+use clipforge_inference::servers::{kill_servers, marker_path, server_log_path, ServerMarker};
 
 /// How long a submitted job may run before the wait gives up.
 const JOB_DEADLINE: Duration = Duration::from_secs(1200);
@@ -52,13 +52,15 @@ pub enum CreativeRuntimeError {
     Job(String),
     #[error(
         "generation server on {address} has {loaded} loaded; {requested} needs the server restarted. \
-         Stop stale instances first (`svs runtime serve --force` or `pkill -f \"sd-server --diffusion\"`)"
+         Take over the port from Settings (or `svs runtime serve --force`) to stop it"
     )]
     ProfileMismatch {
         address: String,
         loaded: String,
         requested: String,
     },
+    #[error("could not stop the generation server holding :{port}: {message}")]
+    TakeOver { port: u16, message: String },
     #[error("could not create generated asset directory {path}: {source}")]
     CreateAssetDirectory {
         path: PathBuf,
@@ -79,6 +81,7 @@ impl CodedError for CreativeRuntimeError {
             Self::ReadinessTimeout(_) => ErrorCode::RuntimeReadinessTimeout,
             Self::Job(_) => ErrorCode::RuntimeJobFailed,
             Self::ProfileMismatch { .. } => ErrorCode::RuntimeProfileMismatch,
+            Self::TakeOver { .. } => ErrorCode::RuntimeGenerationStop,
             Self::CreateAssetDirectory { .. } => ErrorCode::RuntimeCreateAssetDirectory,
             Self::ImportAsset { .. } => ErrorCode::RuntimeImportAsset,
         }
@@ -154,6 +157,28 @@ impl CreativeRuntime {
     /// Whether the resident server this app started is still alive.
     pub fn is_running(&self) -> bool {
         self.runtime.is_running()
+    }
+
+    /// The model file name the resident server should report; a server holding
+    /// the port but serving something else reports a different one.
+    pub fn expected_model(&self) -> String {
+        self.runtime.expected_model()
+    }
+
+    /// Stops whatever holds the provider's port — including a server this
+    /// process did not start — and then starts ours. The precise alternative
+    /// to a `pkill` pattern: it matches the served executable and listen port,
+    /// so another model's server is left alone.
+    pub async fn take_over_generation_runtime(&self) -> Result<(), CreativeRuntimeError> {
+        let port = self.image.port;
+        kill_servers(&self.image.executable, port).map_err(|error| {
+            CreativeRuntimeError::TakeOver {
+                port,
+                message: error.to_string(),
+            }
+        })?;
+        self.clear_marker();
+        self.ensure_profile_ready().await
     }
 
     pub async fn ensure_ready(&self) -> Result<(), CreativeRuntimeError> {

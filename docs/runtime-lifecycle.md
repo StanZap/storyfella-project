@@ -48,8 +48,18 @@ The model check is two-phase: capabilities answer "is the HTTP server up" and
 "is the right model actually resident". Loading ≈17.3 GiB of weights takes
 minutes, so the readiness cap stays generous (600 s). The Rust side never treats
 process creation as readiness. A `ProfileMismatch` names the loaded model
-(compared by file name or stem) and the fix (`svs runtime serve --force` or
-`pkill -f "sd-server --diffusion"`).
+(compared by file name or stem) and the fix: **Take over** on the image
+service in Settings, or `svs runtime serve --force`. Take-over stops whatever
+holds the port — a server this app did not start included — identified
+precisely by the served executable and listen port (`servers::find_servers`),
+never by a `pkill` pattern, then starts ours.
+
+A server this app started is found by a small **marker** in the cache dir
+(`servers/<port>.marker`: pid, port, executable) written on start and cleared
+on stop; `ServerMarker::is_live` re-checks that the pid is alive *and* really
+that binary, so a recycled pid is never killed. The health check reports a
+reachable server whose resident model is not ours as `Degraded` with the
+foreign model named, which is what surfaces the take-over action.
 
 ### Job waiting — `wait_for_job`
 
@@ -222,5 +232,5 @@ automatic starts behave identically.
 ## Known gaps
 
 - Application shutdown stops the child with a bounded blocking kill, but only
-  from the app's own exit points; a `SIGKILL`ed app still leaves the server to
-  be adopted or replaced (see TODO §7).
+  from the app's own exit points; a `SIGKILL`ed app leaves the server running,
+  to be stopped by take-over (Settings) or `svs runtime stop --force`.
