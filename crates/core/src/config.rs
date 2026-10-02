@@ -47,6 +47,10 @@ pub struct AppConfig {
     /// The configurable sizes, step count, and LoRA bindings that shape
     /// every generation (editable in Settings, persisted to this file).
     pub generation_defaults: GenerationDefaults,
+    /// Start the resident generation server as soon as a project opens, so
+    /// the first generation is not a multi-minute weight load (`[runtime]
+    /// prewarm`). Off by default — it holds the card's VRAM from the outset.
+    pub prewarm: bool,
 }
 
 #[derive(Debug, Error)]
@@ -111,6 +115,15 @@ struct FileConfig {
     generation: GenerationFileConfig,
     #[serde(default)]
     lora: LoraFileConfig,
+    #[serde(default)]
+    runtime: RuntimeFileConfig,
+}
+
+/// `[runtime]` — how the app manages the native server processes.
+#[derive(Debug, Default, Deserialize)]
+struct RuntimeFileConfig {
+    #[serde(default)]
+    prewarm: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -298,6 +311,7 @@ impl AppConfig {
                 sample_method: file.generation.sample_method,
                 loras: lora_bindings,
             },
+            prewarm: file.runtime.prewarm,
         })
     }
 
@@ -446,6 +460,30 @@ impl AppConfig {
             Some(format!("{:?}", defaults.loras.multiplier)),
         );
 
+        write_config_file(path, lines.join("\n"))
+    }
+
+    /// Persists the prewarm choice to the user config (see
+    /// [`paths::user_config_path`]), line-preserving like the other settings.
+    pub fn persist_prewarm(&self, enabled: bool) -> Result<(), ConfigError> {
+        let path = paths::user_config_path().ok_or(ConfigError::PlatformDirectories)?;
+        Self::persist_prewarm_to(path, enabled)
+    }
+
+    /// Testable variant of [`AppConfig::persist_prewarm`] targeting an
+    /// arbitrary path; creates the file when it does not exist yet.
+    pub fn persist_prewarm_to(path: impl AsRef<Path>, enabled: bool) -> Result<(), ConfigError> {
+        let path = path.as_ref();
+        let contents = if path.exists() {
+            fs::read_to_string(path).map_err(|source| ConfigError::Read {
+                path: path.to_path_buf(),
+                source,
+            })?
+        } else {
+            String::new()
+        };
+        let mut lines: Vec<String> = contents.lines().map(str::to_owned).collect();
+        write_key(&mut lines, "runtime", "prewarm", Some(enabled.to_string()));
         write_config_file(path, lines.join("\n"))
     }
 }
@@ -1024,5 +1062,23 @@ mod tests {
         let contents = std::fs::read_to_string(&path).expect("file should read");
         assert!(contents.contains("[providers.planner]"), "{contents}");
         assert!(contents.contains("model = \"deepseek-chat\""), "{contents}");
+    }
+
+    #[test]
+    fn prewarm_persists_and_round_trips_through_the_file_config() {
+        let dir = std::env::temp_dir().join(format!("svs-prewarm-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("app.toml");
+
+        AppConfig::persist_prewarm_to(&path, true).expect("persist");
+        let parsed: FileConfig =
+            toml::from_str(&std::fs::read_to_string(&path).expect("read")).expect("parse");
+        assert!(parsed.runtime.prewarm);
+
+        AppConfig::persist_prewarm_to(&path, false).expect("persist");
+        let parsed: FileConfig =
+            toml::from_str(&std::fs::read_to_string(&path).expect("read")).expect("parse");
+        assert!(!parsed.runtime.prewarm);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

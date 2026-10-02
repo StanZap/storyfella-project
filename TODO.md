@@ -100,11 +100,6 @@ a first-run "Prepare image model" action with byte counts. Also confirm the
 manifest `remote_path`s against the live Hugging Face repo — the docs flag them
 as best-effort/unverified.
 
-## 5. Prewarm toggle
-
-Optional Settings → Image generation toggle to start `sd-server` on project open,
-so the first generation isn't a multi-minute wait. Must be **off** while any
-local model shares the card — pairs with §1.
 
 
 ## 7. Take over a stale/foreign server instead of `pkill`

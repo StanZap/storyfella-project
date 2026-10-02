@@ -22,7 +22,7 @@ use std::{
 use dioxus::prelude::*;
 
 use svs_core::config::AppConfig;
-use svs_core::errors::ReportedError;
+use svs_core::errors::{CodedError, ReportedError};
 use svs_core::registry::backend::CreativeBackend;
 use svs_core::runtime::HealthStatus;
 
@@ -176,6 +176,12 @@ pub fn Workspace(
     let defaults = use_signal(|| config.generation_defaults.clone());
     use_context_provider(|| defaults);
 
+    // Prewarm: start the resident generation server when a project opens, so
+    // the first generation is not a multi-minute weight load. Editable in
+    // Settings, which persists it to the user config.
+    let prewarm = use_signal(|| config.prewarm);
+    use_context_provider(|| prewarm);
+
     // The app-wide error surface: every failure is reported here (coded
     // log + banner + details modal), whatever screen is showing.
     let error_report = use_signal(|| None::<ReportedError>);
@@ -253,6 +259,28 @@ pub fn Workspace(
                 mode,
                 exit_on_done,
             );
+        });
+    });
+
+    // Prewarm on project open: once per opened project, when the toggle is on,
+    // start the resident server in the background. A failure is logged, not
+    // surfaced — the first generation would report the same error anyway.
+    let prewarm_backend = backend;
+    let mut prewarmed_for = use_signal(|| None::<PathBuf>);
+    use_effect(move || {
+        let path = app_state.read().project_path.clone();
+        let Some(path) = path else {
+            return;
+        };
+        if !prewarm() || prewarmed_for() == Some(path.clone()) {
+            return;
+        }
+        prewarmed_for.set(Some(path));
+        let backend = prewarm_backend.read().clone();
+        spawn(async move {
+            if let Err(error) = backend.ensure_ready().await {
+                tracing::warn!("prewarm failed: {}", error.report().log());
+            }
         });
     });
 

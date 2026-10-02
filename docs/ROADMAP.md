@@ -579,7 +579,9 @@ plan to ship, with its status; update it when work lands.
    regenerates at it) — never invented. The planner discovers the registry
    and adapters via tool calling (`list_artifacts`/`list_loras`) with a
    strict schema on the final stack. `--name` on `variant` (explicit
-   naming for variants). — **✅ implemented**
+   naming for variants). A Settings → Image generation toggle (`[runtime]
+   prewarm`) starts the resident server when a project opens, so the first
+   generation is not a multi-minute weight load. — **✅ implemented**
 6. **LoRA registry:** project-level adapter registry (SQLite
    `lora_registry` table, round-tripped) with per-artifact bindings
    (`/attach-lora`, `/lora-scale`, `/lora-remove` — slash, CLI, and LLM

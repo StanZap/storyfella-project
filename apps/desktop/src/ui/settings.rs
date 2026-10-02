@@ -404,9 +404,6 @@ fn GeneralSettings() -> Element {
             SettingRow { title: "Background generation", description: "Continue queued jobs while you read or present other scenes.",
                 Toggle { enabled: true }
             }
-            SettingRow { title: "Keep models resident", description: "Favor low latency by retaining active models in memory.",
-                Toggle { enabled: true }
-            }
             SettingRow { title: "Autosave", description: "Save project changes locally as you work.", last: true,
                 select {
                     class: "setting-control",
@@ -580,6 +577,7 @@ fn ModelPicker(
 
 #[component]
 fn GenerationSettings(config: AppConfig, mut defaults: Signal<GenerationDefaults>) -> Element {
+    let mut prewarm = use_context::<Signal<bool>>();
     let sizes = defaults.read().sizes;
     let steps = defaults.read().steps;
     let cfg_scale = defaults.read().cfg_scale;
@@ -658,6 +656,15 @@ fn GenerationSettings(config: AppConfig, mut defaults: Signal<GenerationDefaults
                             Icon { name: IconName::Refresh, class: "size-3" }
                         }
                     }
+                }
+            }
+            SettingRow { title: "Prewarm on project open", description: "Start the resident server as soon as a project opens, so the first generation is not a multi-minute weight load. Leave it off while another local model shares the card.",
+                Toggle { enabled: prewarm(), onchange: move |enabled| {
+                    prewarm.set(enabled);
+                    if let Err(error) = config.persist_prewarm(enabled) {
+                        tracing::error!("could not persist prewarm: {error}");
+                    }
+                }
                 }
             }
             SettingRow { title: "Residency policy", description: "Avoid unloading between interactive requests.", last: true,
@@ -938,7 +945,7 @@ fn PathRow(title: String, path: String, #[props(default)] last: bool) -> Element
 }
 
 #[component]
-fn Toggle(enabled: bool) -> Element {
+fn Toggle(enabled: bool, #[props(default)] onchange: Option<EventHandler<bool>>) -> Element {
     let track = if enabled {
         "bg-violet-500/70"
     } else {
@@ -950,7 +957,15 @@ fn Toggle(enabled: bool) -> Element {
         "translate-x-0.5"
     };
     rsx! {
-        button { class: "relative ml-auto h-5 w-10 rounded-full {track} transition", role: "switch", aria_checked: "{enabled}",
+        button {
+            class: "relative ml-auto h-5 w-10 rounded-full {track} transition disabled:cursor-not-allowed disabled:opacity-40",
+            role: "switch",
+            aria_checked: "{enabled}",
+            onclick: move |_| {
+                if let Some(handler) = &onchange {
+                    handler.call(!enabled);
+                }
+            },
             span { class: "absolute left-0 top-0.5 size-4 rounded-full bg-white shadow-sm transition {knob}" }
         }
     }
