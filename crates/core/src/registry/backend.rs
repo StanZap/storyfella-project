@@ -95,6 +95,17 @@ impl CreativeBackend {
         self.runtime.stop_generation_runtime().await
     }
 
+    /// The residency the resident server starts with (`resident`/`lowvram`).
+    pub fn image_residency(&self) -> &'static str {
+        self.runtime.residency()
+    }
+
+    /// Changes the image residency for the next server start (see
+    /// [`CreativeRuntime::set_residency`]); `false` for an unknown id.
+    pub fn set_image_residency(&mut self, residency: &str) -> bool {
+        self.runtime.set_residency(residency)
+    }
+
     /// Whether an LLM is configured (soft dependency).
     pub fn has_llm(&self) -> bool {
         self.llm.is_some()

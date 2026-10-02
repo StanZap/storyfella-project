@@ -31,6 +31,14 @@ architecture = "qwen-image-2.1"
 capabilities = ["t2i", "edit"]
 base_url = "http://127.0.0.1:7861"
 model_dir = "models"
+# How the weights are held on the GPU (a launch-time flag; change it in
+# Settings → Image generation → Residency, or here):
+#   "resident" (default) — weights stay on the device: peak ≈22.7 GiB at t2i
+#                          1024², ≈23.3 GiB at a 1024×1536 edit
+#   "lowvram"            — `--offload-to-cpu`: the weights page from system RAM,
+#                          peak ≈9.2 GiB / ≈15.5 GiB for +7% / +0.5% sampling
+#                          time — the mode that lets the card be shared
+# residency = "lowvram"
 
 # Local weights: the uncensored int8 DiT on disk, with the standard text
 # encoder and VAE from the model tree above.

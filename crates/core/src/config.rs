@@ -32,6 +32,9 @@ pub struct AppConfig {
     pub text_provider_id: Option<String>,
     /// The provider id serving `vision`. `None` when unconfigured.
     pub vision_provider_id: Option<String>,
+    /// The provider id serving `t2i`, kept so Settings can persist the
+    /// residency choice under the right `[providers.<id>]` section.
+    pub image_provider_id: Option<String>,
     /// The image-generation deployment resolved from `providers.toml`: the
     /// `sd-server` executable, model tree, LoRA root, endpoint, and weights.
     pub image: ImageDeployment,
@@ -251,6 +254,9 @@ impl AppConfig {
         let vision_provider_id = providers
             .default_provider(Capability::Vision)
             .map(str::to_owned);
+        let image_provider_id = providers
+            .default_provider(Capability::T2i)
+            .map(str::to_owned);
 
         let dirs = paths::project_dirs().ok_or(ConfigError::PlatformDirectories)?;
         let data_dir = dirs.data_dir();
@@ -287,6 +293,7 @@ impl AppConfig {
             vision,
             text_provider_id,
             vision_provider_id,
+            image_provider_id,
             image,
             cache_dir: file
                 .paths
@@ -460,6 +467,49 @@ impl AppConfig {
             Some(format!("{:?}", defaults.loras.multiplier)),
         );
 
+        write_config_file(path, lines.join("\n"))
+    }
+
+    /// Persists the image provider's residency to the user providers file (see
+    /// [`paths::user_providers_path`]) — the Settings control writes here so
+    /// the choice survives restarts without touching the checked-in
+    /// `providers.toml`.
+    pub fn persist_image_residency(&self, residency: &str) -> Result<(), ConfigError> {
+        let path = paths::user_providers_path().ok_or(ConfigError::PlatformDirectories)?;
+        let provider_id = self
+            .image_provider_id
+            .as_deref()
+            .ok_or(ConfigError::Providers(ProviderError::NoProvider(
+                Capability::T2i,
+            )))?;
+        Self::persist_image_residency_to(path, provider_id, residency)
+    }
+
+    /// Testable variant of [`AppConfig::persist_image_residency`]; creates the
+    /// file when it does not exist yet. Line-preserving: only the `residency`
+    /// key under `[providers.<provider_id>]` changes.
+    pub fn persist_image_residency_to(
+        path: impl AsRef<Path>,
+        provider_id: &str,
+        residency: &str,
+    ) -> Result<(), ConfigError> {
+        let path = path.as_ref();
+        let contents = if path.exists() {
+            fs::read_to_string(path).map_err(|source| ConfigError::Read {
+                path: path.to_path_buf(),
+                source,
+            })?
+        } else {
+            String::new()
+        };
+        let mut lines: Vec<String> = contents.lines().map(str::to_owned).collect();
+        let section = format!("providers.{provider_id}");
+        write_key(
+            &mut lines,
+            &section,
+            "residency",
+            Some(format!("{residency:?}")),
+        );
         write_config_file(path, lines.join("\n"))
     }
 
@@ -1062,6 +1112,26 @@ mod tests {
         let contents = std::fs::read_to_string(&path).expect("file should read");
         assert!(contents.contains("[providers.planner]"), "{contents}");
         assert!(contents.contains("model = \"deepseek-chat\""), "{contents}");
+    }
+
+    #[test]
+    fn image_residency_persists_under_the_provider_section() {
+        let dir = std::env::temp_dir().join(format!("svs-residency-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("providers.toml");
+        std::fs::write(&path, "[providers.qwen-image]\nkind = \"sdcpp\"\n").expect("seed");
+
+        AppConfig::persist_image_residency_to(&path, "qwen-image", "lowvram").expect("persist");
+        let contents = std::fs::read_to_string(&path).expect("read");
+        assert!(contents.contains("residency = \"lowvram\""), "{contents}");
+        assert!(contents.contains("kind = \"sdcpp\""), "{contents}");
+
+        // Re-persisting replaces rather than duplicates the key.
+        AppConfig::persist_image_residency_to(&path, "qwen-image", "resident").expect("persist");
+        let contents = std::fs::read_to_string(&path).expect("read");
+        assert_eq!(contents.matches("residency =").count(), 1, "{contents}");
+        assert!(contents.contains("residency = \"resident\""), "{contents}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

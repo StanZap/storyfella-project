@@ -581,7 +581,12 @@ plan to ship, with its status; update it when work lands.
    strict schema on the final stack. `--name` on `variant` (explicit
    naming for variants). A Settings → Image generation toggle (`[runtime]
    prewarm`) starts the resident server when a project opens, so the first
-   generation is not a multi-minute weight load. — **✅ implemented**
+   generation is not a multi-minute weight load. **Residency** is a launch
+   profile per `sdcpp` provider (`resident` / `lowvram` = `--offload-to-cpu`),
+   selectable in Settings → Image generation and validated at config load; the
+   measured tradeoff (lowvram ≈9/16 GiB peak for +7%/+0.5% sampling; `--max-vram`
+   rejected as too costly for edits) is in `docs/runtime-lifecycle.md`.
+   — **✅ implemented**
 6. **LoRA registry:** project-level adapter registry (SQLite
    `lora_registry` table, round-tripped) with per-artifact bindings
    (`/attach-lora`, `/lora-scale`, `/lora-remove` — slash, CLI, and LLM

@@ -1,6 +1,9 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use clipforge_inference::sd::{Client, ClientError, JobSubmission, Runtime, RuntimeError};
+use clipforge_inference::sd::{
+    Client, ClientError, JobSubmission, Residency, Runtime, RuntimeError,
+};
+use clipforge_inference::ImageDeployment;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -20,16 +23,15 @@ const JOB_DEADLINE: Duration = Duration::from_secs(1200);
 #[derive(Clone)]
 pub struct CreativeRuntime {
     client: Client,
+    /// The deployment this runtime serves: its executable, address, weights,
+    /// and residency. Kept whole so the runtime can be rebuilt when the
+    /// residency changes (see [`CreativeRuntime::set_residency`]).
+    image: ImageDeployment,
     runtime: Arc<Runtime>,
     asset_directory: PathBuf,
     /// Where the process marker is written, so a later process can stop a
     /// leftover server this one leaves behind (see [`super::servers`]).
     cache_dir: PathBuf,
-    executable: PathBuf,
-    /// The deployment's listen address — readiness and the mismatch message
-    /// both name it.
-    host: String,
-    port: u16,
 }
 
 impl PartialEq for CreativeRuntime {
@@ -85,15 +87,13 @@ impl CodedError for CreativeRuntimeError {
 
 impl CreativeRuntime {
     pub fn new(config: &AppConfig) -> Self {
-        let image = &config.image;
+        let image = config.image.clone();
         Self {
             client: Client::new(format!("http://{}:{}", image.host, image.port)),
             runtime: Arc::new(image.runtime()),
             asset_directory: config.asset_dir.join("generated"),
             cache_dir: config.cache_dir.clone(),
-            executable: image.executable.clone(),
-            host: image.host.clone(),
-            port: image.port,
+            image,
         }
     }
 
@@ -101,7 +101,7 @@ impl CreativeRuntime {
     /// and is not killed when this process exits, so `svs runtime start` leaves
     /// a resident server behind.
     pub fn detached(config: &AppConfig) -> Self {
-        let image = &config.image;
+        let image = config.image.clone();
         let runtime = image
             .runtime()
             .keep_alive(server_log_path(&config.cache_dir, image.port));
@@ -110,10 +110,29 @@ impl CreativeRuntime {
             runtime: Arc::new(runtime),
             asset_directory: config.asset_dir.join("generated"),
             cache_dir: config.cache_dir.clone(),
-            executable: image.executable.clone(),
-            host: image.host.clone(),
-            port: image.port,
+            image,
         }
+    }
+
+    /// The residency the runtime starts the server with (see
+    /// [`Residency`]).
+    pub fn residency(&self) -> &'static str {
+        self.image.residency.as_str()
+    }
+
+    /// Changes the residency the next server start will use, rebuilding the
+    /// runtime. Returns `false` for an unknown id, leaving the runtime alone.
+    ///
+    /// Residency is a launch-time flag, so a server already running keeps its
+    /// old mode until it is stopped and started again; the caller decides
+    /// whether to restart.
+    pub fn set_residency(&mut self, residency: &str) -> bool {
+        let Some(residency) = Residency::from_id(residency) else {
+            return false;
+        };
+        self.image.residency = residency;
+        self.runtime = Arc::new(self.image.runtime());
+        true
     }
 
     /// The pid of the server this process started, when it owns one.
@@ -147,7 +166,7 @@ impl CreativeRuntime {
     /// as [`CreativeRuntimeError::ProfileMismatch`].
     pub async fn ensure_profile_ready(&self) -> Result<(), CreativeRuntimeError> {
         self.runtime
-            .ensure_ready(&self.host, self.port)
+            .ensure_ready(&self.image.host, self.image.port)
             .await
             .map_err(|error| match error {
                 // The shared runtime's profile mismatch carries the loaded and
@@ -155,7 +174,7 @@ impl CreativeRuntime {
                 RuntimeError::ProfileMismatch {
                     loaded, requested, ..
                 } => CreativeRuntimeError::ProfileMismatch {
-                    address: format!("{}:{}", self.host, self.port),
+                    address: format!("{}:{}", self.image.host, self.image.port),
                     loaded,
                     requested,
                 },
@@ -203,15 +222,15 @@ impl CreativeRuntime {
         if let Some(pid) = self.runtime.pid() {
             let marker = ServerMarker {
                 pid,
-                port: self.port,
-                executable: self.executable.clone(),
+                port: self.image.port,
+                executable: self.image.executable.clone(),
             };
-            let _ = marker.write(&marker_path(&self.cache_dir, self.port));
+            let _ = marker.write(&marker_path(&self.cache_dir, self.image.port));
         }
     }
 
     fn clear_marker(&self) {
-        let _ = std::fs::remove_file(marker_path(&self.cache_dir, self.port));
+        let _ = std::fs::remove_file(marker_path(&self.cache_dir, self.image.port));
     }
 
     /// Waits for a submitted job to complete and stores its image in the asset

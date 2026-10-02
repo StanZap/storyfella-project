@@ -113,9 +113,26 @@ detected on the next readiness check and restarted.
 
 The diffusion model, encoder, and VAE stay loaded across prompts; normal
 generation never unloads them. There is a single generation profile —
-`qwen-image-2.1` — so there is no profile switching. Qwen-Image-2.1 peaks at
-≈23.4 GiB on a 24 GiB card (weights resident ≈15.9 GB), so the LLM
-planner/VLM **cannot be resident during a generation**: free VRAM, then generate.
+`qwen-image-2.1` — so there is no profile switching.
+
+Residency is a **launch-time** choice (`sd::Residency`), set per `sdcpp`
+provider in `providers.toml` under `residency`, or in Settings → Image
+generation → Residency. There is no unload endpoint, so changing it restarts
+the server; the Settings control persists the choice and restarts a running
+server into the new mode.
+
+| mode | flags | peak (t2i 1024² / edit 1024×1536) | sampling cost |
+| --- | --- | ---: | --- |
+| `resident` (default) | — | ≈22.7 / ≈23.3 GiB | baseline |
+| `lowvram` | `--offload-to-cpu` | ≈9.2 / ≈15.5 GiB | +7% / +0.5% |
+
+Measured on an RTX 3090, 25 steps, CFG 6.0 (`.svs-e2e/logs/2026-10-01-offload-cost.md`).
+`lowvram` is nearly free at these canvases, so it is what lets a second model
+share the card. `--max-vram 8` was also measured and is **not** a general
+answer: it leaves t2i untouched but makes a reference edit ~2.9× slower
+(99.7 s → 288.5 s) as the graph is re-cut, so it is not offered as a mode.
+Qwen-Image-2.1 peaks at ≈23.4 GiB `resident`, so the LLM planner/VLM **cannot
+be co-resident that way**: either move to `lowvram`, or free VRAM first.
 
 ## `ModelStore` — provisioning
 

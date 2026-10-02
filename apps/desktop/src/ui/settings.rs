@@ -200,7 +200,7 @@ pub fn Settings(
                         SettingsSection::Status => rsx! { StatusSettings { health, checking, checked_at, busy, operation_error, on_check: on_check.clone(), on_operate: on_operate.clone() } },
                         SettingsSection::General => rsx! { GeneralSettings {} },
                         SettingsSection::Intelligence => rsx! { IntelligenceSettings { config: config.clone(), backend, health, lm_model, models_state, on_check: on_check.clone() } },
-                        SettingsSection::Generation => rsx! { GenerationSettings { config: config.clone(), defaults } },
+                        SettingsSection::Generation => rsx! { GenerationSettings { config: config.clone(), defaults, backend } },
                         SettingsSection::Storage => rsx! { StorageSettings { config: config.clone() } },
                     }
                 }
@@ -590,8 +590,13 @@ fn ModelPicker(
 }
 
 #[component]
-fn GenerationSettings(config: AppConfig, mut defaults: Signal<GenerationDefaults>) -> Element {
+fn GenerationSettings(
+    config: AppConfig,
+    mut defaults: Signal<GenerationDefaults>,
+    backend: Signal<CreativeBackend>,
+) -> Element {
     let mut prewarm = use_context::<Signal<bool>>();
+    let mut residency = use_context::<Signal<String>>();
     let persist_config = config.clone();
     let on_prewarm = move |enabled: bool| {
         prewarm.set(enabled);
@@ -599,6 +604,33 @@ fn GenerationSettings(config: AppConfig, mut defaults: Signal<GenerationDefaults
             tracing::error!("could not persist prewarm: {error}");
         }
     };
+    // Changing residency is a launch-flag change: persist it, and restart a
+    // running server so the new mode takes effect now. The runtime keeps a
+    // clone in the backend, so it survives navigation.
+    let residency_config = config.clone();
+    let mut residency_backend = backend;
+    let on_residency = EventHandler::new(move |value: String| {
+        residency.set(value.clone());
+        if let Err(error) = residency_config.persist_image_residency(&value) {
+            tracing::error!("could not persist image residency: {error}");
+        }
+        let was_running = residency_backend.read().runtime().is_running();
+        spawn(async move {
+            if was_running {
+                let runtime = residency_backend.read().runtime();
+                let _ = runtime.stop_generation_runtime().await;
+            }
+            if !residency_backend.write().set_image_residency(&value) {
+                tracing::error!("unknown image residency {value:?}");
+            }
+            if was_running {
+                let runtime = residency_backend.read().runtime();
+                if let Err(error) = runtime.ensure_ready().await {
+                    let _ = error.report().log();
+                }
+            }
+        });
+    });
     let sizes = defaults.read().sizes;
     let steps = defaults.read().steps;
     let cfg_scale = defaults.read().cfg_scale;
@@ -682,8 +714,13 @@ fn GenerationSettings(config: AppConfig, mut defaults: Signal<GenerationDefaults
             SettingRow { title: "Prewarm on project open", description: "Start the resident server as soon as a project opens, so the first generation is not a multi-minute weight load. Leave it off while another local model shares the card.",
                 Toggle { enabled: prewarm(), onchange: on_prewarm }
             }
-            SettingRow { title: "Residency policy", description: "Avoid unloading between interactive requests.", last: true,
-                select { class: "setting-control", option { "Keep active model loaded" } option { "Release when idle" } }
+            SettingRow { title: "Residency", description: "How the weights are held on the GPU. `resident` is fastest (measured peak ≈23 GiB); `lowvram` pages them from system RAM (`--offload-to-cpu`) for ≈9 GiB at t2i and ≈16 GiB at an edit, at +7% / +0.5% sampling time. A running server restarts into the new mode.", last: true,
+                select {
+                    class: "setting-control",
+                    oninput: move |event| on_residency.call(event.value()),
+                    option { selected: residency() == "resident", value: "resident", "Resident (fastest)" }
+                    option { selected: residency() == "lowvram", value: "lowvram", "Low VRAM (offload)" }
+                }
             }
         }
         ModelFiles { config: config.clone() }

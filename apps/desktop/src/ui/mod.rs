@@ -182,6 +182,11 @@ pub fn Workspace(
     let prewarm = use_signal(|| config.prewarm);
     use_context_provider(|| prewarm);
 
+    // Image residency (`resident`/`lowvram`): a launch-time choice, shared so
+    // Settings can change it; a running server restarts into the new mode.
+    let image_residency = use_signal(|| config.image.residency.as_str().to_owned());
+    use_context_provider(|| image_residency);
+
     // The app-wide error surface: every failure is reported here (coded
     // log + banner + details modal), whatever screen is showing.
     let error_report = use_signal(|| None::<ReportedError>);
