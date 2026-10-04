@@ -113,6 +113,12 @@ pub const OPS: &[OpSpec] = &[
         summary: "make a look canonical",
     },
     OpSpec {
+        name: "/revert",
+        params: &["c:<ref>"],
+        flags: &[],
+        summary: "activate the previous image",
+    },
+    OpSpec {
         name: "/attach-lora",
         params: &["c:<ref>", "<lora>"],
         flags: &["--multiplier"],
@@ -169,6 +175,7 @@ pub fn parse_slash(input: &str) -> Result<Operation, SlashError> {
         "lora-scale" => parse_lora_scale(&tokens),
         "lora-remove" => parse_lora_remove(&tokens),
         "describe" => parse_describe(&tokens),
+        "revert" => parse_revert(&tokens),
         other => Err(SlashError(format!(
             "unknown command /{other}; expected {}",
             op_list()
@@ -467,6 +474,15 @@ fn parse_lora_flag(value: &str) -> Result<LoraSelection, String> {
         return Err("--lora needs an adapter file: --lora <file>@<multiplier>".to_owned());
     }
     Ok(LoraSelection { path, multiplier })
+}
+
+/// `/revert c:<ref>` — activate the artifact's previous image.
+fn parse_revert(tokens: &[Token]) -> Result<Operation, SlashError> {
+    let target = tokens
+        .get(1)
+        .map(|token| Ref::new(token.text.clone()))
+        .ok_or_else(|| SlashError("revert needs a target: /revert c:<ref>".to_owned()))?;
+    Ok(Operation::Revert { target })
 }
 
 /// The token at index 1 is the `c:` ref (bare names and UUIDs resolve too).
@@ -973,6 +989,17 @@ mod tests {
         assert!(error.0.contains("unknown command"), "{error}");
         let error = parse_slash("/create dragon green").unwrap_err();
         assert!(error.0.contains("unknown artifact kind"), "{error}");
+    }
+
+    #[test]
+    fn revert_parses_to_a_target() {
+        assert_eq!(
+            parse_slash("/revert c:mia").unwrap(),
+            Operation::Revert {
+                target: Ref::new("c:mia"),
+            }
+        );
+        assert!(parse_slash("/revert").unwrap_err().0.contains("target"));
     }
 
     #[test]

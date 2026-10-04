@@ -29,8 +29,10 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use svs_core::config::AppConfig;
+use svs_core::errors::CodedError;
 use svs_core::persistence::ProjectDb;
 use svs_core::registry::{ArtifactKind, GenerationDefaults};
+use svs_core::vision;
 
 use crate::{
     commands::{self, ExecutionUi, OpActivity},
@@ -111,6 +113,21 @@ pub enum StepVerb {
         count: usize,
     },
     ExpectImage(String),
+    /// Ask the configured `vision` provider whether an artifact's current
+    /// image answers a question about it — a real check that the generation
+    /// produced what was asked for, where [`Self::ExpectImage`] only checks
+    /// that *a* picture exists.
+    ///
+    /// Non-hermetic and slow (a vision round trip, and a managed server may
+    /// have to start), so it belongs in plans that already need the vision
+    /// endpoint. `expect`/`expect_not` are case-insensitive substring gates,
+    /// as in `svs eval`.
+    ExpectVision {
+        image: String,
+        question: String,
+        expect: Option<String>,
+        expect_not: Option<String>,
+    },
     ExpectNoError,
 }
 
@@ -139,6 +156,7 @@ impl StepVerb {
             Self::ExpectArtifact { name, .. } => format!("artifact \"{name}\" exists"),
             Self::ExpectArtifactCount { kind, count } => format!("{count} {kind}s exist"),
             Self::ExpectImage(name) => format!("artifact \"{name}\" has an image"),
+            Self::ExpectVision { image, .. } => format!("vision check on \"{image}\""),
             Self::ExpectNoError => "no errors are showing".to_owned(),
         }
     }
@@ -223,6 +241,31 @@ impl StepVerb {
                 }
             }
             "expect_image" => Self::ExpectImage(text(&value)?),
+            "expect_vision" => {
+                let mapping = map(action, &value)?;
+                let image = text(
+                    mapping
+                        .get(serde_yaml::Value::String("image".into()))
+                        .ok_or("expect_vision needs an image (an artifact name)")?,
+                )?;
+                let question = text(
+                    mapping
+                        .get(serde_yaml::Value::String("question".into()))
+                        .ok_or("expect_vision needs a question")?,
+                )?;
+                let optional = |key: &str| -> Result<Option<String>, String> {
+                    mapping
+                        .get(serde_yaml::Value::String(key.into()))
+                        .map(text)
+                        .transpose()
+                };
+                Self::ExpectVision {
+                    image,
+                    question,
+                    expect: optional("expect")?,
+                    expect_not: optional("expect_not")?,
+                }
+            }
             "expect_no_error" => Self::ExpectNoError,
             other => return Err(format!("unknown step action \"{other}\"")),
         })
@@ -638,6 +681,9 @@ async fn run_steps(
 ) -> RunReport {
     let started = Instant::now();
     let mut results: Vec<(String, StepStatus)> = Vec::new();
+    // The vision session (if a step needs one) lives for the whole run, so a
+    // managed server is started once rather than per assessment.
+    let mut vision: Option<vision::VisionSession> = None;
     for (index, step) in plan.steps.iter().enumerate() {
         if session.read().is_none() {
             break; // cancelled
@@ -655,7 +701,7 @@ async fn run_steps(
         if session.read().is_none() {
             break;
         }
-        let status = execute_step(ctx.clone(), ui.clone(), step, session).await;
+        let status = execute_step(ctx.clone(), ui.clone(), step, session, &mut vision).await;
         let mut status = status;
         if step.soft {
             if let StepStatus::Failed { reason } = status {
@@ -684,6 +730,7 @@ async fn execute_step(
     mut ui: ExecutionUi,
     step: &Step,
     session: Signal<Option<GuideSession>>,
+    vision: &mut Option<vision::VisionSession>,
 ) -> StepStatus {
     match &step.verb {
         StepVerb::GoProjects => {
@@ -986,7 +1033,7 @@ async fn execute_step(
                         .registry
                         .iter()
                         .find(|artifact| artifact.name.eq_ignore_ascii_case(&expected))
-                        .and_then(|artifact| state.registry.latest_image(artifact.id))
+                        .and_then(|artifact| state.registry.active_revision(artifact.id))
                         .and_then(|revision| revision.asset_path.as_ref())
                         .map(|path| Path::new(path).exists())
                         .unwrap_or(false);
@@ -995,7 +1042,76 @@ async fn execute_step(
                 IMAGE_TIMEOUT_MS,
             )
             .await;
-            status(ok, format!("expected \"{name}\" to have a finished image"))
+            status(
+                ok,
+                format!("expected \"{name}\" to have a finished active image"),
+            )
+        }
+        StepVerb::ExpectVision {
+            image,
+            question,
+            expect,
+            expect_not,
+        } => {
+            let Some(deployment) = ctx.config.vision.clone() else {
+                return StepStatus::Failed {
+                    reason: "no `vision` provider is configured in providers.toml".to_owned(),
+                };
+            };
+            if vision.is_none() {
+                match vision::VisionSession::start(deployment).await {
+                    Ok(started) => *vision = Some(started),
+                    Err(error) => {
+                        let report = error.report().log();
+                        return StepStatus::Failed {
+                            reason: format!("{} — {}", report.code.code(), report.details),
+                        };
+                    }
+                }
+            }
+            let session = vision.as_ref().expect("the session was just started");
+
+            // The image currently shown for the artifact (its active revision).
+            let path = {
+                let state = ctx.app_state.read();
+                let artifact = state
+                    .registry
+                    .iter()
+                    .find(|artifact| artifact.name.eq_ignore_ascii_case(image));
+                artifact.and_then(|artifact| state.display_image(artifact).map(str::to_owned))
+            };
+            let Some(path) = path else {
+                return StepStatus::Failed {
+                    reason: format!("artifact \"{image}\" has no image to assess"),
+                };
+            };
+            let attachment = match vision::image_for_chat(Path::new(&path)) {
+                Ok(attachment) => attachment,
+                Err(error) => {
+                    let report = error.report().log();
+                    return StepStatus::Failed {
+                        reason: format!("{} — {}", report.code.code(), report.details),
+                    };
+                }
+            };
+            let answer = match session
+                .assess(vec![attachment], question, vision::DEFAULT_MAX_TOKENS)
+                .await
+            {
+                Ok(answer) => answer,
+                Err(error) => {
+                    let report = error.report().log();
+                    return StepStatus::Failed {
+                        reason: format!("{} — {}", report.code.code(), report.details),
+                    };
+                }
+            };
+            match vision::check(&answer, expect.as_deref(), expect_not.as_deref()) {
+                Ok(()) => StepStatus::Passed,
+                Err(reason) => StepStatus::Failed {
+                    reason: format!("{reason} (model said: {answer})"),
+                },
+            }
         }
         StepVerb::ExpectNoError => {
             let ok = ui.error_report.read().is_none();
@@ -1200,6 +1316,31 @@ steps:
             StepVerb::ExpectArtifactCount {
                 kind: ArtifactKind::Scene,
                 count: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn expect_vision_parses_its_mapping() {
+        let plan = Plan::from_yaml(
+            r#"
+name: vision
+steps:
+  - expect_vision:
+      image: "mara"
+      question: "Is her hair auburn?"
+      expect: "yes"
+      expect_not: "no"
+"#,
+        )
+        .expect("plan parses");
+        assert_eq!(
+            plan.steps[0].verb,
+            StepVerb::ExpectVision {
+                image: "mara".into(),
+                question: "Is her hair auburn?".into(),
+                expect: Some("yes".into()),
+                expect_not: Some("no".into()),
             }
         );
     }

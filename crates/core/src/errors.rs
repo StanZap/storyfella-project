@@ -39,6 +39,7 @@ pub enum ErrorCode {
     RegistryLoraNotFound,
     RegistryLoraAmbiguous,
     RegistryBadLoraMultiplier,
+    RegistryNoPreviousRevision,
 
     // ---- OP · ops, compile, pipeline (src/registry/ops.rs, pipeline.rs) ----
     OpBackendRequired,
@@ -89,6 +90,8 @@ pub enum ErrorCode {
     LlmRequest,
     LlmStatus,
     LlmPlanner,
+    LlmVisionImage,
+    LlmVisionServer,
 
     // ---- GEN · native generation client (src/generation/mod.rs) ----
     GenRequest,
@@ -228,6 +231,12 @@ impl ErrorCode {
                 "SVS-REG-123",
                 "LoRA multiplier out of range",
                 "The multiplier must be within -2..=2. Retry with a value in that range.",
+            ),
+            Self::RegistryNoPreviousRevision => (
+                "SVS-REG-124",
+                "No earlier image to revert to",
+                "The artifact has no completed revision before the current one. \
+                 Apply an edit first, or open the history to pick a revision.",
             ),
             Self::OpBackendRequired => (
                 "SVS-OP-101",
@@ -476,6 +485,18 @@ impl ErrorCode {
                 "LLM planning did not finish",
                 "The LLM did not produce a usable plan. Retry, or use slash \
                  commands directly.",
+            ),
+            Self::LlmVisionImage => (
+                "SVS-LLM-105",
+                "Evaluation image could not be read",
+                "The image handed to the vision model could not be read or \
+                 decoded. Check that the artifact's asset file still exists.",
+            ),
+            Self::LlmVisionServer => (
+                "SVS-LLM-106",
+                "Vision server did not start",
+                "The managed vision model server could not be started. Check that \
+                 its executable and weights exist (providers.toml).",
             ),
             Self::GenRequest => (
                 "SVS-GEN-101",

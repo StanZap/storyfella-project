@@ -526,7 +526,7 @@ mod tests {
     #[test]
     fn partial_operation_filters_and_replaces_itself() {
         let completions = complete("/re", 3, &refs());
-        assert_eq!(labels(&completions), ["/regenerate", "/resize"]);
+        assert_eq!(labels(&completions), ["/regenerate", "/resize", "/revert"]);
         // Accepting must overwrite what was typed, not append to it.
         assert_eq!(completions.replace, Span { start: 0, end: 3 });
     }
@@ -623,7 +623,7 @@ mod tests {
     fn cursor_past_the_end_is_clamped() {
         // A stale cursor must not panic or slice outside the string.
         let completions = complete("/re", 9_999, &refs());
-        assert_eq!(labels(&completions), ["/regenerate", "/resize"]);
+        assert_eq!(labels(&completions), ["/regenerate", "/resize", "/revert"]);
     }
 
     // ----------------------------------------------------------- signature

@@ -656,6 +656,8 @@ pub enum RegistryError {
     LoraAmbiguous { value: String, matches: usize },
     #[error("lora multiplier {0} must be within -2..=2")]
     BadLoraMultiplier(f32),
+    #[error("artifact {0} has no earlier completed revision to revert to")]
+    NoPreviousRevision(Uuid),
 }
 
 impl CodedError for RegistryError {
@@ -675,6 +677,7 @@ impl CodedError for RegistryError {
             Self::LoraNotFound(_) => ErrorCode::RegistryLoraNotFound,
             Self::LoraAmbiguous { .. } => ErrorCode::RegistryLoraAmbiguous,
             Self::BadLoraMultiplier(_) => ErrorCode::RegistryBadLoraMultiplier,
+            Self::NoPreviousRevision(_) => ErrorCode::RegistryNoPreviousRevision,
         }
     }
 }
@@ -816,6 +819,35 @@ impl ArtifactRegistry {
             .revisions
             .iter()
             .find(|revision| revision.id == active_id)
+    }
+
+    /// The newest completed revision made *before* the artifact's current
+    /// active revision, if any — what `/revert` activates. Nothing is
+    /// destroyed: the current revision stays in the history.
+    pub fn previous_revision(&self, id: Uuid) -> Option<Uuid> {
+        let artifact = self.artifact(id)?;
+        let start = artifact
+            .active_revision_id
+            .and_then(|active| artifact.revisions.iter().position(|r| r.id == active))
+            .unwrap_or(artifact.revisions.len());
+        artifact.revisions[..start]
+            .iter()
+            .rev()
+            .find(|revision| {
+                revision.status == RevisionStatus::Completed && revision.asset_path.is_some()
+            })
+            .map(|revision| revision.id)
+    }
+
+    /// Activates the artifact's previous completed revision (see
+    /// [`Self::previous_revision`]) and returns its id.
+    pub fn activate_previous_revision(&mut self, id: Uuid) -> Result<Uuid, RegistryError> {
+        let previous = self
+            .previous_revision(id)
+            .ok_or(RegistryError::NoPreviousRevision(id))?;
+        let artifact = self.artifact_mut(id).ok_or(RegistryError::NoArtifact(id))?;
+        artifact.active_revision_id = Some(previous);
+        Ok(previous)
     }
 
     /// Creates an artifact, enforcing the kind-compatibility invariants.
@@ -1749,6 +1781,48 @@ mod tests {
             .expect("first revision should remain the image");
         assert_eq!(image.asset_path.as_deref(), Some("first.png"));
         assert_eq!(registry.active_revision(id).map(|r| r.id), Some(second));
+    }
+
+    #[test]
+    fn revert_activates_the_previous_completed_revision_without_destroying_it() {
+        let mut registry = registry_with(&[(ArtifactKind::Character, "Mia")]);
+        let id = registry.artifacts[0].id;
+        let first = registry
+            .start_revision(id, "first".into(), Some(1), None, RevisionOrigin::Canon)
+            .unwrap();
+        registry
+            .finish_revision(id, first, "first.png".into())
+            .unwrap();
+        let second = registry
+            .start_revision(id, "second".into(), Some(2), None, RevisionOrigin::Canon)
+            .unwrap();
+        registry
+            .finish_revision(id, second, "second.png".into())
+            .unwrap();
+
+        assert_eq!(registry.previous_revision(id), Some(first));
+        assert_eq!(registry.activate_previous_revision(id).unwrap(), first);
+        assert_eq!(registry.active_revision(id).map(|r| r.id), Some(first));
+        // Nothing is destroyed: the revision reverted from is still there.
+        assert_eq!(registry.artifact(id).unwrap().revisions.len(), 2);
+    }
+
+    #[test]
+    fn revert_without_an_earlier_image_is_an_error() {
+        let mut registry = registry_with(&[(ArtifactKind::Character, "Mia")]);
+        let id = registry.artifacts[0].id;
+        let only = registry
+            .start_revision(id, "only".into(), Some(1), None, RevisionOrigin::Canon)
+            .unwrap();
+        registry
+            .finish_revision(id, only, "only.png".into())
+            .unwrap();
+
+        assert_eq!(registry.previous_revision(id), None);
+        assert!(matches!(
+            registry.activate_previous_revision(id),
+            Err(RegistryError::NoPreviousRevision(_))
+        ));
     }
 
     #[test]

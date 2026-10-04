@@ -198,13 +198,19 @@ impl AppConfig {
     /// Loads the effective config: `config/app.toml` beneath the project root
     /// (see [`crate::paths`]), with the user config layered over it.
     pub fn load() -> Result<Self, ConfigError> {
-        Self::load_layered(paths::config_path(), paths::user_config_path())
+        Self::load_layered(
+            paths::config_path(),
+            paths::user_config_path(),
+            paths::user_providers_path(),
+        )
     }
 
     /// Loads exactly one file, with no user layer. The path is explicit, so a
-    /// caller that names the file itself (tests, tooling) gets only that file.
+    /// caller that names the file itself (tests, tooling) gets only that file —
+    /// and only the checked-in `providers.toml`, never the user providers
+    /// overlay, so the result does not depend on the machine running it.
     pub fn load_from(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
-        Self::load_layered(path.as_ref().to_path_buf(), None)
+        Self::load_layered(path.as_ref().to_path_buf(), None, None)
     }
 
     /// The planner's [`LlmConfig`] — the `text` provider deployment, or `None`
@@ -214,15 +220,16 @@ impl AppConfig {
         self.text.as_ref().map(LlmConfig::from)
     }
 
-    /// The vision [`LlmConfig`] — the `vision` provider deployment, or `None`.
-    pub fn vision_config(&self) -> Option<LlmConfig> {
-        self.vision.as_ref().map(LlmConfig::from)
-    }
-
     /// Reads `base`, merges `user` over it (deeply; see [`merge_toml`]), and
     /// resolves the result. A missing file contributes nothing rather than
-    /// failing, so the default config needs neither file to exist.
-    fn load_layered(base: PathBuf, user: Option<PathBuf>) -> Result<Self, ConfigError> {
+    /// failing, so the default config needs neither file to exist. The
+    /// providers registry layers `user_providers` over the checked-in
+    /// `providers.toml`; `None` skips that overlay ([`Self::load_from`]).
+    fn load_layered(
+        base: PathBuf,
+        user: Option<PathBuf>,
+        user_providers: Option<PathBuf>,
+    ) -> Result<Self, ConfigError> {
         let path = base.as_path();
         let mut value = read_config_value(path)?;
         if let Some(overlay) = user.as_deref() {
@@ -242,7 +249,7 @@ impl AppConfig {
         // (`text`/`vision`) endpoints — come from the providers registry at
         // the project root (`providers.toml`), with the user-level providers
         // file layered over it.
-        let providers = load_providers()?;
+        let providers = load_providers(user_providers.as_deref())?;
         let image = providers.image_deployment(Capability::T2i)?;
         // The chat capabilities are optional: an unconfigured planner or vision
         // endpoint leaves the app fully usable, with those features degraded.
@@ -575,15 +582,12 @@ fn merge_toml(base: &mut toml::Value, overlay: toml::Value) {
 }
 
 /// The providers registry: the checked-in `providers.toml` at the project root
-/// with the user-level providers file (see [`paths::user_providers_path`])
-/// layered over it, key by key. The two files are merged as TOML and the
-/// assembled text is parsed by the shared registry, so a user override only
-/// needs the keys it changes.
-fn load_providers() -> Result<Providers, ConfigError> {
-    providers_from_files(
-        &paths::providers_path(),
-        paths::user_providers_path().as_deref(),
-    )
+/// with the user-level providers file at `user` layered over it, key by key.
+/// The two files are merged as TOML and the assembled text is parsed by the
+/// shared registry, so a user override only needs the keys it changes. `None`
+/// reads only the checked-in file (tests and tooling).
+fn load_providers(user: Option<&Path>) -> Result<Providers, ConfigError> {
+    providers_from_files(&paths::providers_path(), user)
 }
 
 /// The testable core of [`load_providers`]: merges `user` (when present) over
@@ -889,14 +893,10 @@ mod tests {
         assert_eq!(vision.model, "google/gemma-4-e4b");
         // The image deployment resolves from the same registry.
         assert_eq!(config.image.architecture, "qwen-image-2.1");
-        // The derived `LlmConfig`s carry the same endpoints.
+        // The derived planner `LlmConfig` carries the same endpoint.
         assert_eq!(
             config.planner_config().expect("planner config").model,
             text.model
-        );
-        assert_eq!(
-            config.vision_config().expect("vision config").base_url,
-            vision.base_url
         );
     }
 
@@ -1064,8 +1064,8 @@ mod tests {
         )
         .expect("user fixture should write");
 
-        let config =
-            AppConfig::load_layered(base, Some(user.clone())).expect("layered config should load");
+        let config = AppConfig::load_layered(base, Some(user.clone()), None)
+            .expect("layered config should load");
         // The user file sets one nested key without clobbering the base's.
         assert_eq!(config.generation_defaults.steps, 25);
         assert_eq!(config.generation_defaults.cfg_scale, 7.5);
@@ -1086,7 +1086,8 @@ mod tests {
         std::fs::write(&base, "[generation]\nsteps = 25\n").expect("base fixture");
         std::fs::write(&user, "[generation]\nsteps = 8\n").expect("user fixture");
 
-        let config = AppConfig::load_layered(base, Some(user)).expect("layered config should load");
+        let config =
+            AppConfig::load_layered(base, Some(user), None).expect("layered config should load");
         assert_eq!(config.generation_defaults.steps, 8);
     }
 
@@ -1097,7 +1098,7 @@ mod tests {
         let base = dir.join("app.toml");
         std::fs::write(&base, "[generation]\nsteps = 10\n").expect("base fixture");
 
-        let config = AppConfig::load_layered(base, Some(dir.join("absent.toml")))
+        let config = AppConfig::load_layered(base, Some(dir.join("absent.toml")), None)
             .expect("a missing user config is fine");
         assert_eq!(config.generation_defaults.steps, 10);
     }

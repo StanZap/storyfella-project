@@ -185,6 +185,7 @@ core that drives prototyping; slices 2 and 3 extend it.
 | 1 | create | primitive | `/create <kind> <description>` | New artifact (story, scene, beat, character, object, environment) |
 | 1 | variant | primitive | `/variant <ref> <description> [axis]` | New visual variant of an artifact |
 | 1 | regenerate | primitive | `/regenerate <ref> [prompt]` | New revision of the active image (fresh seed, or edited prompt with current image as reference) |
+| 1 | revert | primitive | `/revert <ref>` | Re-activate the previous image; nothing is deleted, the history keeps both |
 | 1 | compose | primitive | `/compose <scene> <description> [layer refs…]` | New beat in a scene |
 | 1 | draft | primitive | `/draft <ref> <request>` | LLM proposes story text; user approves |
 | 2 | modify | primitive | `/modify <ref> <description>` | Change the artifact's defining text |
@@ -560,7 +561,10 @@ plan to ship, with its status; update it when work lands.
    image as part of the operation (variants reference the base's active
    image); a failed generation keeps the artifact with a failed revision,
    and `/regenerate` is the retry. `modify` runs unattended — an instruction
-   edit has no checkpoint and no segmentation step.
+   edit has no checkpoint and no segmentation step. `/revert` re-activates the
+   previous completed image (a Direct op — no render); the history keeps both,
+   nothing is deleted, and the reverted-from revision can be re-activated from
+   the detail pane. It is on the slash bar, the palette, and `svs op revert`.
    Free-form
    composer messages (no leading `/`) go to the LLM, which proposes an
    operation stack against the closed vocabulary; the proposal is shown in
@@ -592,6 +596,14 @@ plan to ship, with its status; update it when work lands.
    A grounding regression harness (`.svs-e2e/scripts/grounding_suite.py`) runs a
    fixed edit suite against one or more planner models and judges each with
    `svs eval --expect`, so planner quality is comparable by command.
+   **Image assessment in the plans:** a driver `expect_vision` step attaches an
+   artifact's current image to a question and asserts a substring gate, so a
+   plan checks *what* was generated rather than only that an image exists. The
+   image-carrying chat call lives in `clipforge-inference`
+   (`chat::Client::complete_with_images`); storyfella's `crates/core/src/vision.rs`
+   (
+   `VisionSession`) adapts config and images to it, and `svs eval` uses the same
+   path.
    — **✅ implemented**
 6. **LoRA registry:** project-level adapter registry (SQLite
    `lora_registry` table, round-tripped) with per-artifact bindings

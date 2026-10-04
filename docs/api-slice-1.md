@@ -99,6 +99,7 @@ svs --project p.db op draft c:<story> "write the opening"          # LLM + appro
 svs --project p.db op draft c:<story> "write the opening" --text "…"   # manual, no checkpoint
 svs --project p.db op modify c:<char> "give her a short bob haircut"   # instruction edit
 svs --project p.db op describe c:<char> "Mia, a lighthouse keeper, short bob"  # make an edit canonical
+svs --project p.db op revert c:<char>                                # re-activate the previous image
 svs --project p.db stack run stack.json --approve auto             # the VLLM contract test bed
 svs --project p.db stack propose "Add a rainy variant of the kitchen scene"   # LLM → JSON
 svs --project p.db runtime serve --force                           # resident generation server
@@ -114,6 +115,12 @@ commands override it per run. Variants inherit the base artifact's size.
 `create`/`variant` of visual kinds generate the first image at that size as
 part of the op (so they need the generation backend — see the table below);
 variants use the base's active image as the reference.
+
+`describe` rewrites an artifact's canonical description; `revert` re-activates
+its previous completed image (the newest revision made before the current one).
+Neither renders anything: both are registry mutations, so they need no
+backend. `revert` never deletes — the revision reverted from stays in the
+history and can be re-activated from the canvas.
 
 `--approve auto|interactive` (default interactive) resolves checkpoints;
 `--out <dir>` drops every intermediate image into a folder for human review —

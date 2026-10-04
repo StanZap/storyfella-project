@@ -1040,6 +1040,7 @@ fn op_name(operation: &Operation) -> &'static str {
         Operation::AttachLora { .. } => "attach-lora",
         Operation::LoraScale { .. } => "lora-scale",
         Operation::Describe { .. } => "describe",
+        Operation::Revert { .. } => "revert",
         Operation::LoraRemove { .. } => "lora-remove",
     }
 }

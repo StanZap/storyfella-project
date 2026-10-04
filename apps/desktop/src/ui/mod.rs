@@ -358,6 +358,19 @@ pub fn Workspace(
     let mut goto = use_signal(|| false);
     let mut tick = use_signal(|| 0u64);
     keys::use_keys(move |press| {
+        // `Ctrl/Cmd+Z` and `+Shift+Z` (claimed by the bridge in `keys.rs`) are
+        // the header's undo/redo, so the key and the button cannot disagree.
+        match press.key.as_str() {
+            "undo" => {
+                app_state.write().undo();
+                return;
+            }
+            "redo" => {
+                app_state.write().redo();
+                return;
+            }
+            _ => {}
+        }
         // `g` then `s`/`c` switches screens, matching the tab hints. The
         // pending `g` lives here because the pair spans two presses.
         if *goto.peek() {
@@ -437,10 +450,10 @@ pub fn Workspace(
                 }
 
                 div { class: "flex items-center gap-1",
-                    button { class: "grid size-7 place-items-center rounded-lg text-zinc-600 transition hover:bg-white/[0.05] hover:text-zinc-200 disabled:opacity-30", title: "Undo (Ctrl+Z)", disabled: !app_state.read().can_undo(), onclick: move |_| { app_state.write().undo(); },
+                    button { class: "grid size-7 place-items-center rounded-lg text-zinc-600 transition hover:bg-white/[0.05] hover:text-zinc-200 disabled:opacity-30", title: shortcuts::tooltip("Undo", "undo"), disabled: !app_state.read().can_undo(), onclick: move |_| { app_state.write().undo(); },
                         Icon { name: IconName::Undo, class: "size-3" }
                     }
-                    button { class: "grid size-7 place-items-center rounded-lg text-zinc-600 transition hover:bg-white/[0.05] hover:text-zinc-200 disabled:opacity-30", title: "Redo (Ctrl+Shift+Z)", disabled: !app_state.read().can_redo(), onclick: move |_| { app_state.write().redo(); },
+                    button { class: "grid size-7 place-items-center rounded-lg text-zinc-600 transition hover:bg-white/[0.05] hover:text-zinc-200 disabled:opacity-30", title: shortcuts::tooltip("Redo", "redo"), disabled: !app_state.read().can_redo(), onclick: move |_| { app_state.write().redo(); },
                         Icon { name: IconName::Redo, class: "size-3" }
                     }
                     button { class: "grid size-7 place-items-center rounded-lg text-zinc-600 transition hover:bg-white/[0.05] hover:text-zinc-200 disabled:opacity-30", title: "Save (Cmd/Ctrl+S)", disabled: !dirty, onclick: move |_| persist_state(app_state, error_report),

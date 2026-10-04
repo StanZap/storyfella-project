@@ -17,12 +17,12 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use clipforge_inference::chat::ChatImage;
 use clipforge_inference::sd::LoraSelection;
 use uuid::Uuid;
 
 use svs_core::config::AppConfig;
 use svs_core::errors::{CodedError, ErrorCode, ReportedError};
-use svs_core::llm::{ChatMessage, ChatOptions, LlmClient};
 use svs_core::persistence::ProjectDb;
 use svs_core::registry::backend::CreativeBackend;
 use svs_core::registry::ops::{
@@ -34,6 +34,7 @@ use svs_core::registry::pipeline::{
 };
 use svs_core::registry::{ArtifactKind, ArtifactRegistry, GenerationDefaults, Ref, VariantAxis};
 use svs_core::runtime::{kill_servers, marker_path, CreativeRuntime, ServerMarker};
+use svs_core::vision;
 
 #[derive(Parser)]
 #[command(
@@ -235,6 +236,9 @@ enum OpCommand {
     /// look. Edits re-anchor to this, so writing a change back here is how
     /// it survives the next `modify`.
     Describe { target: Ref, description: String },
+    /// /revert <ref> — activate the artifact's previous image. Nothing is
+    /// deleted; the revision reverted from stays in the history.
+    Revert { target: Ref },
 }
 
 #[derive(Subcommand)]
@@ -548,124 +552,48 @@ async fn run(cli: Cli) -> Result<()> {
 /// test script.
 async fn run_eval(eval: EvalArgs) -> Result<()> {
     let config = AppConfig::load().context("could not load config/app.toml")?;
-    let mut vision_config = config
-        .vision_config()
+    let mut deployment = config
+        .vision
+        .clone()
         .context("no `vision` provider is configured in providers.toml")?;
     if let Some(model) = &eval.model {
-        vision_config.model = model.clone();
+        deployment.model = model.clone();
     }
-    // A managed (`llamacpp`) vision provider is started on demand; an `openai`
-    // provider has no server and is called as-is. The runtime is bound, not a
-    // temporary: it kills its child when dropped, and `svs eval` is the process
-    // that owns the server for the whole evaluation.
-    let managed_vision = config
-        .vision
-        .as_ref()
-        .and_then(|deployment| deployment.server.as_ref())
-        .map(|server| (server.runtime(), server.host.clone(), server.port));
-    if let Some((runtime, host, port)) = &managed_vision {
-        runtime
-            .ensure_ready(host, *port)
-            .await
-            .context("could not start the managed vision server")?;
-    }
-    let client =
-        LlmClient::new(vision_config.clone()).map_err(|error| anyhow!(error.report().log()))?;
+    // A managed (`llamacpp`) vision provider is started on demand and the
+    // session holds it for the whole evaluation; an `openai` provider has no
+    // server and is called as-is.
+    let session = vision::VisionSession::start(deployment)
+        .await
+        .map_err(|error| anyhow!(error.report().log()))?;
 
-    // Read every image up front so a missing file fails before any model
-    // round trips. Large canvases are downscaled to a fixed maximum
-    // dimension before encoding — the endpoint rejects oversized image
-    // payloads (two full 1024×1536 PNGs reliably come back empty).
-    const MAX_EVAL_DIMENSION: u32 = 1024;
-    let mut images: Vec<(String, String)> = Vec::new();
-    for path in &eval.images {
-        let bytes = std::fs::read(path)
-            .with_context(|| format!("could not read image {}", path.display()))?;
-        let encoded = match image::load_from_memory(&bytes) {
-            Ok(image) => {
-                use image::GenericImageView as _;
-                let (width, height) = image.dimensions();
-                let scale = (width.max(height) as f32 / MAX_EVAL_DIMENSION as f32).max(1.0);
-                if scale > 1.0 {
-                    let resized = image.resize(
-                        (width as f32 / scale).round() as u32,
-                        (height as f32 / scale).round() as u32,
-                        image::imageops::FilterType::Lanczos3,
-                    );
-                    let mut buffer = std::io::Cursor::new(Vec::new());
-                    resized
-                        .write_to(&mut buffer, image::ImageFormat::Png)
-                        .context("could not re-encode image")?;
-                    buffer.into_inner()
-                } else {
-                    bytes
-                }
-            }
-            Err(_) => bytes,
-        };
-        use base64::Engine as _;
-        images.push((
-            path.display().to_string(),
-            format!(
-                "data:image/png;base64,{}",
-                base64::engine::general_purpose::STANDARD.encode(encoded)
-            ),
-        ));
-    }
+    // Read every image up front so a missing file fails before any model round
+    // trips. `image_for_chat` downscales each to a fixed maximum edge.
+    let images: Vec<ChatImage> = eval
+        .images
+        .iter()
+        .map(|path| vision::image_for_chat(path).map_err(|error| anyhow!(error.report().log())))
+        .collect::<Result<_>>()?;
 
     let mut failures = 0usize;
     for prompt in &eval.prompts {
-        let data_urls: Vec<String> = images.iter().map(|(_, url)| url.clone()).collect();
-        let messages = [
-            ChatMessage::text(
-                "system",
-                "You are a rigorous image evaluator for a visual-storytelling application. \
-                 Judge what you actually see in the attached images: composition, identity \
-                 consistency, localized edits, artifacts, distortion, and quality. Answer the \
-                 user's question directly.",
-            ),
-            ChatMessage::with_images(
-                "user",
-                format!(
-                    "{prompt}\n\nThe attached images are numbered in the order given (image 1, image 2, …). Be specific and concise."
-                ),
-                data_urls,
-            ),
-        ];
-        let options = ChatOptions {
-            max_tokens: Some(eval.max_tokens),
-            ..Default::default()
-        };
-        let answer = client
-            .chat_with_options(&messages, &options)
+        let question = format!(
+            "{prompt}\n\nThe attached images are numbered in the order given (image 1, image 2, …). Be specific and concise."
+        );
+        let answer = session
+            .assess(images.clone(), &question, eval.max_tokens)
             .await
             .map_err(|error| anyhow!(error.report().log()))?;
-        let text = answer
-            .choices
-            .first()
-            .and_then(|choice| choice.message.content.clone())
-            .unwrap_or_else(|| "(no answer)".to_owned());
 
-        println!("model: {}", vision_config.model);
+        println!("model: {}", session.model());
         println!("question: {prompt}");
-        println!("{text}");
+        println!("{answer}");
         println!("----");
 
-        let lowered = text.to_lowercase();
-        if let Some(expected) = &eval.expect {
-            if !lowered.contains(&expected.to_lowercase()) {
-                failures += 1;
-                eprintln!(
-                    "expectation failed: the answer does not contain {:?}",
-                    expected
-                );
-            }
-        }
-        if let Some(banned) = &eval.expect_not {
-            if lowered.contains(&banned.to_lowercase()) {
-                failures += 1;
-                eprintln!("expectation failed: the answer contains {:?}", banned);
-            }
+        if let Err(reason) =
+            vision::check(&answer, eval.expect.as_deref(), eval.expect_not.as_deref())
+        {
+            failures += 1;
+            eprintln!("expectation failed: {reason}");
         }
     }
 
@@ -797,7 +725,8 @@ fn operation_needs_backend(operation: &Operation, manual_text: Option<&str>) -> 
         | Operation::LoraScale { .. }
         | Operation::LoraRemove { .. }
         | Operation::Set { .. }
-        | Operation::Describe { .. } => false,
+        | Operation::Describe { .. }
+        | Operation::Revert { .. } => false,
     }
 }
 
@@ -1090,6 +1019,17 @@ fn build_operation(op: OpCommand) -> Result<(Operation, CliRunOptions)> {
                 manual_text: None,
             },
         ),
+        OpCommand::Revert { target } => (
+            Operation::Revert { target },
+            CliRunOptions {
+                work_dir: std::env::temp_dir(),
+                golden_dir: None,
+                approvals: ApprovalPolicy::auto(),
+                seed: None,
+                generation: GenerationOverrides::default(),
+                manual_text: None,
+            },
+        ),
         OpCommand::LoraRemove { lora } => (
             Operation::LoraRemove { lora },
             CliRunOptions {
@@ -1314,6 +1254,15 @@ fn print_outcome(registry: &ArtifactRegistry, operation: &Operation, outcome: &o
                 _ => {}
             }
         }
+        Operation::Revert { .. } => {
+            let id = outcome.artifact_id.expect("revert has an artifact");
+            let revision_id = outcome.revision_id.expect("revert activates a revision");
+            println!(
+                "reverted {} → revision {}",
+                registry.ref_of(id),
+                revision_id
+            );
+        }
     }
 
     if let Some(run) = &outcome.run {
@@ -1351,6 +1300,7 @@ fn operation_name(operation: &Operation) -> &'static str {
         Operation::LoraScale { .. } => "lora-scale",
         Operation::LoraRemove { .. } => "lora-remove",
         Operation::Describe { .. } => "describe",
+        Operation::Revert { .. } => "revert",
     }
 }
 

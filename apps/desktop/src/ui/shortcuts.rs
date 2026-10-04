@@ -82,6 +82,18 @@ pub const SHORTCUTS: &[Shortcut] = &[
         label: "Jump to the command bar",
         scope: Scope::Global,
     },
+    Shortcut {
+        action: "undo",
+        keys: "⌃Z",
+        label: "Undo",
+        scope: Scope::Global,
+    },
+    Shortcut {
+        action: "redo",
+        keys: "⌃⇧Z",
+        label: "Redo",
+        scope: Scope::Global,
+    },
     // --------------------------------------------------------------- grid
     Shortcut {
         action: "move",

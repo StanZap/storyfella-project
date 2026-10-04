@@ -29,11 +29,13 @@ pub struct KeyPress {
     pub columns: usize,
 }
 
-/// Streams unmodified key presses that no text field claimed.
+/// Streams key presses that no text field claimed.
 ///
 /// `Ctrl`/`Cmd` chords are left alone so the global shortcuts (`Ctrl+K`,
 /// `Ctrl+S`) keep working, and the navigation keys are prevented from
-/// scrolling the page.
+/// scrolling the page. The one exception is `Ctrl/Cmd+Z` (and `+Shift+Z`
+/// for redo): undo is a whole-app action with a button in the header, so the
+/// bridge claims it here rather than leaving it to the webview.
 const KEY_BRIDGE: &str = r#"
     if (!window.__svsKeys) {
         window.__svsKeys = true;
@@ -45,6 +47,12 @@ const KEY_BRIDGE: &str = r#"
             // A focused text field owns every key it receives.
             if (tag === "INPUT" || tag === "TEXTAREA" ||
                 (active && active.isContentEditable)) {
+                return;
+            }
+            if ((event.ctrlKey || event.metaKey) &&
+                (event.key === "z" || event.key === "Z")) {
+                event.preventDefault();
+                dioxus.send([event.shiftKey ? "redo" : "undo", 1]);
                 return;
             }
             if (event.metaKey || event.ctrlKey || event.altKey) {

@@ -171,6 +171,10 @@ pub enum Operation {
     /// the original description and the auburn washes out. `describe` is how
     /// a change becomes canonical and survives.
     Describe { target: Ref, description: String },
+    /// Revert the artifact to its previous image: activate the newest completed
+    /// revision made before the current one. Nothing is destroyed — the
+    /// revision reverted from stays in the history and can be re-activated.
+    Revert { target: Ref },
 }
 
 /// One layer reference for `compose`.
@@ -328,6 +332,7 @@ impl Operation {
                 target,
                 description,
             } => format!("describe {target} {description:?}"),
+            Operation::Revert { target } => format!("revert {target}"),
         }
     }
 
@@ -341,7 +346,8 @@ impl Operation {
             | Operation::Draft { target, .. }
             | Operation::Modify { target, .. }
             | Operation::AttachLora { target, .. }
-            | Operation::Describe { target, .. } => Some(target),
+            | Operation::Describe { target, .. }
+            | Operation::Revert { target, .. } => Some(target),
             Operation::Compose { scene, .. } => Some(scene),
             Operation::Create { .. }
             | Operation::LoraScale { .. }
@@ -985,6 +991,13 @@ pub fn compile(
             registry.resolve(target)?;
             Ok(CompiledOp::Direct)
         }
+        Operation::Revert { target } => {
+            let id = registry.resolve(target)?;
+            registry
+                .previous_revision(id)
+                .ok_or(RegistryError::NoPreviousRevision(id))?;
+            Ok(CompiledOp::Direct)
+        }
     }
 }
 
@@ -1468,6 +1481,19 @@ pub async fn execute(
                 log_id: Some(log_id),
                 run: None,
                 status: OpStatus::Applied,
+            })
+        }
+        Operation::Revert { target } => {
+            let id = registry.resolve(target)?;
+            let revision = registry.activate_previous_revision(id)?;
+            let log_id =
+                registry.push_log(op.clone(), options.origin, OpStatus::Reverted, Some(id));
+            Ok(OpOutcome {
+                artifact_id: Some(id),
+                revision_id: Some(revision),
+                log_id: Some(log_id),
+                run: None,
+                status: OpStatus::Reverted,
             })
         }
     }

@@ -3,7 +3,9 @@
 #
 # `modify` is a plain instruction edit: a reference image plus a plain-language
 # instruction — no region to select and no approval checkpoint. It needs the
-# generation backend.
+# generation backend. One step also asks the vision model to confirm an edit
+# landed; `soft: true` there means it warns (rather than fails) when no
+# `vision` provider is configured, so the plan still runs without one.
 name: "The edit loop"
 description: "Create a character, then restyle her by instruction — hair, then outfit — and check she survives each edit."
 speed_ms: 2000
@@ -26,6 +28,13 @@ steps:
     soft: true
     wait_ms: 2000
     message: "Same face, same sweater, same wall — auburn hair. The edit stays local because the instruction is specific."
+  - expect_vision:
+      image: "mara"
+      question: "Is the person's hair auburn (reddish-brown)? Answer YES or NO."
+      expect: "yes"
+    soft: true
+    wait_ms: 400
+    message: "A real check, not just 'an image exists': the vision model confirms the recolour landed. This is what `expect_vision` is for."
 
   - compose: "/modify c:mara give her a short bob haircut"
     message: "Harder: a haircut changes shape, not just colour. Her description says 'long dark hair', which contradicts this — the grounding step drops the length and keeps the rest."
@@ -35,11 +44,11 @@ steps:
     message: "A bob, and still Mara. Terse instructions are the risk here: ungrounded, 'give her a bob' can return a different person entirely."
 
   - compose: "/modify c:mara change her sweater to a yellow raincoat"
-    message: "Edits stack — this one applies to the bob-cut revision, not the original."
+    message: "Edits build on the active revision — this one references the bob-cut image, not the original."
   - expect_image: "mara"
     soft: true
     wait_ms: 2000
-    message: "The raincoat lands on the previous edit. Every revision is kept, so the operation log is the whole history of how she got here."
+    message: "The raincoat lands on the previous edit. Every revision stays in the history: press `e` to open it and click an earlier picture to bring it back — nothing is destroyed, only the one on screen is replaced."
 
   - expect_no_error: true
     message: "Three instruction edits, one subject, no errors. That is the edit loop."
