@@ -350,7 +350,7 @@ pipeline → executes — one code path shared with the UI and the VLLM.
 
 The CLI is a separate binary crate sharing the domain modules
 (config, generation client, runtime, operations/pipelines) without the
-Dioxus UI: `crates/core` holds the shared modules; `apps/desktop/src/main.rs`
+Dioxus UI: `crates/studio-core` holds the shared modules; `apps/studio/src/main.rs`
 (UI) and `apps/cli/src/bin/svs.rs` (CLI) both build on it.
 
 ## 8. Story text pipeline
@@ -499,7 +499,7 @@ CREATE TABLE operation_log (
 
 Implementation notes: **resolved** — `rusqlite` (bundled, synchronous) with a
 single writer connection behind a `parking_lot` mutex and WAL mode, in
-`crates/core/src/persistence/` (`ProjectDb`). Deliberate deviations from the sketch
+`crates/studio-core/src/persistence/` (`ProjectDb`). Deliberate deviations from the sketch
 above: timestamps are unix epoch integers (no chrono dependency),
 `operation_log.id` is TEXT (the model uses `Uuid`), `op` holds the serde tag
 name with the full `Operation` JSON in `args`, `artifacts.composition_mode`
@@ -520,11 +520,20 @@ reference).
 5. **Layered-mode cutout quality** acceptance for final output (Qwen-Image-2.1's alpha channel is subject-dependent).
 6. **Native mask input** — **resolved by removal:** the mask/inpaint path was deleted with the Krea/SAM migration; `modify` is an instruction edit and there is no mask source.
 7. **SQLite crate** — **resolved:** `rusqlite` (bundled), one writer
-   connection + WAL (`crates/core/src/persistence/`). The TOML `ProjectStore` and the
+   connection + WAL (`crates/studio-core/src/persistence/`). The TOML `ProjectStore` and the
    stopgap JSON registry were removed with their imports; formats evolve
    via SQLite migrations.
 
 ## 12. Suggested implementation order
+
+**Workspace restructuring: implemented.** Studio is `apps/studio`
+(`storyfella-studio`), with GUI-free `crates/studio-core`
+(`storyfella-studio-core`). `apps/cli` and `xtask` remain; `apps/player`
+is a minimal executable with its GUI framework undecided. Language, compiler,
+story runtime and LSP are reserved in
+[`architecture.md`](architecture.md#storyfella-workspace-boundaries) and will
+be added as implementation begins. Studio preview and Player will share story
+execution through that runtime. This handoff includes no DSL/LSP implementation.
 
 **This section is the status tracker for planned work** — every feature we
 plan to ship, with its status; update it when work lands.
@@ -539,7 +548,7 @@ plan to ship, with its status; update it when work lands.
    instruction. Live validation of `modify`/`stack propose` on Linux/CUDA pending
 2. **The CLI (`svs`):** ops, `stack run`/`propose`, `--out` golden runs —
    drives and validates the API without the UI. — **✅ implemented**
-3. **SQLite foundation:** schema + storage layer (§10) — `crates/core/src/persistence/`
+3. **SQLite foundation:** schema + storage layer (§10) — `crates/studio-core/src/persistence/`
    (`ProjectDb`: versioned migrations via `schema_meta` (v1 §10 tables, v2
    `project_json` for the storyboard), WAL, full-replace snapshot writes,
    lossless round-trip); the CLI persists to `.svs-project.db`; the GUI
@@ -600,7 +609,7 @@ plan to ship, with its status; update it when work lands.
    artifact's current image to a question and asserts a substring gate, so a
    plan checks *what* was generated rather than only that an image exists. The
    image-carrying chat call lives in `clipforge-inference`
-   (`chat::Client::complete_with_images`); storyfella's `crates/core/src/vision.rs`
+   (`chat::Client::complete_with_images`); storyfella's `crates/studio-core/src/vision.rs`
    (
    `VisionSession`) adapts config and images to it, and `svs eval` uses the same
    path.
@@ -615,7 +624,7 @@ plan to ship, with its status; update it when work lands.
    every generation (artifact-bound first, then kind default;
    per-run `--lora <file>@<mult>` flags on
    the CLI). — **✅ implemented**
- 7. **Error codes and reporting:** a central registry (`crates/core/src/errors.rs` —
+ 7. **Error codes and reporting:** a central registry (`crates/studio-core/src/errors.rs` —
     `ErrorCode`, one stable `SVS-<DOMAIN>-<NNN>` per failure, with a short
     message and a remediation hint) that every `thiserror` type implements
     via `CodedError` (transparent variants delegate to the inner code).
@@ -637,18 +646,21 @@ plan to ship, with its status; update it when work lands.
    mode (compose beats in the canvas, story sequencing). — **⏳ deferred**
    behind the quality/control work above (user reprioritized; the canvas
    still surfaces beats, compose, and drafts per the session guide)
-9. **Storyfella DSL (in-repo):** the language crate (lexer/parser/compiler,
-   CLI); DSL asset references + validation; round-trip to canvas.
+9. **Storyfella DSL (in-repo):** `storyfella-language` (lexer/parser/shared
+   analysis) and `storyfella-compiler` (validation/lowering); DSL asset references
+   and round-trip to canvas. `storyfella-runtime` will own story execution,
+   state and timing, shared by Studio preview and standalone Player.
    — **⏳ planned.** The *surface* exists ahead of it: the Writer screen
    edits `.sf` text with references resolved against the registry and
-   pending ones offered for creation, and `crates/core/src/registry/completion.rs` is the
+   pending ones offered for creation, and `crates/studio-core/src/registry/completion.rs` is the
    same discipline at small scale (spans on every token, one tokenizer,
    `complete(input, cursor)`, `signature`). What is missing is the language:
-   `apps/desktop/src/ui/writer.rs` reads line by line, and its `outline`/`highlight` are the
+   `apps/studio/src/ui/writer.rs` reads line by line, and its `outline`/`highlight` are the
    seam a real lexer replaces. Story text currently lives in the project
    database (schema v7), not in `.sf` files on disk.
-10. **LSP-style tooling** as the DSL matures (go-to-definition, refactor,
-    diagnostics). — **⏳ planned**
+10. **LSP tooling:** `storyfella-lsp` exposes shared language analysis to
+    external editors as the DSL matures (go-to-definition, refactor,
+    diagnostics). — **⏳ planned; implementation follows restructuring**
 11. **Self-contained distribution (no user-side dependencies):** one
    downloadable artifact per platform (AppImage/`.deb` on Linux, `.app`
    bundle on macOS, installer/portable zip on Windows) containing the app
@@ -666,7 +678,7 @@ plan to ship, with its status; update it when work lands.
    runtime-lifecycle machinery for no user-facing gain. **Bundling mechanism
    (verified 2026-09-30):** the CLI itself bundles Linux AppImages —
    `dx bundle --platform desktop --package-types appimage` (run from
-   `apps/desktop`) — so no extra crate is needed; it lays out an `.AppDir` and
+   `apps/studio`) — so no extra crate is needed; it lays out an `.AppDir` and
    drives `linuxdeploy`, which it downloads into `~/.local/share/.dx/tools`
    (the only networked step, run with `APPIMAGE_EXTRACT_AND_RUN=1` so FUSE is
    not required). `Dioxus.toml` now
@@ -696,22 +708,22 @@ demand; weights are never bundled.
 
 ### Entry points (existing code)
 
-- `crates/core/src/registry/` — artifact kinds, variants, scenes/beats, revisions,
+- `crates/studio-core/src/registry/` — artifact kinds, variants, scenes/beats, revisions,
   drafts; the typed operation set + pipeline builder; the slash
   parser (`slash.rs`) the canvas composer uses; `CreativeBackend` (live
   backend shared by the CLI, the canvas, and Settings).
-- `apps/desktop/src/state/mod.rs` — AppState: registry, selection, undo/redo stacks.
-- `crates/core/src/persistence/mod.rs` — `ProjectDb` (§10 schema; v3 dropped the legacy
+- `apps/studio/src/state/mod.rs` — AppState: registry, selection, undo/redo stacks.
+- `crates/studio-core/src/persistence/mod.rs` — `ProjectDb` (§10 schema; v3 dropped the legacy
   `project_json` column, v8 dropped the `masks` table).
 - The shared `clipforge-inference` crate (`../clipforge/crates/inference`) —
   `sd::Client`, the typed client for the
   native `sd-server` `sdcpp` API; `GenerateRequest` is the wire shape. Also owns
   `sd::Runtime` (the resident process), `sd::qwen_image_2_1()` (the served profile),
   and `ModelStore` (provisioning). storyfella depends on it as a path dependency.
-- `crates/core/src/runtime/creative_runtime.rs` — `CreativeRuntime`, the adapter over
+- `crates/studio-core/src/runtime/creative_runtime.rs` — `CreativeRuntime`, the adapter over
   the shared runtime + client (readiness, job wait, asset import) the pipeline
   builder wraps; `health.rs` probes the dependent services.
-- `crates/core/src/llm/` — LLM endpoint client; the operation registry is the
+- `crates/studio-core/src/llm/` — LLM endpoint client; the operation registry is the
   planner business logic it will serve.
 
 ### Open decisions to settle first (with the user)

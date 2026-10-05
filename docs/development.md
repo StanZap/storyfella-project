@@ -3,11 +3,30 @@
 This document covers setting up a machine and the day-to-day commands for the
 Rust application.
 
+The repository directory is `storyfella`, beside the separate `clipforge` and
+`finewinetts` repositories. Studio remains in Dioxus. Player has no GUI framework
+or playback implementation yet:
+
+```sh
+cargo build -p storyfella-player
+cargo run -p storyfella-player
+```
+
+Future language/compiler/runtime/LSP responsibilities are documented in
+[`architecture.md`](architecture.md#storyfella-workspace-boundaries); add those
+crates only when implementation begins. Existing CLI and user-data identities
+remain unchanged. CI checks formatting, all workspace targets and tests, builds
+CLI/Player, and builds and runs Studio's backend-free smoke plan through dx.
+If the Clipforge repository is private, configure the Actions secret
+`CLIPFORGE_READ_TOKEN` with read access to `StanZap/clipforge`; the normal
+workflow token only grants access to this repository. Local builds consume the
+sibling checkout and do not need that secret.
+
 ## Prerequisites
 
 - Rust stable
 - The current stable Dioxus CLI (`dx`) — see <https://dioxuslabs.com>
-- Node.js/npm (Tailwind CSS 4 toolchain, pinned in `apps/desktop/package-lock.json`)
+- Node.js/npm (Tailwind CSS 4 toolchain, pinned in `apps/studio/package-lock.json`)
 - An OpenAI-compatible LLM endpoint (llama.cpp / LM Studio), running separately, only when LLM features are exercised
 - A CUDA toolchain and an NVIDIA GPU to build and run `sd-server` (see below)
 - Linux desktop builds: the WebKitGTK/GTK development packages (see below)
@@ -35,14 +54,18 @@ Bundling (below) adds no system package: the AppImage is assembled by
 
 ## Workspace layout
 
-The repository is a Cargo workspace. `crates/core` (package `svs-core`) holds
+The repository is a Cargo workspace. `crates/studio-core` (package `storyfella-studio-core`) holds
 the domain layer — the artifact registry, typed operations, persistence, and
 the vision/LLM/runtime clients — and has **no GUI dependency**, so the CLI and
-the core tests never compile the toolkit or the WebKit stack. `apps/desktop`
-(package `smart-visual-sequencer`) is the Dioxus application and owns the
+the core tests never compile the toolkit or the WebKit stack. `apps/studio`
+(package `storyfella-studio`) is the Dioxus application and owns the
 `desktop` feature; `apps/cli` (package `svs-cli`) builds the `svs`,
 `model_setup`, and `vlm_probe` binaries. Both application crates depend on
-`svs-core` and name it explicitly (`svs_core::…`) rather than re-exporting it.
+`storyfella-studio-core` and name it explicitly (`storyfella_studio_core::…`) rather than re-exporting it.
+
+`apps/player` (package `storyfella-player`) currently prints a placeholder
+message and has no dependencies. It will consume the shared story runtime
+when playback implementation begins; the GUI framework remains undecided.
 
 The native-inference runtime is **not** owned by this workspace: it is the
 sibling `clipforge` project's crate, package **`clipforge-inference`**, pulled in
@@ -59,12 +82,12 @@ migration — the project is pure Rust plus the native `sd-server`. Data —
 databases store absolute asset paths. `xtask/` is the developer task runner
 described below; nothing shipped depends on it.
 
-The payoff is a cheap domain loop: `svs-core`'s dependency tree is 464 entries
+The payoff is a cheap domain loop: `storyfella-studio-core`'s dependency tree is 464 entries
 with no `dioxus`/`webkit`/`gtk`/`tao`/`wry` in it at all, against 1183 for the
 desktop crate, so
 
 ```sh
-cargo test -p svs-core                  # domain tests, no toolkit
+cargo test -p storyfella-studio-core                  # domain tests, no toolkit
 cargo run -p svs-cli --bin svs -- --help
 ```
 
@@ -113,34 +136,32 @@ workflow. `bundle` writes to `dist/` (git-ignored) and lists each artifact.
 the reference for the underlying commands, for when you need a flag the task
 runner does not expose.
 
-## The `:` in the repository path
+## Build artifact directory
 
-The repository currently lives under a directory containing a literal `:` (for
-example `lab:storycreator/`). On macOS and Linux that character is a separator
-in dynamic-library path variables, so build artifacts are redirected out of the
-checkout by `.cargo/config.toml`:
+Build artifacts remain redirected outside the checkout by
+`.cargo/config.toml`. This also supports checkouts whose parent contains `:`,
+a separator in macOS/Linux dynamic-library path variables:
 
 ```toml
 [build]
-target-dir = "/tmp/smart-visual-sequencer-target"
+target-dir = "/tmp/storyfella-studio-target"
 ```
 
-This makes Cargo and `dx` work. Be aware that tools that resolve the checkout
-as a "project path" (rather than a build path) can still trip over the `:`; if
-a tool complains about a path separator, that is the cause.
+`CARGO_TARGET_DIR` can override this. Keep the configuration and documented
+launch paths in sync when changing the artifact directory.
 
 ## First-time setup
 
 ```bash
-# Rust UI toolchain — run from apps/desktop (which holds package.json)
-cd apps/desktop
+# Rust UI toolchain — run from apps/studio (which holds package.json)
+cd apps/studio
 npm install
 
 # Compiled stylesheet: `assets/tailwind.css` is git-ignored generated output.
 # `dx serve` compiles it automatically; for `cargo check`/`cargo test` on a
 # fresh clone, generate it once (the asset macro embeds the file at compile time):
 npm run css:build
-cd ..
+cd ../..
 ```
 
 ### Native generation backend (`sd-server`)
@@ -170,22 +191,22 @@ Provision those weights with `model_setup` (see the CLI tools table below).
 
 ## Run the desktop application
 
-Commands are run from `apps/desktop` (where `Dioxus.toml` and `package.json`
+Commands are run from `apps/studio` (where `Dioxus.toml` and `package.json`
 live):
 
 ```bash
-cd apps/desktop && dx serve --platform desktop
+cd apps/studio && dx serve --platform desktop
 ```
 
 `cargo xtask serve` runs the same command (and `cargo xtask run` builds once
 and launches without the dev server).
 
-`dx` compiles `apps/desktop/assets/tailwind.css` from `apps/desktop/tailwind.css`
+`dx` compiles `apps/studio/assets/tailwind.css` from `apps/studio/tailwind.css`
 automatically. To build or watch the CSS independently:
 
 ```bash
-cd apps/desktop && npm run css:build
-cd apps/desktop && npm run css:watch
+cd apps/studio && npm run css:build
+cd apps/studio && npm run css:watch
 ```
 
 Most component styling is expressed as Tailwind utility classes in RSX, so
@@ -210,17 +231,17 @@ takes `--deny` to fail on warnings (the tree is not warning-clean yet).
 packaging details.
 
 `dx bundle` produces the distributable artifacts; on Linux the useful package
-types are `appimage` and `deb`. Run it from `apps/desktop`:
+types are `appimage` and `deb`. Run it from `apps/studio`:
 
 ```bash
 # Release build + AppImage (prints `Created AppImage: <path>` when it lands)
-cd apps/desktop && dx bundle --platform desktop --package-types appimage -r
+cd apps/studio && dx bundle --platform desktop --package-types appimage -r
 
 # One value per flag occurrence — `--package-types appimage deb` and
 # `--package-types appimage,deb` are both rejected. Build several artifacts in
 # one run: each run rebuilds into a cleaned bundle directory, so an appimage-only
 # run deletes the .deb produced by the run before it.
-cd apps/desktop && dx bundle --platform desktop --package-types appimage --package-types deb -r
+cd apps/studio && dx bundle --platform desktop --package-types appimage --package-types deb -r
 ```
 
 No extra Rust crate is involved — bundling is the CLI's own job. For an
@@ -240,7 +261,7 @@ reaches the Linux packages, verified on both package types:
 | Field | Source |
 | --- | --- |
 | `Comment`, deb `Description` | `bundle.short_description` (+ `long_description`) |
-| `Name` in the desktop entry | a sanitised product name — `Name=SmartVisualSequencer`, not `[application] name` verbatim |
+| `Name` in the desktop entry | a sanitised product name derived from `[application] name`; revalidate packaging for the renamed Studio |
 | deb `Maintainer` | Cargo `authors`, not `bundle.publisher` |
 | `Categories` / `Keywords` | **nothing** — `bundle.category` and `[linux] categories`/`keywords` are ignored; a categorised menu entry needs a custom desktop template |
 | `Icon` | the default Dioxus icon while `[bundle] icon` is unset (the deb also drops a stray `.dx-default-icon.png` at its root) |
@@ -254,8 +275,8 @@ Two inputs are still missing before a bundle is more than an empty shell (see
 [`ROADMAP.md`](ROADMAP.md) §12 item 11):
 
 - **An app icon.** `[bundle] icon` takes PNG paths (512×512 is the safe size).
-  The repo has none — `apps/desktop/assets/favicon.ico` and
-  `apps/desktop/assets/header.svg` came with the Dioxus scaffold and are
+  The repo has none — `apps/studio/assets/favicon.ico` and
+  `apps/studio/assets/header.svg` came with the Dioxus scaffold and are
   referenced nowhere. With no icon configured, `dx` writes a default one, so
   the AppImage builds but is unlabelled.
 - **The runtime payload.** `sd-server` is bundled with `[bundle] external_bin`
@@ -287,11 +308,11 @@ the configured port (7861 in the checked-in `providers.toml`). Only the
 cargo test --workspace
 ```
 
-The workspace runs 131 tests in `svs-core` plus 77 in the desktop crate, and 3
-in the CLI binaries (211 total). They cover state transitions
-(`apps/desktop/src/state/`), the runtime adapter and health probes
-(`crates/core/src/runtime/`), and multimodal message shape
-(`crates/core/src/llm/`). They do not require a running `sd-server` or an LLM
+The workspace runs 149 tests in `storyfella-studio-core`, 78 in Studio, 3
+in the CLI binaries, and 1 in xtask (231 total). They cover state transitions
+(`apps/studio/src/state/`), the runtime adapter and health probes
+(`crates/studio-core/src/runtime/`), and multimodal message shape
+(`crates/studio-core/src/llm/`). They do not require a running `sd-server` or an LLM
 endpoint.
 The `sdcpp` wire serialization tests (request body + job decoding) live in the
 shared `clipforge-inference` crate (`../clipforge/crates/inference/src/sd/`) and
@@ -299,16 +320,15 @@ are not part of this workspace's run. `cargo xtask test` runs the same command.
 
 ### End-to-end: plans (the app's own regression suite)
 
-Unit tests do not exercise the app. The automation driver (`apps/desktop/src/driver/`)
+Unit tests do not exercise the app. The automation driver (`apps/studio/src/driver/`)
 does: it plays a **plan** — a YAML script written in the app's own vocabulary
-— through the same code paths the UI uses (`apps/desktop/src/commands.rs`), and asserts
+— through the same code paths the UI uses (`apps/studio/src/commands.rs`), and asserts
 outcomes against app state. Plans never mention selectors, coordinates or
 DOM, so they do not break when the UI is restyled.
 
 ```bash
 # Fast, backend-free: project, story, beats. Runs anywhere.
-cargo run -p smart-visual-sequencer --bin smart-visual-sequencer -- \
-  --plan config/plans/smoke.yaml --mode check
+cargo xtask plan config/plans/smoke.yaml --mode check --log
 ```
 
 `--mode check` runs the steps back to back and prints a verdict
@@ -402,7 +422,7 @@ touch the generation backend.
 ## Configuration reference
 
 Configuration lives in [`config/app.toml`](../config/app.toml) and is loaded by
-`crates/core/src/config.rs`. Missing sections fall back to defaults. Relative
+`crates/studio-core/src/config.rs`. Missing sections fall back to defaults. Relative
 paths in the file resolve against the project root (see the `paths` note below).
 That file is checked in and shared, so a **user config** is layered over it, key
 by key, for machine-local choices and secrets (see the `user config` note below).
@@ -428,7 +448,7 @@ The `text`/`vision` LLM endpoints are **not** here: they resolve from
 | `paths.project_dir` | platform data dir + `projects` | Where the Projects screen keeps `.svs-project.db` files |
 
 Configured relative paths (`paths.*` and the plan directory) resolve against the
-**project root**, not the working directory: `crates/core/src/paths.rs` picks
+**project root**, not the working directory: `crates/studio-core/src/paths.rs` picks
 `$SVS_HOME` first, otherwise the nearest ancestor of the working directory (then
 of the executable) that holds `config/app.toml`, so commands do not need to be
 run from the repository root. The checked-in `config/app.toml` raises
@@ -465,8 +485,8 @@ planner-model picker writes to the **user providers overlay** instead (see
 
 The image backend — the `sd-server` executable, its model tree, LoRA root,
 endpoint, and weights — is resolved from `<root>/providers.toml`, anchored to the
-project root like every other path (`crates/core/src/paths.rs`,
-`providers_path()`). `crates/core/src/config.rs` loads it through the shared
+project root like every other path (`crates/studio-core/src/paths.rs`,
+`providers_path()`). `crates/studio-core/src/config.rs` loads it through the shared
 `clipforge_inference::Providers` registry and keeps the resolved
 `ImageDeployment` on `AppConfig::image`; the LoRA root shown in Settings is the
 provider's `lora_dir`.
@@ -554,7 +574,7 @@ resolved endpoints and persists the planner-model pick under
 
 ## Common issues
 
-- **`cargo`/`dx` fail with path errors** — the `:` in the parent directory; the
+- **`cargo`/`dx` fail with path errors** — a `:` in a parent directory; the
   `.cargo/config.toml` target-dir redirect is the fix, do not remove it.
 - **Generation says the runtime is not ready / job fails** — the `sd-server`
   binary or model artifacts are missing. Run `cargo run -p svs-cli --bin model_setup`

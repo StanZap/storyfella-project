@@ -4674,27 +4674,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
-name = "smart-visual-sequencer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clipforge-inference",
- "dioxus",
- "futures-util",
- "image",
- "parking_lot",
- "rfd",
- "serde",
- "serde_json",
- "serde_yaml",
- "svs-core",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "socket2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4747,6 +4726,52 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "storyfella-player"
+version = "0.1.0"
+
+[[package]]
+name = "storyfella-studio"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clipforge-inference",
+ "dioxus",
+ "futures-util",
+ "image",
+ "parking_lot",
+ "rfd",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "storyfella-studio-core",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "storyfella-studio-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clipforge-inference",
+ "directories",
+ "futures-util",
+ "image",
+ "parking_lot",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "toml 1.1.4+spec-1.1.0",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "string_cache"
@@ -4824,31 +4849,10 @@ dependencies = [
  "image",
  "serde",
  "serde_json",
- "svs-core",
+ "storyfella-studio-core",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "svs-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clipforge-inference",
- "directories",
- "futures-util",
- "image",
- "parking_lot",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
- "tokio",
- "toml 1.1.4+spec-1.1.0",
- "tracing",
  "uuid",
 ]
 

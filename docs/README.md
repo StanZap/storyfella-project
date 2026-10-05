@@ -1,4 +1,4 @@
-# Smart Visual Sequencer — documentation
+# Storyfella Studio — documentation
 
 This directory documents how the application is built, how its pieces talk to
 each other, and how to develop it. It is the companion to the top-level

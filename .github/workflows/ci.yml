@@ -1,0 +1,57 @@
+name: Storyfella
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  workspace:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: storyfella
+      # Inference remains a separate sibling repository.
+      - uses: actions/checkout@v4
+        with:
+          repository: StanZap/clipforge
+          path: clipforge
+          # A private sibling needs a token with read access to that repository.
+          token: ${{ secrets.CLIPFORGE_READ_TOKEN || github.token }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: storyfella/apps/studio/package-lock.json
+      - name: Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libasound2-dev libudev-dev libayatana-appindicator3-dev libxdo-dev libglib2.0-dev xvfb
+      - name: Dioxus CLI
+        run: cargo install dioxus-cli --version 0.7.10 --locked
+      - name: Studio stylesheet
+        working-directory: storyfella/apps/studio
+        run: |
+          npm ci
+          npm run css:build
+      - name: Format
+        working-directory: storyfella
+        run: cargo fmt --all -- --check
+      - name: Check
+        working-directory: storyfella
+        run: cargo check --workspace --all-targets --locked
+      - name: Test
+        working-directory: storyfella
+        run: cargo test --workspace --locked
+      - name: CLI and Player
+        working-directory: storyfella
+        run: |
+          cargo build -p svs-cli -p storyfella-player --locked
+          cargo run -p svs-cli --bin svs --locked -- --help
+          cargo run -p storyfella-player --locked
+      - name: Studio build and smoke plan
+        working-directory: storyfella
+        run: |
+          cargo xtask build
+          timeout 120s xvfb-run -a cargo xtask plan config/plans/smoke.yaml --mode check --log

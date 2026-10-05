@@ -16,12 +16,12 @@ The process, client, model store, and profile are all owned by the sibling
 **path dependency** (`clipforge-inference = { path = "../clipforge/crates/inference" }`
 in the root `[workspace.dependencies]`); the sibling checkout must be present at
 that relative path for storyfella to build, and the crate is not a workspace
-member. `crates/core/src/runtime/` holds only the adapter: `CreativeRuntime`
+member. `crates/studio-core/src/runtime/` holds only the adapter: `CreativeRuntime`
 (`creative_runtime.rs`), the health probes (`health.rs`), and `mod.rs`.
 
 ## `CreativeRuntime` facade
 
-`CreativeRuntime` (`crates/core/src/runtime/creative_runtime.rs`) is the single entry point
+`CreativeRuntime` (`crates/studio-core/src/runtime/creative_runtime.rs`) is the single entry point
 used by the UI. It owns:
 
 - an `sd::Client` for the native `sd-server` (from the shared `clipforge-inference` crate),
@@ -167,7 +167,7 @@ cargo run -p svs-cli --bin model_setup
 ```
 
 The app drives the same call from Settings → Image generation → **Model files**
-(`svs_core::runtime::provision_image_model`, over the same `ModelStore`), listing
+(`storyfella_studio_core::runtime::provision_image_model`, over the same `ModelStore`), listing
 each artifact with its size, presence, and a byte-counted progress bar — so a
 first run does not need a terminal.
 
@@ -194,7 +194,7 @@ LoRA directory; absolute paths and parent traversal are rejected (see
 ## Health status checks
 
 The Settings **Status** section probes every service the application depends on
-(`crates/core/src/runtime/health.rs`, triggered by `Settings` in `apps/desktop/src/ui/settings.rs`). The
+(`crates/studio-core/src/runtime/health.rs`, triggered by `Settings` in `apps/studio/src/ui/settings.rs`). The
 checks are read-only: they never start or stop a process and never download
 anything. Each probe runs with a short timeout and reports one of four states:
 
@@ -216,7 +216,7 @@ connection** button in Intelligence.
 
 ### On-demand start and stop
 
-The Status section controls the local runtime (`apps/desktop/src/ui/settings.rs`,
+The Status section controls the local runtime (`apps/studio/src/ui/settings.rs`,
 `operate_service`):
 
 - **Image generation** — `Start` runs `ensure_profile_ready` (starts `sd-server`

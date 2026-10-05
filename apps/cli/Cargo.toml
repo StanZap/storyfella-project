@@ -3,7 +3,7 @@ name = "svs-cli"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-description = "Command-line tools for Smart Visual Sequencer."
+description = "Command-line tools for Storyfella Studio."
 
 [[bin]]
 name = "svs"
@@ -18,7 +18,7 @@ name = "vlm_probe"
 path = "src/bin/vlm_probe.rs"
 
 [dependencies]
-svs-core = { path = "../../crates/core" }
+storyfella-studio-core = { path = "../../crates/studio-core" }
 anyhow.workspace = true
 base64.workspace = true
 clap.workspace = true

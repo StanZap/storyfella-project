@@ -3,7 +3,7 @@ name = "xtask"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-description = "Development task runner for Smart Visual Sequencer (cargo xtask …)."
+description = "Development task runner for Storyfella Studio (cargo xtask …)."
 # A developer tool, never a published artifact.
 publish = false
 

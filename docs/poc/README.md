@@ -14,6 +14,6 @@ surface. For how the pieces fit together today, start at
 | [`segmentation/README.md`](segmentation/README.md) | SAM 2.1 Tiny behind the Python `/segment` contract | Removed (Qwen-Image-2.1 migration) |
 | [`grounded-segmentation/README.md`](grounded-segmentation/README.md) | Text grounding with Grounding DINO feeding SAM | Removed (Qwen-Image-2.1 migration) |
 
-The current product wiring is Rust only — `crates/core`, `apps/desktop`, and
+The current product wiring is Rust only — `crates/studio-core`, `apps/studio`, and
 `apps/cli` — plus the native `sd-server`; see
 [`architecture.md`](../architecture.md) for the boundary.

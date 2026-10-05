@@ -14,7 +14,7 @@ use crate::workspace::Profile;
 #[command(
     name = "xtask",
     version,
-    about = "Development tasks for Smart Visual Sequencer",
+    about = "Development tasks for Storyfella Studio",
     long_about = "Wraps the project's build, run, bundle, check and test workflows \
                   so the exact tool invocations live in one place. Run it as \
                   `cargo xtask <command>` (the alias is in .cargo/config.toml).",

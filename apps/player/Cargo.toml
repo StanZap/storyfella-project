@@ -1,0 +1,8 @@
+[package]
+name = "storyfella-player"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Standalone Storyfella Player placeholder; GUI framework undecided."
+
+[dependencies]

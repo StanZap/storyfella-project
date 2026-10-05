@@ -18,11 +18,11 @@ Three separate complaints, one of which is structural:
    so nothing feels productive. Only the DSL fixes this (`.sf` is the artifact
    that grows). Out of scope here, tracked as roadmap §9.
 2. **A keyboard vocabulary behind a mouse-only shell.** The app has exactly one
-   shortcut — `CmdOrCtrl+S` at [`ui/mod.rs:231`](../../apps/desktop/src/ui/mod.rs) — and one
+   shortcut — `CmdOrCtrl+S` at [`ui/mod.rs:231`](../../apps/studio/src/ui/mod.rs) — and one
    `onkeydown` (Enter to submit). The CLI has a fast path; the GUI does not.
 3. **A discovery cliff.** Nothing on screen reveals that `/resize`, `--steps`,
    or `describe` exist. The composer placeholder at
-   [`ui/canvas.rs:1287`](../../apps/desktop/src/ui/canvas.rs) is the entire vocabulary
+   [`ui/canvas.rs:1287`](../../apps/studio/src/ui/canvas.rs) is the entire vocabulary
    crammed into one string, and the narrated Guide plans exist partly to
    compensate for it.
 
@@ -83,7 +83,7 @@ Each phase is independently shippable and leaves the app working.
 
 The piece everything else waits on.
 
-- Add a byte span to `Token` in [`registry/slash.rs:450`](../../crates/core/src/registry/slash.rs)
+- Add a byte span to `Token` in [`registry/slash.rs:450`](../../crates/studio-core/src/registry/slash.rs)
   and make `tokenize` public. **One tokenizer** — the highlighter must not get
   its own, or the two will drift.
 - Add `complete(input: &str, cursor: usize) -> Completions` next to the parser:
@@ -103,7 +103,7 @@ shapes the `complete()` signature, so resolve it before writing the API.
 
 ### Phase 1 — The tokenized command bar *(done)*
 
-Replaces the textarea at [`ui/canvas.rs:1287`](../../apps/desktop/src/ui/canvas.rs) and
+Replaces the textarea at [`ui/canvas.rs:1287`](../../apps/studio/src/ui/canvas.rs) and
 deletes its placeholder.
 
 - Transparent `<input>` layered over a highlight `div` with identical font
@@ -159,13 +159,13 @@ started here; the slots from §2 are what they plug into.
 
 ## 5. Structure
 
-[`ui/canvas.rs`](../../apps/desktop/src/ui/canvas.rs) is 1426 lines and this is a rewrite of
-it, not an edit. Make `apps/desktop/src/ui/canvas/` a module directory — `home.rs`,
+[`ui/canvas.rs`](../../apps/studio/src/ui/canvas.rs) is 1426 lines and this is a rewrite of
+it, not an edit. Make `apps/studio/src/ui/canvas/` a module directory — `home.rs`,
 `detail.rs`, `inspector.rs`, `cmdbar.rs` — rather than growing the file.
 
-Styling: Tailwind v4 scans `apps/desktop/src/ui/**/*.rs`. Do not convert the prototype CSS to
+Styling: Tailwind v4 scans `apps/studio/src/ui/**/*.rs`. Do not convert the prototype CSS to
 utilities wholesale — the chip and layered-input rules are awkward as utilities.
-Put those in a component layer in [`tailwind.css`](../../apps/desktop/tailwind.css) and use
+Put those in a component layer in [`tailwind.css`](../../apps/studio/tailwind.css) and use
 Tailwind for ordinary layout, matching current practice.
 
 ## 6. Acceptance
@@ -186,6 +186,6 @@ If a session cannot be expressed as a plan, that is the finding.
 Done. `ROADMAP.md` §9 now calls an unresolved reference *pending* rather than
 a compile error and records that the Writer surface landed ahead of the
 language crate; §10 lists the applied schema versions; §12 item 4 describes
-the grid-and-detail canvas. `AGENTS.md` describes the current `apps/desktop/src/ui/`
+the grid-and-detail canvas. `AGENTS.md` describes the current `apps/studio/src/ui/`
 layout. `architecture.md` records that the CLI, the command bar, the palette
 and the inspector are four views of one vocabulary.

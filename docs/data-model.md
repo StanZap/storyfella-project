@@ -1,14 +1,14 @@
 # Data model and persistence
 
-The application state is a single `AppState` (`apps/desktop/src/state/mod.rs`) holding the
+The application state is a single `AppState` (`apps/studio/src/state/mod.rs`) holding the
 artifact registry, an unsaved-changes flag, and the currently selected
-artifact. The domain types live in `crates/core/src/registry/`; persistence lives in
-`crates/core/src/persistence/mod.rs`. The legacy `Project`/`StoryboardFrame`/`Timeline`
+artifact. The domain types live in `crates/studio-core/src/registry/`; persistence lives in
+`crates/studio-core/src/persistence/mod.rs`. The legacy `Project`/`StoryboardFrame`/`Timeline`
 model was removed when the canvas replaced it (roadmap §12 item 4).
 
 ## Types
 
-The registry (`crates/core/src/registry/mod.rs`) is one id space for every artifact:
+The registry (`crates/studio-core/src/registry/mod.rs`) is one id space for every artifact:
 
 ```text
 ArtifactRegistry
@@ -76,7 +76,7 @@ promoted revision, experiment an edit that has not been made canonical.
 
 ## Persistence format
 
-`ProjectDb` (`crates/core/src/persistence/mod.rs`) is SQLite storage for the project: one
+`ProjectDb` (`crates/studio-core/src/persistence/mod.rs`) is SQLite storage for the project: one
 `projects` row, then `artifacts`, `revisions`, `layers`,
 `lora_registry` (project LoRA entries — round-tripped since the
 LoRA registry landed, §12 item 6), and `operation_log`. The registry stays the in-memory source of truth; a save
@@ -101,7 +101,7 @@ clears `has_unsaved_changes`.
 A generation request is `GenerateRequest`
 (`clipforge_inference::sd::GenerateRequest`, the request type of the shared
 native-inference crate) — the shape `CreativeBackend::generate`
-(`crates/core/src/registry/backend.rs`) builds and the shared `sd::Client` maps
+(`crates/studio-core/src/registry/backend.rs`) builds and the shared `sd::Client` maps
 onto the `sd-server` wire body (see [`architecture.md`](architecture.md)):
 
 | Field | Meaning |
@@ -118,7 +118,7 @@ onto the `sd-server` wire body (see [`architecture.md`](architecture.md)):
 There is no mask, init-image, or reference-strength field: an edit is the
 reference image plus the instruction. The request carries no `model`/`device`
 either — the profile is implied by the resident server. The pipeline's own
-`GenerationParams` (`crates/core/src/registry/pipeline.rs`) keeps the profile id
+`GenerationParams` (`crates/studio-core/src/registry/pipeline.rs`) keeps the profile id
 (`DEFAULT_MODEL`) and records it on the revision for provenance; the pipeline's
 `GenerateResponse` (also `registry/pipeline.rs`) is what the backend returns.
 
@@ -128,7 +128,7 @@ either — the profile is implied by the resident server. The pipeline's own
    canonical absolute path of each generated file. A project moved between
    machines (or even directories) loses its image references. A stable,
    relative-to-project asset reference is needed before shipping.
-2. **No generated-asset index.** `crates/core/src/assets/mod.rs` (`AssetCatalog`) is a
+2. **No generated-asset index.** `crates/studio-core/src/assets/mod.rs` (`AssetCatalog`) is a
    stub; there is no central registry of imported/generated files,
    thumbnails, or usage counts.
 3. **No delete/rename ops.** The operation vocabulary has no `delete`

@@ -1,6 +1,44 @@
 # Architecture
 
-Smart Visual Sequencer is a desktop application whose entire product code —
+## Storyfella workspace boundaries
+
+This restructuring establishes the workspace layout. DSL and LSP implementation
+begins afterward. Only Studio, Studio core, the existing CLI, the minimal Player,
+and xtask are workspace members today.
+
+| Component | Responsibility | Dependency boundary |
+| --- | --- | --- |
+| `apps/studio` / `storyfella-studio` | Dioxus authoring UI, project state and creative workflows; future story preview | Consumes GUI-free Studio core; preview will consume the shared story runtime |
+| `crates/studio-core` / `storyfella-studio-core` | Artifact registry, operations, persistence, config, creative inference adapters | No GUI dependencies; consumes sibling `clipforge-inference` |
+| `apps/cli` / `svs-cli` | Existing `svs`, `model_setup`, and `vlm_probe` tools | Keeps current commands and behavior; consumes Studio core |
+| `apps/player` / `storyfella-player` | Minimal executable now; standalone playback later | GUI framework undecided; playback will consume the same runtime as Studio preview |
+| `xtask` | Build, launch, package and validation commands | Developer tooling only |
+
+The following crate names and paths are reserved in this document, not created
+as placeholder crates or workspace members. Add each as its implementation begins:
+
+| Future crate | Responsibility | Dependency boundary |
+| --- | --- | --- |
+| `crates/language` / `storyfella-language` | Source model, lexer/parser, spans, diagnostics, symbols, references and shared language analysis | Independent of Studio, UI frameworks and inference backends |
+| `crates/compiler` / `storyfella-compiler` | Validate/lower analyzed stories into a shared executable story representation | May consume language analysis; independent of Studio, UI frameworks and inference backends |
+| `crates/runtime` / `storyfella-runtime` | Story execution, state transitions and timing; host-facing playback events | Shared by Studio preview and Player; no dependency on either application or an inference backend |
+| `crates/lsp` / `storyfella-lsp` | LSP transport and editor-facing diagnostics, completion, navigation and other language services | Exposes shared language analysis to external editors; does not duplicate analysis or depend on Studio |
+
+The compiler/runtime representation contract will be settled during implementation.
+Existing Studio core `runtime/` supervises creative generation through Clipforge;
+it is distinct from the future story execution runtime. FineWineTTS and Clipforge
+remain separate repositories. The inference path dependency stays
+`../clipforge/crates/inference` after the repository-directory rename.
+
+`svs`, `model_setup`, and `vlm_probe` names, `SVS_*` settings, error codes,
+SQLite formats and original platform config/data identities are retained to
+preserve existing workflows. The directory move preserves local files, but
+databases containing absolute paths into the old checkout can still reference
+the old location; those paths are not silently rewritten by this restructuring.
+
+## Existing Studio architecture
+
+Storyfella Studio is a desktop application whose entire product code —
 UI, state, domain models, persistence, provisioning, process lifecycle, and
 path resolution — is Rust. There is no Python: the old FastAPI vision runtime
 and its SAM/segmentation stack were removed with the Krea/SAM migration, and
@@ -18,15 +56,15 @@ HTTP.
   accessed directly from Rust and resolved from `providers.toml` as separate
   capabilities. An `openai` provider is external and never started; a
   `llamacpp` provider is a managed `llama-server` the app starts on demand.
-  `crates/core/src/llm/` is the client; the planner business logic lives in
-  `crates/core/src/registry/`.
+  `crates/studio-core/src/llm/` is the client; the planner business logic lives in
+  `crates/studio-core/src/registry/`.
 
 ## Component map
 
 ```text
 ┌────────────────────────────── Rust (Dioxus desktop) ──────────────────────────────┐
 │                                                                                    │
-│  crates/core/src/  — the domain layer (no GUI dependency)                          │
+│  crates/studio-core/src/  — the domain layer (no GUI dependency)                          │
 │    registry/      Artifact model, typed ops + pipelines, slash parser,             │
 │                   CreativeBackend (live backend)                                   │
 │    persistence/   ProjectDb (SQLite, versioned migrations)                         │
@@ -35,7 +73,7 @@ HTTP.
 │                   crate (asset import, job wait, health, error mapping)            │
 │    assets/        AssetCatalog (import/index boundary; currently minimal)          │
 │                                                                                    │
-│  apps/desktop/src/  — the Dioxus application                                       │
+│  apps/studio/src/  — the Dioxus application                                       │
 │    ui/            Workspace shell, Canvas (artifact workspace), Settings           │
 │    state/         AppState: registry, selection, undo/redo stacks                  │
 │                                                                                    │
@@ -46,7 +84,7 @@ HTTP.
 │   └──────────────────────────────────────────────────────────────────────────────┘ │
 └────────────────────────────────────────────────────────────────────────────────────┘
   │
-  │ OpenAI-compatible HTTP (crates/core/src/llm/)
+  │ OpenAI-compatible HTTP (crates/studio-core/src/llm/)
   ▼
 ┌───────────────────────────────┐
 │ text/vision endpoints (LLM)   │
@@ -65,8 +103,8 @@ provisioning do **not** live in this workspace: they are in the sibling
 `clipforge` project's crate, package **`clipforge-inference`**, pulled in as a
 **path dependency** (`clipforge-inference = { path = "../clipforge/crates/inference" }`
 in the root `[workspace.dependencies]`). storyfella keeps only the adapter —
-`crates/core/src/runtime/` (`CreativeRuntime`), `config.rs`, and the pipeline's
-`GenerateResponse` (`crates/core/src/registry/pipeline.rs`). The sibling checkout
+`crates/studio-core/src/runtime/` (`CreativeRuntime`), `config.rs`, and the pipeline's
+`GenerateResponse` (`crates/studio-core/src/registry/pipeline.rs`). The sibling checkout
 at `../clipforge/crates/inference` must be present for storyfella to build;
 the crate is not a workspace member.
 
@@ -150,7 +188,7 @@ The Canvas is the primary workspace. Commands reach it from four places that
 share one vocabulary: the `svs` CLI, the tokenized command bar, the `Ctrl+K`
 palette, and the inspector rail — every control in the rail emits the command
 a person would have typed, so the two cannot diverge. All of them parse
-through `crates/core/src/registry/slash.rs`; model-only operations
+through `crates/studio-core/src/registry/slash.rs`; model-only operations
 (`compose`, `create` of text-only kinds) apply instantly, while visual
 `create`/`variant` (first image), `regenerate`, and `modify` run their
 pipeline against `CreativeBackend` in a spawned task.
@@ -159,14 +197,14 @@ pipeline against `CreativeBackend` in a spawned task.
 Composer: /create character Mia…  /variant c:mia …  /regenerate c:mia …
     │  slash::parse_slash → Operation (compile validates against the registry)
     ▼
-ops::execute (crates/core/src/registry/ops.rs)
+ops::execute (crates/studio-core/src/registry/ops.rs)
     ├─ Direct (compose / text-only create): registry mutation + log entry
     ├─ Create/Variant (visual): artifact + first-image pipeline (variants
     │    reference the base's active image)
     └─ Pipeline (regenerate/modify):
          │  AppState::snapshot_for_undo (registry snapshot — undo basis)
          ▼
-       CreativeBackend::generate (crates/core/src/registry/backend.rs)
+       CreativeBackend::generate (crates/studio-core/src/registry/backend.rs)
          │  CreativeRuntime::ensure_profile_ready (cold start: sd-server)
          │  sd::Client::generate (POST /sdcpp/v1/img_gen)
          ▼
@@ -189,7 +227,7 @@ there is no checkpoint.
 Grounding is why it holds together. A terse instruction under-specifies the
 render and it collapses toward base-model priors, so the instruction is
 rewritten to name the medium and re-state the artifact's own description as the
-traits to keep. `ground_instruction` (`crates/core/src/registry/ops.rs`)
+traits to keep. `ground_instruction` (`crates/studio-core/src/registry/ops.rs`)
 does that deterministically; when the LLM endpoint is configured, `llm_ground`
 refines it by dropping the traits the edit overrides. The LLM is a soft
 dependency — it never blocks, and a missing one falls back to the template.
@@ -230,7 +268,7 @@ card, so the planner/LLM cannot run concurrently with a generation. Free VRAM
 ## Directory resolution
 
 Runtime, model, cache, and asset paths resolve against the **project root**
-(`crates/core/src/paths.rs`): `$SVS_HOME` if set, otherwise the nearest
+(`crates/studio-core/src/paths.rs`): `$SVS_HOME` if set, otherwise the nearest
 ancestor of the working directory (then of the executable) holding
 `config/app.toml`. Relative paths in [`config/app.toml`](../config/app.toml)
 resolve against that root, and unset values fall back to platform-appropriate
@@ -249,9 +287,9 @@ repository for development, while `providers.toml` roots the model tree at
 
 ## What is deliberately absent
 
-- **The planner lives in `crates/core/src/registry/`.** The typed operation set, the
+- **The planner lives in `crates/studio-core/src/registry/`.** The typed operation set, the
   pipeline layer, the slash parser, and the `svs` CLI (see
-  `docs/api-slice-1.md`) are implemented; `crates/core/src/llm/` is the client only,
+  `docs/api-slice-1.md`) are implemented; `crates/studio-core/src/llm/` is the client only,
   driven through `CreativeBackend`. The Canvas free-form composer messages
   are proposed as operation stacks (LLM → closed-vocabulary JSON → approval
   modal → executed through the same worker machinery as slash commands).

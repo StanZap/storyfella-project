@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use clipforge_inference::{Capability, ModelStore, Providers};
-use svs_core::paths;
+use storyfella_studio_core::paths;
 
 #[derive(Debug, Parser)]
 #[command(about = "Download and verify the Qwen-Image-2.1 model artifacts")]

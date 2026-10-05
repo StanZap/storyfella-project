@@ -21,20 +21,22 @@ use clipforge_inference::chat::ChatImage;
 use clipforge_inference::sd::LoraSelection;
 use uuid::Uuid;
 
-use svs_core::config::AppConfig;
-use svs_core::errors::{CodedError, ErrorCode, ReportedError};
-use svs_core::persistence::ProjectDb;
-use svs_core::registry::backend::CreativeBackend;
-use svs_core::registry::ops::{
+use storyfella_studio_core::config::AppConfig;
+use storyfella_studio_core::errors::{CodedError, ErrorCode, ReportedError};
+use storyfella_studio_core::persistence::ProjectDb;
+use storyfella_studio_core::registry::backend::CreativeBackend;
+use storyfella_studio_core::registry::ops::{
     self, ComposeLayer, ExecuteOptions, OpOrigin, OpStatus, Operation, OperationStack,
 };
-use svs_core::registry::pipeline::{
+use storyfella_studio_core::registry::pipeline::{
     ApprovalPolicy, BlockedOn, Decision, GenerationBackend, GenerationOverrides, InputPurpose,
     OutputKind, PipelineRun, RunOptions,
 };
-use svs_core::registry::{ArtifactKind, ArtifactRegistry, GenerationDefaults, Ref, VariantAxis};
-use svs_core::runtime::{kill_servers, marker_path, CreativeRuntime, ServerMarker};
-use svs_core::vision;
+use storyfella_studio_core::registry::{
+    ArtifactKind, ArtifactRegistry, GenerationDefaults, Ref, VariantAxis,
+};
+use storyfella_studio_core::runtime::{kill_servers, marker_path, CreativeRuntime, ServerMarker};
+use storyfella_studio_core::vision;
 
 #[derive(Parser)]
 #[command(
@@ -1454,7 +1456,7 @@ fn origin_str(origin: OpOrigin) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use svs_core::registry::pipeline::{OutputKind, PipelineRun, StepOutput};
+    use storyfella_studio_core::registry::pipeline::{OutputKind, PipelineRun, StepOutput};
 
     #[test]
     fn golden_outputs_are_copied_with_step_prefixed_names() {

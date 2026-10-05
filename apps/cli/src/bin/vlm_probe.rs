@@ -9,7 +9,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use svs_core::{
+use storyfella_studio_core::{
     config::AppConfig,
     llm::{strip_json_fence, ChatMessage, ChatOptions, LlmClient, LlmConfig},
 };

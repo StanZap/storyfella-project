@@ -1,6 +1,26 @@
-# Smart Visual Sequencer
+# Storyfella
 
-Smart Visual Sequencer is a cross-platform Dioxus desktop application for planning, generating, and arranging visual stories. The first product workflow includes project creation, the artifact canvas (characters, environments, objects, scenes with typed operations, variants, revisions), resident local Qwen-Image-2.1 generation, and sectioned runtime settings. The typed operation/planner layer is shared by the `svs` CLI and the canvas; Studio sequencing and presentation/export orchestration are not wired yet.
+Storyfella is the workspace for story authoring and playback. The existing
+Dioxus application is **Storyfella Studio**; the `svs` CLI keeps its current
+commands and behavior. `apps/player` is a minimal executable with no GUI
+framework selected yet. Language, compiler, story runtime, and LSP crates
+will be added when their implementations begin; see
+[workspace boundaries](docs/architecture.md#storyfella-workspace-boundaries).
+
+```text
+storyfella/
+├── apps/studio/       # storyfella-studio (Dioxus)
+├── apps/cli/          # svs-cli: svs, model_setup, vlm_probe
+├── apps/player/       # storyfella-player (placeholder)
+├── crates/studio-core/ # storyfella-studio-core (no GUI)
+└── xtask/            # developer tasks
+```
+
+Clipforge and FineWineTTS remain separate sibling repositories. Storyfella
+consumes `../clipforge/crates/inference`; the directory rename leaves that
+relative dependency unchanged.
+
+Storyfella Studio is a cross-platform Dioxus desktop application for planning, generating, and arranging visual stories. The first product workflow includes project creation, the artifact canvas (characters, environments, objects, scenes with typed operations, variants, revisions), resident local Qwen-Image-2.1 generation, and sectioned runtime settings. The typed operation/planner layer is shared by the `svs` CLI and the canvas; Studio sequencing and presentation/export orchestration are not wired yet.
 
 The validated target is Linux with an NVIDIA GPU (CUDA). Image generation runs on a CUDA build of `stable-diffusion.cpp`'s `sd-server` serving Qwen-Image-2.1. The LLM endpoint is an external prerequisite and is never installed or bundled by this project.
 
@@ -10,7 +30,7 @@ This is intentionally a desktop-only application. Web, mobile, and WASM targets 
 
 - **Rust** owns the Dioxus UI, application state, the artifact registry, project persistence boundary, model-download boundary, directory resolution, process lifecycle, the LLM client, and the native generation client. Rust never links an ML framework.
 - **`stable-diffusion.cpp`** (`sd-server`) is a separate native process owned by Rust that keeps the Qwen-Image-2.1 diffusion model resident. Rust talks to it directly over the server's async `sdcpp` HTTP API; it is not ComfyUI and there is no Python adapter in between.
-- The **LLM endpoint** is accessed directly from Rust through its OpenAI-compatible `/v1/chat/completions` endpoint. The typed planner vocabulary (operations + pipelines) lives in `crates/core/src/registry/`; `crates/core/src/llm/` is the client only.
+- The **LLM endpoint** is accessed directly from Rust through its OpenAI-compatible `/v1/chat/completions` endpoint. The typed planner vocabulary (operations + pipelines) lives in `crates/studio-core/src/registry/`; `crates/studio-core/src/llm/` is the client only.
 
 ## Product surface
 
@@ -54,8 +74,8 @@ The configured defaults favor Qwen's single quality profile — 25 steps, CFG 6.
 
 ```text
 Cargo.toml            Virtual workspace manifest ([workspace] members only)
-.cargo/config.toml    target-dir redirect to /tmp/smart-visual-sequencer-target
-crates/core/          svs-core — the domain layer (no GUI dependency):
+.cargo/config.toml    target-dir redirect to /tmp/storyfella-studio-target
+crates/studio-core/          storyfella-studio-core — the domain layer (no GUI dependency):
   src/registry/         Artifact registry, typed ops + pipelines, slash parser,
                         CreativeBackend
   src/persistence/      SQLite project store (versioned migrations)
@@ -68,7 +88,7 @@ crates/core/          svs-core — the domain layer (no GUI dependency):
   src/errors.rs         Error-code registry
   src/config.rs         Configuration loading
   src/paths.rs          Project-root path resolution
-apps/desktop/         smart-visual-sequencer — the Dioxus application:
+apps/studio/         storyfella-studio — the Dioxus application:
   src/app/              Dioxus root
   src/ui/               Desktop UI components (canvas, writer, projects, settings)
   src/state/            AppState: registry, selection, undo/redo
@@ -76,6 +96,7 @@ apps/desktop/         smart-visual-sequencer — the Dioxus application:
   src/driver/           YAML plan driver (Guide/Check modes)
   Dioxus.toml, tailwind.css, assets/, package.json
 apps/cli/             svs-cli — src/bin/{svs,model_setup,vlm_probe}.rs
+apps/player/          storyfella-player — minimal executable; GUI undecided
 xtask/                cargo xtask — the developer task runner (build, run, bundle,
                       check, test); not part of any shipped artifact
 config/               app.toml + plans/*.yaml (data, at the workspace root)
@@ -84,9 +105,9 @@ assets/generated/     Dev runtime data written by generations; project databases
 docs/ models/ cache/ stable-diffusion.cpp/ .svs-e2e/
 ```
 
-`crates/core` never depends on the GUI; `apps/desktop` and `apps/cli` both depend on `svs-core`, and the desktop crate names `svs_core::…` explicitly rather than re-exporting it.
+`crates/studio-core` never depends on the GUI; `apps/studio` and `apps/cli` both depend on `storyfella-studio-core`, and the desktop crate names `storyfella_studio_core::…` explicitly rather than re-exporting it.
 
-Self-resolved paths anchor to a **project root** instead of the working directory (see `crates/core/src/paths.rs`): `$SVS_HOME` wins, otherwise the nearest ancestor of the working directory (then of the executable) holding `config/app.toml`. Relative paths in `config/app.toml` resolve against that root, and unset values fall back to platform-appropriate application directories via the Rust `directories` crate. A user-level `app.toml` in that platform config directory (`paths::user_config_path()`) is layered over the checked-in file for machine-local secrets and overrides.
+Self-resolved paths anchor to a **project root** instead of the working directory (see `crates/studio-core/src/paths.rs`): `$SVS_HOME` wins, otherwise the nearest ancestor of the working directory (then of the executable) holding `config/app.toml`. Relative paths in `config/app.toml` resolve against that root, and unset values fall back to platform-appropriate application directories via the Rust `directories` crate. A user-level `app.toml` in that platform config directory (`paths::user_config_path()`) is layered over the checked-in file for machine-local secrets and overrides.
 
 ## Documentation
 
@@ -123,17 +144,17 @@ cargo run -p svs-cli --bin model_setup
 
 ## Run the desktop application
 
-Install the frontend toolchain once (from `apps/desktop`, which holds `package.json`):
+Install the frontend toolchain once (from `apps/studio`, which holds `package.json`):
 
 ```bash
-cd apps/desktop
+cd apps/studio
 npm install
 ```
 
-The `tailwind.css` file in `apps/desktop` selects Tailwind CSS 4 and lets `dx` automatically compile `assets/tailwind.css`. Most component styling is expressed as Tailwind utility classes in RSX. To build or watch CSS independently, use `npm run css:build` or `npm run css:watch`.
+The `tailwind.css` file in `apps/studio` selects Tailwind CSS 4 and lets `dx` automatically compile `assets/tailwind.css`. Most component styling is expressed as Tailwind utility classes in RSX. To build or watch CSS independently, use `npm run css:build` or `npm run css:watch`.
 
 ```bash
-cd apps/desktop && dx serve --platform desktop
+cd apps/studio && dx serve --platform desktop
 ```
 
 The workspace also carries a task runner for the common commands — `cargo xtask
@@ -146,7 +167,7 @@ For a compile-only check:
 cargo check --workspace --all-targets
 ```
 
-This checkout includes `.cargo/config.toml` because its current parent directory contains a literal `:`. On macOS and Linux that character conflicts with dynamic-library path lists, so build artifacts are placed under `/tmp/smart-visual-sequencer-target`.
+This checkout keeps build artifacts under `/tmp/storyfella-studio-target` through `.cargo/config.toml`. The redirect also supports parent directories containing `:`, which macOS and Linux treat as a separator in dynamic-library path lists.
 
 Configuration lives in `config/app.toml`. The default LLM endpoint URL is `http://localhost:1234/v1`; update `model` to the identifier loaded in the endpoint. `api_key` is optional.
 

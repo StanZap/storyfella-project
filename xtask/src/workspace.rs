@@ -12,9 +12,9 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 /// The desktop package name; `dx` also names its build directory after it.
-pub const APP_PACKAGE: &str = "smart-visual-sequencer";
+pub const APP_PACKAGE: &str = "storyfella-studio";
 /// The desktop binary (package and binary share a name).
-pub const APP_BIN: &str = "smart-visual-sequencer";
+pub const APP_BIN: &str = "storyfella-studio";
 
 /// Which cargo profile to build.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,8 +87,8 @@ impl Workspace {
         }
     }
 
-    pub fn desktop(&self) -> PathBuf {
-        self.root.join("apps/desktop")
+    pub fn studio(&self) -> PathBuf {
+        self.root.join("apps/studio")
     }
 
     /// Where `cargo xtask bundle` writes artifacts by default.
@@ -102,7 +102,7 @@ impl Workspace {
     }
 
     /// The cargo target directory, honouring `.cargo/config.toml`'s
-    /// `build.target-dir` redirect (the `:` in this path makes it mandatory —
+    /// `build.target-dir` redirect (supports parent paths containing `:` —
     /// never assume `<root>/target`).
     pub fn target_dir(&self) -> Result<PathBuf> {
         if let Some(dir) = std::env::var_os("CARGO_TARGET_DIR") {
@@ -184,17 +184,42 @@ fn find_app_binary(dir: &Path) -> Option<PathBuf> {
             if let Some(found) = find_app_binary(&path) {
                 return Some(found);
             }
-        } else if entry.file_name().to_string_lossy() == APP_BIN
-            && path
-                .parent()
-                .and_then(Path::file_name)
-                .map(|name| name == "app")
-                .unwrap_or(false)
-        {
+        } else if is_app_binary(&path) {
             return Some(path);
         }
     }
     None
+}
+
+/// dx uses `app/<bin>` on Linux/Windows and `.app/Contents/MacOS/<bin>`
+/// on macOS. Reject similarly named build intermediates outside those layouts.
+fn is_app_binary(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == APP_BIN)
+        && path.parent().and_then(Path::file_name).is_some_and(|name| {
+            name == "app"
+                || (name == "MacOS"
+                    && path
+                        .parent()
+                        .and_then(Path::parent)
+                        .and_then(Path::file_name)
+                        .is_some_and(|name| name == "Contents"))
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_dx_app_layouts_and_rejects_intermediates() {
+        assert!(is_app_binary(Path::new("linux/app/storyfella-studio")));
+        assert!(is_app_binary(Path::new(
+            "macos/StoryfellaStudio.app/Contents/MacOS/storyfella-studio"
+        )));
+        assert!(!is_app_binary(Path::new("debug/storyfella-studio")));
+        assert!(!is_app_binary(Path::new("linux/app/svs")));
+        assert!(!is_app_binary(Path::new("debug/MacOS/storyfella-studio")));
+    }
 }
 
 #[derive(Deserialize)]

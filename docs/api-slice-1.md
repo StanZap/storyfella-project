@@ -56,12 +56,12 @@ surfaces the artifact registry in the GUI.
 
 | Module | Contents |
 | --- | --- |
-| `crates/core/src/registry/mod.rs` | Artifact model (kinds, variants, scenes, beats, layers, revisions, drafts), one id space, `c:` ref resolution, parent/kind invariants, snapshot/restore undo |
-| `crates/core/src/registry/ops.rs` | Typed operation set (slice 1: create, variant, regenerate, compose, draft, modify), closed JSON vocabulary (`op`-tagged), compiler (`compile`), executor (`execute`), operation log |
-| `crates/core/src/registry/pipeline.rs` | Linear fail-fast pipeline builder: closed `Step` vocabulary (`LoadImage`, `Checkpoint`, `Generate`, `Llm`), typed handles (`ImageHandle`, `PromptHandle`, `FeedbackHandle`), static validation at `build()`, `GenerationBackend` trait, `GenerateResponse`, checkpoints, approval policies, `RunOptions` |
-| `crates/core/src/registry/backend.rs` | `CreativeBackend` — the live backend (`CreativeRuntime` + `LlmClient`); LLM steps are soft dependencies that degrade to manual input |
-| `clipforge-inference` (`../clipforge/crates/inference`) | The shared native-inference crate: `sd::Client` — the typed `sdcpp` client for the native `sd-server` — plus `sd::Runtime` (the resident process), `sd::qwen_image_2_1()` (the served profile), and `ModelStore` (provisioning). storyfella's `crates/core/src/runtime/` adapts it as `CreativeRuntime` (see `architecture.md`) |
-| `crates/core/src/persistence/mod.rs` | SQLite project store (`ProjectDb`): §10 schema, versioned migrations, WAL, snapshot save/load of the registry |
+| `crates/studio-core/src/registry/mod.rs` | Artifact model (kinds, variants, scenes, beats, layers, revisions, drafts), one id space, `c:` ref resolution, parent/kind invariants, snapshot/restore undo |
+| `crates/studio-core/src/registry/ops.rs` | Typed operation set (slice 1: create, variant, regenerate, compose, draft, modify), closed JSON vocabulary (`op`-tagged), compiler (`compile`), executor (`execute`), operation log |
+| `crates/studio-core/src/registry/pipeline.rs` | Linear fail-fast pipeline builder: closed `Step` vocabulary (`LoadImage`, `Checkpoint`, `Generate`, `Llm`), typed handles (`ImageHandle`, `PromptHandle`, `FeedbackHandle`), static validation at `build()`, `GenerationBackend` trait, `GenerateResponse`, checkpoints, approval policies, `RunOptions` |
+| `crates/studio-core/src/registry/backend.rs` | `CreativeBackend` — the live backend (`CreativeRuntime` + `LlmClient`); LLM steps are soft dependencies that degrade to manual input |
+| `clipforge-inference` (`../clipforge/crates/inference`) | The shared native-inference crate: `sd::Client` — the typed `sdcpp` client for the native `sd-server` — plus `sd::Runtime` (the resident process), `sd::qwen_image_2_1()` (the served profile), and `ModelStore` (provisioning). storyfella's `crates/studio-core/src/runtime/` adapts it as `CreativeRuntime` (see `architecture.md`) |
+| `crates/studio-core/src/persistence/mod.rs` | SQLite project store (`ProjectDb`): §10 schema, versioned migrations, WAL, snapshot save/load of the registry |
 | `apps/cli/src/bin/svs.rs` | The `svs` CLI (clap, a binary of the `svs-cli` package) |
 
 ## Pipeline rules (as implemented)
@@ -187,10 +187,10 @@ the user providers overlay (`~/.config/smartvisualsequencer/providers.toml`,
 
 - **The legacy storyboard model is gone.** The canvas (roadmap item 4)
   replaced `Project`/`StoryboardFrame`/`Timeline`; the GUI is the artifact
-  registry (`AppState` in `apps/desktop/src/state/`). Schema v3 dropped
+  registry (`AppState` in `apps/studio/src/state/`). Schema v3 dropped
   `project_json` — the sanctioned one-time loss, no legacy
   formats are parsed.
-- **Canvas slice 1** (`apps/desktop/src/ui/canvas.rs`): gallery grid and detail
+- **Canvas slice 1** (`apps/studio/src/ui/canvas.rs`): gallery grid and detail
   pane (image, description, variants, revisions, children, operation log),
   slash-command composer (`/create`, `/variant`, `/regenerate`,
   `/modify`), undo/redo via registry snapshots. `modify` runs unattended (an
@@ -259,7 +259,7 @@ the user providers overlay (`~/.config/smartvisualsequencer/providers.toml`,
 
 ## First CI surface
 
-- Builder validation tests (`crates/core/src/registry/pipeline.rs`): empty stacks,
+- Builder validation tests (`crates/studio-core/src/registry/pipeline.rs`): empty stacks,
   bounds, ordering.
 - Execution tests with a fake backend: request bodies (prompt, reference,
   LoRA, size, seed), revision state transitions, checkpoint

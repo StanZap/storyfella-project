@@ -61,7 +61,7 @@ fn plan(ws: &Workspace, args: PlanArgs) -> Result<ExitCode> {
 fn serve(ws: &Workspace, args: ServeArgs) -> Result<ExitCode> {
     let profile = args.profile.resolve(false);
     let mut cmd = Process::new("dx");
-    cmd.current_dir(ws.desktop())
+    cmd.current_dir(ws.studio())
         .args(["serve", "--platform", "desktop"]);
     if profile.is_release() {
         cmd.arg("-r");
@@ -83,7 +83,7 @@ fn bundle(ws: &Workspace, args: BundleArgs) -> Result<ExitCode> {
     std::fs::create_dir_all(&out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
 
     let mut cmd = Process::new("dx");
-    cmd.current_dir(ws.desktop())
+    cmd.current_dir(ws.studio())
         .args(["bundle", "--platform", "desktop"]);
     for package_type in &args.package_types {
         cmd.args(["--package-types", package_type.as_arg()]);
@@ -139,16 +139,16 @@ fn test(ws: &Workspace) -> Result<ExitCode> {
 }
 
 fn css(ws: &Workspace, args: CssArgs) -> Result<ExitCode> {
-    let desktop = ws.desktop();
+    let studio = ws.studio();
     if args.install {
-        npm(&desktop, &["install"])?;
-    } else if !desktop.join("node_modules").is_dir() {
+        npm(&studio, &["install"])?;
+    } else if !studio.join("node_modules").is_dir() {
         bail!(
             "frontend toolchain missing at {} — run `cargo xtask css --install`",
-            desktop.join("node_modules").display()
+            studio.join("node_modules").display()
         );
     }
-    npm(&desktop, &["run", "css:build"])?;
+    npm(&studio, &["run", "css:build"])?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -183,12 +183,12 @@ fn doctor(ws: &Workspace) -> Result<ExitCode> {
         ),
         (ws.root().join("config/app.toml"), true, "app configuration"),
         (
-            ws.desktop().join("node_modules"),
+            ws.studio().join("node_modules"),
             false,
-            "npm install (from apps/desktop)",
+            "npm install (from apps/studio)",
         ),
         (
-            ws.desktop().join("assets/tailwind.css"),
+            ws.studio().join("assets/tailwind.css"),
             false,
             "cargo xtask css",
         ),
@@ -228,7 +228,7 @@ fn clean(ws: &Workspace) -> Result<ExitCode> {
 /// pipeline and produces an unstyled binary — see `AGENTS.md`).
 fn dx_build(ws: &Workspace, profile: Profile, extra: &[String]) -> Result<()> {
     let mut cmd = Process::new("dx");
-    cmd.current_dir(ws.desktop())
+    cmd.current_dir(ws.studio())
         .args(["build", "--platform", "desktop"]);
     if profile.is_release() {
         cmd.arg("-r");
