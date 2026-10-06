@@ -10,84 +10,96 @@
 # the artifact already has. No model runs and no image is produced.
 #
 #   Guide mode — watch it drive the app and narrate each step.
-#   Check mode — the same walk as a regression; a failure is a UX bug.
-name: "UI tour"
-description: "The Story and Canvas screens end to end, on a populated project. Shows the states, not just the navigation. No backend needed."
-speed_ms: 2400
+#   Check mode — exercise the same actions and report state assertions.
+name: "Story authoring walkthrough"
+description: "Follow a lighthouse story from its .sf source to asset references, the canvas, and character canon. About two minutes; no models needed."
+speed_ms: 3200
 steps:
   - sample_project: true
-    message: "A story with twelve artifacts, five variants, and a few renders already made. Nothing here needs the model running."
-    wait_ms: 1600
+    message: "Let's open a fresh lighthouse story: twelve base artifacts and five variants. Pictures and revision history are demo fixtures; no model runs during this walkthrough."
+    wait_ms: 5000
 
   # ------------------------------------------------------------- the story
   - go_story: true
-    message: "The Story screen. The text on the left is the source; everything on the right is derived from where the caret is."
-    wait_ms: 2400
+    message: "Open Story to see the editable .sf source. Scenes contain beats, dialogue, and directions. The scope and reference panels follow the caret."
+    wait_ms: 5000
 
   - caret: 9
-    message: "Caret inside the harbor scene. The panel fills with what this beat references — mara and tam resolve, so they show their pictures."
-    wait_ms: 3000
+    message: "Move into the harbor's arrival beat. mara and tam resolve to existing character artifacts; resolved references can show an image when one exists."
+    wait_ms: 5000
 
   - caret: 30
-    message: "Move to the lighthouse scene and the panel re-derives. keeper_elias and lighthouse_tower are amber: the story names them, but no artifact exists."
-    wait_ms: 3200
+    message: "Now move to the lighthouse scene. keeper_elias and lighthouse_tower are pending: the story names them, but their artifacts still need to be created."
+    wait_ms: 5000
 
   - say: true
-    message: "Amber is PENDING, not an error. The story is a work queue — Create turns a name into an artifact rather than scolding you for a typo."
-    wait_ms: 3000
+    message: "You can write ahead of the artwork. The pending list gives each missing asset a Create action. Pause the guide whenever you want to inspect or edit something."
+    wait_ms: 5000
 
   # ------------------------------------------------------------ the canvas
   - go_canvas: true
-    message: "The Canvas at rest is the grid. The picture is what you navigate by."
-    wait_ms: 2400
+    message: "Open Canvas to work with the story's assets. Some tiles have a stand-in picture; others are placeholders waiting for artwork."
+    wait_ms: 5000
 
   - cursor: "mara"
-    message: "hjkl moves this focus ring. mara has three variants, so they stack behind her tile."
-    wait_ms: 2600
+    message: "Focus mara. Three variants stack behind her tile: oilskins, lantern light, and a younger version. Keyboard navigation moves the same focus ring."
+    wait_ms: 4500
 
   - cursor: "isak"
-    message: "And the cursor travels. Notice isak is mid-render — dimmed, badged, still in the grid rather than in a toast that vanishes."
-    wait_ms: 2800
+    message: "Focus isak to see the rendering badge and dimmed tile. This is a sample of the busy state, with no live generation job behind it."
+    wait_ms: 4500
 
-  - simulate_render: "harbor_dock"
-    message: "Watch harbor_dock go in flight and come back. Work in progress stays where the work is; you never lose the thing you were looking at."
-    wait_ms: 1400
+  - simulate_render: "mara"
+    message: "Watch mara enter and leave the rendering state. This simulation reuses the existing picture so you can judge progress feedback without loading a model."
+    wait_ms: 4500
 
   # ------------------------------------------------------------ the detail
   - open: "mara"
-    message: "Opening an artifact replaces the grid. The render dominates; the rail holds everything that decides how it is made."
-    wait_ms: 2800
+    message: "Open mara's detail view. The picture and revision history sit beside the description and generation controls. The sample picture is a stand-in, not a character portrait."
+    wait_ms: 5000
 
   - say: true
-    message: "The description is tagged CANON because that is what it is — every generation is grounded against it. Steps and a pinned seed are stored on the artifact."
-    wait_ms: 3000
+    message: "CANON is the character's lasting description. Generation steps and a pinned seed are stored with the artifact, ready for the next image request."
+    wait_ms: 4500
 
   - say: true
-    message: "Revisions split into canon and experiment. An experiment renders a delta, not the description, which is why edits never accumulate. Promote is what makes one stick."
-    wait_ms: 3200
+    message: "Revision badges separate canon from experiments. An instruction edit tries a change; Promote makes an experiment part of canon. These sample revisions let you inspect the layout."
+    wait_ms: 5000
 
   # ------------------------------------------------- one vocabulary, twice
   - compose: "/set c:mara --steps 8"
-    message: "Every control in the rail is also a command. Watch the Steps row change — the rail and the bar are two views of one state."
-    wait_ms: 2600
+    message: "Type a real command to set mara's generation steps to 8. Watch the inspector update: the command bar and controls share the same artifact state."
+    wait_ms: 4500
   - expect_no_error: true
+    wait_ms: 0
 
   - compose: "/describe c:mara A harbourmaster in her fifties, silver crop, storm-grey oilskin"
-    message: "DESCRIBE rewrites canon. The rail's description follows, and every later generation grounds against the new text."
-    wait_ms: 2600
+    message: "Now rewrite mara's canon description. This changes the saved character text; producing a new picture is a separate generation action."
+    wait_ms: 4500
   - expect_no_error: true
+    wait_ms: 0
 
   - back: true
-    message: "Escape returns to the grid."
-    wait_ms: 1600
+    message: "Return to the grid. You can move between the whole cast and an individual artifact without leaving the project."
+    wait_ms: 3500
 
   - palette: true
-    message: "Ctrl+K opens the palette from anywhere: the same vocabulary again, browsable this time, with every artifact reachable by name."
-    wait_ms: 3200
+    message: "Open the command palette to browse actions and reach artifacts by name. This is another entry point into the same command vocabulary."
+    wait_ms: 4500
 
   - palette: false
-    wait_ms: 900
+    wait_ms: 1000
+
+  - go_story: true
+    message: "Return to the story. Its text lives in a .sf file beside the project database; edits autosave, and Reload .sf and Save copy are available above the editor."
+    wait_ms: 5000
+
+  - caret: 17
+    message: "The handoff beat ties dialogue to brass_lantern. Story-to-canvas scene synchronization and playable preview are the next pieces to build."
+    wait_ms: 5000
 
   - expect_artifact: { name: "mara", kind: character }
+    wait_ms: 0
   - expect_no_error: true
-    message: "Two screens, one vocabulary — the CLI, the command bar, the palette, and the inspector all speak it."
+    message: "Your turn: edit a line of dialogue, move the caret between beats, or inspect a variant in Canvas. Start with how the writing and asset references feel."
+    wait_ms: 6000

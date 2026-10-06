@@ -333,13 +333,30 @@ cargo xtask plan config/plans/smoke.yaml --mode check --log
 
 `--mode check` runs the steps back to back and prints a verdict
 (`verdict: 7 passed, 0 failed`, non-zero exit on failure) — this is the
-regression mode. `--mode guide` (the default) runs the same plan slowly with
+regression mode. `--mode guide` runs the same plan slowly with
 an assistant card narrating each step in the UI, which is the tutorial
 experience and the better way to eyeball UX.
+
+For a first look at the authoring UX, run:
+
+```bash
+cargo xtask plan config/plans/ui-tour.yaml --mode guide --log
+```
+
+Or open **Plans**, choose **Story authoring walkthrough**, select **Guide**,
+and run it. The roughly two-minute walkthrough creates a fresh sample project,
+shows the Writer's resolved and pending references, explores canvas variants
+and revision history, and changes a character's settings and canon through
+the composer. Pause, resume, change speed, or stop from the assistant card.
+It ends in the Writer so you can try editing the story yourself.
+Pictures and revision history are fixtures; the render step is explicitly
+simulated. No inference backend is needed. See [ux-walkthrough.md](ux-walkthrough.md)
+for the review goals and the next UX slices.
 
 | Plan | Needs a backend | Covers |
 | --- | --- | --- |
 | `smoke.yaml` | no | Project creation, story and beat artifacts, registry state |
+| `ui-tour.yaml` | no | Narrated Story authoring walkthrough: source, asset references, variants, inspector, canon commands and palette |
 | `story-setup.yaml` | yes | The artifact kinds and how they relate — mostly text, so it is quick (~30s) |
 | `edit-vocabulary.yaml` | yes | `modify` vs `describe` vs `variant` vs `regenerate`, including an edit vanishing and then surviving |
 | `character-sheet.yaml` | yes | One character fanned across outfit / time-of-day / weather / mood axes |
