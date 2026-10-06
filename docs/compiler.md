@@ -95,7 +95,8 @@ labels, exact immutable bindings, blocked directions, determinism and JSON
 round-trip. CLI process tests check JSON/exit behavior and prove that model config
 and project databases are unnecessary.
 
-Next: Studio `.sf` persistence and registry synchronization, then the shared
+Studio [`.sf` persistence](story-files.md) is implemented. Next: registry
+synchronization, then the shared
 headless story runtime, preview/Player, media capability validation and compiler
 diagnostic integration in Writer/LSP. Timing, save-state compatibility, expressions,
 imports and speech performance annotations require their own contracts.

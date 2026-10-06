@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 use storyfella_studio_core::persistence::StoredProject;
 use storyfella_studio_core::registry::{Artifact, ArtifactRegistry, RevisionStatus};
+use storyfella_studio_core::story::StoryDocument;
 
 /// Cap on the undo stack depth (each entry is a full registry snapshot).
 const UNDO_DEPTH: usize = 100;
@@ -20,9 +21,8 @@ pub struct AppState {
     pub project_path: Option<PathBuf>,
     pub has_unsaved_changes: bool,
     pub selected_artifact_id: Option<Uuid>,
-    /// The story text the Writer edits. Lives here rather than in the
-    /// registry because it is the project's prose, not an artifact.
-    pub story_source: String,
+    /// Exact Writer text, bound `.sf` path and disk snapshot for conflict checks.
+    pub story: StoryDocument,
     /// Registry snapshots taken before each applied operation — undo is
     /// state restore, never pipeline re-execution.
     undo_stack: Vec<ArtifactRegistry>,
@@ -30,28 +30,12 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn create_project(&mut self, name: impl Into<String>) {
-        let name = name.into();
-        self.registry = ArtifactRegistry::default();
-        self.project_name = if name.trim().is_empty() {
-            "Untitled Story".to_owned()
-        } else {
-            name.trim().to_owned()
-        };
-        self.project_path = None;
-        self.has_unsaved_changes = true;
-        self.selected_artifact_id = None;
-        self.story_source = String::new();
-        self.undo_stack.clear();
-        self.redo_stack.clear();
-    }
-
     /// Replaces the in-memory state with a snapshot loaded from disk.
     /// The caller is responsible for saving before navigating away.
     pub fn open_project(&mut self, stored: StoredProject, path: PathBuf) {
         self.registry = stored.registry;
         self.project_name = stored.name;
-        self.story_source = stored.story_source;
+        self.story = stored.story;
         self.project_path = Some(path);
         self.has_unsaved_changes = false;
         self.selected_artifact_id = None;
@@ -62,6 +46,13 @@ impl AppState {
     pub fn selected_artifact(&self) -> Option<&Artifact> {
         let selected_id = self.selected_artifact_id?;
         self.registry.artifact(selected_id)
+    }
+
+    pub fn set_story_source(&mut self, source: String) {
+        if self.story.source() != source {
+            self.story.set_source(source);
+            self.has_unsaved_changes = true;
+        }
     }
 
     /// Selection is validated: ids that do not exist are ignored.
@@ -169,7 +160,7 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
-    use super::AppState;
+    use super::{AppState, StoryDocument};
     use storyfella_studio_core::registry::{ArtifactKind, ArtifactRegistry, CreateArtifact};
 
     fn character_registry(name: &str) -> ArtifactRegistry {
@@ -196,30 +187,33 @@ mod tests {
     }
 
     #[test]
-    fn creating_a_project_resets_registry_name_and_history() {
+    fn story_edits_preserve_exact_text_and_mark_changes() {
         let mut state = state_with("mia");
-        state.snapshot_for_undo();
-
-        state.create_project("A New Story");
-
-        assert_eq!(state.project_name, "A New Story");
-        assert!(state.registry.artifacts.is_empty());
+        let registry = state.registry.clone();
+        state.set_story_source(String::new());
+        assert!(!state.has_unsaved_changes);
+        let source = "// 🌊\r\nscene unfinished\r\n   editing\r\n";
+        state.set_story_source(source.to_owned());
+        assert_eq!(state.story.source(), source);
+        assert!(state.story.is_dirty());
         assert!(state.has_unsaved_changes);
-        assert!(state.selected_artifact_id.is_none());
-        assert!(!state.can_undo());
-        assert!(!state.can_redo());
+        assert_eq!(
+            state.registry, registry,
+            "partial drafts do not mutate artwork"
+        );
     }
 
     #[test]
     fn opening_a_stored_project_replaces_state_and_marks_clean() {
         let mut state = state_with("mia");
-        state.create_project("Draft");
+        state.project_name = "Draft".into();
+        state.snapshot_for_undo();
 
         let stored = storyfella_studio_core::persistence::StoredProject {
             id: uuid::Uuid::new_v4(),
             name: "Stored Story".to_owned(),
             registry: character_registry("stored"),
-            story_source: String::new(),
+            story: StoryDocument::default(),
         };
         state.open_project(stored, std::path::PathBuf::from("/tmp/stored.db"));
 

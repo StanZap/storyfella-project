@@ -292,7 +292,10 @@ pub fn Workspace(
     // Save after every change (the default): the effect re-runs on state
     // changes, saves when the project is dirty, and clears the flag.
     use_effect(move || {
-        if autosave() == AutosaveMode::OnChange && app_state.read().has_unsaved_changes {
+        if autosave() == AutosaveMode::OnChange
+            && app_state.read().project_path.is_some()
+            && app_state.read().has_unsaved_changes
+        {
             persist_state(app_state, error_report);
         }
     });
@@ -308,6 +311,7 @@ pub fn Workspace(
             loop {
                 interval.tick().await;
                 if autosave_loop() == AutosaveMode::EveryMinute
+                    && app_state.read().project_path.is_some()
                     && app_state.read().has_unsaved_changes
                 {
                     persist_state(app_state, error_report_loop);

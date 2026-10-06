@@ -71,6 +71,7 @@ HTTP.
 │    registry/      Artifact model, typed ops + pipelines, slash parser,             │
 │                   CreativeBackend (live backend)                                   │
 │    persistence/   ProjectDb (SQLite, versioned migrations)                         │
+│    story.rs       Exact .sf documents, disk snapshots and source-file saves       │
 │    llm/           LlmClient (OpenAI-compatible chat completions)                   │
 │    runtime/       CreativeRuntime adapter over the shared clipforge-inference      │
 │                   crate (asset import, job wait, health, error mapping)            │
@@ -215,7 +216,7 @@ ops::execute (crates/studio-core/src/registry/ops.rs)
        <asset_dir>/generated/<uuid>.png (the canonical asset path)
          ▼
        registry.finish_revision → completed revision + active image
-         │  has_unsaved_changes → autosave writes the SQLite snapshot
+         │  has_unsaved_changes → autosave writes .sf and the SQLite registry snapshot
          ▼
 Artifact detail: image + revision history (served via /generated/<file>)
 ```

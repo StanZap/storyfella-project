@@ -1,7 +1,8 @@
 # Storyfella language: initial contract
 
 Status: the language front end, compiler, Writer adapter and initial stdio LSP are
-implemented. Playback and Studio file persistence are the next milestones in
+implemented, including Studio `.sf` file persistence. Registry synchronization
+and playback are the next milestones in
 [the execution plan](language-plan.md). This syntax is a first editable design,
 anchored to the current Writer; it is not a compatibility layer for the prototype.
 
@@ -115,5 +116,6 @@ The [compiler](compiler.md) records sequential scene fallthrough, ordered beats,
 and explicit branch/jump/end instructions; it does not execute choices, load voices
 or generate assets. Expressions, variables, includes, speech annotations and
 timing units remain unspecified. No placeholder runtime crate exists.
-Story drafts still use the existing SQLite persistence until real `.sf` file
-migration lands; language analysis itself is independent of that storage.
+Studio reads and writes authoritative [`.sf` files](story-files.md); SQLite
+stores the project's artwork and metadata. Language analysis itself remains
+independent of storage.

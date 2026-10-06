@@ -246,47 +246,84 @@ pub fn create_project(
     story_name: &str,
     mut app_state: Signal<AppState>,
 ) -> Result<PathBuf, ReportedError> {
+    // An unbound Writer draft becomes this project's first source; switching
+    // away from a saved project first persists its outstanding changes.
+    let (registry, source) = if app_state.read().project_path.is_none() {
+        let state = app_state.read();
+        (state.registry.clone(), state.story.source().to_owned())
+    } else {
+        if app_state.read().has_unsaved_changes {
+            save_project(app_state)?;
+        }
+        (ArtifactRegistry::default(), String::new())
+    };
     std::fs::create_dir_all(project_dir)
         .map_err(|error| ReportedError::plain(ErrorCode::StoreSave, error.to_string()))?;
     let path = unique_project_path(project_dir, story_name);
     let db = ProjectDb::open(&path).map_err(|error| error.report())?;
-    app_state.write().create_project(story_name);
-    let registry = app_state.read().registry.clone();
     db.rename_project(story_name)
         .map_err(|error| error.report())?;
     db.save_registry(&registry)
         .map_err(|error| error.report())?;
-    app_state.write().project_path = Some(path.clone());
-    app_state.write().has_unsaved_changes = false;
+    let mut stored = db.load().map_err(|error| error.report())?;
+    stored.story.set_source(source);
+    stored.story.save().map_err(|error| error.report())?;
+    app_state.write().open_project(stored, path.clone());
     Ok(path)
 }
 
-/// Opens any `.svs-project.db` file in place.
+/// Opens a project database or its `.sf` source in place. A standalone `.sf`
+/// gets a companion database; the source file is never imported into SQLite.
 pub fn open_project(path: &Path, mut app_state: Signal<AppState>) -> Result<(), ReportedError> {
-    let stored = ProjectDb::open(path)
+    if app_state.read().has_unsaved_changes {
+        save_project(app_state)?;
+    }
+    let path = path
+        .canonicalize()
+        .map_err(|error| ReportedError::plain(ErrorCode::StoreOpen, error.to_string()))?;
+    let project_path = if path.extension().is_some_and(|extension| extension == "sf") {
+        path.with_extension("db")
+    } else {
+        path
+    };
+    let stored = ProjectDb::open(&project_path)
         .and_then(|db| db.load())
         .map_err(|error| error.report())?;
-    app_state.write().open_project(stored, path.to_path_buf());
+    app_state.write().open_project(stored, project_path);
     Ok(())
 }
 
 /// Saves the current registry to the open project file; clears the dirty
 /// flag on success. The one persistence seam: the autosave effect, the
 /// Cmd/Ctrl+S shortcut, and the driver's check-mode exit all use it.
-/// No-op when no project file is open.
+/// An unbound dirty draft must be assigned a project before it can be saved.
 pub fn save_project(mut app_state: Signal<AppState>) -> Result<(), ReportedError> {
     let Some(path) = app_state.read().project_path.clone() else {
+        if app_state.read().has_unsaved_changes {
+            return Err(storyfella_studio_core::story::StoryFileError::Unbound.report());
+        }
         return Ok(());
     };
     let registry = app_state.read().registry.clone();
-    let story_source = app_state.read().story_source.clone();
+    let mut story = app_state.read().story.clone();
+    story.save().map_err(|error| error.report())?;
+    // A later registry-save failure must not make the successful source save
+    // look like an external edit on the next attempt.
+    if app_state.read().story != story {
+        app_state.write().story = story;
+    }
     ProjectDb::open(&path)
-        .and_then(|db| {
-            db.save_registry(&registry)?;
-            db.save_story_source(&story_source)
-        })
+        .and_then(|db| db.save_registry(&registry))
         .map_err(|error| error.report())?;
     app_state.write().has_unsaved_changes = false;
+    Ok(())
+}
+
+/// Called only after the Writer's explicit discard confirmation when dirty.
+pub fn reload_story(mut app_state: Signal<AppState>) -> Result<(), ReportedError> {
+    let mut story = app_state.read().story.clone();
+    story.reload().map_err(|error| error.report())?;
+    app_state.write().story = story;
     Ok(())
 }
 
@@ -311,7 +348,7 @@ pub fn unique_project_path(project_dir: &Path, name: &str) -> PathBuf {
     };
     let mut candidate = project_dir.join(format!("{slug}.svs-project.db"));
     let mut index = 2;
-    while candidate.exists() {
+    while candidate.exists() || storyfella_studio_core::story::source_path(&candidate).exists() {
         candidate = project_dir.join(format!("{slug}-{index}.svs-project.db"));
         index += 1;
     }
@@ -321,8 +358,84 @@ pub fn unique_project_path(project_dir: &Path, name: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::unique_project_path;
+    use dioxus::prelude::*;
+    use std::path::PathBuf;
 
     use storyfella_studio_core::registry::{ops::Operation, ArtifactKind, Ref, VariantAxis};
+
+    #[component]
+    fn PersistenceProbe(directory: PathBuf) -> Element {
+        let mut state = use_signal(crate::state::AppState::default);
+        use_hook(move || {
+            // Starting a project preserves an unbound Writer draft.
+            state
+                .write()
+                .set_story_source("scene draft\r\n   unfinished 🌊\r\n".into());
+            let project = super::create_project(&directory, "Draft", state).unwrap();
+            let source = state.read().story.path().unwrap().to_owned();
+            assert_eq!(
+                std::fs::read_to_string(&source).unwrap(),
+                state.read().story.source()
+            );
+            assert!(!state.read().has_unsaved_changes);
+
+            // An external edit prevents both saving and switching projects.
+            state.write().set_story_source("local edits".into());
+            std::fs::write(&source, "external edits").unwrap();
+            let another = directory.join("another.sf");
+            std::fs::write(&another, "scene another\n  end\n").unwrap();
+            assert!(super::save_project(state).is_err());
+            assert!(super::open_project(&another, state).is_err());
+            assert_eq!(state.read().story.source(), "local edits");
+            assert!(state.read().has_unsaved_changes);
+            assert!(!another.with_extension("db").exists());
+            super::reload_story(state).unwrap();
+            assert_eq!(state.read().story.source(), "external edits");
+            super::save_project(state).unwrap();
+
+            // Source success followed by DB failure must retain the new disk
+            // snapshot, keep the project dirty, and allow a normal retry.
+            let backup = directory.join("registry-backup.db");
+            std::fs::rename(&project, &backup).unwrap();
+            std::fs::create_dir(&project).unwrap();
+            state
+                .write()
+                .set_story_source("scene saved\n  end\n".into());
+            assert!(super::save_project(state).is_err());
+            assert_eq!(
+                std::fs::read_to_string(&source).unwrap(),
+                "scene saved\n  end\n"
+            );
+            assert!(!state.read().story.is_dirty());
+            assert!(state.read().has_unsaved_changes);
+            std::fs::remove_dir(&project).unwrap();
+            std::fs::rename(&backup, &project).unwrap();
+            super::save_project(state).unwrap();
+            assert!(!state.read().has_unsaved_changes);
+
+            super::open_project(&another, state).unwrap();
+            assert_eq!(state.read().story.source(), "scene another\n  end\n");
+            assert!(another.with_extension("db").exists());
+        });
+        rsx! {}
+    }
+
+    #[test]
+    fn project_commands_preserve_drafts_conflicts_and_partial_save_retries() {
+        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.svs-e2e/tests")
+            .join(format!("project-commands-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut dom = VirtualDom::new_with_props(
+            PersistenceProbe,
+            PersistenceProbeProps {
+                directory: directory.clone(),
+            },
+        );
+        dom.rebuild_in_place();
+        drop(dom);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn slugs_are_safe_filename_components() {
@@ -339,12 +452,19 @@ mod tests {
 
     #[test]
     fn existing_files_get_a_suffix() {
-        let dir = std::env::temp_dir().join(format!("svs-slug-{}", uuid::Uuid::new_v4()));
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.svs-e2e/tests")
+            .join(format!("svs-slug-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("story.svs-project.db"), b"x").unwrap();
         assert_eq!(
             unique_project_path(&dir, "Story"),
             dir.join("story-2.svs-project.db")
+        );
+        std::fs::write(dir.join("story-2.svs-project.sf"), b"source only").unwrap();
+        assert_eq!(
+            unique_project_path(&dir, "Story"),
+            dir.join("story-3.svs-project.db")
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

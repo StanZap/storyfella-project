@@ -19,6 +19,7 @@ current product code.
 | [`data-model.md`](data-model.md) | The artifact-registry domain model, the persistence format, and known gaps. |
 | [`language.md`](language.md) | Initial `.sf` syntax, shared front-end API and stdio LSP setup/limits. |
 | [`compiler.md`](compiler.md) | Story flow, versioned plan/source maps, immutable asset linking, readiness and story CLI commands. |
+| [`story-files.md`](story-files.md) | Authoritative `.sf` files, Studio open/save, disk conflicts and SQLite draft migration. |
 | [`language-plan.md`](language-plan.md) | Language/compiler/runtime implementation sequence and acceptance gates. |
 | [`ROADMAP.md`](ROADMAP.md) | Product design and the feature/status tracker (§12): every planned feature with its status. |
 

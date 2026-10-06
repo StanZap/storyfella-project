@@ -15,7 +15,7 @@
 //!   AUTOINCREMENT; `op` holds the serde tag name and `args` the full
 //!   serialized `Operation` JSON.
 //! - `artifacts.composition_mode` (beat-only) and `artifacts.drafts_json`
-//!   (the transitional home for pre-`.sf` story drafts) are not in the
+//!   (artifact-scoped generated text proposals) are not in the
 //!   sketch; `revisions.error` and `revisions.seed`/`model` round out the
 //!   model fields.
 //!
@@ -40,6 +40,7 @@ use crate::registry::{
     Artifact, ArtifactRegistry, ArtifactRevision, BeatComposition, CompositionMode, Layer,
     LoraEntry, StoryDraft,
 };
+use crate::story::{export_draft, source_path, StoryDocument, StoryFileError};
 
 /// The `projects` row for a database, plus the full registry snapshot.
 ///
@@ -51,8 +52,8 @@ pub struct StoredProject {
     pub id: Uuid,
     pub name: String,
     pub registry: ArtifactRegistry,
-    /// The `.sf` story text the Writer edits (see schema v7).
-    pub story_source: String,
+    /// The authoritative `.sf` file beside this database.
+    pub story: StoryDocument,
 }
 
 /// SQLite-backed storage for one project (one registry per database).
@@ -67,6 +68,13 @@ pub struct ProjectDb {
 
 #[derive(Debug, Error)]
 pub enum StoreError {
+    #[error(transparent)]
+    Story(#[from] StoryFileError),
+    #[error("could not resolve project database path {path}: {source}")]
+    Path {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("could not open project database {path}: {source}")]
     Open {
         path: PathBuf,
@@ -108,7 +116,8 @@ pub enum StoreError {
 impl CodedError for StoreError {
     fn code(&self) -> ErrorCode {
         match self {
-            Self::Open { .. } => ErrorCode::StoreOpen,
+            Self::Story(error) => error.code(),
+            Self::Open { .. } | Self::Path { .. } => ErrorCode::StoreOpen,
             Self::Configure { .. } => ErrorCode::StoreConfigure,
             Self::Migrate { .. } => ErrorCode::StoreMigrate,
             Self::Save { .. } => ErrorCode::StoreSave,
@@ -129,6 +138,10 @@ impl ProjectDb {
             path: path.clone(),
             source,
         })?;
+        let path = path.canonicalize().map_err(|source| StoreError::Path {
+            path: path.clone(),
+            source,
+        })?;
         let db = Self {
             conn: Mutex::new(conn),
             path,
@@ -143,20 +156,6 @@ impl ProjectDb {
     /// leaving the `projects` row untouched.
     pub fn save_registry(&self, registry: &ArtifactRegistry) -> Result<(), StoreError> {
         self.write_snapshot(registry)
-    }
-
-    /// Writes the story text the Writer edits.
-    pub fn save_story_source(&self, source: &str) -> Result<(), StoreError> {
-        let conn = self.conn.lock();
-        conn.execute(
-            "UPDATE projects SET story_source = ?1, updated_at = ?2",
-            params![source, unix_now()],
-        )
-        .map_err(|source| StoreError::Save {
-            path: self.path.clone(),
-            source,
-        })?;
-        Ok(())
     }
 
     /// Renames the `projects` row (used at creation, and by any future
@@ -348,17 +347,11 @@ impl ProjectDb {
     /// Loads the project row and the full registry snapshot.
     pub fn load(&self) -> Result<StoredProject, StoreError> {
         let conn = self.conn.lock();
-        let (row_id, row_name, story_source) = conn
+        let (row_id, row_name) = conn
             .query_row(
-                "SELECT id, name, story_source FROM projects ORDER BY rowid LIMIT 1",
+                "SELECT id, name FROM projects ORDER BY rowid LIMIT 1",
                 [],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                },
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()
             .map_err(|source| StoreError::Load {
@@ -705,7 +698,7 @@ impl ProjectDb {
 
         registry.artifacts = artifacts;
         Ok(StoredProject {
-            story_source,
+            story: StoryDocument::open(&source_path(&self.path))?,
             id: project_id,
             name: row_name,
             registry,
@@ -765,6 +758,23 @@ impl ProjectDb {
                 path: self.path.clone(),
                 source,
             })?;
+            if version == 9 {
+                let draft: Option<String> = tx
+                    .query_row(
+                        "SELECT story_source FROM projects ORDER BY rowid LIMIT 1",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|source| StoreError::Migrate {
+                        path: self.path.clone(),
+                        source,
+                    })?;
+                export_draft(
+                    &source_path(&self.path),
+                    draft.as_deref().unwrap_or_default(),
+                )?;
+            }
             tx.execute_batch(migration)
                 .map_err(|source| StoreError::Migrate {
                     path: self.path.clone(),
@@ -824,6 +834,7 @@ impl ProjectDb {
 /// databases; `schema_meta` records what has been applied.
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
+    SCHEMA_V9,
 ];
 
 /// Schema version 2 — the GUI carried the legacy `Project` model
@@ -858,10 +869,7 @@ ALTER TABLE revisions ADD COLUMN origin TEXT NOT NULL DEFAULT 'canon' \
 
 /// Schema version 7 — the story source the Writer edits.
 ///
-/// Roadmap §9 makes `.sf` files on disk the story's source of truth. Until
-/// the language crate exists the text lives in the project database, which
-/// keeps it saved and undoable with everything else; moving it to a file is
-/// a later migration, not a format to preserve.
+/// Version 9 exports this text to `.sf` and removes the column.
 const SCHEMA_V7: &str = "\
 ALTER TABLE projects ADD COLUMN story_source TEXT NOT NULL DEFAULT '';";
 
@@ -870,6 +878,9 @@ ALTER TABLE projects ADD COLUMN story_source TEXT NOT NULL DEFAULT '';";
 const SCHEMA_V8: &str = "\
 DROP INDEX IF EXISTS idx_masks_revision;\n\
 DROP TABLE IF EXISTS masks;";
+
+/// The draft is exported by `migrate` before this SQL runs.
+const SCHEMA_V9: &str = "ALTER TABLE projects DROP COLUMN story_source;";
 
 const SCHEMA_V1: &str = "
 CREATE TABLE projects (
@@ -1093,8 +1104,14 @@ mod tests {
         VariantAxis,
     };
 
+    fn test_dir() -> PathBuf {
+        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
+        std::fs::create_dir_all(&directory).unwrap();
+        directory
+    }
+
     fn temp_db() -> (PathBuf, ProjectDb) {
-        let path = std::env::temp_dir().join(format!("svs-db-test-{}.db", Uuid::new_v4()));
+        let path = test_dir().join(format!("svs-db-test-{}.db", Uuid::new_v4()));
         let db = ProjectDb::open(&path).expect("open should create the database");
         (path, db)
     }
@@ -1104,6 +1121,7 @@ mod tests {
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+        let _ = std::fs::remove_file(source_path(path));
     }
 
     /// A fake generation backend: writes a dummy image file (so later ops
@@ -1123,8 +1141,7 @@ mod tests {
         > {
             let request = request.clone();
             Box::pin(async move {
-                let path =
-                    std::env::temp_dir().join(format!("svs-persist-gen-{}.png", Uuid::new_v4()));
+                let path = test_dir().join(format!("svs-persist-gen-{}.png", Uuid::new_v4()));
                 std::fs::write(&path, b"png").expect("dummy image should write");
                 Ok(crate::registry::pipeline::GenerateResponse {
                     status: "completed".to_owned(),
@@ -1151,7 +1168,7 @@ mod tests {
         let backend = VisualBackend;
         // Each apply gets its own lora dir with a dummy adapter so the
         // LoRA ops resolve their file check.
-        let lora_dir = std::env::temp_dir().join(format!("svs-db-test-loras-{}", Uuid::new_v4()));
+        let lora_dir = test_dir().join(format!("svs-db-test-loras-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&lora_dir).expect("lora dir should create");
         std::fs::write(lora_dir.join("mia-v2.safetensors"), b"lora")
             .expect("dummy lora should write");
@@ -1167,7 +1184,7 @@ mod tests {
         };
         let options = ExecuteOptions {
             backend: Some(&backend),
-            run: RunOptions::new(std::env::temp_dir()),
+            run: RunOptions::new(test_dir()),
             generation: Default::default(),
             defaults: &defaults,
             manual_text: None,
@@ -1372,7 +1389,7 @@ mod tests {
 
     #[test]
     fn v1_databases_migrate_to_v3_and_drop_the_legacy_column() {
-        let path = std::env::temp_dir().join(format!("svs-db-v1-{}.db", Uuid::new_v4()));
+        let path = test_dir().join(format!("svs-db-v1-{}.db", Uuid::new_v4()));
         {
             let conn = Connection::open(&path).expect("open should succeed");
             conn.execute_batch(SCHEMA_V1)
@@ -1417,7 +1434,7 @@ mod tests {
         // A v2 database written by the pre-canvas GUI carries the storyboard
         // as JSON; opening it migrates to v3 and discards that column (the
         // canvas replaced the storyboard model — sanctioned one-time loss).
-        let path = std::env::temp_dir().join(format!("svs-db-v2-{}.db", Uuid::new_v4()));
+        let path = test_dir().join(format!("svs-db-v2-{}.db", Uuid::new_v4()));
         {
             let conn = Connection::open(&path).expect("open should succeed");
             conn.execute_batch(SCHEMA_V1)

@@ -74,6 +74,10 @@ pub enum ErrorCode {
     StoreSerialize,
     StoreLoad,
     StoreCorrupt,
+    StoryRead,
+    StoryWrite,
+    StoryConflict,
+    StoryUnbound,
 
     // ---- CFG · config (src/app/config.rs) ----
     ConfigPlatformDirectories,
@@ -413,6 +417,26 @@ impl ErrorCode {
                 "Corrupt project data",
                 "A value stored in the project database could not be parsed. \
                  The file may be corrupted or written by a newer version.",
+            ),
+            Self::StoryRead => (
+                "SVS-STO-108",
+                "Could not read story file",
+                "Check that the project's .sf file exists and contains UTF-8 text. The editor's unsaved text is preserved.",
+            ),
+            Self::StoryWrite => (
+                "SVS-STO-109",
+                "Could not save story file",
+                "Check file permissions and disk space, then save again. The editor's unsaved text is preserved.",
+            ),
+            Self::StoryConflict => (
+                "SVS-STO-110",
+                "Story file changed on disk",
+                "Save a copy of your edits before reloading the .sf file. During database migration, reconcile the file with the stored Writer draft before retrying; neither copy was overwritten.",
+            ),
+            Self::StoryUnbound => (
+                "SVS-STO-111",
+                "Story draft has no project",
+                "Create a project to save the current draft, or open an existing .sf file from Projects.",
             ),
             Self::ConfigPlatformDirectories => (
                 "SVS-CFG-101",
@@ -869,7 +893,11 @@ mod tests {
     /// the count so any change to the registry is deliberate.
     #[test]
     fn registry_size_is_pinned() {
-        assert_eq!(codes().len(), 86, "error codes must never be renumbered");
+        assert_eq!(
+            codes().len(),
+            90,
+            "update the registry count when adding error codes"
+        );
     }
 
     #[test]
@@ -983,6 +1011,10 @@ mod tests {
             ErrorCode::StoreSerialize,
             ErrorCode::StoreLoad,
             ErrorCode::StoreCorrupt,
+            ErrorCode::StoryRead,
+            ErrorCode::StoryWrite,
+            ErrorCode::StoryConflict,
+            ErrorCode::StoryUnbound,
             ErrorCode::ConfigPlatformDirectories,
             ErrorCode::ConfigRead,
             ErrorCode::ConfigParse,

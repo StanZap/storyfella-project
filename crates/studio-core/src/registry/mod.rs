@@ -280,8 +280,8 @@ pub struct Artifact {
     pub active_revision_id: Option<Uuid>,
     #[serde(default)]
     pub revisions: Vec<ArtifactRevision>,
-    /// Approved or proposed story text (the stand-in for the deferred `.sf`
-    /// story document; see `docs/ROADMAP.md` §8–9).
+    /// Artifact-scoped generated text proposals from the `draft` operation.
+    /// They do not replace or automatically edit the authored `.sf` document.
     #[serde(default)]
     pub drafts: Vec<StoryDraft>,
 }

@@ -33,7 +33,7 @@ ArtifactRegistry
 │       ├── revisions: Vec<ArtifactRevision>    — generation history
 │       │   └── ArtifactRevision { id, prompt, asset_path, status:
 │       │       RevisionStatus, seed, model, error, origin: RevisionOrigin }
-│       └── drafts: Vec<StoryDraft>      — pre-.sf story text proposals
+│       └── drafts: Vec<StoryDraft>      — artifact-scoped generated text proposals
 └── log: Vec<OperationLogEntry>          — provenance, the undo basis
 ```
 
@@ -85,14 +85,18 @@ replaces the snapshot rows in one transaction. Schema versioning lives in
 current format evolves (no legacy formats are parsed; the TOML `ProjectStore`
 and the `project_json` storyboard column (schema v3) were removed with the
 models they carried, and the `masks` table (schema v8) was dropped with the
-mask edit path). The `svs` CLI persists to `.svs-project.db`.
+mask edit path). Schema v9 exports `projects.story_source` to `.sf` before
+dropping the column. The `svs` CLI persists artwork to `.svs-project.db`.
 
 ### The GUI save flow
 
 `AppState.project_path` names the open database file. The Projects screen
 scans `paths.project_dir` (config) for `.svs-project.db` files, creates new
 projects as `slug.svs-project.db`, and opens any `.db` file in place via the
-Open… picker. The workspace autosaves per the General settings select — after
+Open… picker. The picker also opens `.sf` with a companion `.db` beside it.
+`AppState.story` holds the authoritative source document, bound file path and
+last disk snapshot. See [story-files.md](story-files.md) for migration and
+external-edit conflict handling. The workspace autosaves per the General settings select — after
 every change, every minute, or off — and `Cmd/Ctrl+S` saves manually; saving
 clears `has_unsaved_changes`.
 

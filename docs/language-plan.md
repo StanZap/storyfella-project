@@ -47,12 +47,16 @@ resolved, explicit flow origins, JSON round-trip and actionable readiness report
 direction readiness. Compiler-specific diagnostics are not yet integrated into
 Writer/LSP; those clients currently expose the shared front-end diagnostics.
 
-## 3. Story files become authoritative
+## 3. Story files and Studio integration — file persistence implemented
 
-Implement `.sf` open/save and project-relative asset linking through Studio's
-existing project path/state methods. Migrate actual `story_documents` drafts to
-files before dropping that SQLite table. Handle unsaved drafts, external edits,
-save failures and project moves. Registry scenes/beats follow valid analysis;
+Studio now opens/saves authoritative `.sf` files through the project commands.
+Schema v9 exports actual `projects.story_source` drafts before dropping the
+column. Document snapshots detect external-edit conflicts; copy/reload preserve
+edits, save failures remain dirty, and project/source pairs can move together.
+There was no `story_documents` table to migrate. See [story-files.md](story-files.md).
+
+Remaining: project-relative generated asset paths and scene/beat synchronization.
+Registry scenes/beats must follow valid analysis;
 partial edits must not delete artwork or recreate stable IDs.
 
 Add Writer completion/navigation UI, pending assets of the correct kind,

@@ -449,7 +449,7 @@ impl GuideMode {
         }
     }
 
-    pub fn from_str(value: &str) -> Self {
+    pub fn from_value(value: &str) -> Self {
         match value {
             "check" => Self::Check,
             _ => Self::Guide,
@@ -480,7 +480,7 @@ impl PlanLaunch {
                 "--mode" => {
                     i += 1;
                     if let Some(value) = args.get(i) {
-                        mode = GuideMode::from_str(value);
+                        mode = GuideMode::from_value(value);
                     }
                 }
                 _ => {}
@@ -755,7 +755,7 @@ async fn execute_step(
                     let (registry, story) = crate::app::sample::project(&ctx.config.asset_dir);
                     let mut state = ctx.app_state.write();
                     state.registry = registry;
-                    state.story_source = story;
+                    state.set_story_source(story);
                     state.has_unsaved_changes = true;
                     drop(state);
                     ui.error_report.set(None);
@@ -970,9 +970,8 @@ async fn execute_step(
             let ok = poll_until(
                 move || {
                     let state = app_state.read();
-                    let matches = state.project_name.eq_ignore_ascii_case(&expected)
-                        && state.project_path.is_some();
-                    matches
+                    state.project_name.eq_ignore_ascii_case(&expected)
+                        && state.project_path.is_some()
                 },
                 STEP_TIMEOUT_MS,
             )
@@ -1217,7 +1216,7 @@ async fn wait_with_pause(session: &Signal<Option<GuideSession>>, wait_ms: u64) {
             tokio::time::sleep(Duration::from_millis(80)).await;
             continue;
         }
-        let slice = (POLL_INTERVAL_MS as u64)
+        let slice = POLL_INTERVAL_MS
             .div_ceil(active.speed.max(1) as u64)
             .max(20);
         tokio::time::sleep(Duration::from_millis(slice)).await;

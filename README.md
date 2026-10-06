@@ -34,6 +34,10 @@ See [the language contract](docs/language.md) and [compiler contract](docs/compi
 Asset linking and unsupported directions remain explicit readiness requirements;
 use `--require-ready` to make either command fail when they are unmet.
 
+Studio edits [authoritative `.sf` files](docs/story-files.md) beside each project
+database. Projects → Open accepts `.sf` or `.db`; Writer offers Save copy and
+Reload for resolving external edits.
+
 Storyfella Studio is a cross-platform Dioxus desktop application for planning, generating, and arranging visual stories. The first product workflow includes project creation, the artifact canvas (characters, environments, objects, scenes with typed operations, variants, revisions), resident local Qwen-Image-2.1 generation, and sectioned runtime settings. The typed operation/planner layer is shared by the `svs` CLI and the canvas; Studio sequencing and presentation/export orchestration are not wired yet.
 
 The validated target is Linux with an NVIDIA GPU (CUDA). Image generation runs on a CUDA build of `stable-diffusion.cpp`'s `sd-server` serving Qwen-Image-2.1. The LLM endpoint is an external prerequisite and is never installed or bundled by this project.
@@ -93,6 +97,7 @@ crates/studio-core/          storyfella-studio-core — the domain layer (no GUI
   src/registry/         Artifact registry, typed ops + pipelines, slash parser,
                         CreativeBackend
   src/persistence/      SQLite project store (versioned migrations)
+  src/story.rs          Exact .sf source, disk snapshots and save conflict checks
   src/llm/              OpenAI-compatible LLM client
   src/runtime/          CreativeRuntime — adapter over the shared
                         clipforge-inference crate (path dependency)

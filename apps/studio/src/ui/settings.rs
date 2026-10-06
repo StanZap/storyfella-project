@@ -178,12 +178,14 @@ pub fn Settings(
             operate_config.clone(),
             service,
             action,
-            lm_model,
-            busy,
-            operation_error,
-            health,
-            checking,
-            checked_at,
+            ServiceSignals {
+                lm_model,
+                busy,
+                operation_error,
+                health,
+                checking,
+                checked_at,
+            },
         );
     };
 
@@ -264,23 +266,29 @@ fn fetch_models(config: AppConfig, mut state: Signal<ModelListState>) {
     });
 }
 
+/// The UI state updated together by a service operation and its health check.
+#[derive(Clone, Copy)]
+struct ServiceSignals {
+    lm_model: Signal<String>,
+    busy: Signal<Option<ServiceId>>,
+    operation_error: Signal<Option<ReportedError>>,
+    health: Signal<Vec<ServiceHealth>>,
+    checking: Signal<bool>,
+    checked_at: Signal<Option<String>>,
+}
+
 fn operate_service(
     runtime: CreativeRuntime,
     config: AppConfig,
     service: ServiceId,
     action: ServiceAction,
-    lm_model: Signal<String>,
-    mut busy: Signal<Option<ServiceId>>,
-    mut operation_error: Signal<Option<ReportedError>>,
-    health: Signal<Vec<ServiceHealth>>,
-    checking: Signal<bool>,
-    checked_at: Signal<Option<String>>,
+    mut signals: ServiceSignals,
 ) {
-    if busy().is_some() {
+    if (signals.busy)().is_some() {
         return;
     }
-    busy.set(Some(service));
-    operation_error.set(None);
+    signals.busy.set(Some(service));
+    signals.operation_error.set(None);
     spawn(async move {
         let result = match (service, action) {
             (ServiceId::ImageGeneration, ServiceAction::Start) => runtime.ensure_ready().await,
@@ -295,12 +303,19 @@ fn operate_service(
             }
             (ServiceId::Llm | ServiceId::Vision, _) => Ok(()),
         };
-        busy.set(None);
+        signals.busy.set(None);
         match result {
             Ok(()) => {}
-            Err(error) => operation_error.set(Some(error.report().log())),
+            Err(error) => signals.operation_error.set(Some(error.report().log())),
         }
-        run_checks(runtime, config, lm_model, health, checking, checked_at);
+        run_checks(
+            runtime,
+            config,
+            signals.lm_model,
+            signals.health,
+            signals.checking,
+            signals.checked_at,
+        );
     });
 }
 

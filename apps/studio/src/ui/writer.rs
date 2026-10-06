@@ -14,6 +14,7 @@ use storyfella_language::{
 };
 use uuid::Uuid;
 
+use storyfella_studio_core::errors::{CodedError, ReportedError};
 use storyfella_studio_core::registry::{ArtifactKind, ArtifactRegistry};
 
 use crate::state::AppState;
@@ -261,6 +262,7 @@ fn highlight(line: &str, known: &[String]) -> Vec<Piece> {
 
 #[component]
 pub fn Writer(app_state: Signal<AppState>) -> Element {
+    let mut error_report = use_context::<Signal<Option<ReportedError>>>();
     let mut cursor = use_context::<super::WriterCaret>().0;
     use_future(move || async move {
         let mut bridge = document::eval(CARET_LINE_BRIDGE);
@@ -268,7 +270,12 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
             cursor.set(line);
         }
     });
-    let source = app_state.read().story_source.clone();
+    let source = app_state.read().story.source().to_owned();
+    let story_path = app_state
+        .read()
+        .story
+        .path()
+        .map(std::path::Path::to_path_buf);
     let registry = app_state.read().registry.clone();
     let analysis = analyze(&source, &asset_catalog(&registry));
 
@@ -308,6 +315,43 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                     p { class: "text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-600",
                         "Writer"
                     }
+                    button {
+                        class: "rounded px-2 py-1 text-[10px] text-zinc-400 hover:bg-white/[0.05] hover:text-white",
+                        onclick: move |_| {
+                            let Some(mut path) = rfd::FileDialog::new()
+                                .set_title("Save a copy of the story")
+                                .add_filter("Storyfella source", &["sf"])
+                                .set_file_name("story-copy.sf")
+                                .save_file() else { return; };
+                            if path.extension().is_none() { path.set_extension("sf"); }
+                            if let Err(error) = app_state.read().story.save_copy(&path) {
+                                error_report.set(Some(error.report().log()));
+                            }
+                        },
+                        "Save copy…"
+                    }
+                    if let Some(path) = story_path.as_ref() {
+                        p { class: "min-w-0 truncate font-mono text-[10px] text-zinc-500", title: "{path.display()}",
+                            "{path.file_name().unwrap_or_default().to_string_lossy()}"
+                        }
+                        button {
+                            class: "rounded px-2 py-1 text-[10px] text-zinc-400 hover:bg-white/[0.05] hover:text-white",
+                            onclick: move |_| {
+                                let dirty = app_state.read().story.is_dirty();
+                                if dirty && rfd::MessageDialog::new()
+                                    .set_title("Reload story from disk?")
+                                    .set_description("Your unsaved story edits will be discarded. Artwork changes stay in the project.")
+                                    .set_buttons(rfd::MessageButtons::OkCancel)
+                                    .show() != rfd::MessageDialogResult::Ok {
+                                    return;
+                                }
+                                if let Err(error) = crate::commands::reload_story(app_state) {
+                                    error_report.set(Some(error.log()));
+                                }
+                            },
+                            "Reload .sf"
+                        }
+                    }
                     p { class: "ml-auto font-mono text-[10px] text-zinc-700",
                         if let Some(scene) = here.scene.clone() {
                             if let Some(beat) = here.beat.clone() { "{scene} › {beat}" } else { "{scene}" }
@@ -330,8 +374,7 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                             class: "mt-4 rounded-lg bg-violet-400/15 px-3 py-1.5 text-[11px] font-semibold text-violet-200 transition hover:bg-violet-400/25",
                             onclick: move |_| {
                                 let mut state = app_state.write();
-                                state.story_source = STARTER.to_owned();
-                                state.has_unsaved_changes = true;
+                                state.set_story_source(STARTER.to_owned());
                             },
                             "Start a story"
                         }
@@ -363,8 +406,7 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                             value: "{source}",
                             oninput: move |event| {
                                 let mut state = app_state.write();
-                                state.story_source = event.value();
-                                state.has_unsaved_changes = true;
+                                state.set_story_source(event.value());
                             },
                         }
                     }

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use dioxus::prelude::*;
 
 use storyfella_studio_core::config::AppConfig;
-use storyfella_studio_core::errors::{CodedError, ReportedError};
+use storyfella_studio_core::errors::ReportedError;
 use storyfella_studio_core::persistence::ProjectDb;
 
 use crate::{commands, state::AppState};
@@ -31,19 +31,17 @@ pub fn Projects(
 
     let recent_list = recent.read().clone();
     let recent_items = recent_list.iter().cloned().map(|item| {
-        let mut app_state = app_state;
         rsx! {
             button {
                 class: "group flex w-full items-center gap-5 border-y border-white/[0.06] py-5 text-left",
                 onclick: move |event| {
                     let path = item.path.clone();
-                    match ProjectDb::open(&path).and_then(|db| db.load()) {
-                        Ok(stored) => {
-                            app_state.write().open_project(stored, path);
+                    match commands::open_project(&path, app_state) {
+                        Ok(()) => {
                             on_open.call(event);
                         }
                         Err(error) => {
-                            error_report.set(Some(error.report().log()));
+                            error_report.set(Some(error.log()));
                         }
                     }
                 },
@@ -93,7 +91,7 @@ pub fn Projects(
                 let (registry, story) = crate::app::sample::project(&asset_dir);
                 let mut state = app_state.write();
                 state.registry = registry;
-                state.story_source = story;
+                state.set_story_source(story);
                 state.has_unsaved_changes = true;
                 drop(state);
                 on_open.call(event);
@@ -106,7 +104,7 @@ pub fn Projects(
         move |event: MouseEvent| {
             let Some(picked) = rfd::FileDialog::new()
                 .set_title("Open project")
-                .add_filter("Project", &["db"])
+                .add_filter("Storyfella project or story", &["db", "sf"])
                 .pick_file()
             else {
                 return;

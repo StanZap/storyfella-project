@@ -414,13 +414,14 @@ Decisions:
 Decision: SQLite is the project format (`.svs-project.db`); the pre-SQLite
 formats (TOML `ProjectStore`, stopgap JSON registry) were removed with their
 one-time imports — the current format evolves via `schema_meta` migrations.
-Assets (PNGs) stay as files on disk; the database stores relative paths
-(this also fixes the known "absolute asset paths" gap). Schema versioning
+Assets (PNGs) stay as files on disk; portable project-relative image paths remain
+planned (the current generator stores absolute paths). Schema versioning
 via a `schema_meta` table. Applied so far: v1 (§10 tables), v2/v3 (the
 legacy storyboard column, added then dropped), v4 (per-artifact default
 size), v5 (per-artifact default steps and pinned seed), v6 (`RevisionOrigin`
 on revisions), v7 (`projects.story_source`, the Writer's text), v8 (drops the
-`masks` table with the removed mask edit path).
+`masks` table with the removed mask edit path), v9 (exports Writer text to `.sf`
+before dropping `projects.story_source`).
 
 ```sql
 CREATE TABLE schema_meta (version INTEGER NOT NULL, applied_at TEXT NOT NULL);
@@ -506,7 +507,7 @@ above: timestamps are unix epoch integers (no chrono dependency),
 `operation_log.id` is TEXT (the model uses `Uuid`), `op` holds the serde tag
 name with the full `Operation` JSON in `args`, `artifacts.composition_mode`
 holds the beat-only composition mode, `artifacts.drafts_json` is the
-transitional home for pre-`.sf` story drafts, and `revisions.error` covers
+home for artifact-scoped generated text proposals, and `revisions.error` covers
 the model field. Writes replace the registry rows in one transaction with
 `PRAGMA defer_foreign_keys` (the circular `artifacts ↔ revisions`
 reference).
@@ -531,12 +532,12 @@ reference).
 **Workspace restructuring: implemented.** Studio is `apps/studio`
 (`storyfella-studio`), with GUI-free `crates/studio-core`
 (`storyfella-studio-core`). `apps/cli` and `xtask` remain; `apps/player`
-is a minimal executable with its GUI framework undecided. Language, compiler,
-story runtime and LSP are reserved in
-[`architecture.md`](architecture.md#storyfella-workspace-boundaries) and will
-be added as implementation begins. Studio preview and Player will share story
-execution through that runtime. The language front end and initial LSP now land
-in the first slice of [the language execution plan](language-plan.md).
+is a minimal executable with its GUI framework undecided. Language, compiler
+and LSP are implemented; the story runtime remains reserved in
+[`architecture.md`](architecture.md#storyfella-workspace-boundaries).
+Studio preview and Player will share execution through that runtime. Studio
+now edits authoritative `.sf` files; [the language execution plan](language-plan.md)
+tracks the remaining integration and execution work.
 
 **This section is the status tracker for planned work** — every feature we
 plan to ship, with its status; update it when work lands.
@@ -660,8 +661,11 @@ plan to ship, with its status; update it when work lands.
    `storyfella-compiler` now lowers versioned, source-mapped plans with sequential
    scene fallthrough, terminal-flow validation and immutable asset readiness;
    `svs story check`/`compile` expose it. See [compiler.md](compiler.md).
-   Story runtime, registry scene synchronization, Writer completion UI and
-   `.sf` file persistence remain planned; drafts still use SQLite.
+   Studio opens/saves authoritative `.sf` files beside project databases.
+   Schema v9 exports existing Writer drafts before removing the source column;
+   disk conflicts, copy/reload and project pair moves are covered. See
+   [story-files.md](story-files.md). Story runtime, registry scene synchronization,
+   portable image paths and Writer completion/navigation UI remain planned.
 10. **LSP tooling:** `storyfella-lsp` exposes shared language analysis to
     external editors. — **🔧 initial server implemented.** Stdio, full-document
     sync, UTF-16, versioned diagnostics, completion, definitions, references and
