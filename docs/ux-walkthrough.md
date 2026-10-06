@@ -16,14 +16,16 @@ Inside Studio, the same plan is **Plans → Story authoring walkthrough → Guid
 Allow roughly two minutes. The guide creates a fresh **Keeper of the Low Light**
 project and walks through:
 
-1. Read a scene and move between beats in the Writer.
+1. Watch a new beat being typed, then read a scene and move between beats.
 2. Compare resolved references with assets that still need to be created.
 3. Explore the cast and variants on Canvas.
 4. Inspect a character's canon, revision history, and generation controls.
 5. Change generation settings and the description through real commands.
 6. Browse the palette, then return to the editable `.sf` story.
 
-The assistant card supports pause, resume, speed changes, and stop. Pause
+The assistant card supports pause, resume, speed changes, and stop. Its
+**Typing** slider adjusts visible typing from 1 to 200 characters per second
+(the tour starts at 60), independently of narration speed. Pause
 before editing or issuing your own commands. After the tour, edit dialogue,
 inspect a variant, then reopen the saved project to try persistence.
 

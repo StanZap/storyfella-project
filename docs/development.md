@@ -371,6 +371,13 @@ progress, `soft: true` downgrades a failure to a warning (use it for
 narration shown in guide mode. `compose:` types text into the canvas
 composer character by character and submits it exactly like a user pressing
 Enter — prefer it over `command:` when the point is to exercise the UI.
+`type_story:` appends text in the Writer through its normal source setter,
+keeping the caret and scope panel on the typed line. Guide mode animates both
+actions at `typing_cps` characters per second (default 60, allowed 1–200).
+The assistant card's **Typing** slider changes that rate live, independently
+of the narration's 1x/2x/4x controls. Pause stops typing and delays command
+submission; stopping leaves the partial text available to inspect. Check mode
+applies typed text immediately without the animation.
 
 Steps that stop for approval cannot be driven from a plan: the driver
 auto-rejects checkpoints, so the op fails fast with the checkpoint message.

@@ -14,6 +14,7 @@
 name: "Story authoring walkthrough"
 description: "Follow a lighthouse story from its .sf source to asset references, the canvas, and character canon. About two minutes; no models needed."
 speed_ms: 3200
+typing_cps: 60
 steps:
   - sample_project: true
     message: "Let's open a fresh lighthouse story: twelve base artifacts and five variants. Pictures and revision history are demo fixtures; no model runs during this walkthrough."
@@ -23,6 +24,14 @@ steps:
   - go_story: true
     message: "Open Story to see the editable .sf source. Scenes contain beats, dialogue, and directions. The scope and reference panels follow the caret."
     wait_ms: 5000
+
+  - type_story: |2
+
+        beat signal
+          prop: brass_lantern
+          tam: "If the light goes out, follow my voice."
+    message: "Watch a new beat appear character by character. Adjust Typing in the guide card to change its speed; Pause stops typing as well as narration."
+    wait_ms: 4500
 
   - caret: 9
     message: "Move into the harbor's arrival beat. mara and tam resolve to existing character artifacts; resolved references can show an image when one exists."

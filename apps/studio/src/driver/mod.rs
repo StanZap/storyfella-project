@@ -83,6 +83,8 @@ pub enum StepVerb {
     /// Move the writer's caret to a line, so the scope panel visibly
     /// re-derives.
     Caret(usize),
+    /// Append authored text in the Writer, character by character in Guide mode.
+    TypeStory(String),
     /// Move the grid's keyboard cursor onto an artifact, so the focus ring
     /// moves the way it does under `hjkl`.
     Cursor(String),
@@ -145,6 +147,7 @@ impl StepVerb {
             Self::Back => "back to the grid".to_owned(),
             Self::Say => String::new(),
             Self::Caret(line) => format!("caret to line {line}"),
+            Self::TypeStory(_) => "type in the Writer".to_owned(),
             Self::SelectTool(tool) => format!("pick the {} tool", tool.label().to_lowercase()),
             Self::Cursor(name) => format!("cursor to \"{name}\""),
             Self::Palette(true) => "open the palette".to_owned(),
@@ -189,6 +192,7 @@ impl StepVerb {
                     as usize,
             ),
             "cursor" => Self::Cursor(text(&value)?),
+            "type_story" => Self::TypeStory(text(&value)?),
             "palette" => Self::Palette(value.as_bool().unwrap_or(true)),
             "select_tool" => {
                 let name = text(&value)?;
@@ -350,7 +354,30 @@ pub struct Plan {
     /// Default guide-mode pacing in milliseconds.
     #[serde(default)]
     pub speed_ms: Option<u64>,
+    /// Guide typing rate, independent of narration pacing (1–200 characters/s).
+    #[serde(
+        default = "default_typing_cps",
+        deserialize_with = "deserialize_typing_cps"
+    )]
+    pub typing_cps: u16,
     pub steps: Vec<Step>,
+}
+
+fn default_typing_cps() -> u16 {
+    60
+}
+
+fn deserialize_typing_cps<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<u16, D::Error> {
+    let rate = u16::deserialize(deserializer)?;
+    if (1..=200).contains(&rate) {
+        Ok(rate)
+    } else {
+        Err(serde::de::Error::custom(
+            "typing_cps must be between 1 and 200",
+        ))
+    }
 }
 
 impl Plan {
@@ -394,6 +421,7 @@ pub fn discover(dir: &Path) -> Vec<PlanFile> {
                                 name,
                                 description: String::new(),
                                 speed_ms: None,
+                                typing_cps: default_typing_cps(),
                                 steps: Vec::new(),
                             },
                             error: Some(format!("cannot read: {error}")),
@@ -414,6 +442,7 @@ pub fn discover(dir: &Path) -> Vec<PlanFile> {
                                 name,
                                 description: String::new(),
                                 speed_ms: None,
+                                typing_cps: default_typing_cps(),
                                 steps: Vec::new(),
                             },
                             error: Some(error),
@@ -611,6 +640,7 @@ pub struct GuideSession {
     pub paused: bool,
     /// Narration pacing multiplier (1x, 2x, 4x).
     pub speed: u32,
+    pub typing_cps: u16,
     pub state: GuideState,
 }
 
@@ -643,6 +673,7 @@ pub fn run_plan(
         busy: None,
         paused: false,
         speed: 1,
+        typing_cps: plan.typing_cps,
         state: GuideState::Running,
     }));
     spawn(async move {
@@ -797,6 +828,18 @@ async fn execute_step(
             ctx.screen.set(AppScreen::Writer);
             StepStatus::Passed
         }
+        StepVerb::TypeStory(text) => {
+            ctx.screen.set(AppScreen::Writer);
+            let original = ctx.app_state.read().story.source().to_owned();
+            let completed = type_text(&session, text, |typed| {
+                let source = format!("{original}{typed}");
+                let line = source.bytes().filter(|byte| *byte == b'\n').count();
+                ctx.app_state.write().set_story_source(source);
+                ctx.writer_caret.0.set(line);
+            })
+            .await;
+            status(completed, "the run was cancelled while typing".to_owned())
+        }
         StepVerb::Cursor(name) => {
             let query = String::new();
             let ids = crate::ui::gallery::ordered_ids(&ctx.app_state.read().registry, &query);
@@ -944,16 +987,22 @@ async fn execute_step(
             // user sees it appear), pause briefly, then submit — clearing
             // the composer first, exactly like the canvas submit handler.
             let mut composer = ctx.composer;
-            for character in text.chars() {
-                if session.read().is_none() {
-                    return StepStatus::Failed {
-                        reason: "the run was cancelled while typing".to_owned(),
-                    };
-                }
-                composer.with_mut(|current| current.push(character));
-                tokio::time::sleep(Duration::from_millis(16)).await;
+            ctx.screen.set(AppScreen::Canvas);
+            composer.set(String::new());
+            if !type_text(&session, text, |typed| composer.set(typed.to_owned())).await {
+                return StepStatus::Failed {
+                    reason: "the run was cancelled while typing".to_owned(),
+                };
             }
-            tokio::time::sleep(Duration::from_millis(120)).await;
+            let guide_mode = session
+                .read()
+                .as_ref()
+                .is_some_and(|s| s.mode == GuideMode::Guide);
+            if !wait_with_pause(&session, if guide_mode { 120 } else { 0 }).await {
+                return StepStatus::Failed {
+                    reason: "the run was cancelled before submission".to_owned(),
+                };
+            }
             composer.with_mut(|current| current.clear());
             let backend = (ctx.backend)();
             let defaults = ctx.defaults.read().clone();
@@ -1205,23 +1254,65 @@ async fn poll_until<F: Fn() -> bool>(check: F, timeout_ms: u64) -> bool {
 
 /// Guide-mode narration pacing: waits the step's duration, honoring pause
 /// and speed from the assistant card; a cancelled session returns early.
-async fn wait_with_pause(session: &Signal<Option<GuideSession>>, wait_ms: u64) {
+async fn wait_with_pause(session: &Signal<Option<GuideSession>>, wait_ms: u64) -> bool {
     let mut remaining = wait_ms;
-    while remaining > 0 {
-        let active = session.read().clone();
-        let Some(active) = active else {
-            return;
+    loop {
+        let control = session.read().as_ref().map(|s| (s.paused, s.speed));
+        let Some((paused, speed)) = control else {
+            return false;
         };
-        if active.paused {
+        if paused {
             tokio::time::sleep(Duration::from_millis(80)).await;
             continue;
         }
-        let slice = POLL_INTERVAL_MS
-            .div_ceil(active.speed.max(1) as u64)
-            .max(20);
+        if remaining == 0 {
+            return true;
+        }
+        let speed = u64::from(speed.max(1));
+        let slice = remaining.div_ceil(speed).min(POLL_INTERVAL_MS);
         tokio::time::sleep(Duration::from_millis(slice)).await;
-        remaining = remaining.saturating_sub(slice);
+        remaining = remaining.saturating_sub(slice * speed);
     }
+}
+
+/// Emit UTF-8-safe prefixes through the same state setters as manual edits.
+/// Check mode applies the text once; Guide mode reads live controls per character.
+async fn type_text(
+    session: &Signal<Option<GuideSession>>,
+    text: &str,
+    mut emit: impl FnMut(&str),
+) -> bool {
+    if !wait_with_pause(session, 0).await {
+        return false;
+    }
+    if session
+        .read()
+        .as_ref()
+        .is_some_and(|s| s.mode == GuideMode::Check)
+    {
+        emit(text);
+        return true;
+    }
+    for (offset, character) in text.char_indices() {
+        loop {
+            if !wait_with_pause(session, 0).await {
+                return false;
+            }
+            let Some(rate) = session.read().as_ref().map(|s| s.typing_cps) else {
+                return false;
+            };
+            tokio::time::sleep(Duration::from_secs_f64(1.0 / f64::from(rate.max(1)))).await;
+            let active = session.read();
+            let Some(active) = active.as_ref() else {
+                return false;
+            };
+            if !active.paused {
+                break;
+            }
+        }
+        emit(&text[..offset + character.len_utf8()]);
+    }
+    true
 }
 
 #[cfg(test)]
@@ -1246,6 +1337,122 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn typing_rate_is_validated_and_tour_adds_valid_source() {
+        let default = Plan::from_yaml("name: typing\nsteps: []\n").unwrap();
+        assert_eq!(default.typing_cps, 60);
+        for rate in [1, 200] {
+            let plan =
+                Plan::from_yaml(&format!("name: typing\ntyping_cps: {rate}\nsteps: []\n")).unwrap();
+            assert_eq!(plan.typing_cps, rate);
+        }
+        for rate in ["0", "201", "-1", "fast"] {
+            assert!(
+                Plan::from_yaml(&format!("name: typing\ntyping_cps: {rate}\nsteps: []\n")).is_err()
+            );
+        }
+        let tour = Plan::from_yaml(include_str!("../../../../config/plans/ui-tour.yaml")).unwrap();
+        let mut source = crate::app::sample::STORY.to_owned();
+        for step in tour.steps {
+            if let StepVerb::TypeStory(text) = step.verb {
+                source.push_str(&text);
+            }
+        }
+        let analysis = storyfella_language::analyze(&source, &[]);
+        assert!(source.contains("  beat signal\n"));
+        assert!(
+            !analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == storyfella_language::Severity::Error),
+            "{:?}",
+            analysis.diagnostics
+        );
+    }
+
+    fn typing_session(mode: GuideMode) -> GuideSession {
+        GuideSession {
+            plan: Plan::from_yaml("name: typing\nsteps: []\n").unwrap(),
+            mode,
+            current: 0,
+            busy: None,
+            paused: false,
+            speed: 1,
+            typing_cps: 200,
+            state: GuideState::Running,
+        }
+    }
+
+    #[component]
+    fn TypingProbe() -> Element {
+        let mut session = use_signal(|| Some(typing_session(GuideMode::Guide)));
+        use_hook(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let mut prefixes = Vec::new();
+                assert!(
+                    type_text(&session, "é🌊\r\n", |text| prefixes
+                        .push(text.to_owned()))
+                    .await
+                );
+                assert_eq!(prefixes, ["é", "é🌊", "é🌊\r", "é🌊\r\n"]);
+
+                // Pausing mid-word leaves the first character in place until resume.
+                let count = std::rc::Rc::new(std::cell::Cell::new(0));
+                let observed = count.clone();
+                let controller = count.clone();
+                let (completed, ()) = futures_util::future::join(
+                    type_text(&session, "ab", move |_| {
+                        observed.set(observed.get() + 1);
+                        if observed.get() == 1 {
+                            session.with_mut(|s| s.as_mut().unwrap().paused = true);
+                        }
+                    }),
+                    async move {
+                        tokio::time::sleep(Duration::from_millis(30)).await;
+                        assert_eq!(controller.get(), 1);
+                        session.with_mut(|s| s.as_mut().unwrap().paused = false);
+                    },
+                )
+                .await;
+                assert!(completed);
+                assert_eq!(count.get(), 2);
+
+                // Stop preserves the emitted prefix and never emits the rest.
+                let mut partial = String::new();
+                let mut cancelled_session = session;
+                assert!(
+                    !type_text(&session, "é🌊", |text| {
+                        partial = text.to_owned();
+                        cancelled_session.set(None);
+                    })
+                    .await
+                );
+                assert_eq!(partial, "é");
+
+                // Check mode emits the exact complete string once, without animation.
+                session.set(Some(typing_session(GuideMode::Check)));
+                let mut emissions = Vec::new();
+                assert!(
+                    type_text(&session, "é🌊\r\n", |text| emissions
+                        .push(text.to_owned()))
+                    .await
+                );
+                assert_eq!(emissions, ["é🌊\r\n"]);
+            });
+        });
+        rsx! {}
+    }
+
+    #[test]
+    fn typing_obeys_pause_stop_and_mode_without_corrupting_unicode() {
+        let mut dom = VirtualDom::new(TypingProbe);
+        dom.rebuild_in_place();
+    }
 
     #[test]
     fn a_tool_a_plan_cannot_use_is_rejected_at_parse() {

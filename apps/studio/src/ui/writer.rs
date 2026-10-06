@@ -295,6 +295,27 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
     let at = (*cursor.read())
         .max(first_scene)
         .min(lines.len().saturating_sub(1));
+    // Keep both editor layers on the parent's scroll surface. Following the
+    // caret also makes driver typing visible when it appends below the viewport.
+    use_effect(use_reactive((&source, &at), move |(_, line)| {
+        document::eval(&format!(
+            r#"
+            const el = document.getElementById("svs-writer");
+            if (el) {{
+                const grow = () => {{
+                    el.style.height = "auto";
+                    el.style.height = Math.max(el.scrollHeight, el.parentElement.clientHeight) + "px";
+                }};
+                grow();
+                if (!el.dataset.sizing) {{
+                    el.dataset.sizing = "1";
+                    new ResizeObserver(grow).observe(el.parentElement);
+                }}
+            }}
+            document.getElementById("svs-writer-line-{line}")?.scrollIntoView({{block: "nearest"}});
+            "#
+        ));
+    }));
     let here = scopes.get(at).cloned().unwrap_or_default();
     let (beat_mentions, scene_mentions) = mentions_in(&analysis, at, &registry);
     let pending = beat_mentions
@@ -388,6 +409,7 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                             for (index , line) in lines.iter().enumerate() {
                                 div {
                                     key: "{index}",
+                                    id: "svs-writer-line-{index}",
                                     class: if index == at { "-mx-4 border-l-2 border-violet-400 bg-violet-400/[0.07] pl-[14px] pr-4" } else { "-mx-4 border-l-2 border-transparent pl-[14px] pr-4" },
                                     for (slot , piece) in highlight_line(&analysis, index).iter().enumerate() {
                                         span { key: "{slot}", class: piece.class, "{piece.text}" }
@@ -400,7 +422,7 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                         }
                         textarea {
                             id: "svs-writer",
-                            class: "absolute inset-0 z-20 size-full resize-none bg-transparent px-4 py-3 font-mono text-[12.5px] leading-[1.75] text-transparent caret-violet-400 outline-none",
+                            class: "absolute inset-x-0 top-0 z-20 min-h-full w-full resize-none overflow-hidden bg-transparent px-4 py-3 font-mono text-[12.5px] leading-[1.75] text-transparent caret-violet-400 outline-none",
                             spellcheck: "false",
                             autocomplete: "off",
                             value: "{source}",

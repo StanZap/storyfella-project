@@ -3,9 +3,8 @@
 //! While a plan executes, a floating card (bottom-right, above every
 //! screen) narrates the steps: the current message, the step index, and
 //! the operation summary while an op is in flight. The controls pause and
-//! speed the narration and stop the run. When the run finishes it shows
-//! the per-step verdict. Everything the card renders comes from the
-//! session signal — the runner is the only writer.
+//! adjust narration and typing speed and stop the run. When the run finishes
+//! it shows the per-step verdict. The runner and controls share the session signal.
 
 use dioxus::prelude::*;
 
@@ -72,6 +71,7 @@ pub fn GuideCard(mut session: Signal<Option<GuideSession>>) -> Element {
         GuideState::Running => {
             let mut paused = active.paused;
             let speed = active.speed;
+            let typing_cps = active.typing_cps;
             rsx! {
                 div { class: "fixed bottom-6 right-6 z-40 w-[360px] overflow-hidden rounded-2xl bg-[#101014] shadow-[0_30px_90px_rgba(0,0,0,.55)] ring-1 ring-white/[0.09]",
                     div { class: "flex items-center justify-between border-b border-white/[0.06] px-4 py-3",
@@ -128,6 +128,24 @@ pub fn GuideCard(mut session: Signal<Option<GuideSession>>) -> Element {
                         }
                     }
                         p { class: "font-mono text-[9px] text-zinc-700", "artificial user · {mode_label}" }
+                    }
+                    div { class: "flex items-center gap-3 border-t border-white/[0.06] px-4 py-2.5",
+                        label { class: "shrink-0 text-[10px] text-zinc-400", r#for: "guide-typing-speed", "Typing" }
+                        input {
+                            id: "guide-typing-speed",
+                            class: "min-w-0 flex-1 accent-violet-400",
+                            r#type: "range",
+                            min: "1", max: "200", step: "1",
+                            value: "{typing_cps}",
+                            oninput: move |event| {
+                                if let Ok(rate @ 1..=200) = event.value().parse::<u16>() {
+                                    session.with_mut(|slot| {
+                                        if let Some(s) = slot { s.typing_cps = rate; }
+                                    });
+                                }
+                            },
+                        }
+                        span { class: "w-16 shrink-0 text-right font-mono text-[10px] text-zinc-400", "{typing_cps} char/s" }
                     }
                 }
             }
