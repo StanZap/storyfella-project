@@ -1,0 +1,11 @@
+[package]
+name = "storyfella-compiler"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+storyfella-language.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

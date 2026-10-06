@@ -128,9 +128,9 @@ either — the profile is implied by the resident server. The pipeline's own
    canonical absolute path of each generated file. A project moved between
    machines (or even directories) loses its image references. A stable,
    relative-to-project asset reference is needed before shipping.
-2. **No generated-asset index.** `crates/studio-core/src/assets/mod.rs` (`AssetCatalog`) is a
-   stub; there is no central registry of imported/generated files,
-   thumbnails, or usage counts.
+2. **No generated-asset index.** There is no central index of imported/generated
+   files, thumbnails, or usage counts. Revisions retain their generated file
+   paths. Implement indexing when the asset workflow requires it.
 3. **No delete/rename ops.** The operation vocabulary has no `delete`
    (artifacts can only be undone) and no description-edit op; both are
    roadmap work.

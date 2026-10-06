@@ -4,7 +4,7 @@
 //! toolkit: the artifact registry and typed operation/pipeline layer
 //! ([`registry`]), SQLite persistence ([`persistence`]), the LLM
 //! client ([`llm`]), the runtime adapter over the shared native-inference crate
-//! ([`runtime`]), the asset-catalog boundary ([`assets`]), the error-code
+//! ([`runtime`]), the error-code
 //! registry ([`errors`]) and the project-root resolution every path hangs off
 //! ([`paths`]).
 //!
@@ -12,7 +12,6 @@
 //! explicitly, so the direction of the dependency stays visible at every call
 //! site.
 
-pub mod assets;
 pub mod config;
 pub mod errors;
 pub mod llm;

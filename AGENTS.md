@@ -4,12 +4,13 @@ Current shape: the artifact registry + typed operation layer (`crates/studio-cor
 
 # Layout
 
-A Cargo workspace: seven packages.
+A Cargo workspace: eight packages.
 
 | Path | Package | Owns |
 | :--- | :--- | :--- |
-| `crates/studio-core` | `storyfella-studio-core` | the domain layer — artifact registry and typed ops (`registry/`), `persistence/`, `llm/`, `runtime/` (the `CreativeRuntime` adapter over the shared `clipforge-inference` crate), `errors.rs`, `config.rs`, `assets/`, `paths.rs`. **No GUI dependency** |
+| `crates/studio-core` | `storyfella-studio-core` | the domain layer — artifact registry and typed ops (`registry/`), `persistence/`, `llm/`, `runtime/` (the `CreativeRuntime` adapter over the shared `clipforge-inference` crate), `errors.rs`, `config.rs`, `paths.rs`. **No GUI dependency** |
 | `crates/language` | `storyfella-language` | lossless lexer, recovering parser, typed AST, source positions and shared analysis/services; independent of Studio |
+| `crates/compiler` | `storyfella-compiler` | deterministic, versioned story plans with scene flow, exact asset revision bindings, source maps and readiness; independent of Studio |
 | `crates/lsp` | `storyfella-lsp` | stdio LSP transport over the shared language analysis |
 | `apps/studio` | `storyfella-studio` | the Dioxus app — `ui/`, `state/`, `commands.rs`, `driver/`, `app/`, plus `Dioxus.toml`, `tailwind.css`, `assets/`, `package.json` |
 | `apps/cli` | `svs-cli` | `svs`, `model_setup`, `vlm_probe`, the VLM fixture example and its fixtures |
@@ -22,9 +23,9 @@ it, so the boundary stays visible at every call site.
 
 ### Storyfella boundaries
 
-`storyfella-language` and `storyfella-lsp` implement the first language slice.
-Reserve `storyfella-compiler` and `storyfella-runtime`; do not add empty crates
-or workspace members. Add each crate when implementation begins, following
+`storyfella-language`, `storyfella-compiler` and `storyfella-lsp` are implemented.
+Reserve `storyfella-runtime`; do not add empty crates or workspace members.
+Add it when implementation begins, following
 `docs/architecture.md` → Storyfella workspace boundaries.
 Language analysis and compilation must remain independent of Studio, GUI
 frameworks, and inference backends. The story runtime owns execution, state,
@@ -32,7 +33,7 @@ and timing; Studio preview and Player will consume the same runtime. The LSP
 exposes shared language analysis to external editors. Studio core stays GUI-free.
 Its existing `runtime/` is the creative inference adapter, not the future story
 execution runtime. Clipforge and FineWineTTS remain separate repositories.
-See `docs/language.md` and `docs/language-plan.md` for implemented language scope
+See `docs/language.md`, `docs/compiler.md` and `docs/language-plan.md` for implemented language scope
 and the remaining compiler, persistence and story-execution milestones.
 Keep `svs` CLI binaries, command behavior, `SVS_*` environment variables, error
 codes, databases, and platform data/config identities stable during this move.
@@ -89,7 +90,8 @@ Never reintroduce a working-directory-relative path or a `parents[N]` walk.
 # Project rules
 
 - **Desktop only.** Never add web, mobile, WASM, routing, or fullstack features. The `apps/studio/Cargo.toml` features are limited to `default = ["desktop"]` / `dioxus/desktop`. Ignore any Dioxus docs about routers, server functions, or hydration.
-- **No stale/dead code; no backward-compatibility shims.** We are pre-1.0 and not in production — formats, models, and APIs change freely. When a change replaces an older shape, remove the old one **in the same change**: no deprecated aliases, no "keep for old files" parse/import paths, no unused fields, no `#[allow(dead_code)]` for hypothetical future use, no leaving a superseded implementation around "for reference". A one-time import of a legacy format is sanctioned only while real files exist that need it (and must be removed once they're migrated or abandoned — SQLite schema migrations are the way to evolve the current format in place). Deferred vocabulary is allowed only when a roadmap item explicitly names it (e.g. slice-1 pipeline steps marked "vocabulary, not executable"); mark it with a doc comment naming the deferred item, never with `allow(dead_code)`. Concrete implication: when the canvas (roadmap item 4) replaces the storyboard model, delete `StoryboardFrame`/`project_json` rather than keeping them alongside.
+- **Clean code is required.** Keep each change focused, readable and complete. Fix quality issues found in the affected paths before committing; successful compilation alone is not a code review. Apply the code quality rules below to implementation, tests, manifests and documentation.
+- **No stale/dead code; no backward-compatibility shims.** This project is pre-1.0: do not add or retain deprecated aliases, alternate old-format parsers, import shims, redundant wrappers or superseded implementations for backward compatibility. Replace the old shape and update all consumers in the same change. Remove unused functions, types, fields, modules, dependencies, feature flags, no-op handlers and commented-out code; Git preserves history. Never hide unused code with `#[allow(dead_code)]` or broaden lint suppressions to get a check to pass. Existing SQLite migrations remain active upgrade code for stored projects; they are not permission to keep a second runtime model or legacy parser. Preserve actual project data when changing persistence.
 - **Reusable components before repetition.** Isolate repeated patterns into small shared components/modules and reuse them everywhere. The UI vocabulary in `apps/studio/src/ui/components.rs` (`SettingRow`, `EmptyVisual`, `StatusDot`, …) and `apps/studio/src/ui/icons.rs` is the model; apply the same instinct outside the UI (registry ops, pipeline steps, persistence helpers, config). When a new use case needs a variant, extend the shared component instead of copy-pasting a near-identical one, and keep similar use cases looking and behaving the same. A new control for a case an existing control already covers is a code smell.
 - **No perl for code edits.** Never use `perl -i` (or similar opaque one-liner rewrites) to modify source files — they are hard to review and have corrupted code before. Make edits with the file editing tools (`edit_file`/`write_file`), which produce reviewable diffs; `cargo fmt` is the only bulk formatter allowed.
 - **Rust talks to the generation backend over HTTP.** The native `sd-server` client lives in the shared `clipforge-inference` crate (`clipforge_inference::sd::Client`, with `GenerateRequest` and the job types) and is consumed through `CreativeRuntime`; do not re-implement it here. It speaks the server's `sdcpp` API (`POST /sdcpp/v1/img_gen`, `GET /sdcpp/v1/jobs/{id}`, `GET /sdcpp/v1/capabilities`). Keep the request/response types in sync with `stable-diffusion.cpp/examples/server/api.md` (the checked-out revision is authoritative). There is no Python in this project — do not reintroduce one.
@@ -102,6 +104,16 @@ Never reintroduce a working-directory-relative path or a `parents[N]` walk.
 - **Validation logs and scratch files stay in the repo** under `.svs-e2e/` (gitignored). When live-testing the GUI, write its stdout/logs to `.svs-e2e/logs/` — never to `/tmp` or the repo root. When killing a stale app instance, use a bracket-quoted pattern so `pgrep`/`pkill` do not match their own command line (e.g. `pkill -f "storyfella-studi[o]"`).
 - **The vision evaluator — the agent's eyes.** The agent cannot see images; when judging generations, edits, or regressions, ask the LLM endpoint's vision model through `svs eval -i <image>… -p "<question>"` (default model `google/gemma-4-e4b`, served by llama.cpp or LM Studio). Images are auto-downscaled to 1024px; default max-tokens 2048 (the model reasons before answering, and 512 was exhausted by reasoning). `--expect <substring>` / `--expect-not <substring>` gate the exit code for scripted checks — craft prompts that elicit strict YES/NO. Comparison workflow: attach the base first, then the candidate(s); the model refers to them as image 1, image 2, …. Common checks: identity preservation across an edit or variant, artifacts/distortion in a generation. Evaluations used to drive a decision should be recorded in `.svs-e2e/logs/`.
 - Consult the documentation below before making changes; many decisions and known gaps are recorded there.
+
+# Code quality and best practices
+
+- **Implement current requirements.** Add APIs and abstractions for real callers or a concrete public contract, not hypothetical future use. Keep planned work in the roadmap. Deferred language instructions may remain only when a named milestone requires them, their limitation is documented, and diagnostics/readiness explicitly expose it; never silently pretend to execute them.
+- **Keep one authoritative implementation.** Share parsing, validation and domain behavior across CLI, Studio, Player and LSP. Keep transport and UI adapters thin. Avoid duplicate models and recomputing domain rules differently in each host. Extract shared code when actual repetition justifies it; avoid unnecessary indirection.
+- **Make invariants visible.** Prefer precise types, explicit inputs and clear ownership. Keep functions and modules cohesive. Use descriptive names and straightforward control flow. Validate untrusted input at its boundary; return actionable errors instead of panicking, silently dropping input or guessing a default. An internal `unwrap`/`expect`/`unreachable!` must follow an established invariant, not stand in for validation.
+- **Keep effects explicit.** Separate pure language/compiler logic from files, databases, UI and inference. Do not mutate host state while analyzing or compiling. Preserve authored text and source locations, produce deterministic results, and distinguish source validity from linking and execution readiness.
+- **Keep dependencies deliberate.** Reuse existing workspace dependencies and standard-library facilities first. Add a dependency only when its concrete benefit warrants it, declare it once at the workspace root, and respect the crate boundaries above. Remove dependencies made obsolete by a change.
+- **Write useful comments and current docs.** Explain invariants, decisions and limitations rather than narrating syntax. Remove obsolete TODOs, examples, status claims and documentation of deleted APIs in the same change. A TODO must describe a real remaining gap and point to its tracked work; do not leave speculative placeholders in source.
+- **Test behavior and failure boundaries.** Cover changed semantics, malformed input and meaningful regressions with deterministic tests. Use process/integration tests when exit status, protocol framing or filesystem effects are part of the contract. Do not add tests that merely mirror implementation details or assert documentation wording. Keep test fixtures isolated and clean them up.
 
 # Documentation
 
@@ -135,7 +147,7 @@ error-code registry (item 7) are implemented and validated:
 - **Text and vision are provider-driven too**: `AppConfig::text` and `AppConfig::vision` are `ChatDeployment`s resolved from `providers.toml` (`Capability::Text`/`Capability::Vision`) and layered with a user overlay (`paths::user_providers_path()`, `$SVS_USER_PROVIDERS`). The planner (`CreativeBackend`, `vlm_probe`) reads `planner_config()`; `svs eval` and the plan driver's `expect_vision` read the `vision` deployment through `crates/studio-core/src/vision.rs`, so a non-vision planner (e.g. DeepSeek) no longer blinds vision. `svs eval` starts a managed `llamacpp` vision server on demand; an `openai` provider has no server. Settings → Intelligence shows both endpoints and persists the planner model under `[providers.<id>]` in the user providers overlay. Text and vision are **optional**: a capability no provider serves resolves to `None` and degrades (`CreativeBackend` drops its LLM client, `svs eval` reports no `vision` provider, Settings shows "not configured") rather than failing config load. The image-carrying chat call lives in the shared `clipforge-inference` crate (`chat::Client::complete_with_images`, `ChatImage`); storyfella's `crates/studio-core/src/vision.rs` (`VisionSession`) is the one home that encodes an image file, starts a managed vision server, and gates a substring verdict — used by `svs eval` and the driver's `expect_vision` step.
 - **The image backend is provider-driven**: `providers.toml` at the project root (`paths::providers_path()`) declares the `sdcpp` provider — its `architecture` (must be a served profile), `capabilities`, `base_url`, `model_dir`/`lora_dir`/`executable`, and per-artifact `weights` overrides — under a `[defaults]` capability→id map. `crates/studio-core/src/config.rs` loads it through `clipforge_inference::Providers::load_or_built_in(…)` → `image_deployment(Capability::T2i)`, mapping `ProviderError` to `SVS-CFG-108` and keeping the result on `AppConfig::image` (there is no `[generation]` endpoint/profile/executable and no `paths.model_dir` any more). The LoRA discovery dir is the provider's `lora_dir`; `model_setup` provisions through the same deployment (skipping artifacts a `weights` override supplies); `runtime serve` and `CreativeRuntime` both use `config.image.runtime()` and `config.image.host`/`port`.
 - **The automation driver** (`apps/studio/src/driver/` + `apps/studio/src/commands.rs`): the intent seam — `apps/studio/src/commands.rs` owns the app's action language (project create/open/save, slash-command parse→execute via `ExecutionUi`); the composer, the operation-log rerun, and the driver all call the same entry points. `apps/studio/src/driver/` runs YAML plans from `config/plans/` (plan = steps in app vocabulary: `create_project`, `compose:` — types visibly into the canvas composer and submits like a user — `command: "/create …"`, `expect_artifact`, …; no selectors) in **Guide** mode (narrated by the floating assistant card, Plans rail → "Plans" screen) or **Check** mode (fast, per-step report, exit code; `storyfella-studio --plan <file> --mode check`, final registry persisted before exit). The driver observes the same signals the UI uses (activity/error), never the DOM; checkpoints are auto-rejected. Besides the state assertions (`expect_artifact`, `expect_image` — which now checks the artifact's *active* revision, not any older image), an `expect_vision: { image, question, expect?, expect_not? }` step attaches the artifact's current image to the configured `vision` provider and asserts a substring gate, so a plan checks *what* was generated and not only that a picture exists. The session is started once per run (a managed server is not reloaded per step); the step needs the vision endpoint, so plans that use it mark it `soft` to stay runnable without one.
-- 231 Rust lib + bin tests pass (149 in `storyfella-studio-core`, 78 in Studio, 3 in the CLI bins, and 1 in xtask). The only generation profile is `qwen-image-2.1`; its t2i / instruction-edit / RGBA-cutout behaviour was measured on a CUDA `sd-server` (RTX 3090) in the 2026-09-30 spike — see `.svs-e2e/logs/2026-09-30-quality-evals.md`. LLM `draft`, `stack propose`, LoRA injection, and the size/step controls still await live validation.
+- Language, compiler and LSP tests cover source preservation, recovery, navigation, flow, linking/readiness and CLI/protocol behavior; run the workspace checks below for current results. The only generation profile is `qwen-image-2.1`; its t2i / instruction-edit / RGBA-cutout behaviour was measured on a CUDA `sd-server` (RTX 3090) in the 2026-09-30 spike — see `.svs-e2e/logs/2026-09-30-quality-evals.md`. LLM `draft`, `stack propose`, LoRA injection, and the size/step controls still await live validation.
 - Next per §12: Studio integration (item 8) — **deferred** by user
   reprioritization (generation quality + LoRA registry landed first; the
   tracker is authoritative).
@@ -147,9 +159,22 @@ Always verify changes that touch Rust code:
 ```sh
 cargo check --workspace --all-targets
 cargo test --workspace
+cargo fmt --all -- --check
 ```
 
 That is `cargo xtask check` (+ `test`), which wraps the same commands from the workspace root. Do not modify `Cargo.toml` features or add dependencies without a strong reason — dependencies live in `[workspace.dependencies]` at the root and are added there once, then referenced from a member with `name.workspace = true`; the `desktop` feature lives in `apps/studio`.
+
+Run `cargo clippy -p <changed-package> --all-targets -- -D warnings` for changed
+Rust packages. Fix warnings introduced by the change; do not silence them to
+pass validation. Report any existing failures separately and accurately.
+
+Before committing, review the complete diff, including new files. Confirm that
+replaced code and all consumers were updated, no compatibility or dead-code
+paths remain in the affected scope, crate boundaries still hold, documentation
+matches behavior, and tests cover the relevant failures. Run `git diff --check`
+and inspect staged changes for unrelated edits, secrets, generated files and
+scratch artifacts. Commit only the reviewed scope and report actual validation
+results and any remaining limitations.
 
 ## Scratch files stay in the project, never in `/tmp`
 
@@ -165,7 +190,7 @@ project spent days re-deriving the same quality findings.
 | Path | Holds |
 | :--- | :--- |
 | `.svs-e2e/inputs/` | Fixed test inputs (downloaded photos, hand-made test images) — the stable base an A/B is measured against |
-| `.svs-e2e/scripts/` | Probe scripts. Resolve paths from `Path(__file__).resolve().parents[2]`, never hardcode an absolute path |
+| `.svs-e2e/scripts/` | Probe scripts. Resolve inputs and outputs from the project root, never hardcode a machine-specific absolute path |
 | `.svs-e2e/quality/<experiment>/` | Generated outputs, one directory per experiment |
 | `.svs-e2e/logs/` | sd-server logs, named for the configuration that produced them |
 
@@ -371,68 +396,3 @@ For fire-and-forget work (such as starting a generation and updating app state f
 - `EventHandler<T>` props receive closures at the call site (`onclick: move |event| ...`). Handlers are `Clone`, so one handler can be shared between several components by binding it once.
 - `use_hook` constructs one-time, non-reactive values (for example `CreativeRuntime::new(&config)` in `apps/studio/src/ui/mod.rs`).
 - In `spawn`ed tasks, never hold a signal `.read()`/`.write()` guard across an `await`; read or clone first, await, then write (see `start_generation` in `apps/studio/src/ui/editor.rs`).
-
-## Routing (reference only — this desktop-only app does not use Dioxus routing)
-
-All possible routes are defined in a single Rust `enum` that derives `Routable`. Each variant represents a route and is annotated with `#[route("/path")]`. Dynamic Segments can capture parts of the URL path as parameters by using `:name` in the route string. These become fields in the enum variant.
-
-The `Router<Route> {}` component is the entry point that manages rendering the correct component for the current URL.
-
-You can use the `#[layout(NavBar)]` to create a layout shared between pages and place an `Outlet<Route> {}` inside your layout component. The child routes will be rendered in the outlet.
-
-```rust
-#[derive(Routable, Clone, PartialEq)]
-enum Route {
-	#[layout(NavBar)] // This will use NavBar as the layout for all routes
-		#[route("/")]
-		Home {},
-		#[route("/blog/:id")] // Dynamic segment
-		BlogPost { id: i32 },
-}
-
-#[component]
-fn NavBar() -> Element {
-	rsx! {
-		a { href: "/", "Home" }
-		Outlet<Route> {} // Renders Home or BlogPost
-	}
-}
-
-#[component]
-fn App() -> Element {
-	rsx! { Router::<Route> {} }
-}
-```
-
-```toml
-dioxus = { version = "0.7.1", features = ["router"] }
-```
-
-## Fullstack (reference only — web/server targets are not used in this project)
-
-Fullstack enables server rendering and ipc calls. It uses Cargo features (`server` and a client feature like `web`) to split the code into a server and client binaries.
-
-```toml
-dioxus = { version = "0.7.1", features = ["fullstack"] }
-```
-
-### Server Functions
-
-Use the `#[post]` / `#[get]` macros to define an `async` function that will only run on the server. On the server, this macro generates an API endpoint. On the client, it generates a function that makes an HTTP request to that endpoint.
-
-```rust
-#[post("/api/double/:path/&query")]
-async fn double_server(number: i32, path: String, query: i32) -> Result<i32, ServerFnError> {
-	tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-	Ok(number * 2)
-}
-```
-
-### Hydration
-
-Hydration is the process of making a server-rendered HTML page interactive on the client. The server sends the initial HTML, and then the client-side runs, attaches event listeners, and takes control of future rendering.
-
-Errors: the initial UI rendered by the component on the client must be identical to the UI rendered on the server.
-
-- Use the `use_server_future` hook instead of `use_resource`. It runs the future on the server, serializes the result, and sends it to the client, ensuring the client has the data immediately for its first render.
-- Any code that relies on browser-specific APIs (like accessing `localStorage`) must be run *after* hydration. Place this code inside a `use_effect` hook.

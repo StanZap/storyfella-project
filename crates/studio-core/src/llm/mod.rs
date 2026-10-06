@@ -508,5 +508,3 @@ mod tests {
         assert!(value.get("tools").is_none());
     }
 }
-
-// TODO: Add planner prompts after the application workflow is defined.

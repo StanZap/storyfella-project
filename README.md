@@ -3,8 +3,8 @@
 Storyfella is the workspace for story authoring and playback. The existing
 Dioxus application is **Storyfella Studio**; the `svs` CLI keeps its current
 commands and behavior. `apps/player` is a minimal executable with no GUI
-framework selected yet. Language and LSP are implemented; compiler and story
-runtime crates will be added when their implementations begin; see
+framework selected yet. Language, compiler and LSP are implemented; the story
+runtime crate will be added when its implementation begins; see
 [workspace boundaries](docs/architecture.md#storyfella-workspace-boundaries).
 
 ```text
@@ -14,6 +14,7 @@ storyfella/
 ├── apps/player/       # storyfella-player (placeholder)
 ├── crates/studio-core/ # storyfella-studio-core (no GUI)
 ├── crates/language/    # shared lexer, parser, AST and analysis
+├── crates/compiler/    # versioned story plans, linking and flow validation
 ├── crates/lsp/         # stdio editor services
 └── xtask/            # developer tasks
 ```
@@ -21,6 +22,17 @@ storyfella/
 Clipforge and FineWineTTS remain separate sibling repositories. Storyfella
 consumes `../clipforge/crates/inference`; the directory rename leaves that
 relative dependency unchanged.
+
+Check or compile `.sf` stories without loading models or opening a project DB:
+
+```sh
+cargo run -p svs-cli --bin svs -- story check examples/harbor.sf
+cargo run -p svs-cli --bin svs -- story compile examples/harbor.sf
+```
+
+See [the language contract](docs/language.md) and [compiler contract](docs/compiler.md).
+Asset linking and unsupported directions remain explicit readiness requirements;
+use `--require-ready` to make either command fail when they are unmet.
 
 Storyfella Studio is a cross-platform Dioxus desktop application for planning, generating, and arranging visual stories. The first product workflow includes project creation, the artifact canvas (characters, environments, objects, scenes with typed operations, variants, revisions), resident local Qwen-Image-2.1 generation, and sectioned runtime settings. The typed operation/planner layer is shared by the `svs` CLI and the canvas; Studio sequencing and presentation/export orchestration are not wired yet.
 
@@ -86,7 +98,6 @@ crates/studio-core/          storyfella-studio-core — the domain layer (no GUI
                         clipforge-inference crate (path dependency)
                         (sd-server lifecycle, sdcpp client, model store live
                         in ../clipforge/crates/inference)
-  src/assets/           Asset catalog boundary
   src/errors.rs         Error-code registry
   src/config.rs         Configuration loading
   src/paths.rs          Project-root path resolution

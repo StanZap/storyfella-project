@@ -38,6 +38,9 @@ use storyfella_studio_core::registry::{
 use storyfella_studio_core::runtime::{kill_servers, marker_path, CreativeRuntime, ServerMarker};
 use storyfella_studio_core::vision;
 
+#[path = "../story.rs"]
+mod story;
+
 #[derive(Parser)]
 #[command(
     name = "svs",
@@ -54,6 +57,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Check or compile a Storyfella source file without opening a project or models.
+    Story {
+        #[command(subcommand)]
+        story: story::StoryCommand,
+    },
     /// Open (load or create) the project database.
     Project { path: PathBuf },
     /// Apply a typed operation.
@@ -424,6 +432,7 @@ fn main() -> Result<()> {
 
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Command::Story { story } => story::run(story),
         Command::Project { path } => {
             let registry = load_project(&path)?;
             println!(

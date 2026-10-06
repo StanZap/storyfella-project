@@ -272,7 +272,7 @@ impl AppConfig {
             |key: &str, value: Option<String>| -> Result<Option<(u32, u32)>, ConfigError> {
                 match value {
                     None => Ok(None),
-                    Some(value) => parse_size_config(&path, key, &value).map(Some),
+                    Some(value) => parse_size_config(path, key, &value).map(Some),
                 }
             };
         let sizes = SizeDefaults {

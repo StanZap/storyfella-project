@@ -26,22 +26,26 @@ without errors; tokens reconstruct source exactly; both clients consume one
 analysis implementation. AST acceptance does not imply executable playback.
 See [the initial language contract](language.md) for syntax and current limits.
 
-## 2. Compiler and explicit executable representation — next
+## 2. Compiler and explicit executable representation — implemented first slice
 
-Add `storyfella-compiler` only with its first implementation. Compile analyzed
-stories into a versioned, serializable plan with stable scene/beat identities,
-ordered instructions, resolved branch destinations and source maps. Establish
-whether scene fallthrough is allowed, how beats advance, how choices terminate a
-beat, and how `goto`/`end` interact with following instructions before lowering.
-Reject unreachable or conflicting terminal instructions; do not guess semantics.
+`storyfella-compiler` emits version-1 serializable plans with stable scene/beat
+identities, ordered instructions, resolved branch destinations and source maps.
+The owner selected sequential scene fallthrough: a scene without an explicit
+terminal continues to the next declaration; the final scene ends. Beats advance
+in source order. Choice/goto/end terminate their scene; following statements
+are compile errors. Unreachable scenes produce warnings; intentional cycles are
+allowed. [compiler.md](compiler.md) records the contract and CLI examples.
 
-Separate draft validity, asset readiness and runtime capability readiness. Link
-the host's immutable asset/revision bindings explicitly; compilation must not
-generate artwork, mutate the registry or load inference models. Preserve shot,
-style and mood as authored directions until execution semantics are specified.
+Draft validity, asset readiness and direction readiness are separate. Immutable
+host asset/revision bindings are snapshotted in each use. Compilation does not
+generate artwork, mutate the registry or load inference models. Shot/style/mood
+remain retained directions that block readiness until execution is implemented.
 
-Acceptance: deterministic lowering, exact source mapping, all targets resolved,
-and actionable readiness reports with no silent defaults or dropped directions.
+Acceptance implemented: deterministic lowering, source mapping, all targets
+resolved, explicit flow origins, JSON round-trip and actionable readiness reports.
+`svs story check`/`compile` expose the compiler; `--require-ready` gates binding and
+direction readiness. Compiler-specific diagnostics are not yet integrated into
+Writer/LSP; those clients currently expose the shared front-end diagnostics.
 
 ## 3. Story files become authoritative
 

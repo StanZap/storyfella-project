@@ -1,7 +1,7 @@
 # Storyfella language: initial contract
 
-Status: the language front end, Writer adapter and initial stdio LSP are
-implemented. Compilation and playback are the next milestones in
+Status: the language front end, compiler, Writer adapter and initial stdio LSP are
+implemented. Playback and Studio file persistence are the next milestones in
 [the execution plan](language-plan.md). This syntax is a first editable design,
 anchored to the current Writer; it is not a compatibility layer for the prototype.
 
@@ -55,7 +55,7 @@ local to their scene. Duplicate declarations and missing targets are errors.
 | `narrate: text` | Narration with no invented character asset |
 | `style: text`, `shot: text`, `mood: text` | Authored directions; execution semantics deferred |
 | `choice "prompt"` / `option "label": target` | Branch prompt and scene destinations |
-| `goto target`, `end` | Explicit flow intent; runtime lowering deferred |
+| `goto target`, `end` | Terminal scene jump or story ending, lowered by the compiler |
 
 Prose is either raw text to end of line, or one quoted string. Raw text preserves
 colons, `#`, punctuation and literal backslashes. It is not scanned for asset names.
@@ -111,8 +111,9 @@ rename, formatter, semantic tokens or runtime integration are advertised yet.
 
 ## Current boundaries
 
-Accepting AST nodes does not execute choices, infer scene fallthrough, load voices
+The [compiler](compiler.md) records sequential scene fallthrough, ordered beats,
+and explicit branch/jump/end instructions; it does not execute choices, load voices
 or generate assets. Expressions, variables, includes, speech annotations and
-timing units remain unspecified. No placeholder compiler/runtime crates exist.
+timing units remain unspecified. No placeholder runtime crate exists.
 Story drafts still use the existing SQLite persistence until real `.sf` file
 migration lands; language analysis itself is independent of that storage.

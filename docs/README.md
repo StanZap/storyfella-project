@@ -18,6 +18,7 @@ current product code.
 | [`runtime-lifecycle.md`](runtime-lifecycle.md) | How the app launches and supervises the native Qwen-Image-2.1 `sd-server` (through the shared `clipforge-inference` crate), plus model provisioning and residency. |
 | [`data-model.md`](data-model.md) | The artifact-registry domain model, the persistence format, and known gaps. |
 | [`language.md`](language.md) | Initial `.sf` syntax, shared front-end API and stdio LSP setup/limits. |
+| [`compiler.md`](compiler.md) | Story flow, versioned plan/source maps, immutable asset linking, readiness and story CLI commands. |
 | [`language-plan.md`](language-plan.md) | Language/compiler/runtime implementation sequence and acceptance gates. |
 | [`ROADMAP.md`](ROADMAP.md) | Product design and the feature/status tracker (§12): every planned feature with its status. |
 

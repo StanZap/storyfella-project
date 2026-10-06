@@ -26,11 +26,12 @@ fn generate_context(
     request: &GenerateRequest,
     job_id: Option<&str>,
 ) -> Vec<(&'static str, String)> {
-    let mut context = Vec::new();
-    context.push(("prompt", request.prompt.clone()));
-    context.push(("width", request.width.to_string()));
-    context.push(("height", request.height.to_string()));
-    context.push(("steps", request.steps.to_string()));
+    let mut context = vec![
+        ("prompt", request.prompt.clone()),
+        ("width", request.width.to_string()),
+        ("height", request.height.to_string()),
+        ("steps", request.steps.to_string()),
+    ];
     if let Some(seed) = request.seed {
         context.push(("seed", seed.to_string()));
     }

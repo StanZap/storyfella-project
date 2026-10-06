@@ -657,7 +657,10 @@ plan to ship, with its status; update it when work lands.
    tokens, a recovering typed AST, source positions, diagnostics, symbol/reference
    analysis and shared completion/navigation. Writer highlighting, scope and asset
    references now consume it. See [language.md](language.md) for the syntax.
-   Compiler/runtime, registry scene synchronization, Writer completion UI and
+   `storyfella-compiler` now lowers versioned, source-mapped plans with sequential
+   scene fallthrough, terminal-flow validation and immutable asset readiness;
+   `svs story check`/`compile` expose it. See [compiler.md](compiler.md).
+   Story runtime, registry scene synchronization, Writer completion UI and
    `.sf` file persistence remain planned; drafts still use SQLite.
 10. **LSP tooling:** `storyfella-lsp` exposes shared language analysis to
     external editors. — **🔧 initial server implemented.** Stdio, full-document

@@ -559,7 +559,7 @@ fn walk_lora_dir(
             .extension()
             .is_some_and(|extension| extension == "safetensors")
         {
-            if let Some(relative) = path.strip_prefix(root).ok() {
+            if let Ok(relative) = path.strip_prefix(root) {
                 files.push(relative.to_string_lossy().into_owned());
             }
         }

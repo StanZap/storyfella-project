@@ -3,7 +3,7 @@
 ## Storyfella workspace boundaries
 
 Studio, Studio core, the existing CLI, the minimal Player, xtask, the shared
-language front end and the stdio LSP are workspace members today. The Writer
+language front end, compiler and the stdio LSP are workspace members today. The Writer
 and LSP consume the same analysis. See [the language contract](language.md)
 and [execution plan](language-plan.md) for implemented scope and next milestones.
 
@@ -15,7 +15,7 @@ and [execution plan](language-plan.md) for implemented scope and next milestones
 | `apps/player` / `storyfella-player` | Minimal executable now; standalone playback later | GUI framework undecided; playback will consume the same runtime as Studio preview |
 | `xtask` | Build, launch, package and validation commands | Developer tooling only |
 
-Language and LSP are implemented below; compiler and story runtime remain
+Language, compiler and LSP are implemented below; story runtime remains
 reserved until implementation begins. No placeholder crates are added.
 
 | Language/execution crate | Responsibility | Dependency boundary |
@@ -25,7 +25,9 @@ reserved until implementation begins. No placeholder crates are added.
 | `crates/runtime` / `storyfella-runtime` | Story execution, state transitions and timing; host-facing playback events | Shared by Studio preview and Player; no dependency on either application or an inference backend |
 | `crates/lsp` / `storyfella-lsp` | LSP transport and editor-facing diagnostics, completion, navigation and other language services | Exposes shared language analysis to external editors; does not duplicate analysis or depend on Studio |
 
-The compiler/runtime representation contract will be settled during implementation.
+The compiler emits a versioned, source-mapped story plan with sequential scene
+fallthrough and explicit terminal instructions; see [compiler.md](compiler.md).
+The runtime will consume that representation when its implementation begins.
 Existing Studio core `runtime/` supervises creative generation through Clipforge;
 it is distinct from the future story execution runtime. FineWineTTS and Clipforge
 remain separate repositories. The inference path dependency stays
@@ -72,7 +74,6 @@ HTTP.
 │    llm/           LlmClient (OpenAI-compatible chat completions)                   │
 │    runtime/       CreativeRuntime adapter over the shared clipforge-inference      │
 │                   crate (asset import, job wait, health, error mapping)            │
-│    assets/        AssetCatalog (import/index boundary; currently minimal)          │
 │                                                                                    │
 │  apps/studio/src/  — the Dioxus application                                       │
 │    ui/            Workspace shell, Canvas (artifact workspace), Settings           │
