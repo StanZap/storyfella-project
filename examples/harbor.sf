@@ -1,0 +1,23 @@
+# A source-first story. Asset names can be written before artwork exists.
+story "The Lantern"
+
+scene harbor
+  location: harbor_dock
+  cast: mara, tam
+
+  beat arrival
+    shot: wide, dawn
+    mara: "You're late. Tide's already turning."
+    tam think: She counts the minutes like coins.
+    choice "Where should we go?"
+      option "Follow the lantern": lighthouse
+      option "Stay by the water": shore
+
+scene lighthouse
+  prop: brass_lantern
+  narrate: Rain taps against the glass. # This is narrated too.
+  end
+
+scene shore
+  narrate: The tide brings something back.
+  goto lighthouse

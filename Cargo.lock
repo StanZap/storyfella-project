@@ -4728,6 +4728,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
+name = "storyfella-language"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "storyfella-lsp"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "storyfella-language",
+]
+
+[[package]]
 name = "storyfella-player"
 version = "0.1.0"
 
@@ -4745,6 +4761,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "storyfella-language",
  "storyfella-studio-core",
  "tokio",
  "tracing",

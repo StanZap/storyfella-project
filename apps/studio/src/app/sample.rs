@@ -400,9 +400,13 @@ mod tests {
             .map(|artifact| artifact.name.clone())
             .collect();
 
-        let mut pending: Vec<String> = story
-            .lines()
-            .flat_map(crate::ui::writer::names_in)
+        let mut pending: Vec<String> = storyfella_language::analyze(&story, &[])
+            .references
+            .into_iter()
+            .filter(|reference| {
+                matches!(reference.kind, storyfella_language::ReferenceKind::Asset(_))
+            })
+            .map(|reference| reference.name.value)
             .filter(|name| !known.contains(name))
             .collect();
         pending.sort();

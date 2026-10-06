@@ -1,0 +1,7 @@
+[package]
+name = "storyfella-language"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true

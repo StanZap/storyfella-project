@@ -14,7 +14,7 @@
 #
 # The `.cargo/config.toml` target-dir redirect must stay at this level.
 [workspace]
-members = ["crates/studio-core", "apps/studio", "apps/cli", "apps/player", "xtask"]
+members = ["crates/studio-core", "crates/language", "crates/lsp", "apps/studio", "apps/cli", "apps/player", "xtask"]
 resolver = "2"
 
 [workspace.package]
@@ -25,6 +25,7 @@ authors = ["Stanley <Zapata>"]
 # One place for versions, so a bump cannot land in three manifests with two
 # different values.
 [workspace.dependencies]
+storyfella-language = { path = "crates/language" }
 anyhow = "1.0.104"
 base64 = "0.23.0"
 clap = { version = "4.6.5", features = ["derive"] }

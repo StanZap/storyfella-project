@@ -5,20 +5,13 @@
 //! placeholders that offer to create them. Writing the story is what fills
 //! the canvas with work.
 //!
-//! ## What this is not
-//!
-//! Not the language crate (roadmap §9). There is no lexer with spans, no
-//! parser, no compiler, no diagnostics with severities — this module reads
-//! the text line by line, which is enough to highlight it and to answer
-//! "which artifacts does this scene mention". When the real front end
-//! exists it replaces [`outline`] and [`highlight`] wholesale; the panel and
-//! the layout do not change.
-//!
-//! An unresolved reference is **pending, not an error** — amber, with a
-//! Create affordance. The story becomes a work queue rather than a list of
-//! mistakes, which is the whole reason to put the two panes side by side.
+//! Uses the same tokens, AST and reference analysis as the external LSP.
+//! Unresolved assets remain pending, with a Create affordance.
 
 use dioxus::prelude::*;
+use storyfella_language::{
+    analyze, Analysis, Asset, AssetKind, ReferenceKind, Severity, TokenKind,
+};
 use uuid::Uuid;
 
 use storyfella_studio_core::registry::{ArtifactKind, ArtifactRegistry};
@@ -29,11 +22,6 @@ use super::{
     generated_asset_url,
     icons::{Icon, IconName},
 };
-
-/// Keywords that open a block.
-const BLOCKS: [&str; 4] = ["story", "scene", "beat", "choice"];
-/// Attribute keys — `location:`, `cast:`, …
-const ATTRS: [&str; 6] = ["style", "location", "cast", "shot", "prop", "mood"];
 
 /// The starter document, so the screen explains itself rather than opening
 /// on an empty box.
@@ -79,25 +67,47 @@ pub struct Scope {
     pub beat: Option<String>,
 }
 
-/// The scene/beat scope of every line, in order.
-///
-/// Indentation is not consulted: a `scene` opens a scene and a `beat` opens
-/// a beat until the next one of its kind. The real parser will do better.
-pub fn outline(source: &str) -> Vec<Scope> {
-    let mut scope = Scope::default();
-    source
-        .lines()
+fn outline_analysis(analysis: &Analysis) -> Vec<Scope> {
+    let source = &analysis.document.source;
+    (0..source.line_count())
         .map(|line| {
-            let trimmed = line.trim_start();
-            if let Some(name) = trimmed.strip_prefix("scene ") {
-                scope = Scope {
-                    scene: Some(name.trim().to_owned()),
-                    beat: None,
-                };
-            } else if let Some(name) = trimmed.strip_prefix("beat ") {
-                scope.beat = Some(name.trim().to_owned());
+            let span = source.line_span(line).unwrap();
+            let offset = if span.start == source.text().len() {
+                span.start.saturating_sub(1)
+            } else {
+                span.start + source.slice(span).unwrap().len()
+                    - source.slice(span).unwrap().trim_start().len()
+            };
+            let (scene, beat) = analysis.scope_at(offset);
+            Scope {
+                scene: scene.map(str::to_owned),
+                beat: beat.map(str::to_owned),
             }
-            scope.clone()
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn outline(source: &str) -> Vec<Scope> {
+    outline_analysis(&analyze(source, &[]))
+}
+
+pub fn asset_catalog(registry: &ArtifactRegistry) -> Vec<Asset> {
+    registry
+        .artifacts
+        .iter()
+        .filter_map(|artifact| {
+            let kind = match artifact.kind {
+                ArtifactKind::Character => AssetKind::Character,
+                ArtifactKind::Environment => AssetKind::Location,
+                ArtifactKind::Object => AssetKind::Prop,
+                _ => return None,
+            };
+            Some(Asset {
+                id: artifact.id.to_string(),
+                name: artifact.name.clone(),
+                kind,
+            })
         })
         .collect()
 }
@@ -117,104 +127,81 @@ impl Mention {
     }
 }
 
-/// Every identifier a line references, in the syntactic slots that hold
-/// references: `cast:`/`prop:`/`location:` values, and the speaker of a
-/// dialogue line.
-///
-/// Prose is never scanned for names. That is the whole reason references
-/// live in slots: it is what makes them resolvable, completable, and
-/// unambiguous.
-pub fn names_in(line: &str) -> Vec<String> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() || trimmed.starts_with('#') {
-        return Vec::new();
-    }
-    let Some((head, rest)) = trimmed.split_once(':') else {
-        return Vec::new();
-    };
-    let head = head.trim();
-
-    if ATTRS.contains(&head) {
-        // Only these carry references; `shot:` and `style:` are prose.
-        if !matches!(head, "cast" | "prop" | "location") {
-            return Vec::new();
-        }
-        return rest
-            .split(',')
-            .map(|value| value.trim().to_owned())
-            .filter(|value| is_identifier(value))
-            .collect();
-    }
-
-    // A speaker line: `mara:` or `tam think:`.
-    let speaker = head.split_whitespace().next().unwrap_or_default();
-    if is_identifier(speaker) && !BLOCKS.contains(&speaker) {
-        return vec![speaker.to_owned()];
-    }
-    Vec::new()
+#[cfg(test)]
+fn names_in(line: &str) -> Vec<String> {
+    analyze(&format!("scene _preview\n  {}", line.trim_start()), &[])
+        .references
+        .into_iter()
+        .filter(|r| matches!(r.kind, ReferenceKind::Asset(_)))
+        .map(|r| r.name.value)
+        .collect()
 }
 
-fn is_identifier(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-}
-
-/// The artifacts referenced by the scene containing `line`, resolved
-/// against the registry. The cursor's own beat comes first.
-pub fn mentions_at(
-    source: &str,
+fn mentions_in(
+    analysis: &Analysis,
     line: usize,
     registry: &ArtifactRegistry,
 ) -> (Vec<Mention>, Vec<Mention>) {
-    let scopes = outline(source);
+    let scopes = outline_analysis(analysis);
     let here = scopes.get(line).cloned().unwrap_or_default();
-    let lines: Vec<&str> = source.lines().collect();
-
-    let mut beat_names: Vec<String> = Vec::new();
-    let mut scene_names: Vec<String> = Vec::new();
-    for (index, text) in lines.iter().enumerate() {
-        let scope = scopes.get(index).cloned().unwrap_or_default();
-        if here.scene.is_none() || scope.scene != here.scene {
+    let mut beat_names = Vec::new();
+    let mut scene_names = Vec::new();
+    for reference in &analysis.references {
+        if !matches!(reference.kind, ReferenceKind::Asset(_))
+            || here.scene.as_deref() != Some(&reference.scene)
+        {
             continue;
         }
-        let target = if here.beat.is_some() && scope.beat == here.beat {
+        let target = if here.beat.is_some() && here.beat == reference.beat {
             &mut beat_names
         } else {
             &mut scene_names
         };
-        for name in names_in(text) {
-            if !target.contains(&name) {
-                target.push(name);
-            }
+        if !target.contains(&reference.name.value) {
+            target.push(reference.name.value.clone());
         }
     }
     scene_names.retain(|name| !beat_names.contains(name));
-
     let resolve = |names: Vec<String>| -> Vec<Mention> {
         names
             .into_iter()
             .map(|name| {
-                let artifact = registry
-                    .artifacts
-                    .iter()
-                    .find(|candidate| candidate.name.eq_ignore_ascii_case(&name));
+                let reference = analysis.references.iter().find(|r| {
+                    r.name.value == name && here.scene.as_deref() == Some(r.scene.as_str())
+                });
+                let artifact = reference
+                    .and_then(|r| r.asset_id.as_ref())
+                    .and_then(|id| registry.artifacts.iter().find(|a| a.id.to_string() == *id));
+                let expected_kind = reference.and_then(|r| match r.kind {
+                    ReferenceKind::Asset(AssetKind::Character) => Some(ArtifactKind::Character),
+                    ReferenceKind::Asset(AssetKind::Location) => Some(ArtifactKind::Environment),
+                    ReferenceKind::Asset(AssetKind::Prop) => Some(ArtifactKind::Object),
+                    ReferenceKind::Scene => None,
+                });
                 Mention {
-                    image: artifact.and_then(|artifact| {
+                    image: artifact.and_then(|a| {
                         registry
-                            .latest_image(artifact.id)
-                            .and_then(|revision| revision.asset_path.as_deref())
+                            .latest_image(a.id)
+                            .and_then(|r| r.asset_path.as_deref())
                             .and_then(generated_asset_url)
                     }),
-                    kind: artifact.map(|artifact| artifact.kind),
-                    artifact: artifact.map(|artifact| artifact.id),
+                    kind: expected_kind,
+                    artifact: artifact.map(|a| a.id),
                     name,
                 }
             })
             .collect()
     };
     (resolve(beat_names), resolve(scene_names))
+}
+
+#[cfg(test)]
+fn mentions_at(
+    source: &str,
+    line: usize,
+    registry: &ArtifactRegistry,
+) -> (Vec<Mention>, Vec<Mention>) {
+    mentions_in(&analyze(source, &asset_catalog(registry)), line, registry)
 }
 
 /// One coloured run of a line.
@@ -224,75 +211,51 @@ pub struct Piece {
     pub class: &'static str,
 }
 
-/// Splits a line into coloured runs. Word-level, not token-level — enough
-/// to read, and replaced wholesale by the real lexer.
-pub fn highlight(line: &str, known: &[String]) -> Vec<Piece> {
-    let trimmed = line.trim_start();
-    if trimmed.starts_with('#') {
-        return vec![Piece {
-            text: line.to_owned(),
-            class: "text-zinc-700 italic",
-        }];
-    }
-
-    let referenced = names_in(line);
-    let mut pieces = Vec::new();
-    let mut buffer = String::new();
-    let mut in_string = false;
-
-    let flush = |buffer: &mut String, pieces: &mut Vec<Piece>| {
-        if buffer.is_empty() {
-            return;
-        }
-        let word = std::mem::take(buffer);
-        // A name in a `cast:` list keeps its separator; compare without it.
-        let bare = word.trim().trim_end_matches([',', ':']);
-        let class = if BLOCKS.contains(&bare) {
-            "text-violet-300 font-semibold"
-        } else if ATTRS.contains(&bare) && word.contains(':') {
-            "text-sky-300"
-        } else if referenced.iter().any(|name| name == bare) {
-            if known.iter().any(|candidate| candidate == bare) {
+fn highlight_line(analysis: &Analysis, line: usize) -> Vec<Piece> {
+    let source = &analysis.document.source;
+    let Some(span) = source.line_span(line) else {
+        return Vec::new();
+    };
+    analysis.document.tokens.iter().filter(|t| t.span.start >= span.start && t.span.end <= span.end).map(|token| {
+        let reference = analysis.references.iter().find(|r| r.name.span == token.span && matches!(r.kind, ReferenceKind::Asset(_)));
+        let class = if let Some(reference) = reference {
+            if reference.asset_id.is_some() {
                 "rounded-sm bg-violet-400/15 text-violet-200 shadow-[0_0_0_2px_rgba(167,139,250,.15)]"
             } else {
                 "rounded-sm bg-amber-400/15 text-amber-300 shadow-[0_0_0_2px_rgba(251,191,36,.15)]"
             }
-        } else if bare == "think" {
-            "text-rose-300 italic"
         } else {
-            "text-zinc-400"
+            match token.kind {
+                TokenKind::Keyword => "text-violet-300 font-semibold",
+                TokenKind::String | TokenKind::Text => "text-emerald-300",
+                TokenKind::Comment => "text-zinc-700 italic",
+                TokenKind::Whitespace => "",
+                _ => "text-zinc-400",
+            }
         };
-        pieces.push(Piece { text: word, class });
-    };
+        Piece { text: source.slice(token.span).unwrap().to_owned(), class }
+    }).collect()
+}
 
-    for character in line.chars() {
-        if character == '"' {
-            flush(&mut buffer, &mut pieces);
-            in_string = !in_string;
-            pieces.push(Piece {
-                text: character.to_string(),
-                class: "text-emerald-300",
-            });
-            continue;
-        }
-        if in_string {
-            pieces.push(Piece {
-                text: character.to_string(),
-                class: "text-emerald-300",
-            });
-            continue;
-        }
-        if character.is_whitespace() {
-            flush(&mut buffer, &mut pieces);
-            pieces.push(Piece {
-                text: character.to_string(),
-                class: "",
-            });
-            continue;
-        }
-        buffer.push(character);
+#[cfg(test)]
+fn highlight(line: &str, known: &[String]) -> Vec<Piece> {
+    let indent = line.len() - line.trim_start().len();
+    let catalog: Vec<Asset> = known
+        .iter()
+        .map(|name| Asset {
+            id: name.clone(),
+            name: name.clone(),
+            kind: AssetKind::Character,
+        })
+        .collect();
+    let analysis = analyze(
+        &format!("scene _preview\n  {}", line.trim_start()),
+        &catalog,
+    );
+    let mut pieces = highlight_line(&analysis, 1);
+    if let Some(first) = pieces.first_mut() {
+        first.text = line[..indent].to_owned();
     }
-    flush(&mut buffer, &mut pieces);
     pieces
 }
 
@@ -307,18 +270,14 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
     });
     let source = app_state.read().story_source.clone();
     let registry = app_state.read().registry.clone();
-    let known: Vec<String> = registry
-        .artifacts
-        .iter()
-        .map(|artifact| artifact.name.clone())
-        .collect();
+    let analysis = analyze(&source, &asset_catalog(&registry));
 
     let lines: Vec<String> = if source.is_empty() {
         Vec::new()
     } else {
         source.lines().map(str::to_owned).collect()
     };
-    let scopes = outline(&source);
+    let scopes = outline_analysis(&analysis);
     // The caret starts at line 0, which is usually a comment or the story
     // header — a scope with nothing in it, which reads as an empty panel on
     // a story that is not empty. Open on the first line that has a scene.
@@ -330,7 +289,7 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
         .max(first_scene)
         .min(lines.len().saturating_sub(1));
     let here = scopes.get(at).cloned().unwrap_or_default();
-    let (beat_mentions, scene_mentions) = mentions_at(&source, at, &registry);
+    let (beat_mentions, scene_mentions) = mentions_in(&analysis, at, &registry);
     let pending = beat_mentions
         .iter()
         .chain(scene_mentions.iter())
@@ -387,7 +346,7 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                                 div {
                                     key: "{index}",
                                     class: if index == at { "-mx-4 border-l-2 border-violet-400 bg-violet-400/[0.07] pl-[14px] pr-4" } else { "-mx-4 border-l-2 border-transparent pl-[14px] pr-4" },
-                                    for (slot , piece) in highlight(line, &known).iter().enumerate() {
+                                    for (slot , piece) in highlight_line(&analysis, index).iter().enumerate() {
                                         span { key: "{slot}", class: piece.class, "{piece.text}" }
                                     }
                                     if line.is_empty() {
@@ -407,12 +366,11 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                                 state.story_source = event.value();
                                 state.has_unsaved_changes = true;
                             },
-                            onkeyup: move |_| {
-                                // Cheap stand-in for a caret bridge: the line
-                                // is recomputed from the click/arrow position
-                                // by the panel below on the next render.
-                            },
-                            onclick: move |_| {},
+                        }
+                    }
+                    for diagnostic in analysis.diagnostics.iter().filter(|d| d.severity == Severity::Error).take(3) {
+                        p { class: "px-4 py-1 font-mono text-[11px] text-rose-300",
+                            "{diagnostic.message}"
                         }
                     }
                     div { class: "flex items-center gap-3 border-t border-white/[0.05] px-4 py-1.5",
@@ -513,7 +471,8 @@ fn MentionGroup(title: String, mentions: Vec<Mention>, app_state: Signal<AppStat
                                 title: "Prefill the command bar to create it",
                                 onclick: {
                                     let name = mention.name.clone();
-                                    move |_| composer.set(format!("/create character --name {name} "))
+                                    let kind = mention.kind.unwrap_or(ArtifactKind::Character).as_str();
+                                    move |_| composer.set(format!("/create {kind} --name {name} "))
                                 },
                                 "Create"
                             }
@@ -543,6 +502,21 @@ fn MentionGroup(title: String, mentions: Vec<Mention>, app_state: Signal<AppStat
 mod tests {
     use super::*;
     use storyfella_studio_core::registry::CreateArtifact;
+
+    #[test]
+    fn starter_and_sample_are_valid_storyfella() {
+        for source in [STARTER, crate::app::sample::STORY] {
+            let analysis = analyze(source, &[]);
+            assert!(!analysis.has_errors(), "{:?}", analysis.diagnostics);
+        }
+    }
+
+    #[test]
+    fn branches_are_not_presented_as_missing_artwork() {
+        let source = "scene harbor\n  goto lighthouse\nscene lighthouse\n  end\n";
+        let (beat, scene) = mentions_at(source, 1, &ArtifactRegistry::new());
+        assert!(beat.is_empty() && scene.is_empty());
+    }
 
     const STORY: &str = "scene harbor\n  cast: mara, tam\n\n  beat arrival\n    mara: \"You're late.\"\n\n  beat handoff\n    prop: brass_lantern\n\nscene lighthouse\n  location: lighthouse_tower\n";
 

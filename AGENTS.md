@@ -4,11 +4,13 @@ Current shape: the artifact registry + typed operation layer (`crates/studio-cor
 
 # Layout
 
-A Cargo workspace: five packages.
+A Cargo workspace: seven packages.
 
 | Path | Package | Owns |
 | :--- | :--- | :--- |
 | `crates/studio-core` | `storyfella-studio-core` | the domain layer — artifact registry and typed ops (`registry/`), `persistence/`, `llm/`, `runtime/` (the `CreativeRuntime` adapter over the shared `clipforge-inference` crate), `errors.rs`, `config.rs`, `assets/`, `paths.rs`. **No GUI dependency** |
+| `crates/language` | `storyfella-language` | lossless lexer, recovering parser, typed AST, source positions and shared analysis/services; independent of Studio |
+| `crates/lsp` | `storyfella-lsp` | stdio LSP transport over the shared language analysis |
 | `apps/studio` | `storyfella-studio` | the Dioxus app — `ui/`, `state/`, `commands.rs`, `driver/`, `app/`, plus `Dioxus.toml`, `tailwind.css`, `assets/`, `package.json` |
 | `apps/cli` | `svs-cli` | `svs`, `model_setup`, `vlm_probe`, the VLM fixture example and its fixtures |
 | `apps/player` | `storyfella-player` | minimal standalone executable; GUI framework undecided; story playback will use the shared story runtime |
@@ -20,9 +22,9 @@ it, so the boundary stays visible at every call site.
 
 ### Storyfella boundaries
 
-Reserve `storyfella-language`, `storyfella-compiler`, `storyfella-runtime`, and
-`storyfella-lsp`; do not add empty crates or workspace members for them.
-Add each crate when implementation begins, following
+`storyfella-language` and `storyfella-lsp` implement the first language slice.
+Reserve `storyfella-compiler` and `storyfella-runtime`; do not add empty crates
+or workspace members. Add each crate when implementation begins, following
 `docs/architecture.md` → Storyfella workspace boundaries.
 Language analysis and compilation must remain independent of Studio, GUI
 frameworks, and inference backends. The story runtime owns execution, state,
@@ -30,7 +32,8 @@ and timing; Studio preview and Player will consume the same runtime. The LSP
 exposes shared language analysis to external editors. Studio core stays GUI-free.
 Its existing `runtime/` is the creative inference adapter, not the future story
 execution runtime. Clipforge and FineWineTTS remain separate repositories.
-This handoff restructures the workspace only; DSL/LSP implementation follows.
+See `docs/language.md` and `docs/language-plan.md` for implemented language scope
+and the remaining compiler, persistence and story-execution milestones.
 Keep `svs` CLI binaries, command behavior, `SVS_*` environment variables, error
 codes, databases, and platform data/config identities stable during this move.
 

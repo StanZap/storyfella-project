@@ -371,11 +371,13 @@ Dioxus UI: `crates/studio-core` holds the shared modules; `apps/studio/src/main.
 ## 9. Storyfella DSL (built in this project)
 
 Storyfella is a DSL and toolkit for interactive narrative experiences. It is
-**built from scratch in this repository** — the earlier `../storyfella`
-prototype is reference material only, not code to integrate. Modern Rust
-stack: a workspace-member crate (`storyfella-dsl`) with its own lexer,
-parser, compiler, CLI, and runtime; serde for wire schemas; clap for the
-CLI. The sequencer becomes the visual-authoring surface for `.sf` projects.
+**built from scratch in this repository** — the sibling
+`../storyfella-old-project-inspiration` prototype is reference material only,
+not code to integrate. `storyfella-language` owns lexing, parsing, AST and shared
+analysis; `storyfella-lsp` exposes it to external editors. Compiler and runtime
+will be separate crates when implemented. See [the language contract](language.md)
+and [execution plan](language-plan.md). The sequencer becomes the
+visual-authoring surface for `.sf` projects.
 Three surfaces share one artifact registry:
 
 | Surface | Role |
@@ -386,7 +388,7 @@ Three surfaces share one artifact registry:
 
 Decisions:
 
-- **Text-driven sync:** writing `scene kitchen:` in the writer auto-creates
+- **Text-driven sync:** writing `scene kitchen` in the writer auto-creates
   or links the kitchen scene artifact; the registry follows the text. The
   canvas is the visual-detail editor for things the text only names.
 - **`.sf` is the story source of truth** — diffable, greppable, versionable.
@@ -533,7 +535,8 @@ is a minimal executable with its GUI framework undecided. Language, compiler,
 story runtime and LSP are reserved in
 [`architecture.md`](architecture.md#storyfella-workspace-boundaries) and will
 be added as implementation begins. Studio preview and Player will share story
-execution through that runtime. This handoff includes no DSL/LSP implementation.
+execution through that runtime. The language front end and initial LSP now land
+in the first slice of [the language execution plan](language-plan.md).
 
 **This section is the status tracker for planned work** — every feature we
 plan to ship, with its status; update it when work lands.
@@ -650,17 +653,17 @@ plan to ship, with its status; update it when work lands.
    analysis) and `storyfella-compiler` (validation/lowering); DSL asset references
    and round-trip to canvas. `storyfella-runtime` will own story execution,
    state and timing, shared by Studio preview and standalone Player.
-   — **⏳ planned.** The *surface* exists ahead of it: the Writer screen
-   edits `.sf` text with references resolved against the registry and
-   pending ones offered for creation, and `crates/studio-core/src/registry/completion.rs` is the
-   same discipline at small scale (spans on every token, one tokenizer,
-   `complete(input, cursor)`, `signature`). What is missing is the language:
-   `apps/studio/src/ui/writer.rs` reads line by line, and its `outline`/`highlight` are the
-   seam a real lexer replaces. Story text currently lives in the project
-   database (schema v7), not in `.sf` files on disk.
+   — **🔧 first slice implemented.** `storyfella-language` provides lossless
+   tokens, a recovering typed AST, source positions, diagnostics, symbol/reference
+   analysis and shared completion/navigation. Writer highlighting, scope and asset
+   references now consume it. See [language.md](language.md) for the syntax.
+   Compiler/runtime, registry scene synchronization, Writer completion UI and
+   `.sf` file persistence remain planned; drafts still use SQLite.
 10. **LSP tooling:** `storyfella-lsp` exposes shared language analysis to
-    external editors as the DSL matures (go-to-definition, refactor,
-    diagnostics). — **⏳ planned; implementation follows restructuring**
+    external editors. — **🔧 initial server implemented.** Stdio, full-document
+    sync, UTF-16, versioned diagnostics, completion, definitions, references and
+    scene/beat symbols are supported. Workspace imports, asset catalog bridging,
+    rename, formatting and semantic tokens remain planned.
 11. **Self-contained distribution (no user-side dependencies):** one
    downloadable artifact per platform (AppImage/`.deb` on Linux, `.app`
    bundle on macOS, installer/portable zip on Windows) containing the app

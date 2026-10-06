@@ -2,9 +2,10 @@
 
 ## Storyfella workspace boundaries
 
-This restructuring establishes the workspace layout. DSL and LSP implementation
-begins afterward. Only Studio, Studio core, the existing CLI, the minimal Player,
-and xtask are workspace members today.
+Studio, Studio core, the existing CLI, the minimal Player, xtask, the shared
+language front end and the stdio LSP are workspace members today. The Writer
+and LSP consume the same analysis. See [the language contract](language.md)
+and [execution plan](language-plan.md) for implemented scope and next milestones.
 
 | Component | Responsibility | Dependency boundary |
 | --- | --- | --- |
@@ -14,10 +15,10 @@ and xtask are workspace members today.
 | `apps/player` / `storyfella-player` | Minimal executable now; standalone playback later | GUI framework undecided; playback will consume the same runtime as Studio preview |
 | `xtask` | Build, launch, package and validation commands | Developer tooling only |
 
-The following crate names and paths are reserved in this document, not created
-as placeholder crates or workspace members. Add each as its implementation begins:
+Language and LSP are implemented below; compiler and story runtime remain
+reserved until implementation begins. No placeholder crates are added.
 
-| Future crate | Responsibility | Dependency boundary |
+| Language/execution crate | Responsibility | Dependency boundary |
 | --- | --- | --- |
 | `crates/language` / `storyfella-language` | Source model, lexer/parser, spans, diagnostics, symbols, references and shared language analysis | Independent of Studio, UI frameworks and inference backends |
 | `crates/compiler` / `storyfella-compiler` | Validate/lower analyzed stories into a shared executable story representation | May consume language analysis; independent of Studio, UI frameworks and inference backends |

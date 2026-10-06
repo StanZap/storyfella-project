@@ -3,8 +3,8 @@
 Storyfella is the workspace for story authoring and playback. The existing
 Dioxus application is **Storyfella Studio**; the `svs` CLI keeps its current
 commands and behavior. `apps/player` is a minimal executable with no GUI
-framework selected yet. Language, compiler, story runtime, and LSP crates
-will be added when their implementations begin; see
+framework selected yet. Language and LSP are implemented; compiler and story
+runtime crates will be added when their implementations begin; see
 [workspace boundaries](docs/architecture.md#storyfella-workspace-boundaries).
 
 ```text
@@ -13,6 +13,8 @@ storyfella/
 ├── apps/cli/          # svs-cli: svs, model_setup, vlm_probe
 ├── apps/player/       # storyfella-player (placeholder)
 ├── crates/studio-core/ # storyfella-studio-core (no GUI)
+├── crates/language/    # shared lexer, parser, AST and analysis
+├── crates/lsp/         # stdio editor services
 └── xtask/            # developer tasks
 ```
 

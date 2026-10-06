@@ -1,0 +1,9 @@
+[package]
+name = "storyfella-lsp"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+storyfella-language.workspace = true
+serde.workspace = true
+serde_json.workspace = true
