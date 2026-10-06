@@ -345,6 +345,7 @@ cargo xtask plan config/plans/ui-tour.yaml --mode guide --log
 
 Or open **Plans**, choose **Story authoring walkthrough**, select **Guide**,
 and run it. The roughly two-minute walkthrough creates a fresh sample project,
+types its entire story from a blank Writer at 40 characters per second,
 shows the Writer's resolved and pending references, explores canvas variants
 and revision history, and changes a character's settings and canon through
 the composer. Pause, resume, change speed, or stop from the assistant card.
@@ -373,7 +374,8 @@ composer character by character and submits it exactly like a user pressing
 Enter — prefer it over `command:` when the point is to exercise the UI.
 `type_story:` appends text in the Writer through its normal source setter,
 keeping the caret and scope panel on the typed line. Guide mode animates both
-actions at `typing_cps` characters per second (default 60, allowed 1–200).
+actions; `sample_project:` also types its complete source using the same controls.
+The rate is `typing_cps` characters per second (default 60, allowed 1–200).
 The assistant card's **Typing** slider changes that rate live, independently
 of the narration's 1x/2x/4x controls. Pause stops typing and delays command
 submission; stopping leaves the partial text available to inspect. Check mode

@@ -14,10 +14,10 @@
 name: "Story authoring walkthrough"
 description: "Follow a lighthouse story from its .sf source to asset references, the canvas, and character canon. About two minutes; no models needed."
 speed_ms: 3200
-typing_cps: 60
+typing_cps: 40
 steps:
   - sample_project: true
-    message: "Let's open a fresh lighthouse story: twelve base artifacts and five variants. Pictures and revision history are demo fixtures; no model runs during this walkthrough."
+    message: "Watch the entire lighthouse story being typed from a blank Writer. The Typing slider controls its speed. Twelve base artifacts and five variants are sample fixtures; no model runs."
     wait_ms: 5000
 
   # ------------------------------------------------------------- the story

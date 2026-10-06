@@ -70,7 +70,8 @@ pub enum StepVerb {
     /// Open a recent project by its story name.
     OpenProject(String),
     /// Create the populated sample project (`app::sample`), so a tour can
-    /// show full screens without waiting on a backend.
+    /// show full screens without waiting on a backend. Guide mode types its
+    /// entire source in the Writer; Check mode applies it immediately.
     SampleProject,
     /// Select an artifact by name — the canvas detail and inspector.
     Open(String),
@@ -784,14 +785,14 @@ async fn execute_step(
             ) {
                 Ok(_) => {
                     let (registry, story) = crate::app::sample::project(&ctx.config.asset_dir);
-                    let mut state = ctx.app_state.write();
-                    state.registry = registry;
-                    state.set_story_source(story);
-                    state.has_unsaved_changes = true;
-                    drop(state);
+                    {
+                        let mut state = ctx.app_state.write();
+                        state.registry = registry;
+                        state.set_story_source(String::new());
+                        state.has_unsaved_changes = true;
+                    }
                     ui.error_report.set(None);
-                    ctx.screen.set(AppScreen::Canvas);
-                    StepStatus::Passed
+                    type_story(&mut ctx, &session, &story).await
                 }
                 Err(report) => StepStatus::Failed {
                     reason: report.details.clone(),
@@ -828,18 +829,7 @@ async fn execute_step(
             ctx.screen.set(AppScreen::Writer);
             StepStatus::Passed
         }
-        StepVerb::TypeStory(text) => {
-            ctx.screen.set(AppScreen::Writer);
-            let original = ctx.app_state.read().story.source().to_owned();
-            let completed = type_text(&session, text, |typed| {
-                let source = format!("{original}{typed}");
-                let line = source.bytes().filter(|byte| *byte == b'\n').count();
-                ctx.app_state.write().set_story_source(source);
-                ctx.writer_caret.0.set(line);
-            })
-            .await;
-            status(completed, "the run was cancelled while typing".to_owned())
-        }
+        StepVerb::TypeStory(text) => type_story(&mut ctx, &session, text).await,
         StepVerb::Cursor(name) => {
             let query = String::new();
             let ids = crate::ui::gallery::ordered_ids(&ctx.app_state.read().registry, &query);
@@ -1273,6 +1263,23 @@ async fn wait_with_pause(session: &Signal<Option<GuideSession>>, wait_ms: u64) -
         tokio::time::sleep(Duration::from_millis(slice)).await;
         remaining = remaining.saturating_sub(slice * speed);
     }
+}
+
+async fn type_story(
+    ctx: &mut DriveContext,
+    session: &Signal<Option<GuideSession>>,
+    text: &str,
+) -> StepStatus {
+    ctx.screen.set(AppScreen::Writer);
+    let original = ctx.app_state.read().story.source().to_owned();
+    let completed = type_text(session, text, |typed| {
+        let source = format!("{original}{typed}");
+        let line = source.bytes().filter(|byte| *byte == b'\n').count();
+        ctx.app_state.write().set_story_source(source);
+        ctx.writer_caret.0.set(line);
+    })
+    .await;
+    status(completed, "the run was cancelled while typing".to_owned())
 }
 
 /// Emit UTF-8-safe prefixes through the same state setters as manual edits.
