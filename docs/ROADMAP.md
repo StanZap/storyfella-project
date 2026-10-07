@@ -651,7 +651,9 @@ plan to ship, with its status; update it when work lands.
    Writer/Canvas reconciliation is implemented: valid source order maps authored
    scene/beat keys to persisted UUIDs; invalid drafts retain the last association;
    removals detach artwork. Joint source/registry undo, pending catalog creation,
-   source origins and backlinks are connected. Re-sync and playback remain.
+   source origins and backlinks are connected. Writer keyboard completion,
+   exact caret navigation, explicit identity-preserving rename, formatting and
+   compiler diagnostics are implemented. Re-sync and playback remain.
 9. **Storyfella DSL (in-repo):** `storyfella-language` (lexer/parser/shared
    analysis) and `storyfella-compiler` (validation/lowering); DSL asset references
    and round-trip to canvas. `storyfella-runtime` will own story execution,
@@ -667,13 +669,13 @@ plan to ship, with its status; update it when work lands.
    Schema v9 exports existing Writer drafts before removing the source column;
    disk conflicts, copy/reload and project pair moves are covered. See
    [story-files.md](story-files.md). Schema v10 persists source/registry associations.
-   Story runtime, portable image paths and Writer completion/navigation tooling
-   remain planned.
+   Story runtime and portable image paths remain planned.
 10. **LSP tooling:** `storyfella-lsp` exposes shared language analysis to
-    external editors. — **🔧 initial server implemented.** Stdio, full-document
+    external editors. — **🔧 single-document tooling implemented.** Stdio, full-document
     sync, UTF-16, versioned diagnostics, completion, definitions, references and
-    scene/beat symbols are supported. Workspace imports, asset catalog bridging,
-    rename, formatting and semantic tokens remain planned.
+    scene/beat symbols, resolved rename, conservative formatting and semantic
+    tokens are supported. Explicit catalog export/refresh supplies shared
+    compiler diagnostics for unsaved buffers. Workspace imports remain planned.
 11. **Self-contained distribution (no user-side dependencies):** one
    downloadable artifact per platform (AppImage/`.deb` on Linux, `.app`
    bundle on macOS, installer/portable zip on Windows) containing the app

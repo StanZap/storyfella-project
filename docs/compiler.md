@@ -26,7 +26,8 @@ fallthrough without silently discarding authored flow.
 
 ## Plan and linking
 
-`compile(source, bindings)` returns `Compilation { plan, diagnostics }`. Source or
+`compile(source, bindings)` returns `Compilation { plan, diagnostics }`;
+`compile_analysis(analysis, bindings)` reuses shared analysis. Source or
 binding-table errors yield no plan. Missing assets and unimplemented directions
 yield a valid plan with blocked readiness; they never result in dropped instructions.
 
@@ -69,7 +70,7 @@ cargo run -p svs-cli --bin svs -- story compile examples/harbor.sf
 cargo run -p svs-cli --bin svs -- story check story.sf --assets bindings.json --require-ready
 ```
 
-The binding file is a JSON array:
+The catalog file is a JSON array (revision is optional for pending artwork):
 
 ```json
 [
@@ -83,9 +84,11 @@ source errors or failed `--require-ready`, it emits the check report and exits
 unsuccessfully. Missing assets alone do not fail either command unless
 `--require-ready` is selected. File/JSON errors fail before compilation.
 
-Compiler-only semantic diagnostics are currently available through these commands.
-Writer/LSP continue to expose front-end analysis until compiler diagnostics and
-immutable binding context are wired into those hosts.
+Writer, CLI and LSP expose the same compiler diagnostics and readiness. Export
+Studio metadata and exact completed active revisions with
+`svs story catalog project.db`. This opens an existing database (including schema
+upgrade if needed), without loading model configuration or starting inference.
+Missing paths are rejected. See [editor context](language.md#external-editors).
 
 ## Validation and remaining work
 
@@ -95,8 +98,7 @@ labels, exact immutable bindings, blocked directions, determinism and JSON
 round-trip. CLI process tests check JSON/exit behavior and prove that model config
 and project databases are unnecessary.
 
-Studio [`.sf` persistence](story-files.md) is implemented. Next: registry
-synchronization, then the shared
-headless story runtime, preview/Player, media capability validation and compiler
-diagnostic integration in Writer/LSP. Timing, save-state compatibility, expressions,
+Studio [`.sf` persistence](story-files.md), registry synchronization and authoring
+tools are implemented. Next: the shared headless runtime, preview/Player and
+media capability validation. Timing, save-state compatibility, expressions,
 imports and speech performance annotations require their own contracts.

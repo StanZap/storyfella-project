@@ -208,7 +208,7 @@ pub fn analyze(source: &str, assets: &[Asset]) -> Analysis {
             }
         }
     }
-    diagnostics.sort_by_key(|d| (d.span.start, d.span.end));
+    normalize_diagnostics(&mut diagnostics);
     Analysis {
         document,
         symbols,
@@ -237,6 +237,19 @@ impl Analysis {
             .map(|s| s.name.span)
     }
     pub fn references_at(&self, offset: usize, include_declaration: bool) -> Vec<Span> {
+        if let Some(id) = self
+            .references
+            .iter()
+            .find(|r| r.name.span.contains(offset))
+            .and_then(|r| r.asset_id.as_ref())
+        {
+            return self
+                .references
+                .iter()
+                .filter(|r| r.asset_id.as_ref() == Some(id))
+                .map(|r| r.name.span)
+                .collect();
+        }
         let Some(definition) = self.definition_at(offset) else {
             return Vec::new();
         };

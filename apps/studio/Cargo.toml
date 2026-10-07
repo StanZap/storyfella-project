@@ -13,6 +13,7 @@ desktop = ["dioxus/desktop"]
 
 [dependencies]
 storyfella-language.workspace = true
+storyfella-compiler.workspace = true
 storyfella-studio-core = { path = "../../crates/studio-core" }
 anyhow.workspace = true
 clipforge-inference.workspace = true

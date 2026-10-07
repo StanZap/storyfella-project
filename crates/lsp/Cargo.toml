@@ -5,5 +5,7 @@ edition.workspace = true
 
 [dependencies]
 storyfella-language.workspace = true
+storyfella-compiler.workspace = true
+storyfella-studio-core = { path = "../studio-core" }
 serde.workspace = true
 serde_json.workspace = true

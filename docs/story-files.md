@@ -103,5 +103,13 @@ Writer associations; project switching and undo wait for the worker to finish.
 Save failures retain dirty state and revisions. Persisted association corruption
 is reported before opening rather than silently rebuilding UUIDs.
 
-Project-relative image paths, Writer completion/navigation tooling and compiler
-diagnostics in Writer/LSP remain work in [the language plan](language-plan.md).
+Writer uses precise UTF-16 caret positions for keyboard completion, definition
+and reference navigation and clickable compiler diagnostics. Shared edits retain
+comments, indentation, line endings and prose. Explicit Rename retains associated
+artwork UUIDs; direct text renames detach/create as above. During live typing, a
+new declaration requires its terminating newline before reconciliation; explicit
+save/open snapshots also accept complete declarations at EOF. This prevents
+typed name prefixes from creating placeholder artwork.
+
+Project-relative image paths and playback remain work in
+[the language plan](language-plan.md).

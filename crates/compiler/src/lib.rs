@@ -2,5 +2,5 @@
 mod lower;
 mod plan;
 
-pub use lower::{compile, Compilation};
+pub use lower::{compile, compile_analysis, Compilation};
 pub use plan::*;

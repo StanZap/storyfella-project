@@ -2,7 +2,7 @@
 
 Status: the language front end, compiler, Writer adapter and initial stdio LSP are
 implemented, including Studio `.sf` persistence and scene/beat registry associations.
-Authoring tools and playback are the next milestones in
+Authoring tools are implemented; playback is the next milestone in
 [the execution plan](language-plan.md). This syntax is a first editable design,
 anchored to the current Writer; it is not a compatibility layer for the prototype.
 
@@ -105,10 +105,31 @@ scene/beat document symbols. Position encoding is UTF-16. Older document version
 are ignored; incremental changes are rejected because the server advertises full
 sync. Closing a file clears published diagnostics.
 
-The server currently analyzes each open document independently with an empty
-asset catalog. External asset references therefore show as pending; Studio alone
-supplies its live registry. No workspace imports, external asset definitions,
-rename, formatter, semantic tokens or runtime integration are advertised yet.
+Resolved scene/beat rename, prepare-rename, conservative formatting and full
+semantic tokens are supported. Rename changes declarations and resolved targets,
+rejects collisions, and leaves prose/comments untouched. Asset rename is rejected:
+it needs a host operation that persists the catalog name. Writer's explicit Rename
+also updates artwork association keys, retaining UUIDs; source-only editor renames
+follow the documented detach/create behavior.
+
+Export context with `svs story catalog project.db > catalog.json`. Pass its
+absolute path in `initializationOptions.catalogPath`. Entries contain `id`, `name`,
+`kind` (`Character`, `Location`, `Prop`) and optional `revision`. An absent revision
+means pending artwork (`SF306`); an absent entry means a missing asset (`SF203`).
+Without a catalog references remain pending. Studio, CLI and LSP use the same
+GUI-free catalog adapter. Refresh explicitly with
+`workspace/didChangeConfiguration`, settings
+`{"storyfella":{"catalogPath":"/absolute/catalog.json"}}`. Refresh reanalyzes
+open unsaved buffers at their current versions. Failure preserves the previous
+context and reports an error. There is no file watcher or source write, and no
+inference startup. Compiler flow diagnostics share ordering and deduplication
+with Writer and CLI.
+
+Formatting edits whitespace gaps between structural tokens only. Indentation,
+line endings, comments, quoted strings and raw prose are preserved; formatting
+is idempotent. Syntax-invalid drafts are rejected without edits. Semantic tokens
+cover keywords, text, comments, asset names and scene/beat names. No imports,
+external asset definition locations or code actions are advertised.
 
 ## Current boundaries
 

@@ -39,26 +39,53 @@ scene harbor
     tam think: She counts the minutes like coins.
 "#;
 
-/// Reports which line the caret is on.
-///
-/// The editor's layers are absolutely positioned, so there is no element
-/// whose scroll position could stand in for the caret — and Dioxus form
-/// events do not carry `selectionStart`. Same bridge as the command bar,
-/// counting newlines instead of bytes.
-const CARET_LINE_BRIDGE: &str = r#"
+/// DOM selections use UTF-16; shared Source converts them to UTF-8 spans.
+const CARET_BRIDGE: &str = r#"
     const el = document.getElementById("svs-writer");
     if (el && !el.dataset.bridged) {
         el.dataset.bridged = "1";
         const push = () => {
             const caret = el.selectionStart ?? 0;
-            dioxus.send(el.value.slice(0, caret).split("\n").length - 1);
+            const lines = el.value.slice(0, caret).split("\n");
+            dioxus.send({line: lines.length - 1, character: lines.at(-1).length});
         };
         for (const name of ["input", "keyup", "click", "focus", "select"]) {
             el.addEventListener(name, push);
         }
-        push();
     }
 "#;
+
+fn focus_position(position: storyfella_language::Position) {
+    document::eval(&format!(
+        r#"const el = document.getElementById("svs-writer");
+        if (el) {{ const lines = el.value.split("\n");
+          const line = Math.min({}, lines.length - 1);
+          const offset = lines.slice(0, line).reduce((n, s) => n + s.length + 1, 0) + Math.min({}, lines[line].length);
+          el.focus(); el.setSelectionRange(offset, offset); }}"#,
+        position.line, position.character
+    ));
+}
+
+fn accept_completion(
+    mut state: Signal<AppState>,
+    caret: super::WriterCaret,
+    completion: &storyfella_language::Completion,
+) {
+    let source = state.read().story.source().to_owned();
+    if let Ok(edited) = storyfella_language::apply_edits(
+        &source,
+        &[storyfella_language::TextEdit {
+            replace: completion.replace,
+            new_text: completion.label.clone(),
+        }],
+    ) {
+        let position = storyfella_language::Source::new(&edited)
+            .position(completion.replace.start + completion.label.len())
+            .unwrap();
+        state.write().set_story_source(edited);
+        caret.navigate(position);
+    }
+}
 
 /// Which scene and beat a line belongs to.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -253,39 +280,71 @@ fn highlight(line: &str, known: &[String]) -> Vec<Piece> {
 #[component]
 pub fn Writer(app_state: Signal<AppState>) -> Element {
     let mut error_report = use_context::<Signal<Option<ReportedError>>>();
-    let mut cursor = use_context::<super::WriterCaret>().0;
+    let caret = use_context::<super::WriterCaret>();
+    let mut cursor = caret.position;
+    let mut navigation = caret.target;
     let mut screen = use_context::<Signal<super::AppScreen>>();
-    use_future(move || async move {
-        let mut bridge = document::eval(CARET_LINE_BRIDGE);
-        while let Ok(line) = bridge.recv::<usize>().await {
-            cursor.set(line);
-        }
-    });
+    let mut show_completions = use_signal(|| false);
+    let mut completion_index = use_signal(|| 0usize);
+    let mut show_references = use_signal(|| false);
+    let mut rename_name = use_signal(String::new);
+    let mut edit_error = use_signal(|| None::<String>);
     let source = app_state.read().story.source().to_owned();
+    let mut previous_source = use_signal(|| source.clone());
     let story_path = app_state
         .read()
         .story
         .path()
         .map(std::path::Path::to_path_buf);
     let registry = app_state.read().registry.clone();
-    let analysis = analyze(&source, &AssetCatalog::from_registry(&registry).assets);
+    let catalog = AssetCatalog::from_registry(&registry);
+    let analysis = analyze(&source, &catalog.assets);
+    let compilation = storyfella_compiler::compile_analysis(&analysis, &catalog.bindings);
+    let offset = analysis.document.source.offset(cursor()).unwrap_or(0);
+    let completions = if show_completions() {
+        storyfella_language::complete(&analysis, offset, &catalog.assets)
+    } else {
+        Vec::new()
+    };
+    let selected_completion = completion_index().min(completions.len().saturating_sub(1));
+    let key_completions = completions.clone();
+    let definition = analysis
+        .definition_at(offset)
+        .and_then(|span| analysis.document.source.position(span.start));
+    let reference_positions: Vec<_> = analysis
+        .references_at(offset, true)
+        .iter()
+        .filter_map(|span| analysis.document.source.position(span.start))
+        .collect();
 
     let lines: Vec<String> = if source.is_empty() {
         Vec::new()
     } else {
-        source.lines().map(str::to_owned).collect()
+        source
+            .split('\n')
+            .map(|line| line.strip_suffix('\r').unwrap_or(line).to_owned())
+            .collect()
     };
     let scopes = outline_analysis(&analysis);
-    // The caret starts at line 0, which is usually a comment or the story
-    // header — a scope with nothing in it, which reads as an empty panel on
-    // a story that is not empty. Open on the first line that has a scene.
-    let first_scene = scopes
-        .iter()
-        .position(|scope| scope.scene.is_some())
-        .unwrap_or(0);
-    let at = (*cursor.read())
-        .max(first_scene)
-        .min(lines.len().saturating_sub(1));
+    let at = (cursor().line as usize).min(lines.len().saturating_sub(1));
+    // A controlled textarea can overwrite newer native keystrokes with an
+    // older queued render. Only replace DOM text when it still matches the
+    // previous snapshot; native input already holds the new text.
+    use_effect(use_reactive((&source,), move |(source,)| {
+        let previous = previous_source.peek().replace("\r\n", "\n");
+        previous_source.set(source.clone());
+        let next = source.replace("\r\n", "\n");
+        document::eval(&format!(
+            "const el = document.getElementById('svs-writer'); if (el && el.value === {}) el.value = {};",
+            serde_json::to_string(&previous).unwrap(), serde_json::to_string(&next).unwrap()
+        ));
+    }));
+    use_effect(move || {
+        if let Some(position) = navigation() {
+            focus_position(position);
+            navigation.set(None);
+        }
+    });
     // Keep both editor layers on the parent's scroll surface. Following the
     // caret also makes driver typing visible when it appends below the viewport.
     use_effect(use_reactive((&source, &at), move |(_, line)| {
@@ -432,17 +491,79 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                             class: "absolute inset-x-0 top-0 z-20 min-h-full w-full resize-none overflow-hidden bg-transparent px-4 py-3 font-mono text-[12.5px] leading-[1.75] text-transparent caret-violet-400 outline-none",
                             spellcheck: "false",
                             autocomplete: "off",
-                            value: "{source}",
+                            onmounted: { let initial = source.clone(); move |_| {
+                                document::eval(&format!("document.getElementById('svs-writer').value = {};", serde_json::to_string(&initial.replace("\r\n", "\n")).unwrap()));
+                                focus_position(cursor());
+                                spawn(async move {
+                                    let mut bridge = document::eval(CARET_BRIDGE);
+                                    while let Ok(position) = bridge.recv::<storyfella_language::Position>().await { cursor.set(position); }
+                                });
+                            } },
                             oninput: move |event| {
                                 let mut state = app_state.write();
-                                state.set_story_source(event.value());
+                                let edited = storyfella_language::textarea_input(state.story.source(), &event.value());
+                                state.set_story_source(edited);
+                                show_completions.set(true);
+                                completion_index.set(0);
+                            },
+                            onkeydown: move |event| {
+                                if event.modifiers().ctrl() && event.key() == Key::Character(" ".into()) { event.prevent_default(); show_completions.set(true); }
+                                if show_completions() && !key_completions.is_empty() {
+                                    match event.key() {
+                                        Key::ArrowDown => { event.prevent_default(); completion_index.set((selected_completion + 1) % key_completions.len()); }
+                                        Key::ArrowUp => { event.prevent_default(); completion_index.set((selected_completion + key_completions.len() - 1) % key_completions.len()); }
+                                        Key::Enter | Key::Tab => { event.prevent_default(); accept_completion(app_state, caret, &key_completions[selected_completion]); show_completions.set(false); }
+                                        Key::Escape => { event.prevent_default(); show_completions.set(false); }
+                                        _ => {}
+                                    }
+                                }
                             },
                         }
                     }
-                    for diagnostic in analysis.diagnostics.iter().filter(|d| d.severity == Severity::Error).take(3) {
-                        p { class: "px-4 py-1 font-mono text-[11px] text-rose-300",
-                            "{diagnostic.message}"
+                    if !completions.is_empty() {
+                        div { class: "max-h-32 overflow-y-auto border-t border-white/[0.05] px-4 py-2",
+                            for (index, completion) in completions.iter().enumerate() {
+                                button {
+                                    class: if index == selected_completion { "mr-2 rounded bg-violet-400/15 px-2 py-1 font-mono text-[11px] text-violet-200" } else { "mr-2 px-2 py-1 font-mono text-[11px] text-zinc-400" },
+                                    onclick: { let completion = completion.clone(); move |_| { accept_completion(app_state, caret, &completion); show_completions.set(false); } },
+                                    "{completion.label}"
+                                }
+                            }
                         }
+                    }
+                    div { class: "flex flex-wrap items-center gap-2 border-t border-white/[0.05] px-4 py-2 text-[11px] text-zinc-400",
+                        button { disabled: definition.is_none(), onclick: move |_| { if let Some(position) = definition { cursor.set(position); focus_position(position); } }, "Definition" }
+                        button { onclick: move |_| show_references.toggle(), "References" }
+                        button { onclick: move |_| {
+                            let catalog = AssetCatalog::from_registry(&app_state.read().registry);
+                            let analysis = analyze(app_state.read().story.source(), &catalog.assets);
+                            let result = storyfella_language::format(&analysis).and_then(|edits| storyfella_language::apply_edits(analysis.document.source.text(), &edits));
+                            match result { Ok(source) => { app_state.write().set_story_source(source); edit_error.set(None); }, Err(error) => edit_error.set(Some(error)) }
+                        }, "Format" }
+                        input { class: "w-28 rounded bg-white/[0.05] px-2 py-1 font-mono text-zinc-200", placeholder: "New symbol name", value: "{rename_name}", oninput: move |event| rename_name.set(event.value()) }
+                        button { onclick: move |_| {
+                            let offset = storyfella_language::Source::new(app_state.read().story.source()).offset(cursor()).unwrap_or(0);
+                            edit_error.set(app_state.write().rename_story_symbol(offset, &rename_name()).err());
+                        }, "Rename" }
+                    }
+                    if let Some(error) = edit_error() { p { class: "px-4 py-1 text-[11px] text-rose-300", "{error}" } }
+                    if show_references() {
+                        div { class: "max-h-24 overflow-auto px-4 py-1",
+                            for position in reference_positions {
+                                button { class: "mr-2 font-mono text-[11px] text-violet-300", onclick: move |_| { cursor.set(position); focus_position(position); }, "{position.line + 1}:{position.character + 1}" }
+                            }
+                        }
+                    }
+                    for diagnostic in compilation.diagnostics.iter().take(4) {
+                        if let Some(position) = analysis.document.source.position(diagnostic.span.start) {
+                            button { class: if diagnostic.severity == Severity::Error { "px-4 py-1 text-left font-mono text-[11px] text-rose-300" } else { "px-4 py-1 text-left font-mono text-[11px] text-amber-300" },
+                                onclick: move |_| { cursor.set(position); focus_position(position); },
+                                "{position.line + 1}:{position.character + 1} · {diagnostic.code} · {diagnostic.message}"
+                            }
+                        }
+                    }
+                    if let Some(plan) = &compilation.plan {
+                        p { class: "px-4 py-1 text-[11px] text-zinc-500", "Playback readiness: {plan.readiness.pending_assets.len()} pending asset uses · {plan.readiness.unsupported_directions.len()} unsupported directions" }
                     }
                     if analysis.has_errors() {
                         p { class: "px-4 py-1 text-[11px] text-amber-300", "Story artwork keeps the last valid scene and beat association while this draft has errors." }

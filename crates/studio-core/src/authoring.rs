@@ -27,6 +27,18 @@ pub struct AssetCatalog {
     pub bindings: Vec<AssetBinding>,
 }
 
+/// Read-only host context for external editors and CLI compilation. Missing
+/// revision means a named catalog asset whose artwork is still pending.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogEntry {
+    pub id: String,
+    pub name: String,
+    pub kind: AssetKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+}
+
 pub fn artifact_kind(kind: AssetKind) -> ArtifactKind {
     match kind {
         AssetKind::Character => ArtifactKind::Character,
@@ -36,10 +48,59 @@ pub fn artifact_kind(kind: AssetKind) -> ArtifactKind {
 }
 
 impl AssetCatalog {
+    pub fn from_entries(entries: Vec<CatalogEntry>) -> Result<Self, String> {
+        if entries.iter().any(|e| {
+            e.id.trim().is_empty()
+                || e.name.trim().is_empty()
+                || e.revision.as_ref().is_some_and(|r| r.trim().is_empty())
+        }) {
+            return Err("Catalog IDs/names and supplied revision IDs must be nonempty".into());
+        }
+        let assets = entries
+            .iter()
+            .map(|e| Asset {
+                id: e.id.clone(),
+                name: e.name.clone(),
+                kind: e.kind,
+            })
+            .collect();
+        let bindings = entries
+            .into_iter()
+            .filter_map(|e| {
+                e.revision.map(|revision| AssetBinding {
+                    id: e.id,
+                    name: e.name,
+                    kind: e.kind,
+                    revision,
+                })
+            })
+            .collect();
+        Ok(Self { assets, bindings })
+    }
+
+    pub fn entries(&self) -> Vec<CatalogEntry> {
+        self.assets
+            .iter()
+            .map(|asset| CatalogEntry {
+                id: asset.id.clone(),
+                name: asset.name.clone(),
+                kind: asset.kind,
+                revision: self
+                    .bindings
+                    .iter()
+                    .find(|b| b.id == asset.id)
+                    .map(|b| b.revision.clone()),
+            })
+            .collect()
+    }
+
     pub fn from_registry(registry: &ArtifactRegistry) -> Self {
         let mut assets = Vec::new();
         let mut bindings = Vec::new();
         for artifact in &registry.artifacts {
+            if artifact.name.trim().is_empty() {
+                continue;
+            }
             let kind = match artifact.kind {
                 ArtifactKind::Character => AssetKind::Character,
                 ArtifactKind::Environment => AssetKind::Location,

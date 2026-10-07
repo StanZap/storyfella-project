@@ -2,14 +2,15 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
 use serde::Serialize;
 use std::path::PathBuf;
-use storyfella_compiler::{compile, AssetBinding, Compilation, Readiness};
+use storyfella_compiler::{compile_analysis, Compilation, Readiness};
 use storyfella_language::{Diagnostic, Position, Source};
+use storyfella_studio_core::authoring::{AssetCatalog, CatalogEntry};
 
 #[derive(Args)]
 pub struct SourceArgs {
     /// UTF-8 .sf source file.
     path: PathBuf,
-    /// JSON array of immutable {id, name, kind, revision} asset bindings.
+    /// JSON catalog array {id, name, kind, revision?}; omitted revision is pending artwork.
     #[arg(long)]
     assets: Option<PathBuf>,
     /// Fail unless source is valid, every asset is bound and directions are supported.
@@ -19,6 +20,8 @@ pub struct SourceArgs {
 
 #[derive(Subcommand)]
 pub enum StoryCommand {
+    /// Export a project's read-only asset context for external editors.
+    Catalog { project: PathBuf },
     /// Print source validity, linking readiness and positioned diagnostics as JSON.
     Check(SourceArgs),
     /// Print the versioned story plan as JSON. Blocked requirements remain explicit.
@@ -62,17 +65,32 @@ pub fn run(command: StoryCommand) -> Result<()> {
     let (args, emit_plan) = match command {
         StoryCommand::Check(args) => (args, false),
         StoryCommand::Compile(args) => (args, true),
+        StoryCommand::Catalog { project } => {
+            if !project.is_file() {
+                bail!("project database does not exist: {}", project.display());
+            }
+            let stored = storyfella_studio_core::persistence::ProjectDb::open(project)?.load()?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &AssetCatalog::from_registry(&stored.registry).entries()
+                )?
+            );
+            return Ok(());
+        }
     };
     let text = std::fs::read_to_string(&args.path)
         .with_context(|| format!("could not read {}", args.path.display()))?;
-    let bindings: Vec<AssetBinding> = match &args.assets {
+    let entries: Vec<CatalogEntry> = match &args.assets {
         Some(path) => serde_json::from_slice(
             &std::fs::read(path).with_context(|| format!("could not read {}", path.display()))?,
         )
         .with_context(|| format!("invalid asset binding array in {}", path.display()))?,
         None => Vec::new(),
     };
-    let result = compile(&text, &bindings);
+    let catalog = AssetCatalog::from_entries(entries).map_err(anyhow::Error::msg)?;
+    let analysis = storyfella_language::analyze(&text, &catalog.assets);
+    let result = compile_analysis(&analysis, &catalog.bindings);
     if !emit_plan || result.has_errors() || (args.require_ready && !result.ready()) {
         println!(
             "{}",
@@ -100,7 +118,7 @@ mod tests {
     fn positioned_diagnostics_use_utf16_and_keep_original_spans() {
         let text =
             "scene start\n  choice \"🌊\"\n    option \"🌊\": unknown\n    option \"🌊\": start\n";
-        let result = compile(text, &[]);
+        let result = storyfella_compiler::compile(text, &[]);
         let source = Source::new(text);
         let report = check_report(&result, &source);
         let diagnostic = report

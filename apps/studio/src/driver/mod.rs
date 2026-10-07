@@ -832,7 +832,10 @@ async fn execute_step(
         }
         StepVerb::Say => StepStatus::Passed,
         StepVerb::Caret(line) => {
-            ctx.writer_caret.0.clone().set(*line);
+            ctx.writer_caret.navigate(storyfella_language::Position {
+                line: *line as u32,
+                character: 0,
+            });
             ctx.screen.set(AppScreen::Writer);
             StepStatus::Passed
         }
@@ -1301,9 +1304,11 @@ async fn type_story(
     let original = ctx.app_state.read().story.source().to_owned();
     let completed = type_text(session, text, |typed| {
         let source = format!("{original}{typed}");
-        let line = source.bytes().filter(|byte| *byte == b'\n').count();
+        let position = storyfella_language::Source::new(&source)
+            .position(source.len())
+            .unwrap();
         ctx.app_state.write().set_story_source(source);
-        ctx.writer_caret.0.set(line);
+        ctx.writer_caret.navigate(position);
     })
     .await;
     status(completed, "the run was cancelled while typing".to_owned())

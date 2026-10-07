@@ -5,7 +5,8 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use storyfella_language::{
-    analyze, Asset, AssetKind, Diagnostic, Name, Node, NodeKind, Severity, Source, Span,
+    analyze, normalize_diagnostics, Analysis, Asset, AssetKind, Diagnostic, Name, Node, NodeKind,
+    Severity, Source, Span,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +56,18 @@ impl Lowerer<'_> {
             .find(|b| b.name.eq_ignore_ascii_case(&name.value) && b.kind == kind)
             .cloned();
         if binding.is_none() {
+            if !self
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "SF203" && d.span == name.span)
+            {
+                self.diagnostics.push(Diagnostic {
+                    code: "SF306".into(),
+                    severity: Severity::Information,
+                    message: format!("Pending artwork revision for '{}'", name.value),
+                    span: name.span,
+                });
+            }
             self.readiness.pending_assets.push(PendingAsset {
                 kind,
                 name: name.clone(),
@@ -198,6 +211,11 @@ pub fn compile(source: &str, bindings: &[AssetBinding]) -> Compilation {
         })
         .collect();
     let analysis = analyze(source, &catalog);
+    compile_analysis(&analysis, bindings)
+}
+
+/// Reuse the host's shared analysis, including catalog entries without artwork.
+pub fn compile_analysis(analysis: &Analysis, bindings: &[AssetBinding]) -> Compilation {
     let mut diagnostics = analysis.diagnostics.clone();
     let mut ids = BTreeSet::new();
     let mut names = BTreeSet::new();
@@ -228,6 +246,7 @@ pub fn compile(source: &str, bindings: &[AssetBinding]) -> Compilation {
         ));
     }
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        normalize_diagnostics(&mut diagnostics);
         return Compilation {
             plan: None,
             diagnostics,
@@ -277,6 +296,7 @@ pub fn compile(source: &str, bindings: &[AssetBinding]) -> Compilation {
         .iter()
         .any(|d| d.severity == Severity::Error)
     {
+        normalize_diagnostics(&mut lowerer.diagnostics);
         return Compilation {
             plan: None,
             diagnostics: lowerer.diagnostics,
@@ -309,14 +329,12 @@ pub fn compile(source: &str, bindings: &[AssetBinding]) -> Compilation {
             });
         }
     }
-    lowerer
-        .diagnostics
-        .sort_by(|a, b| (a.span.start, &a.code).cmp(&(b.span.start, &b.code)));
+    normalize_diagnostics(&mut lowerer.diagnostics);
     Compilation {
         plan: Some(StoryPlan {
             version: PLAN_VERSION,
-            source: source.into(),
-            title: analysis.document.story.title,
+            source: analysis.document.source.text().into(),
+            title: analysis.document.story.title.clone(),
             entry: scene_ids[0].clone(),
             scenes,
             readiness: lowerer.readiness,

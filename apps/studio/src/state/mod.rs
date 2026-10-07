@@ -64,9 +64,79 @@ impl AppState {
         if self.story.source() != source {
             self.snapshot_for_undo();
             self.story.set_source(source);
-            self.reconcile_story();
+            let analysis = analyze(
+                self.story.source(),
+                &AssetCatalog::from_registry(&self.registry).assets,
+            );
+            // Live typing is not an explicit EOF snapshot. Wait for a new
+            // declaration's terminating newline before installing its identity.
+            let unfinished_header = analysis.symbols.iter().any(|symbol| {
+                let line = analysis
+                    .document
+                    .source
+                    .position(symbol.name.span.end)
+                    .unwrap()
+                    .line as usize;
+                let unterminated = analysis.document.source.line_span(line).unwrap().end
+                    == self.story.source().len();
+                let known = match symbol.kind {
+                    storyfella_language::SymbolKind::Scene => self
+                        .registry
+                        .story_scenes
+                        .iter()
+                        .any(|s| s.name == symbol.name.value),
+                    storyfella_language::SymbolKind::Beat => {
+                        self.registry.story_scenes.iter().any(|s| {
+                            symbol.scene.as_ref() == Some(&s.name)
+                                && s.beats.iter().any(|b| b.name == symbol.name.value)
+                        })
+                    }
+                };
+                unterminated && !known
+            });
+            if !unfinished_header {
+                reconcile(&mut self.registry, &analysis);
+            }
             self.has_unsaved_changes = true;
         }
+    }
+
+    pub fn rename_story_symbol(&mut self, offset: usize, name: &str) -> Result<(), String> {
+        let analysis = analyze(
+            self.story.source(),
+            &AssetCatalog::from_registry(&self.registry).assets,
+        );
+        let edits = storyfella_language::rename(&analysis, offset, name)?;
+        let source = storyfella_language::apply_edits(self.story.source(), &edits)?;
+        let definition = analysis
+            .definition_at(offset)
+            .ok_or("Select a resolved declaration")?;
+        let symbol = analysis
+            .symbols
+            .iter()
+            .find(|s| s.name.span == definition)
+            .ok_or("Select a resolved declaration")?;
+        self.snapshot_for_undo();
+        for scene in &mut self.registry.story_scenes {
+            match symbol.kind {
+                storyfella_language::SymbolKind::Scene if scene.name == symbol.name.value => {
+                    scene.name = name.into()
+                }
+                storyfella_language::SymbolKind::Beat
+                    if symbol.scene.as_ref() == Some(&scene.name) =>
+                {
+                    if let Some(beat) = scene.beats.iter_mut().find(|b| b.name == symbol.name.value)
+                    {
+                        beat.name = name.into();
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.story.set_source(source);
+        self.reconcile_story();
+        self.has_unsaved_changes = true;
+        Ok(())
     }
 
     pub fn reconcile_story(&mut self) {
@@ -403,6 +473,45 @@ mod tests {
             .registry
             .artifact(before.story_scenes[0].artifact_id)
             .is_some());
+    }
+
+    #[test]
+    fn explicit_symbol_rename_keeps_artwork_identity_and_undoes_both_representations() {
+        let mut state = AppState::default();
+        state.set_story_source(
+            "scene harbor\n  beat arrival\n    narrate: harbor\nscene sea\n  goto harbor\n".into(),
+        );
+        let before = state.registry.clone();
+        state.rename_story_symbol(7, "port").unwrap();
+        assert_eq!(
+            state.registry.story_scenes[0].artifact_id,
+            before.story_scenes[0].artifact_id
+        );
+        assert_eq!(
+            state.registry.story_scenes[0].beats,
+            before.story_scenes[0].beats
+        );
+        assert!(state.story.source().contains("narrate: harbor"));
+        assert!(state.story.source().ends_with("goto port\n"));
+        assert!(state.undo());
+        assert_eq!(state.registry, before);
+        assert!(state.story.source().starts_with("scene harbor"));
+    }
+
+    #[test]
+    fn typing_declaration_prefixes_waits_for_a_complete_line_or_explicit_snapshot() {
+        let mut state = AppState::default();
+        let source = "scene harbor\n  beat arrival\n";
+        for (offset, ch) in source.char_indices() {
+            state.set_story_source(source[..offset + ch.len_utf8()].into());
+        }
+        assert_eq!(state.registry.artifacts.len(), 2);
+        assert_eq!(state.registry.story_scenes[0].name, "harbor");
+        assert_eq!(state.registry.story_scenes[0].beats[0].name, "arrival");
+        state.set_story_source("scene sea".into());
+        assert_eq!(state.registry.story_scenes[0].name, "harbor");
+        state.reconcile_story();
+        assert_eq!(state.registry.story_scenes[0].name, "sea");
     }
 
     #[test]

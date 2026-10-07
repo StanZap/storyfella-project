@@ -44,8 +44,8 @@ remain retained directions that block readiness until execution is implemented.
 Acceptance implemented: deterministic lowering, source mapping, all targets
 resolved, explicit flow origins, JSON round-trip and actionable readiness reports.
 `svs story check`/`compile` expose the compiler; `--require-ready` gates binding and
-direction readiness. Compiler-specific diagnostics are not yet integrated into
-Writer/LSP; those clients currently expose the shared front-end diagnostics.
+direction readiness. Writer/LSP expose shared compiler diagnostics and catalog
+readiness; `svs story catalog` exports project context for external editors.
 
 ## 3. Story files and Studio integration — file persistence implemented
 
@@ -62,8 +62,10 @@ Text renames and inter-scene moves create new identities; dialogue/reorder retai
 existing ones. Source and registry undo together. See [story-files.md](story-files.md).
 
 Pending catalog creation of the expected kind, artifact origins and `Appears in`
-backlinks are connected. Remaining: project-relative generated asset paths,
-Writer completion/navigation tooling and source-linked compiler diagnostics.
+backlinks, precise Writer completion/navigation and source-linked compiler
+diagnostics are connected. Explicit rename retains artwork identity. Shared
+rename, conservative formatting and semantic tokens are implemented with LSP
+protocol/process tests. Remaining: project-relative generated asset paths.
 
 Acceptance: disk source, Writer and canvas reconcile after save/reopen without
 losing draft text or asset identities. Replace transitional behavior in the same
@@ -97,8 +99,9 @@ execution and evidence; playback never quietly substitutes neutral performance.
 ## 6. Multi-file language and deeper tooling
 
 Specify modules/imports, cross-file identity, cycles and project boundaries before
-implementing a project graph. Then add workspace navigation, semantic tokens,
-rename, code actions and formatting with lossless comments/source maps. Variables,
+implementing a project graph. Single-document semantic tokens, rename and
+formatting are implemented; workspace navigation and concrete code actions remain.
+Variables,
 conditions, expressions and localization need their own grammar/semantics and
 fixtures; they are not implied by this first slice.
 

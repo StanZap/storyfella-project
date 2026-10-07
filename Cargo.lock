@@ -4749,7 +4749,9 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "storyfella-compiler",
  "storyfella-language",
+ "storyfella-studio-core",
 ]
 
 [[package]]
@@ -4770,6 +4772,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "storyfella-compiler",
  "storyfella-language",
  "storyfella-studio-core",
  "tokio",

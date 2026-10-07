@@ -150,8 +150,10 @@ error-code registry (item 7) are implemented and validated:
 - Language, compiler and LSP tests cover source preservation, recovery, navigation, flow, linking/readiness and CLI/protocol behavior; run the workspace checks below for current results. The only generation profile is `qwen-image-2.1`; its t2i / instruction-edit / RGBA-cutout behaviour was measured on a CUDA `sd-server` (RTX 3090) in the 2026-09-30 spike — see `.svs-e2e/logs/2026-09-30-quality-evals.md`. LLM `draft`, `stack propose`, LoRA injection, and the size/step controls still await live validation.
 - Studio integration (item 8) is active: Writer/Canvas associations, schema-v10
   identity persistence, pending catalog creation, origins/backlinks and joint
-  source/registry undo are implemented. Authoring tools and shared playback are
-  next; `docs/ROADMAP.md` §12 remains authoritative.
+  source/registry undo are implemented. Shared Writer completion/navigation,
+  compiler diagnostics, rename, formatting, and catalog-backed LSP semantic
+  tokens are implemented. Shared playback is next; `docs/ROADMAP.md` §12 remains
+  authoritative.
 
 # Validation
 

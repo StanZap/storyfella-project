@@ -710,7 +710,7 @@ fn ArtifactDetail(
     // artifact never lands you in a mode you did not ask for.
     let tool = use_context::<ActiveTool>().0;
     let mut screen = use_context::<Signal<super::AppScreen>>();
-    let mut caret = use_context::<super::WriterCaret>().0;
+    let caret = use_context::<super::WriterCaret>();
     let analysis = storyfella_language::analyze(
         app_state.read().story.source(),
         &storyfella_studio_core::authoring::AssetCatalog::from_registry(&registry).assets,
@@ -723,7 +723,7 @@ fn ArtifactDetail(
                 .document
                 .source
                 .position(link.span.start)
-                .map(|position| (link.label, position.line as usize))
+                .map(|position| (link.label, position))
         })
         .collect();
     let detached = matches!(
@@ -793,11 +793,11 @@ fn ArtifactDetail(
             if !positioned_links.is_empty() {
                 div { class: "mt-12 flex flex-wrap items-center gap-2 px-4 py-2",
                     span { class: "text-[10px] text-zinc-500", "Appears in" }
-                    for (label, line) in positioned_links {
+                    for (label, position) in positioned_links {
                         button {
                             class: "rounded bg-white/[0.05] px-2 py-1 font-mono text-[11px] text-violet-300 hover:text-white",
-                            onclick: move |_| { caret.set(line); screen.set(super::AppScreen::Writer); },
-                            "{label} · line {line + 1}"
+                            onclick: move |_| { caret.navigate(position); screen.set(super::AppScreen::Writer); },
+                            "{label} · line {position.line + 1}"
                         }
                     }
                 }

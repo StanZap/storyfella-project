@@ -106,3 +106,15 @@ impl Diagnostic {
         }
     }
 }
+
+pub fn normalize_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
+    diagnostics.sort_by(|a, b| {
+        (a.span.start, a.span.end, &a.code, &a.message).cmp(&(
+            b.span.start,
+            b.span.end,
+            &b.code,
+            &b.message,
+        ))
+    });
+    diagnostics.dedup();
+}

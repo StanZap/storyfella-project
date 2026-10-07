@@ -173,3 +173,29 @@ fn malformed_binding_schema_is_rejected() {
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("invalid asset binding array"));
 }
+
+#[test]
+fn catalog_entries_without_images_are_resolved_but_report_pending_artwork() {
+    let fixture = Fixture::new();
+    fixture.write("story.sf", "scene first\n  prop: lantern\n");
+    fixture.write(
+        "assets.json",
+        r#"[{"id":"lantern-id","name":"lantern","kind":"Prop"}]"#,
+    );
+    let report = fixture.json(
+        &["story", "check", "story.sf", "--assets", "assets.json"],
+        true,
+    );
+    assert_eq!(report["valid"], true);
+    assert_eq!(report["ready"], false);
+    assert!(report["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["code"] == "SF306"));
+    assert!(!report["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["code"] == "SF203"));
+}

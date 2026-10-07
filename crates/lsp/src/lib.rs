@@ -6,8 +6,10 @@ use std::{
     io::{self, BufRead, Write},
 };
 use storyfella_language::{
-    analyze, complete, Analysis, CompletionKind, Position, Severity, Source, Span, SymbolKind,
+    analyze, complete, format, rename, semantic_tokens, Analysis, CompletionKind, Position,
+    Severity, Source, Span, SymbolKind, SEMANTIC_TOKEN_TYPES,
 };
+use storyfella_studio_core::authoring::{AssetCatalog, CatalogEntry};
 
 const MAX_MESSAGE: usize = 4 * 1024 * 1024;
 
@@ -129,22 +131,37 @@ struct ReferencesParams {
 struct Document {
     version: i64,
     analysis: Analysis,
+    diagnostics: Vec<storyfella_language::Diagnostic>,
+}
+impl Document {
+    fn new(version: i64, text: &str, catalog: &AssetCatalog) -> Self {
+        let analysis = analyze(text, &catalog.assets);
+        let diagnostics =
+            storyfella_compiler::compile_analysis(&analysis, &catalog.bindings).diagnostics;
+        Self {
+            version,
+            analysis,
+            diagnostics,
+        }
+    }
 }
 #[derive(Default)]
 struct Server {
     initialized: bool,
     shutdown: bool,
     documents: BTreeMap<String, Document>,
+    catalog_entries: Vec<CatalogEntry>,
 }
 
+#[derive(Debug)]
 struct RpcError {
     code: i32,
-    message: &'static str,
+    message: String,
 }
 fn invalid() -> RpcError {
     RpcError {
         code: -32602,
-        message: "Invalid params",
+        message: "Invalid params".into(),
     }
 }
 fn params<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, RpcError> {
@@ -156,7 +173,7 @@ fn range(source: &Source, span: Span) -> Value {
 }
 fn publish(uri: &str, doc: &Document) -> Value {
     let source = &doc.analysis.document.source;
-    let diagnostics: Vec<_> = doc.analysis.diagnostics.iter().map(|d| json!({
+    let diagnostics: Vec<_> = doc.diagnostics.iter().map(|d| json!({
         "range": range(source, d.span), "severity": match d.severity { Severity::Error => 1, Severity::Warning => 2, Severity::Information => 3 },
         "code": d.code, "source": "storyfella", "message": d.message,
     })).collect();
@@ -186,32 +203,55 @@ impl Server {
             if self.initialized {
                 return Err(RpcError {
                     code: -32600,
-                    message: "Already initialized",
+                    message: "Already initialized".into(),
                 });
             }
             if !p.is_object() {
                 return Err(invalid());
             }
+            if let Some(path) = p.pointer("/initializationOptions/catalogPath") {
+                self.catalog_entries = load_catalog(path)?;
+            }
             self.initialized = true;
             return Ok(json!({"capabilities": {
                 "positionEncoding": "utf-16", "textDocumentSync": {"openClose": true, "change": 1},
                 "completionProvider": {"triggerCharacters": [":", ","]}, "definitionProvider": true,
-                "referencesProvider": true, "documentSymbolProvider": true
+                "referencesProvider": true, "documentSymbolProvider": true,
+                "renameProvider": {"prepareProvider": true}, "documentFormattingProvider": true,
+                "semanticTokensProvider": {"legend": {"tokenTypes": SEMANTIC_TOKEN_TYPES, "tokenModifiers": []}, "full": true}
             }, "serverInfo": {"name": "storyfella-lsp", "version": env!("CARGO_PKG_VERSION")}}));
         }
         if !self.initialized {
             return Err(RpcError {
                 code: -32002,
-                message: "Server not initialized",
+                message: "Server not initialized".into(),
             });
         }
         if self.shutdown {
             return Err(RpcError {
                 code: -32600,
-                message: "Server has shut down",
+                message: "Server has shut down".into(),
             });
         }
         match method {
+            "workspace/didChangeConfiguration" => {
+                let path = p
+                    .pointer("/settings/storyfella/catalogPath")
+                    .ok_or_else(invalid)?;
+                let entries = load_catalog(path)?;
+                let catalog =
+                    AssetCatalog::from_entries(entries.clone()).map_err(|message| RpcError {
+                        code: -32602,
+                        message,
+                    })?;
+                for (uri, doc) in &mut self.documents {
+                    *doc =
+                        Document::new(doc.version, doc.analysis.document.source.text(), &catalog);
+                    notifications.push(publish(uri, doc));
+                }
+                self.catalog_entries = entries;
+                Ok(Value::Null)
+            }
             "initialized" | "$/cancelRequest" | "$/setTrace" => Ok(Value::Null),
             "shutdown" => {
                 self.shutdown = true;
@@ -224,10 +264,11 @@ impl Server {
                 {
                     return Err(invalid());
                 }
-                let document = Document {
-                    version: p.text_document.version,
-                    analysis: analyze(&p.text_document.text, &[]),
-                };
+                let document = Document::new(
+                    p.text_document.version,
+                    &p.text_document.text,
+                    &self.catalog(),
+                );
                 notifications.push(publish(&p.text_document.uri, &document));
                 self.documents.insert(p.text_document.uri, document);
                 Ok(Value::Null)
@@ -246,10 +287,8 @@ impl Server {
                 if change.range.is_some() || change.text.len() > MAX_MESSAGE {
                     return Err(invalid());
                 }
-                let document = Document {
-                    version: p.text_document.version,
-                    analysis: analyze(&change.text, &[]),
-                };
+                let document =
+                    Document::new(p.text_document.version, &change.text, &self.catalog());
                 notifications.push(publish(&p.text_document.uri, &document));
                 self.documents.insert(p.text_document.uri, document);
                 Ok(Value::Null)
@@ -278,10 +317,79 @@ impl Server {
             "textDocument/completion" => {
                 let p: TextPosition = params(p)?;
                 let (analysis, offset) = self.at(&p)?;
-                Ok(json!(complete(analysis, offset, &[]).iter().map(|c| json!({"label": c.label,
+                Ok(json!(complete(analysis, offset, &self.catalog().assets).iter().map(|c| json!({"label": c.label,
                     "kind": match c.kind { CompletionKind::Keyword => 14, CompletionKind::Scene => 3, CompletionKind::Asset => 6 },
                     "textEdit": {"range": range(&analysis.document.source, c.replace), "newText": c.label}
                 })).collect::<Vec<_>>()))
+            }
+            "textDocument/prepareRename" | "textDocument/rename" => {
+                let position: TextPosition = params(p.clone())?;
+                let (analysis, offset) = self.at(&position)?;
+                let definition = analysis.definition_at(offset).ok_or_else(invalid)?;
+                let current = analysis
+                    .document
+                    .source
+                    .slice(definition)
+                    .ok_or_else(invalid)?;
+                let name = if method.ends_with("prepareRename") {
+                    current
+                } else {
+                    p.get("newName")
+                        .and_then(Value::as_str)
+                        .ok_or_else(invalid)?
+                };
+                let edits = rename(analysis, offset, name).map_err(|message| RpcError {
+                    code: -32602,
+                    message,
+                })?;
+                if method.ends_with("prepareRename") {
+                    let target = analysis
+                        .references
+                        .iter()
+                        .find(|r| r.name.span.contains(offset))
+                        .map_or(definition, |r| r.name.span);
+                    Ok(
+                        json!({"range": range(&analysis.document.source, target), "placeholder": current}),
+                    )
+                } else {
+                    let doc = self.document(&position.text_document.uri)?;
+                    Ok(
+                        json!({"documentChanges": [{"textDocument": {"uri": position.text_document.uri, "version": doc.version}, "edits": edits.iter().map(|e| json!({"range": range(&analysis.document.source, e.replace), "newText": e.new_text})).collect::<Vec<_>>()}]}),
+                    )
+                }
+            }
+            "textDocument/formatting" => {
+                let p: DocumentParams = params(p)?;
+                let analysis = &self.document(&p.text_document.uri)?.analysis;
+                let edits = format(analysis).map_err(|message| RpcError {
+                    code: -32602,
+                    message,
+                })?;
+                Ok(json!(edits.iter().map(|e| json!({"range": range(&analysis.document.source, e.replace), "newText": e.new_text})).collect::<Vec<_>>()))
+            }
+            "textDocument/semanticTokens/full" => {
+                let p: DocumentParams = params(p)?;
+                let analysis = &self.document(&p.text_document.uri)?.analysis;
+                let mut data = Vec::<u32>::new();
+                let mut previous = Position::default();
+                for token in semantic_tokens(analysis) {
+                    let start = analysis.document.source.position(token.span.start).unwrap();
+                    let end = analysis.document.source.position(token.span.end).unwrap();
+                    let delta = start.line - previous.line;
+                    data.extend([
+                        delta,
+                        if delta == 0 {
+                            start.character - previous.character
+                        } else {
+                            start.character
+                        },
+                        end.character - start.character,
+                        token.kind,
+                        0,
+                    ]);
+                    previous = start;
+                }
+                Ok(json!({"data": data}))
             }
             "textDocument/documentSymbol" => {
                 let p: DocumentParams = params(p)?;
@@ -297,9 +405,42 @@ impl Server {
             }
             _ => Err(RpcError {
                 code: -32601,
-                message: "Method not found",
+                message: "Method not found".into(),
             }),
         }
+    }
+}
+
+fn load_catalog(path: &Value) -> Result<Vec<CatalogEntry>, RpcError> {
+    let path = path.as_str().ok_or_else(invalid)?;
+    if !std::path::Path::new(path).is_absolute() {
+        return Err(RpcError {
+            code: -32602,
+            message: "catalogPath must be absolute".into(),
+        });
+    }
+    let entries: Vec<CatalogEntry> = std::fs::read(path)
+        .map_err(|e| RpcError {
+            code: -32602,
+            message: format!("Could not read catalog {path}: {e}"),
+        })
+        .and_then(|bytes| {
+            serde_json::from_slice(&bytes).map_err(|e| RpcError {
+                code: -32602,
+                message: format!("Invalid catalog {path}: {e}"),
+            })
+        })?;
+    AssetCatalog::from_entries(entries.clone()).map_err(|message| RpcError {
+        code: -32602,
+        message,
+    })?;
+    Ok(entries)
+}
+
+impl Server {
+    fn catalog(&self) -> AssetCatalog {
+        AssetCatalog::from_entries(self.catalog_entries.clone())
+            .expect("catalog is validated before installation")
     }
 }
 
@@ -398,6 +539,63 @@ mod tests {
             request(99, "shutdown", Value::Null),
             notification("exit", Value::Null),
         ]
+    }
+
+    #[test]
+    fn catalog_refresh_uses_unsaved_text_and_preserves_last_context_on_failure() {
+        let directory =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(format!("lsp-catalog-{}.json", std::process::id()));
+        std::fs::write(&path, r#"[{"id":"mara","name":"mara","kind":"Character"}]"#).unwrap();
+        let mut server = Server::default();
+        let mut notifications = Vec::new();
+        server
+            .dispatch(
+                "initialize",
+                json!({"initializationOptions":{"catalogPath":path}}),
+                &mut notifications,
+            )
+            .unwrap();
+        server.dispatch("textDocument/didOpen", json!({"textDocument":{"uri":"file:///story.sf","version":8,"text":"scene a\n  mara: Unsaved 🌊\n  end\n  narrate: unreachable\n"}}), &mut notifications).unwrap();
+        assert!(server.documents["file:///story.sf"]
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "SF301"));
+        server.dispatch("textDocument/didChange", json!({"textDocument":{"uri":"file:///story.sf","version":9},"contentChanges":[{"text":"scene a\n  mara: Unsaved 🌊\n"}]}), &mut notifications).unwrap();
+        assert!(server.documents["file:///story.sf"]
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "SF306"));
+        std::fs::write(
+            &path,
+            r#"[{"id":"mara","name":"mara","kind":"Character","revision":"image-v1"}]"#,
+        )
+        .unwrap();
+        server
+            .dispatch(
+                "workspace/didChangeConfiguration",
+                json!({"settings":{"storyfella":{"catalogPath":path}}}),
+                &mut notifications,
+            )
+            .unwrap();
+        let doc = &server.documents["file:///story.sf"];
+        assert_eq!(doc.version, 9);
+        assert!(doc.analysis.document.source.text().contains("Unsaved 🌊"));
+        assert!(doc.diagnostics.is_empty());
+        std::fs::write(&path, "invalid json").unwrap();
+        assert!(server
+            .dispatch(
+                "workspace/didChangeConfiguration",
+                json!({"settings":{"storyfella":{"catalogPath":path}}}),
+                &mut notifications
+            )
+            .is_err());
+        assert_eq!(
+            server.catalog_entries[0].revision.as_deref(),
+            Some("image-v1")
+        );
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

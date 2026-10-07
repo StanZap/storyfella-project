@@ -82,9 +82,18 @@ pub fn persist_state(app_state: Signal<AppState>, mut error_report: Signal<Optio
     }
 }
 
-/// Newtypes so two `Signal<usize>` contexts stay distinguishable.
+/// Precise Writer position and the grid's independent selection.
 #[derive(Clone, Copy)]
-pub struct WriterCaret(pub Signal<usize>);
+pub struct WriterCaret {
+    pub position: Signal<storyfella_language::Position>,
+    pub target: Signal<Option<storyfella_language::Position>>,
+}
+impl WriterCaret {
+    pub fn navigate(mut self, position: storyfella_language::Position) {
+        self.position.set(position);
+        self.target.set(Some(position));
+    }
+}
 #[derive(Clone, Copy)]
 pub struct GridCursor(pub Signal<usize>);
 
@@ -206,7 +215,10 @@ pub fn Workspace(
     // The two cursors — the writer's caret line and the grid's keyboard
     // selection. Owned here so the plan driver can move them: a demo that
     // cannot move a cursor can only narrate, never show.
-    let writer_caret = WriterCaret(use_signal(|| 0usize));
+    let writer_caret = WriterCaret {
+        position: use_signal(storyfella_language::Position::default),
+        target: use_signal(|| None),
+    };
     use_context_provider(|| writer_caret);
     let grid_cursor = GridCursor(use_signal(|| 0usize));
     use_context_provider(|| grid_cursor);
