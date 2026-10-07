@@ -1,5 +1,3 @@
-#[path = "support/playback.rs"]
-mod support;
 use storyfella_runtime::{Command, Phase};
 use storyfella_studio_core::{playback::PlaybackSession, registry::RevisionOrigin};
 
@@ -14,9 +12,20 @@ fn directory() -> std::path::PathBuf {
 }
 
 #[test]
+fn fixture_creation_reports_a_blocked_directory_without_overwriting_it() {
+    let dir = directory();
+    std::fs::create_dir_all(&dir).unwrap();
+    let blocked = dir.join("blocked");
+    std::fs::write(&blocked, b"reserved file").unwrap();
+    assert!(storyfella_studio_core::playback::fixture::create(&blocked).is_err());
+    assert_eq!(std::fs::read(&blocked).unwrap(), b"reserved file");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn both_hosts_follow_identical_events_source_positions_and_pinned_images() {
     let dir = directory();
-    let (source, mut registry) = support::fixture(&dir);
+    let (source, mut registry) = storyfella_studio_core::playback::fixture::create(&dir).unwrap();
     let studio = PlaybackSession::compile(&source, &registry).unwrap();
     let plan = studio.runtime.plan().clone();
     // A later active revision must not replace the compiled binding.
@@ -73,7 +82,7 @@ fn both_hosts_follow_identical_events_source_positions_and_pinned_images() {
 #[test]
 fn missing_wrong_and_unreadable_pinned_resources_block_before_execution() {
     let dir = directory();
-    let (source, registry) = support::fixture(&dir);
+    let (source, registry) = storyfella_studio_core::playback::fixture::create(&dir).unwrap();
     let session = PlaybackSession::compile(&source, &registry).unwrap();
     let plan = session.runtime.plan().clone();
     let mut missing = registry.clone();

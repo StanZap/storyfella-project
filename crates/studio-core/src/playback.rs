@@ -1,4 +1,5 @@
 //! Shared, GUI-free playback host: snapshot compilation and exact resource checks.
+pub mod fixture;
 use crate::{
     authoring::{artifact_kind, AssetCatalog},
     persistence::ProjectDb,

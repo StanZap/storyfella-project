@@ -75,6 +75,10 @@ and compiled JSON beneath `.svs-e2e/inputs/playback`. It deliberately overwrites
 that disposable fixture with fresh identities. The 22-step desktop plan checks
 text, choices, both routes, pause/resume, bookmark restore, restart/completion and
 pinned decoded imagery through the same model/actions as the visible controls.
+Artwork creation is shared with the resource tests through the GUI-free
+`studio-core::playback::fixture::create`. It reports unusable output directories
+as errors instead of panicking or replacing a blocking file.
+
 Host adapter tests compare event sequences, source positions and pinned image
 bytes for source compilation versus imported-plan playback, including a newer
 active revision and missing/corrupt files. Runtime tests cover rejected save
