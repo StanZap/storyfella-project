@@ -139,17 +139,20 @@ runner does not expose.
 
 ## Build artifact directory
 
-Build artifacts remain redirected outside the checkout by
-`.cargo/config.toml`. This also supports checkouts whose parent contains `:`,
-a separator in macOS/Linux dynamic-library path variables:
+Build artifacts stay in the checkout's gitignored `target/`, selected by
+`.cargo/config.toml`. Cargo also sets `TMPDIR`, `TMP` and `TEMP` to the ignored
+`.cargo/tmp/` directory, so tests and inherited subprocesses keep temporary
+files inside the checkout. Its tracked `.gitignore` creates it on a fresh clone:
 
 ```toml
 [build]
-target-dir = "/tmp/storyfella-studio-target"
+target-dir = "target"
 ```
 
-`CARGO_TARGET_DIR` can override this. Keep the configuration and documented
-launch paths in sync when changing the artifact directory.
+Keep task output local; do not set an external `CARGO_TARGET_DIR` or temporary
+directory override. Use a checkout path without `:`: macOS/Linux interpret it
+as a separator in dynamic-library path variables. See `AGENTS.md` for the
+project-directory boundary and `.svs-e2e/` scratch layout.
 
 ## First-time setup
 
@@ -603,8 +606,9 @@ resolved endpoints and persists the planner-model pick under
 
 ## Common issues
 
-- **`cargo`/`dx` fail with path errors** — a `:` in a parent directory; the
-  `.cargo/config.toml` target-dir redirect is the fix, do not remove it.
+- **`cargo`/`dx` fail with path errors** — check for `:` in the checkout's parent
+  path; macOS/Linux library-path variables treat it as a separator. Use a
+  checkout path without that character and keep build output in local `target/`.
 - **Generation says the runtime is not ready / job fails** — the `sd-server`
   binary or model artifacts are missing. Run `cargo run -p svs-cli --bin model_setup`
   and confirm the provider's `executable` in `providers.toml`.

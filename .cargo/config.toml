@@ -1,7 +1,13 @@
 [build]
-# Keep compiled artifacts outside the checkout, including when its parent has
-# `:`, which macOS/Linux library-path variables treat as a separator.
-target-dir = "/tmp/storyfella-studio-target"
+# Build output belongs to this checkout, including dx desktop bundles.
+target-dir = "target"
+
+[env]
+# Cargo, tests, subprocesses and cargo-launched apps use checkout-local temporary
+# files. This tracked directory exists before Cargo starts; its contents are ignored.
+TMPDIR = { value = ".cargo/tmp", relative = true, force = true }
+TMP = { value = ".cargo/tmp", relative = true, force = true }
+TEMP = { value = ".cargo/tmp", relative = true, force = true }
 
 [alias]
 # `cargo xtask <command>` — the developer task runner. See xtask/src/main.rs.

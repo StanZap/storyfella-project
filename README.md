@@ -2,20 +2,23 @@
 
 Storyfella is the workspace for story authoring and playback. The existing
 Dioxus application is **Storyfella Studio**; the `svs` CLI keeps its current
-commands and behavior. `apps/player` is a minimal executable with no GUI
-framework selected yet. Language, compiler and LSP are implemented; the story
-runtime crate will be added when its implementation begins; see
+commands and behavior. Writer and Canvas share persistent scene/beat associations
+and authoring tools with the catalog-backed LSP. Language, compiler and story
+runtime are implemented; Studio preview and the standalone visual Dioxus Player
+share deterministic execution, exact artwork bindings and controls. See
 [workspace boundaries](docs/architecture.md#storyfella-workspace-boundaries).
 
 ```text
 storyfella/
 ├── apps/studio/       # storyfella-studio (Dioxus)
 ├── apps/cli/          # svs-cli: svs, model_setup, vlm_probe
-├── apps/player/       # storyfella-player (placeholder)
+├── apps/player/       # storyfella-player (visual Dioxus desktop host)
 ├── crates/studio-core/ # storyfella-studio-core (no GUI)
 ├── crates/language/    # shared lexer, parser, AST and analysis
 ├── crates/compiler/    # versioned story plans, linking and flow validation
 ├── crates/lsp/         # stdio editor services
+├── crates/runtime/     # deterministic execution and verified saved state
+├── crates/playback-ui/ # shared visual presentation and controls
 └── xtask/            # developer tasks
 ```
 
@@ -38,7 +41,19 @@ Studio edits [authoritative `.sf` files](docs/story-files.md) beside each projec
 database. Projects → Open accepts `.sf` or `.db`; Writer offers Save copy and
 Reload for resolving external edits.
 
-Storyfella Studio is a cross-platform Dioxus desktop application for planning, generating, and arranging visual stories. The first product workflow includes project creation, the artifact canvas (characters, environments, objects, scenes with typed operations, variants, revisions), resident local Qwen-Image-2.1 generation, and sectioned runtime settings. The typed operation/planner layer is shared by the `svs` CLI and the canvas; Studio sequencing and presentation/export orchestration are not wired yet.
+Try basic playback with procedural fixture images, without inference services:
+
+```sh
+cargo run -p storyfella-studio-core --example playback_fixture
+cargo run -p storyfella-player -- .svs-e2e/inputs/playback/lantern.sf
+cargo xtask plan config/plans/playback.yaml --mode guide --log
+```
+
+The fixture stays under `.svs-e2e/`. [Playback documentation](docs/playback.md)
+defines open inputs, fixed snapshots, keyboard controls and save/restore.
+Voice, expressive media and portable packaging/export remain later work.
+
+Storyfella Studio is a cross-platform Dioxus desktop application for planning, generating, arranging and previewing visual stories. The workflow includes authoritative source editing, the artifact canvas (characters, environments, objects, scenes with typed operations, variants, revisions), resident local Qwen-Image-2.1 generation, and sectioned runtime settings. The typed operation/planner layer is shared by the `svs` CLI and the canvas; source order drives scene/beat associations and basic playback.
 
 The validated target is Linux with an NVIDIA GPU (CUDA). Image generation runs on a CUDA build of `stable-diffusion.cpp`'s `sd-server` serving Qwen-Image-2.1. The LLM endpoint is an external prerequisite and is never installed or bundled by this project.
 
@@ -52,12 +67,17 @@ This is intentionally a desktop-only application. Web, mobile, and WASM targets 
 
 ## Product surface
 
-- **Projects** creates a fresh story and reopens existing `.svs-project.db` files.
+- **Projects** creates a fresh story and reopens paired `.sf`/`.db` projects.
+- **Writer** preserves exact drafts, reconciles valid scene/beat declarations with
+  Canvas identities, and supplies precise completion, navigation, diagnostics,
+  resolved rename and conservative formatting.
+- **Preview / Player** share still artwork, dialogue/thought/narration, choices,
+  manual advancement, pause, restart, scene jump and verified save/restore.
 - **Canvas** is the artifact workspace: a gallery grid at rest (variants stack
   behind their base, in-flight work dimmed and badged) and an image-dominant
   detail pane with an inspector rail, plus a slash-command composer
   (`/create`, `/variant`, `/regenerate`, `/modify`, `/describe` — the same
-  typed vocabulary as the `svs` CLI). Undo/redo restores registry snapshots.
+  typed vocabulary as the `svs` CLI). Undo/redo restores source and registry together.
 - **Image generation** starts the resident native Qwen-Image-2.1 `sd-server` on
   demand, waits for the model to load, and leaves it resident for subsequent
   requests. `regenerate` and `modify` (edits described in plain language) run
@@ -92,12 +112,14 @@ The configured defaults favor Qwen's single quality profile — 25 steps, CFG 6.
 
 ```text
 Cargo.toml            Virtual workspace manifest ([workspace] members only)
-.cargo/config.toml    target-dir redirect to /tmp/storyfella-studio-target
+.cargo/config.toml    checkout-local build output and tool temporary directories
 crates/studio-core/          storyfella-studio-core — the domain layer (no GUI dependency):
   src/registry/         Artifact registry, typed ops + pipelines, slash parser,
                         CreativeBackend
   src/persistence/      SQLite project store (versioned migrations)
   src/story.rs          Exact .sf source, disk snapshots and save conflict checks
+  src/authoring.rs      Source associations and shared asset catalog
+  src/playback.rs       Snapshot compilation and pinned resource checks
   src/llm/              OpenAI-compatible LLM client
   src/runtime/          CreativeRuntime — adapter over the shared
                         clipforge-inference crate (path dependency)
@@ -114,7 +136,12 @@ apps/studio/         storyfella-studio — the Dioxus application:
   src/driver/           YAML plan driver (Guide/Check modes)
   Dioxus.toml, tailwind.css, assets/, package.json
 apps/cli/             svs-cli — src/bin/{svs,model_setup,vlm_probe}.rs
-apps/player/          storyfella-player — minimal executable; GUI undecided
+apps/player/          storyfella-player — standalone visual Dioxus desktop host
+crates/language/      Shared front end and authoring services
+crates/compiler/      Versioned plans, linking and flow validation
+crates/lsp/           Catalog-backed stdio editor tooling
+crates/runtime/       Independent deterministic story execution
+crates/playback-ui/   Shared Dioxus presentation and controls
 xtask/                cargo xtask — the developer task runner (build, run, bundle,
                       check, test); not part of any shipped artifact
 config/               app.toml + plans/*.yaml (data, at the workspace root)
@@ -185,7 +212,7 @@ For a compile-only check:
 cargo check --workspace --all-targets
 ```
 
-This checkout keeps build artifacts under `/tmp/storyfella-studio-target` through `.cargo/config.toml`. The redirect also supports parent directories containing `:`, which macOS and Linux treat as a separator in dynamic-library path lists.
+This checkout keeps build artifacts in gitignored `target/` through `.cargo/config.toml`. Cargo, tests and inherited subprocesses use ignored `.cargo/tmp/` for temporary files. Keep task scratch files and desktop-plan projects under `.svs-e2e/`. Use a checkout path without `:`, which macOS and Linux treat as a separator in dynamic-library path lists.
 
 Configuration lives in `config/app.toml`. The default LLM endpoint URL is `http://localhost:1234/v1`; update `model` to the identifier loaded in the endpoint. `api_key` is optional.
 
@@ -253,8 +280,8 @@ The ordered backlog with statuses lives in `docs/ROADMAP.md` §12
 1. Connect free-form Canvas messages to LLM proposals (the vocabulary
    exists; `svs stack propose` is the contract test bed) and add
    `c:` autocomplete.
-2. Add the interactive-first job scheduler and Studio sequencing (scenes
-   group the timeline; compose beats in the canvas).
+2. Add the interactive-first job scheduler and richer timeline/media composition.
+   Authored scene/beat order and basic preview/Player execution are implemented.
 3. Add versioned project persistence improvements, generated-asset indexing, and autosave polish.
 4. Wire model-download progress/cancellation, LoRA discovery, and runtime installation into Settings.
 5. Complete warm-latency and peak-memory gates for Qwen-Image-2.1 on the target hardware.

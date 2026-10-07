@@ -93,8 +93,8 @@ cargo run --quiet -p storyfella-lsp
 ```
 
 For an editor, configure its generic LSP client with the executable
-`/tmp/storyfella-studio-target/debug/storyfella-lsp` (the repository's configured
-build target directory), file extension `.sf`, and language ID `storyfella`.
+`<checkout>/target/debug/storyfella-lsp` (use the absolute checkout path),
+file extension `.sf`, and language ID `storyfella`.
 The server uses standard Content-Length-framed JSON-RPC on stdin/stdout; stderr
 is for process failures. It follows the
 [LSP 3.17 specification](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/).
