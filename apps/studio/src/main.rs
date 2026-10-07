@@ -20,10 +20,11 @@ fn main() {
         .init();
 
     tracing::info!("starting Storyfella Studio");
-    // Maximized: the workspace is a canvas beside two rails, and at the
-    // default window size the canvas is the part that loses.
+    // Maximize the workspace, with a wide fallback for platforms that leave
+    // the initial window unmaximized. Canvas rails and Preview need room.
     let window = dioxus::desktop::WindowBuilder::new()
         .with_title("Storyfella Studio")
+        .with_inner_size(dioxus::desktop::LogicalSize::new(1280., 800.))
         .with_maximized(true);
     dioxus::LaunchBuilder::new()
         .with_cfg(dioxus::desktop::Config::new().with_window(window))

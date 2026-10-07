@@ -5,7 +5,7 @@ Studio's Preview tab and the standalone Dioxus desktop Player share
 and [the execution runtime](runtime.md). Player has no dependency on Studio state.
 No model configuration, generation or inference process is needed for playback.
 
-Preview → **Start / apply current draft** compiles the current unsaved Writer
+Preview → **Apply draft** compiles the current unsaved Writer
 source with exact completed active registry revisions. Syntax/flow errors,
 pending artwork and unsupported shot/style/mood block starting. Every plan
 binding is resolved by asset UUID and exact revision UUID, with matching name/
@@ -15,18 +15,27 @@ All used bindings, including artwork in alternate routes, are checked first.
 
 The session retains its compiled source and decoded PNG visuals. Editing source,
 changing artwork or replacing a file does not alter it. Source changes display
-an apply-current-draft banner; **Restart** replays the fixed snapshot, while
-**Start / apply current draft** checks and starts a new one. Switching projects
+the quiet **Draft changed** indicator; **Restart story** replays the fixed snapshot,
+while **Apply draft** checks and starts a new one. Switching projects
 clears preview. Playback does not mutate authored source or registry artwork.
 
-Both hosts show current scene/beat, dialogue/thought/narration, basic asset images,
-choices and completion. Asset captions show pinned artwork; the tooltip identifies
-the revision. Controls provide advance, pause/resume, restart, end and scene jump.
+Both hosts use the same minimal widescreen stage: location artwork fills the
+scene, with softly shaded dialogue/thought/narration near the bottom, a small
+speaker portrait, and text choices. Without location artwork, the available
+portrait or prop is contained instead of cropped to fill the stage. A quiet
+header and current scene/beat leave the artwork prominent. Long passages and
+short windows scroll; narrower windows reduce margins.
+
+Continue and pause/resume stay beside the story. **Playback options** (the
+ellipsis) holds open, restart, end, scene jump, bookmarks, state files, artwork
+and source inspection. **Artwork** shows all active pinned images with name/kind
+captions. One panel opens at a time; Escape or clicking outside dismisses it and
+returns focus to the options button. Opening a panel focuses its Close button.
 Right arrow advances; Space pauses/resumes. Tab and Enter operate native controls
 and choices. Transition-budget exhaustion shows the recoverable runtime message.
 
 **Source snapshot** displays read-only source with the executing line highlighted.
-Studio's **Edit executing line** returns to the precise Writer caret. It is
+Studio's **Edit source** returns to the precise Writer caret. It is
 available when current source matches the snapshot; after editing, apply the
 new draft or inspect the retained snapshot. Source spans are UTF-8 bytes with
 shared UTF-16 conversion for the editor.

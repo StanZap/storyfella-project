@@ -676,7 +676,9 @@ plan to ship, with its status; update it when work lands.
    Studio preview and standalone visual Player share checked resources and
    Dioxus controls: still visuals, text/choices, pause/restart, save/restore and
    source snapshots/Writer return. The 22-step fixture-backed desktop plan checks
-   actual execution. See [playback.md](playback.md). Portable image paths,
+   actual execution. Both hosts now use a minimal widescreen stage with
+   location artwork, softly shaded text and choices, and secondary controls
+   in the options panel. See [playback.md](playback.md). Portable image paths,
    packaging/export and expressive media/voice remain planned.
 10. **LSP tooling:** `storyfella-lsp` exposes shared language analysis to
     external editors. — **🔧 single-document tooling implemented.** Stdio, full-document

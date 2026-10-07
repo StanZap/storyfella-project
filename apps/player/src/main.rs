@@ -17,7 +17,7 @@ fn main() {
     let options = Options::parse();
     let window = dioxus::desktop::WindowBuilder::new()
         .with_title("Storyfella Player")
-        .with_inner_size(dioxus::desktop::LogicalSize::new(1100., 850.));
+        .with_inner_size(dioxus::desktop::LogicalSize::new(1280., 720.));
     dioxus::LaunchBuilder::new()
         .with_cfg(dioxus::desktop::Config::new().with_window(window))
         .with_context(options)
@@ -27,7 +27,7 @@ fn main() {
 #[component]
 fn Player() -> Element {
     let options = use_context::<Options>();
-    let mut model = use_signal(|| {
+    let model = use_signal(|| {
         let mut model = PlaybackModel::default();
         if let Some(input) = &options.input {
             model.install(PlaybackSession::open(input, options.project.as_deref()));
@@ -37,26 +37,45 @@ fn Player() -> Element {
         model
     });
     rsx! {
-        style { "html,body,#main {{height:100%;margin:0;background:#13131a}}" }
-        div { style: "height:100%;display:flex;flex-direction:column",
-            header { style: "padding:12px 24px;color:#ece7ff;font:15px system-ui;display:flex;gap:15px;align-items:center",
-                strong { "Storyfella Player" }
-                button { onclick: move |_| {
-                    let Some(input) = rfd::FileDialog::new().add_filter("Storyfella story", &["sf", "db", "json"]).pick_file() else { return; };
-                    let project = if input.extension().is_some_and(|e| e == "json") {
-                        match PlaybackSession::plan_requires_project(&input) {
-                            Ok(false) => None,
-                            Ok(true) => {
-                                let Some(path) = rfd::FileDialog::new().set_title("Choose the plan's artwork project").add_filter("Project database", &["db"]).pick_file() else { return; };
-                                Some(path)
-                            },
-                            Err(error) => { model.write().install(Err(error)); return; }
-                        }
-                    } else { None };
-                    model.write().install(PlaybackSession::open(&input, project.as_deref()));
-                }, "Open story…" }
-            }
-            div { style: "flex:1;min-height:0", PlaybackPanel { model } }
-        }
+        style { "html,body,#main {{height:100%;margin:0;background:#121619}}" }
+        PlaybackPanel { model, on_open: move |_| { spawn(open_story(model)); } }
     }
+}
+
+async fn open_story(mut model: Signal<PlaybackModel>) {
+    let window = dioxus::desktop::window().window.clone();
+    let Some(input) = rfd::AsyncFileDialog::new()
+        .set_parent(window.as_ref())
+        .add_filter("Storyfella story", &["sf", "db", "json"])
+        .pick_file()
+        .await
+    else {
+        return;
+    };
+    let project = if input.path().extension().is_some_and(|e| e == "json") {
+        match PlaybackSession::plan_requires_project(input.path()) {
+            Ok(false) => None,
+            Ok(true) => {
+                let Some(file) = rfd::AsyncFileDialog::new()
+                    .set_parent(window.as_ref())
+                    .set_title("Choose the plan's artwork project")
+                    .add_filter("Project database", &["db"])
+                    .pick_file()
+                    .await
+                else {
+                    return;
+                };
+                Some(file.path().to_path_buf())
+            }
+            Err(error) => {
+                model.write().install(Err(error));
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    model
+        .write()
+        .install(PlaybackSession::open(input.path(), project.as_deref()));
 }

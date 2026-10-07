@@ -50,8 +50,10 @@ const KEY_BRIDGE: &str = r#"
                 (active && active.isContentEditable)) {
                 return;
             }
+            if (active && active.closest('[data-playback-panel]') &&
+                NAV.includes(event.key)) { return; }
             if (active && active.closest('[data-owns-keys]') &&
-                ["Enter", "ArrowRight", " "].includes(event.key)) { return; }
+                ["Enter", "Escape", "ArrowRight", " "].includes(event.key)) { return; }
             // Native buttons own Enter; claiming it prevents their click.
             if (tag === "BUTTON" && event.key === "Enter") { return; }
             if ((event.ctrlKey || event.metaKey) &&
