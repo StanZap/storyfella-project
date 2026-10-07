@@ -93,7 +93,7 @@ cargo run -p svs-cli --bin svs -- --help
 
 skip the GUI stack entirely. The workspace-wide `cargo check --workspace
 --all-targets` / `cargo test --workspace` cover everything, including the
-desktop crate's 77 tests.
+desktop crate's tests.
 
 ## Task runner (`cargo xtask`)
 
@@ -376,6 +376,8 @@ Enter — prefer it over `command:` when the point is to exercise the UI.
 keeping the caret and scope panel on the typed line. Guide mode animates both
 actions; `sample_project:` also types its complete source using the same controls.
 The rate is `typing_cps` characters per second (default 60, allowed 1–200).
+Unknown plan settings are rejected with their name, so a typo cannot silently
+fall back to a different typing speed.
 The assistant card's **Typing** slider changes that rate live, independently
 of the narration's 1x/2x/4x controls. Pause stops typing and delays command
 submission; stopping leaves the partial text available to inspect. Check mode

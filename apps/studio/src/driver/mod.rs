@@ -348,6 +348,7 @@ impl<'de> Deserialize<'de> for Step {
 
 /// A plan document: the narration metadata plus an ordered step list.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Plan {
     pub name: String,
     #[serde(default)]
@@ -1346,7 +1347,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn typing_rate_is_validated_and_tour_adds_valid_source() {
+    fn typing_settings_are_validated() {
         let default = Plan::from_yaml("name: typing\nsteps: []\n").unwrap();
         assert_eq!(default.typing_cps, 60);
         for rate in [1, 200] {
@@ -1359,6 +1360,13 @@ mod tests {
                 Plan::from_yaml(&format!("name: typing\ntyping_cps: {rate}\nsteps: []\n")).is_err()
             );
         }
+        let error = Plan::from_yaml("name: typing\ntyping_cp: 20\nsteps: []\n").unwrap_err();
+        assert!(error.contains("typing_cp"), "{error}");
+        assert!(error.contains("unknown field"), "{error}");
+    }
+
+    #[test]
+    fn tour_appends_valid_source() {
         let tour = Plan::from_yaml(include_str!("../../../../config/plans/ui-tour.yaml")).unwrap();
         let mut source = crate::app::sample::STORY.to_owned();
         for step in tour.steps {
@@ -1408,28 +1416,29 @@ mod tests {
                 );
                 assert_eq!(prefixes, ["é", "é🌊", "é🌊\r", "é🌊\r\n"]);
 
-                // Pausing mid-word leaves the first character in place until resume.
+                // Check mode has no character delay: its first poll can only
+                // remain pending without emitting text if pause is honored.
+                session.set(Some(typing_session(GuideMode::Check)));
+                session.with_mut(|s| s.as_mut().unwrap().paused = true);
                 let count = std::rc::Rc::new(std::cell::Cell::new(0));
                 let observed = count.clone();
-                let controller = count.clone();
-                let (completed, ()) = futures_util::future::join(
-                    type_text(&session, "ab", move |_| {
-                        observed.set(observed.get() + 1);
-                        if observed.get() == 1 {
-                            session.with_mut(|s| s.as_mut().unwrap().paused = true);
-                        }
-                    }),
-                    async move {
-                        tokio::time::sleep(Duration::from_millis(30)).await;
-                        assert_eq!(controller.get(), 1);
-                        session.with_mut(|s| s.as_mut().unwrap().paused = false);
-                    },
-                )
+                let mut controller = session;
+                let mut typing = Box::pin(type_text(&session, "ab", move |_| {
+                    observed.set(observed.get() + 1);
+                }));
+                std::future::poll_fn(|context| {
+                    use std::future::Future;
+                    assert!(typing.as_mut().poll(context).is_pending());
+                    assert_eq!(count.get(), 0);
+                    controller.with_mut(|s| s.as_mut().unwrap().paused = false);
+                    std::task::Poll::Ready(())
+                })
                 .await;
-                assert!(completed);
-                assert_eq!(count.get(), 2);
+                assert!(typing.await);
+                assert_eq!(count.get(), 1);
 
                 // Stop preserves the emitted prefix and never emits the rest.
+                session.set(Some(typing_session(GuideMode::Guide)));
                 let mut partial = String::new();
                 let mut cancelled_session = session;
                 assert!(

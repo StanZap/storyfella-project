@@ -386,7 +386,7 @@ match dog() {
 }
 ```
 
-For fire-and-forget work (such as starting a generation and updating app state from a spawned task), use `spawn(async move { ... })` as in `apps/studio/src/ui/editor.rs`.
+For fire-and-forget work (such as starting a generation and updating app state from a spawned task), use `spawn(async move { ... })` as in `run_operations` in `apps/studio/src/commands.rs`.
 
 ## Dioxus 0.7 usage notes (learned while building this app)
 
@@ -395,4 +395,4 @@ For fire-and-forget work (such as starting a generation and updating app state f
 - Signals are `Copy`. Pass them to child components as props (`Signal<T>`) and to plain helper functions that mutate them — the helper declares `mut signal: Signal<T>` parameters.
 - `EventHandler<T>` props receive closures at the call site (`onclick: move |event| ...`). Handlers are `Clone`, so one handler can be shared between several components by binding it once.
 - `use_hook` constructs one-time, non-reactive values (for example `CreativeRuntime::new(&config)` in `apps/studio/src/ui/mod.rs`).
-- In `spawn`ed tasks, never hold a signal `.read()`/`.write()` guard across an `await`; read or clone first, await, then write (see `start_generation` in `apps/studio/src/ui/editor.rs`).
+- In `spawn`ed tasks, never hold a signal `.read()`/`.write()` guard across an `await`; read or clone first, await, then write (see `run_operations` in `apps/studio/src/commands.rs`).
