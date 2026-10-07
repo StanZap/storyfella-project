@@ -339,24 +339,6 @@ pub fn Inspector(
                     }
                 }
 
-                // ------------------------------------------------ appears in
-                // Filled by the compiler once `.sf` files exist; renders
-                // nothing until then (see docs/design/ui-plan.md §2).
-                if let Some(origins) = story_origins(&artifact) {
-                    section {
-                        p { class: "mb-2 text-[10px] font-semibold uppercase tracking-[0.07em] text-zinc-600",
-                            "Appears in"
-                        }
-                        div { class: "flex flex-wrap gap-1.5",
-                            for origin in origins {
-                                span { key: "{origin}",
-                                    class: "rounded-md bg-teal-400/10 px-1.5 py-1 font-mono text-[10px] text-teal-300",
-                                    "{origin}"
-                                }
-                            }
-                        }
-                    }
-                }
             }
         }
     }
@@ -390,13 +372,6 @@ fn StepButton(steps: u32, active: bool, disabled: bool, onpick: EventHandler<()>
             "{steps}"
         }
     }
-}
-
-/// Where the story references this artifact. Always `None` until the DSL
-/// lands — the slot exists so the compiler can fill it without this
-/// component changing shape.
-fn story_origins(_artifact: &Artifact) -> Option<Vec<String>> {
-    None
 }
 
 /// A seed to pin. Uses the clock rather than a generator dependency; the
@@ -506,26 +481,5 @@ mod tests {
             }
             other => panic!("expected describe, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn the_story_slot_stays_empty_until_the_dsl_lands() {
-        let artifact = Artifact {
-            id: uuid::Uuid::new_v4(),
-            kind: storyfella_studio_core::registry::ArtifactKind::Character,
-            name: "mara".into(),
-            description: "a harbourmaster".into(),
-            variant_of: None,
-            variant_axis: None,
-            default_size: None,
-            default_steps: None,
-            default_seed: None,
-            parent_id: None,
-            composition: None,
-            active_revision_id: None,
-            revisions: Vec::new(),
-            drafts: Vec::new(),
-        };
-        assert!(story_origins(&artifact).is_none());
     }
 }

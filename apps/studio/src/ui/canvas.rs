@@ -709,6 +709,29 @@ fn ArtifactDetail(
     // The active canvas tool. Pointer is the resting state, so opening an
     // artifact never lands you in a mode you did not ask for.
     let tool = use_context::<ActiveTool>().0;
+    let mut screen = use_context::<Signal<super::AppScreen>>();
+    let mut caret = use_context::<super::WriterCaret>().0;
+    let analysis = storyfella_language::analyze(
+        app_state.read().story.source(),
+        &storyfella_studio_core::authoring::AssetCatalog::from_registry(&registry).assets,
+    );
+    let links = storyfella_studio_core::authoring::source_links(&registry, &analysis, artifact.id);
+    let positioned_links: Vec<_> = links
+        .into_iter()
+        .filter_map(|link| {
+            analysis
+                .document
+                .source
+                .position(link.span.start)
+                .map(|position| (link.label, position.line as usize))
+        })
+        .collect();
+    let detached = matches!(
+        artifact.kind,
+        storyfella_studio_core::registry::ArtifactKind::Scene
+            | storyfella_studio_core::registry::ArtifactKind::Beat
+    ) && storyfella_studio_core::authoring::declaration_key(&registry, artifact.id)
+        .is_none();
 
     // Size and bound adapters are the inspector rail's business now.
     // Always the base's family, never the open artifact's children —
@@ -764,6 +787,21 @@ fn ArtifactDetail(
         // reach the revisions was the thing that made this feel like a
         // document rather than a workspace.
         div { class: "relative flex h-full min-h-0 flex-col",
+            if detached {
+                p { class: "mt-12 px-4 py-2 text-[11px] text-amber-300", "Detached artwork · add story structure in Writer" }
+            }
+            if !positioned_links.is_empty() {
+                div { class: "mt-12 flex flex-wrap items-center gap-2 px-4 py-2",
+                    span { class: "text-[10px] text-zinc-500", "Appears in" }
+                    for (label, line) in positioned_links {
+                        button {
+                            class: "rounded bg-white/[0.05] px-2 py-1 font-mono text-[11px] text-violet-300 hover:text-white",
+                            onclick: move |_| { caret.set(line); screen.set(super::AppScreen::Writer); },
+                            "{label} · line {line + 1}"
+                        }
+                    }
+                }
+            }
 
             // Floats over the render: no background, no border, so the
             // picture reads as the surface and this reads as chrome on it.

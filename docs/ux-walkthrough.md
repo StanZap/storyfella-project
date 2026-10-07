@@ -42,10 +42,12 @@ guess what to do next. The guide finishes in the Writer for hands-on review.
 
 ## 2. Connect an authored scene to Canvas
 
-Next, synchronize scene and beat identities from `.sf` into the registry.
-Make a referenced asset reachable from the current beat and let asset creation
-resolve the reference immediately. Preserve artwork and revisions when source
-is edited; show positioned diagnostics for invalid drafts.
+Valid `.sf` analysis now synchronizes ordered scene/beat associations into the
+registry. The scope panel opens their artwork and creates missing catalog assets;
+resolution refreshes immediately. Artwork and revisions survive edits, invalid
+drafts and removal. Canvas shows source origins and `Appears in` links. The tour
+asserts the resulting source sequence. Positioned compiler diagnostics and
+completion are the next authoring increment.
 
 Acceptance scenario: write a harbor beat using Mara and a lantern, create its
 missing asset, revise the dialogue, save, and reopen. The scene order, beat
@@ -71,6 +73,5 @@ moving a project.
 Acceptance scenario: preview and share a complete lighthouse scene with its
 images and voice, then open the moved project with its media intact.
 
-The first walkthrough is available now. Scene synchronization, playable
-preview, and presentation are implementation milestones, not steps the current
-guide pretends to execute.
+The walkthrough and scene synchronization are available now. Playable preview
+and presentation remain implementation milestones.

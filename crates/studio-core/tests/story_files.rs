@@ -30,6 +30,68 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn associations_and_fixture_revisions_survive_save_reopen_and_rejected_snapshots() {
+    use storyfella_studio_core::{
+        authoring::{reconcile, AssetCatalog},
+        registry::RevisionOrigin,
+    };
+    let fixture = Fixture::new();
+    let path = fixture
+        .source("scene harbor\n  beat arrival\n    mara: Hello\n  beat light\n    prop: lantern\n");
+    let db = ProjectDb::open(path.with_extension("db")).unwrap();
+    let mut registry = ArtifactRegistry::default();
+    let source = fs::read_to_string(&path).unwrap();
+    reconcile(&mut registry, &storyfella_language::analyze(&source, &[]));
+    let scene = registry.story_scenes[0].clone();
+    let beat = scene.beats[0].artifact_id;
+    let image = fixture.0.join("fixture.png");
+    fs::write(&image, b"fixture imagery, no inference").unwrap();
+    let revision = registry
+        .start_revision(beat, "fixture".into(), None, None, RevisionOrigin::Canon)
+        .unwrap();
+    registry
+        .finish_revision(beat, revision, image.to_string_lossy().into())
+        .unwrap();
+    db.save_registry(&registry).unwrap();
+    let reopened = db.load().unwrap();
+    assert_eq!(reopened.registry, registry);
+    assert_eq!(reopened.story.source(), source);
+    let catalog = AssetCatalog::from_registry(&registry);
+    assert!(!reconcile(
+        &mut registry,
+        &storyfella_language::analyze("scene harbor\n  beat\n", &catalog.assets)
+    ));
+    let mut document = reopened.story;
+    document.set_source("scene harbor\n  beat\n".into());
+    document.save().unwrap();
+    db.save_registry(&registry).unwrap();
+    assert_eq!(db.load().unwrap().registry, reopened.registry);
+    document.set_source("scene harbor\n  beat light\n  beat arrival\n".into());
+    document.save().unwrap();
+    reconcile(
+        &mut registry,
+        &storyfella_language::analyze(document.source(), &catalog.assets),
+    );
+    assert_eq!(registry.story_scenes[0].beats[1].artifact_id, beat);
+    db.save_registry(&registry).unwrap();
+    let persisted = db.load().unwrap().registry;
+    registry.story_scenes[0].beats[0].artifact_id = Uuid::new_v4();
+    assert!(db.save_registry(&registry).is_err());
+    assert_eq!(
+        db.load().unwrap().registry,
+        persisted,
+        "rejected saves preserve revisions and associations"
+    );
+    let conn = Connection::open(path.with_extension("db")).unwrap();
+    conn.execute("UPDATE projects SET story_scenes_json = 'invalid json'", [])
+        .unwrap();
+    assert!(
+        db.load().is_err(),
+        "corrupt associations are reported, not silently recreated"
+    );
+}
+
+#[test]
 fn edits_save_exact_text_and_external_changes_block_overwrite() {
     let fixture = Fixture::new();
     let path = fixture.source("// 🌊\r\nscene harbor\r\n  narrate: café\r\n");
@@ -141,7 +203,7 @@ fn v8_project(path: &std::path::Path, source: &str) {
     drop(current);
     fs::remove_file(source_path(path)).unwrap();
     let conn = Connection::open(path).unwrap();
-    conn.execute_batch("ALTER TABLE projects ADD COLUMN story_source TEXT NOT NULL DEFAULT ''; DELETE FROM schema_meta WHERE version = 9;").unwrap();
+    conn.execute_batch("ALTER TABLE projects ADD COLUMN story_source TEXT NOT NULL DEFAULT ''; ALTER TABLE projects DROP COLUMN story_scenes_json; DELETE FROM schema_meta WHERE version >= 9;").unwrap();
     conn.execute("UPDATE projects SET story_source = ?1", params![source])
         .unwrap();
 }

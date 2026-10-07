@@ -6,11 +6,7 @@
 //! than in a toast that disappears — a generation is a tile that is not
 //! finished yet, not a notification.
 //!
-//! Two slots here are deliberately empty until the DSL exists (see
-//! `docs/design/ui-plan.md` §2): [`Tile::origin`], the story beat a reference
-//! came from, and the pending tiles for artifacts the story names but that
-//! have never been created. Both render nothing when unfed, so the compiler
-//! can fill them later without this component changing shape.
+//! Source associations supply origins; the story sequence follows `.sf`.
 
 use dioxus::prelude::*;
 use uuid::Uuid;
@@ -47,11 +43,7 @@ pub struct Tile {
     pub variants: usize,
     /// A generation is running for this artifact.
     pub working: bool,
-    /// The artifact exists only because the story names it. Always false
-    /// until the DSL lands.
-    pub pending: bool,
-    /// Where in the story this came from — `harbor.handoff`. Empty until the
-    /// DSL lands.
+    /// The authored declaration key, independent of the artwork's display name.
     pub origin: Option<String>,
     pub subtitle: String,
 }
@@ -94,8 +86,7 @@ fn tiles_for(registry: &ArtifactRegistry, kind: ArtifactKind, query: &str) -> Ve
                     .and_then(generated_asset_url),
                 variants,
                 working,
-                pending: false,
-                origin: None,
+                origin: storyfella_studio_core::authoring::declaration_key(registry, artifact.id),
                 subtitle: first_line(&artifact.description),
             }
         })
@@ -152,7 +143,6 @@ pub fn Gallery(
         if tiles.is_empty() {
             return None;
         }
-        let pending = tiles.iter().filter(|tile| tile.pending).count();
         Some(rsx! {
             section { key: "{kind}",
                 div { class: "mb-3 flex items-center gap-2",
@@ -160,9 +150,6 @@ pub fn Gallery(
                         "{kind}s"
                     }
                     span { class: "text-[10px] text-zinc-700", "{tiles.len()}" }
-                    if pending > 0 {
-                        span { class: "text-[10px] text-amber-400", "· {pending} pending" }
-                    }
                     div { class: "h-px flex-1 bg-white/[0.055]" }
                 }
                 // `data-grid` is what the key bridge measures to learn how
@@ -200,6 +187,27 @@ pub fn Gallery(
                 }
             }
 
+            if !registry.story_scenes.is_empty() {
+                div { class: "space-y-2 border-b border-white/[0.05] px-6 py-3",
+                    p { class: "text-[10px] text-zinc-500", "Story sequence · from .sf" }
+                    for scene in &registry.story_scenes {
+                        div { class: "flex flex-wrap items-center gap-2",
+                            button {
+                                class: "font-mono text-[11px] text-violet-300 hover:text-white",
+                                onclick: { let id = scene.artifact_id; move |_| app_state.write().select_artifact(id) },
+                                "{scene.name}"
+                            }
+                            for beat in &scene.beats {
+                                button {
+                                    class: "rounded bg-white/[0.05] px-2 py-1 font-mono text-[11px] text-zinc-300 hover:text-white",
+                                    onclick: { let id = beat.artifact_id; move |_| app_state.write().select_artifact(id) },
+                                    "{beat.name}"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             if empty {
                 div { class: "grid place-items-center px-6 py-24 text-center",
                     div { class: "grid size-12 place-items-center rounded-2xl bg-white/[0.045] text-zinc-600 ring-1 ring-inset ring-white/[0.06]",
@@ -225,7 +233,6 @@ pub fn Gallery(
 
 #[component]
 fn TileCard(tile: Tile, focused: bool, onopen: EventHandler<Uuid>) -> Element {
-    let pending = tile.pending;
     rsx! {
         button {
             class: "group text-left",
@@ -243,11 +250,7 @@ fn TileCard(tile: Tile, focused: bool, onopen: EventHandler<Uuid>) -> Element {
                     div { class: "absolute inset-0 translate-x-1 -translate-y-1 rotate-[2.5deg] rounded-[10px] bg-zinc-800/80 ring-1 ring-inset ring-white/[0.07]" }
                 }
 
-                if pending {
-                    div { class: "absolute inset-0 grid place-items-center rounded-[10px] border border-dashed border-amber-400/30 bg-amber-400/[0.04] text-2xl font-light text-amber-400/60",
-                        "+"
-                    }
-                } else if let Some(url) = tile.image.clone() {
+                if let Some(url) = tile.image.clone() {
                     img {
                         class: "absolute inset-0 size-full rounded-[10px] object-cover ring-1 ring-inset ring-white/[0.11] transition group-hover:ring-white/20",
                         class: if focused { "ring-2 ring-violet-400" } else { "" },
@@ -276,16 +279,11 @@ fn TileCard(tile: Tile, focused: bool, onopen: EventHandler<Uuid>) -> Element {
 
             p {
                 class: "truncate font-mono text-[12px] font-semibold",
-                class: if focused { "text-violet-300" } else if pending { "text-amber-400" } else { "text-zinc-200" },
+                class: if focused { "text-violet-300" } else { "text-zinc-200" },
                 "{tile.name}"
             }
             p { class: "mt-0.5 truncate text-[10px] text-zinc-600",
-                if pending {
-                    span { class: "text-amber-400/80", "not created" }
-                } else {
-                    "{tile.subtitle}"
-                }
-                // Filled by the compiler once `.sf` files exist.
+                "{tile.subtitle}"
                 if let Some(origin) = tile.origin.clone() {
                     span { class: "font-mono text-zinc-700", " · {origin}" }
                 }
@@ -401,12 +399,20 @@ mod tests {
     }
 
     #[test]
-    fn the_story_driven_slots_stay_empty_until_the_dsl_lands() {
-        // Guards the seam from ui-plan.md §2: these render nothing today, but
-        // the shape must already be here so the compiler can fill them.
-        let registry = registry_with(&[(ArtifactKind::Character, "mara")]);
-        let tiles = tiles_for(&registry, ArtifactKind::Character, "");
-        assert!(!tiles[0].pending);
+    fn authored_origins_are_distinct_from_manual_artwork() {
+        let mut registry = registry_with(&[(ArtifactKind::Scene, "harbor")]);
+        storyfella_studio_core::authoring::reconcile(
+            &mut registry,
+            &storyfella_language::analyze("scene harbor\n  beat arrival\n", &[]),
+        );
+        let tiles = tiles_for(&registry, ArtifactKind::Scene, "");
         assert_eq!(tiles[0].origin, None);
+        assert_eq!(tiles[1].origin.as_deref(), Some("harbor"));
+        assert_eq!(
+            tiles_for(&registry, ArtifactKind::Beat, "")[0]
+                .origin
+                .as_deref(),
+            Some("harbor.arrival")
+        );
     }
 }

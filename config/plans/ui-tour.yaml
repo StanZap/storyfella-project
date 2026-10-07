@@ -104,10 +104,12 @@ steps:
     wait_ms: 5000
 
   - caret: 17
-    message: "The handoff beat ties dialogue to brass_lantern. Story-to-canvas scene synchronization and playable preview are the next pieces to build."
+    message: "The handoff beat ties dialogue to brass_lantern. Canvas now follows the valid source sequence; removed declarations keep their artwork detached. Playable preview is the next milestone."
     wait_ms: 5000
 
   - expect_artifact: { name: "mara", kind: character }
+    wait_ms: 0
+  - expect_story_sequence: [harbor, harbor.arrival, harbor.handoff, counting_house, counting_house.the_ledger, lighthouse, lighthouse.climb, lighthouse.the_wreck, lighthouse.signal]
     wait_ms: 0
   - expect_no_error: true
     message: "Your turn: edit a line of dialogue, move the caret between beats, or inspect a variant in Canvas. Start with how the writing and asset references feel."

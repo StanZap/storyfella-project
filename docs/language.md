@@ -1,8 +1,8 @@
 # Storyfella language: initial contract
 
 Status: the language front end, compiler, Writer adapter and initial stdio LSP are
-implemented, including Studio `.sf` file persistence. Registry synchronization
-and playback are the next milestones in
+implemented, including Studio `.sf` persistence and scene/beat registry associations.
+Authoring tools and playback are the next milestones in
 [the execution plan](language-plan.md). This syntax is a first editable design,
 anchored to the current Writer; it is not a compatibility layer for the prototype.
 

@@ -116,6 +116,7 @@ pub enum StepVerb {
         count: usize,
     },
     ExpectImage(String),
+    ExpectStorySequence(Vec<String>),
     /// Ask the configured `vision` provider whether an artifact's current
     /// image answers a question about it — a real check that the generation
     /// produced what was asked for, where [`Self::ExpectImage`] only checks
@@ -160,6 +161,7 @@ impl StepVerb {
             Self::ExpectArtifact { name, .. } => format!("artifact \"{name}\" exists"),
             Self::ExpectArtifactCount { kind, count } => format!("{count} {kind}s exist"),
             Self::ExpectImage(name) => format!("artifact \"{name}\" has an image"),
+            Self::ExpectStorySequence(_) => "story scene/beat sequence matches source".into(),
             Self::ExpectVision { image, .. } => format!("vision check on \"{image}\""),
             Self::ExpectNoError => "no errors are showing".to_owned(),
         }
@@ -209,6 +211,10 @@ impl StepVerb {
             "command" => Self::Command(text(&value)?),
             "compose" => Self::Compose(text(&value)?),
             "expect_project" => Self::ExpectProject(text(&value)?),
+            "expect_story_sequence" => Self::ExpectStorySequence(
+                serde_yaml::from_value(value)
+                    .map_err(|e| format!("expect_story_sequence expects declaration keys: {e}"))?,
+            ),
             "expect_artifact" => match &value {
                 serde_yaml::Value::Mapping(mapping) => {
                     let name = text(
@@ -1017,6 +1023,26 @@ async fn execute_step(
             )
             .await;
             status(ok, format!("expected the open story to be \"{name}\""))
+        }
+        StepVerb::ExpectStorySequence(expected) => {
+            let registry = ctx.app_state.read().registry.clone();
+            let actual: Vec<String> = registry
+                .story_scenes
+                .iter()
+                .flat_map(|scene| {
+                    std::iter::once(scene.name.clone()).chain(
+                        scene
+                            .beats
+                            .iter()
+                            .map(|beat| format!("{}.{}", scene.name, beat.name)),
+                    )
+                })
+                .collect();
+            let valid = storyfella_studio_core::authoring::validate_associations(&registry).is_ok();
+            status(
+                valid && &actual == expected,
+                format!("expected {expected:?}, got {actual:?}"),
+            )
         }
         StepVerb::ExpectArtifact { name, kind } => {
             let expected = name.clone();

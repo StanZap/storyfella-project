@@ -145,6 +145,7 @@ pub fn Workspace(
     // Land on Projects so a story is opened before any canvas work — the
     // canvas cannot save until a project file is bound.
     let mut screen = use_signal(|| AppScreen::Projects);
+    use_context_provider(|| screen);
     let backend_config = config.clone();
     // The backend lives in a signal so the Settings model picker can swap
     // the planner model and the canvas picks it up on the next op.

@@ -647,9 +647,11 @@ plan to ship, with its status; update it when work lands.
     Settings service/model errors, and the `svs` CLI op paths (which also
     init a tracing subscriber so reports actually log). — **✅ implemented**
 8. **Studio integration:** scenes group the timeline; re-sync flows per
-   mode (compose beats in the canvas, story sequencing). — **⏳ deferred**
-   behind the quality/control work above (user reprioritized; the canvas
-   still surfaces beats, compose, and drafts per the session guide)
+   mode (compose beats in the canvas, story sequencing). — **🔧 active**
+   Writer/Canvas reconciliation is implemented: valid source order maps authored
+   scene/beat keys to persisted UUIDs; invalid drafts retain the last association;
+   removals detach artwork. Joint source/registry undo, pending catalog creation,
+   source origins and backlinks are connected. Re-sync and playback remain.
 9. **Storyfella DSL (in-repo):** `storyfella-language` (lexer/parser/shared
    analysis) and `storyfella-compiler` (validation/lowering); DSL asset references
    and round-trip to canvas. `storyfella-runtime` will own story execution,
@@ -664,8 +666,9 @@ plan to ship, with its status; update it when work lands.
    Studio opens/saves authoritative `.sf` files beside project databases.
    Schema v9 exports existing Writer drafts before removing the source column;
    disk conflicts, copy/reload and project pair moves are covered. See
-   [story-files.md](story-files.md). Story runtime, registry scene synchronization,
-   portable image paths and Writer completion/navigation UI remain planned.
+   [story-files.md](story-files.md). Schema v10 persists source/registry associations.
+   Story runtime, portable image paths and Writer completion/navigation tooling
+   remain planned.
 10. **LSP tooling:** `storyfella-lsp` exposes shared language analysis to
     external editors. — **🔧 initial server implemented.** Stdio, full-document
     sync, UTF-16, versioned diagnostics, completion, definitions, references and

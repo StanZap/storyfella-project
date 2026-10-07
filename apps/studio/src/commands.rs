@@ -117,10 +117,18 @@ pub fn run_operations(
     mut ui: ExecutionUi,
 ) {
     let summary = stack_summary(&operations);
-    app_state.write().snapshot_for_undo();
+    if app_state.read().operation_in_progress() {
+        ui.error_report.set(Some(ReportedError::plain(
+            ErrorCode::AppCommandInvalid,
+            "Wait for the current artwork operation to finish.",
+        )));
+        return;
+    }
+    app_state.write().begin_operation();
     ui.activity.set(OpActivity::Running { summary });
 
     let registry = app_state.read().registry.clone();
+    let baseline = registry.clone();
     spawn(async move {
         let outcome = tokio::task::spawn_blocking(move || {
             let runtime = tokio::runtime::Runtime::new().expect("op worker runtime");
@@ -133,12 +141,14 @@ pub fn run_operations(
         let result = match outcome {
             Ok((finished, result)) => {
                 let mut state = app_state.write();
-                state.registry = finished;
-                state.has_unsaved_changes = true;
+                state.finish_operation(&baseline, finished);
                 drop(state);
                 Some(result)
             }
-            Err(_) => None,
+            Err(_) => {
+                app_state.write().cancel_operation();
+                None
+            }
         };
         ui.activity.set(OpActivity::Idle);
         match result {
@@ -246,6 +256,7 @@ pub fn create_project(
     story_name: &str,
     mut app_state: Signal<AppState>,
 ) -> Result<PathBuf, ReportedError> {
+    ensure_project_idle(app_state)?;
     // An unbound Writer draft becomes this project's first source; switching
     // away from a saved project first persists its outstanding changes.
     let (registry, source) = if app_state.read().project_path.is_none() {
@@ -275,6 +286,7 @@ pub fn create_project(
 /// Opens a project database or its `.sf` source in place. A standalone `.sf`
 /// gets a companion database; the source file is never imported into SQLite.
 pub fn open_project(path: &Path, mut app_state: Signal<AppState>) -> Result<(), ReportedError> {
+    ensure_project_idle(app_state)?;
     if app_state.read().has_unsaved_changes {
         save_project(app_state)?;
     }
@@ -293,6 +305,16 @@ pub fn open_project(path: &Path, mut app_state: Signal<AppState>) -> Result<(), 
     Ok(())
 }
 
+fn ensure_project_idle(app_state: Signal<AppState>) -> Result<(), ReportedError> {
+    if app_state.read().operation_in_progress() {
+        return Err(ReportedError::plain(
+            ErrorCode::AppCommandInvalid,
+            "Wait for artwork generation before switching projects.",
+        ));
+    }
+    Ok(())
+}
+
 /// Saves the current registry to the open project file; clears the dirty
 /// flag on success. The one persistence seam: the autosave effect, the
 /// Cmd/Ctrl+S shortcut, and the driver's check-mode exit all use it.
@@ -304,18 +326,18 @@ pub fn save_project(mut app_state: Signal<AppState>) -> Result<(), ReportedError
         }
         return Ok(());
     };
-    let registry = app_state.read().registry.clone();
     let mut story = app_state.read().story.clone();
     story.save().map_err(|error| error.report())?;
     // A later registry-save failure must not make the successful source save
     // look like an external edit on the next attempt.
     if app_state.read().story != story {
-        app_state.write().story = story;
+        app_state.write().adopt_story_document(story);
     }
+    let registry = app_state.read().registry.clone();
     ProjectDb::open(&path)
         .and_then(|db| db.save_registry(&registry))
         .map_err(|error| error.report())?;
-    app_state.write().has_unsaved_changes = false;
+    app_state.write().mark_saved();
     Ok(())
 }
 
@@ -323,7 +345,7 @@ pub fn save_project(mut app_state: Signal<AppState>) -> Result<(), ReportedError
 pub fn reload_story(mut app_state: Signal<AppState>) -> Result<(), ReportedError> {
     let mut story = app_state.read().story.clone();
     story.reload().map_err(|error| error.report())?;
-    app_state.write().story = story;
+    app_state.write().adopt_story_document(story);
     Ok(())
 }
 
@@ -413,6 +435,41 @@ mod tests {
             super::save_project(state).unwrap();
             assert!(!state.read().has_unsaved_changes);
 
+            state
+                .write()
+                .set_story_source("scene harbor\n  beat arrival\n    prop: lantern\n".into());
+            super::save_project(state).unwrap();
+            let saved_scene = state.read().registry.story_scenes[0].clone();
+            state.write().set_story_source("scene port\n".into());
+            super::reload_story(state).unwrap();
+            assert_eq!(
+                state.read().registry.story_scenes[0],
+                saved_scene,
+                "reload reattaches saved identities after an unsaved rename"
+            );
+            state
+                .write()
+                .create_pending_asset("lantern", storyfella_language::AssetKind::Prop)
+                .unwrap();
+            super::save_project(state).unwrap();
+            std::fs::write(
+                &source,
+                "scene harbor\n  beat light\n  beat arrival\n    prop: lantern\n",
+            )
+            .unwrap();
+            super::save_project(state).unwrap();
+            assert_eq!(
+                state.read().registry.story_scenes[0].beats[1].artifact_id,
+                saved_scene.beats[0].artifact_id
+            );
+            let reopened = storyfella_studio_core::persistence::ProjectDb::open(&project)
+                .unwrap()
+                .load()
+                .unwrap();
+            assert_eq!(reopened.registry, state.read().registry);
+            state.write().begin_operation();
+            assert!(super::open_project(&another, state).is_err());
+            state.write().cancel_operation();
             super::open_project(&another, state).unwrap();
             assert_eq!(state.read().story.source(), "scene another\n  end\n");
             assert!(another.with_extension("db").exists());

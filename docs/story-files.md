@@ -63,10 +63,45 @@ alias. The export is an active schema upgrade for existing projects.
 
 Filesystem tests cover exact text, malformed drafts, external edits, copy/reload,
 missing files, migration/retry and moved project pairs with stable artifact IDs.
-Studio state tests verify that editing source marks it dirty without changing
-the registry. A headless Dioxus harness exercises the actual project commands,
+Studio state tests verify joint source/registry undo and draft preservation.
+A headless Dioxus harness exercises the actual project commands,
 including conflict-blocked navigation and retrying a partial project save.
 
-Scene/beat synchronization, project-relative image paths, Writer completion and
-navigation, artifact origins/backlinks and compiler diagnostics in Writer/LSP
-remain separate work in [the language plan](language-plan.md).
+## Scene and beat reconciliation
+
+Every error-free shared analysis replaces the active ordered association.
+Scene keys are authored names; beat keys are `(scene, beat name)`. Schema v10
+stores those keys and their registry UUIDs in `projects.story_scenes_json`.
+It stores no second source or editable story order. Dialogue edits and reorder
+retain UUIDs, compositions, descriptions and revisions. Invalid/unfinished drafts
+and duplicate declarations retain the last valid association and remain saveable.
+A valid empty source detaches every declaration.
+
+Text renames and moves between scenes change authored identity: they detach the
+old artwork and create a new association. Reintroducing a removed name also
+creates new artwork. No proximity matching or automatic adoption of manual
+artifacts occurs. Reloading saved source after an unsaved rename/removal reattaches
+its saved UUID when its artwork is still present, retaining current revisions.
+Name collisions get a unique Canvas display key; the persisted
+authored key remains exact. Detached artwork is still listed in the gallery and
+keeps its revisions and composition. Canvas labels detached scene/beat artwork.
+
+Writer is the structure editor. Existing `/create scene`, `/create beat` and
+`/compose` commands create library artwork only; they never insert or reorder
+declarations. Canvas's Story sequence is derived from the association. Generation,
+composition, descriptions, variants and revision controls are artwork operations.
+Writer's scene/beat buttons open their associated artwork. Resolved references
+provide source origins and `Appears in` links. A missing asset can be created as a
+catalog entry immediately, with rendering as a separate action. Wrong kinds and
+ambiguity remain errors. One GUI-free catalog maps character/environment/object
+to Character/Location/Prop and exposes exact completed active revision bindings.
+
+Undo/redo snapshots source text together with the registry, preserving the current
+disk snapshot for conflict detection. External refreshes reconcile before saving
+the registry. Background artwork results merge their artifact changes with newer
+Writer associations; project switching and undo wait for the worker to finish.
+Save failures retain dirty state and revisions. Persisted association corruption
+is reported before opening rather than silently rebuilding UUIDs.
+
+Project-relative image paths, Writer completion/navigation tooling and compiler
+diagnostics in Writer/LSP remain work in [the language plan](language-plan.md).

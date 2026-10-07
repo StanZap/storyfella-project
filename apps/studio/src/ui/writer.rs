@@ -9,11 +9,10 @@
 //! Unresolved assets remain pending, with a Create affordance.
 
 use dioxus::prelude::*;
-use storyfella_language::{
-    analyze, Analysis, Asset, AssetKind, ReferenceKind, Severity, TokenKind,
-};
+use storyfella_language::{analyze, Analysis, AssetKind, ReferenceKind, Severity, TokenKind};
 use uuid::Uuid;
 
+use storyfella_studio_core::authoring::AssetCatalog;
 use storyfella_studio_core::errors::{CodedError, ReportedError};
 use storyfella_studio_core::registry::{ArtifactKind, ArtifactRegistry};
 
@@ -93,26 +92,6 @@ fn outline(source: &str) -> Vec<Scope> {
     outline_analysis(&analyze(source, &[]))
 }
 
-pub fn asset_catalog(registry: &ArtifactRegistry) -> Vec<Asset> {
-    registry
-        .artifacts
-        .iter()
-        .filter_map(|artifact| {
-            let kind = match artifact.kind {
-                ArtifactKind::Character => AssetKind::Character,
-                ArtifactKind::Environment => AssetKind::Location,
-                ArtifactKind::Object => AssetKind::Prop,
-                _ => return None,
-            };
-            Some(Asset {
-                id: artifact.id.to_string(),
-                name: artifact.name.clone(),
-                kind,
-            })
-        })
-        .collect()
-}
-
 /// A name the story references, and whether the registry has it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mention {
@@ -120,6 +99,7 @@ pub struct Mention {
     pub artifact: Option<Uuid>,
     pub image: Option<String>,
     pub kind: Option<ArtifactKind>,
+    pub can_create: bool,
 }
 
 impl Mention {
@@ -180,6 +160,12 @@ fn mentions_in(
                     ReferenceKind::Scene => None,
                 });
                 Mention {
+                    can_create: reference.is_some_and(|r| {
+                        analysis
+                            .diagnostics
+                            .iter()
+                            .any(|d| d.code == "SF203" && d.span == r.name.span)
+                    }),
                     image: artifact.and_then(|a| {
                         registry
                             .latest_image(a.id)
@@ -202,7 +188,11 @@ fn mentions_at(
     line: usize,
     registry: &ArtifactRegistry,
 ) -> (Vec<Mention>, Vec<Mention>) {
-    mentions_in(&analyze(source, &asset_catalog(registry)), line, registry)
+    mentions_in(
+        &analyze(source, &AssetCatalog::from_registry(registry).assets),
+        line,
+        registry,
+    )
 }
 
 /// One coloured run of a line.
@@ -241,9 +231,9 @@ fn highlight_line(analysis: &Analysis, line: usize) -> Vec<Piece> {
 #[cfg(test)]
 fn highlight(line: &str, known: &[String]) -> Vec<Piece> {
     let indent = line.len() - line.trim_start().len();
-    let catalog: Vec<Asset> = known
+    let catalog: Vec<storyfella_language::Asset> = known
         .iter()
-        .map(|name| Asset {
+        .map(|name| storyfella_language::Asset {
             id: name.clone(),
             name: name.clone(),
             kind: AssetKind::Character,
@@ -264,6 +254,7 @@ fn highlight(line: &str, known: &[String]) -> Vec<Piece> {
 pub fn Writer(app_state: Signal<AppState>) -> Element {
     let mut error_report = use_context::<Signal<Option<ReportedError>>>();
     let mut cursor = use_context::<super::WriterCaret>().0;
+    let mut screen = use_context::<Signal<super::AppScreen>>();
     use_future(move || async move {
         let mut bridge = document::eval(CARET_LINE_BRIDGE);
         while let Ok(line) = bridge.recv::<usize>().await {
@@ -277,7 +268,7 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
         .path()
         .map(std::path::Path::to_path_buf);
     let registry = app_state.read().registry.clone();
-    let analysis = analyze(&source, &asset_catalog(&registry));
+    let analysis = analyze(&source, &AssetCatalog::from_registry(&registry).assets);
 
     let lines: Vec<String> = if source.is_empty() {
         Vec::new()
@@ -317,6 +308,22 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
         ));
     }));
     let here = scopes.get(at).cloned().unwrap_or_default();
+    let scene_artwork = registry
+        .story_scenes
+        .iter()
+        .find(|s| Some(&s.name) == here.scene.as_ref());
+    let in_scope_artwork: Vec<(String, Uuid)> = scene_artwork
+        .into_iter()
+        .flat_map(|scene| {
+            std::iter::once((scene.name.clone(), scene.artifact_id)).chain(
+                scene
+                    .beats
+                    .iter()
+                    .filter(|b| Some(&b.name) == here.beat.as_ref())
+                    .map(|b| (b.name.clone(), b.artifact_id)),
+            )
+        })
+        .collect();
     let (beat_mentions, scene_mentions) = mentions_in(&analysis, at, &registry);
     let pending = beat_mentions
         .iter()
@@ -437,6 +444,9 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                             "{diagnostic.message}"
                         }
                     }
+                    if analysis.has_errors() {
+                        p { class: "px-4 py-1 text-[11px] text-amber-300", "Story artwork keeps the last valid scene and beat association while this draft has errors." }
+                    }
                     div { class: "flex items-center gap-3 border-t border-white/[0.05] px-4 py-1.5",
                         p { class: "font-mono text-[10px] text-zinc-700",
                             "line {at + 1} of {lines.len()}"
@@ -459,6 +469,13 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                     }
                 }
                 div { class: "min-h-0 flex-1 space-y-5 overflow-y-auto p-3",
+                    for (name, id) in in_scope_artwork {
+                        button {
+                            class: "block rounded px-2 py-1 font-mono text-[11px] text-violet-300 hover:bg-white/[0.05]",
+                            onclick: move |_| { app_state.write().select_artifact(id); screen.set(super::AppScreen::Canvas); },
+                            "Open {name} artwork"
+                        }
+                    }
                     if beat_mentions.is_empty() && scene_mentions.is_empty() {
                         p { class: "px-1 text-[11px] italic text-zinc-700",
                             "Nothing referenced here yet."
@@ -487,6 +504,7 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
 #[component]
 fn MentionGroup(title: String, mentions: Vec<Mention>, app_state: Signal<AppState>) -> Element {
     let mut composer = use_context::<Signal<String>>();
+    let mut screen = use_context::<Signal<super::AppScreen>>();
     rsx! {
         section {
             div { class: "mb-2 flex items-center gap-2 px-1",
@@ -529,18 +547,32 @@ fn MentionGroup(title: String, mentions: Vec<Mention>, app_state: Signal<AppStat
                             }
                         }
 
-                        if mention.pending() {
+                        if mention.can_create {
+                            button {
+                                class: "shrink-0 rounded-md bg-amber-400/15 px-2 py-1 text-[10px] font-semibold text-amber-300 transition hover:bg-amber-400/25",
+                                title: "Create a catalog entry; render its image on Canvas",
+                                onclick: {
+                                    let name = mention.name.clone();
+                                    let kind = match mention.kind {
+                                        Some(ArtifactKind::Environment) => AssetKind::Location,
+                                        Some(ArtifactKind::Object) => AssetKind::Prop,
+                                        _ => AssetKind::Character,
+                                    };
+                                    move |_| { app_state.write().create_pending_asset(&name, kind); }
+                                },
+                                "Create"
+                            }
                             button {
                                 class: "shrink-0 rounded-md bg-amber-400/15 px-2 py-1 text-[10px] font-semibold text-amber-300 transition hover:bg-amber-400/25",
                                 title: "Prefill the command bar to create it",
                                 onclick: {
                                     let name = mention.name.clone();
                                     let kind = mention.kind.unwrap_or(ArtifactKind::Character).as_str();
-                                    move |_| composer.set(format!("/create {kind} --name {name} "))
+                                    move |_| { composer.set(format!("/create {kind} --name {name} ")); screen.set(super::AppScreen::Canvas); }
                                 },
-                                "Create"
+                                "Render…"
                             }
-                        } else {
+                        } else if !mention.pending() {
                             button {
                                 class: "shrink-0 rounded-md px-2 py-1 text-[10px] text-zinc-600 transition hover:text-zinc-200",
                                 title: "Open in the canvas",
@@ -549,6 +581,7 @@ fn MentionGroup(title: String, mentions: Vec<Mention>, app_state: Signal<AppStat
                                     move |_| {
                                         if let Some(id) = id {
                                             app_state.write().select_artifact(id);
+                                            screen.set(super::AppScreen::Canvas);
                                         }
                                     }
                                 },

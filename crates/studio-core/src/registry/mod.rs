@@ -685,6 +685,9 @@ impl CodedError for RegistryError {
 /// The in-memory artifact registry for one project.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ArtifactRegistry {
+    /// Source-ordered associations from the last error-free analysis. Artwork
+    /// outside this list remains on Canvas but does not sequence the story.
+    pub story_scenes: Vec<crate::authoring::SceneAssociation>,
     /// One id space; creation order is preserved for display.
     pub artifacts: Vec<Artifact>,
     /// LoRA adapters known to this project (`lora_registry`); entries with

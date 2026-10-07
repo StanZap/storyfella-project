@@ -12,6 +12,7 @@
 //! explicitly, so the direction of the dependency stays visible at every call
 //! site.
 
+pub mod authoring;
 pub mod config;
 pub mod errors;
 pub mod llm;

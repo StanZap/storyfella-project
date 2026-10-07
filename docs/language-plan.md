@@ -55,12 +55,15 @@ column. Document snapshots detect external-edit conflicts; copy/reload preserve
 edits, save failures remain dirty, and project/source pairs can move together.
 There was no `story_documents` table to migrate. See [story-files.md](story-files.md).
 
-Remaining: project-relative generated asset paths and scene/beat synchronization.
-Registry scenes/beats must follow valid analysis;
-partial edits must not delete artwork or recreate stable IDs.
+Scene/beat reconciliation now follows error-free shared analysis, with ordered
+authored-name → UUID associations persisted by schema v10. Invalid drafts keep
+the last valid association; removals detach artwork without removing revisions.
+Text renames and inter-scene moves create new identities; dialogue/reorder retain
+existing ones. Source and registry undo together. See [story-files.md](story-files.md).
 
-Add Writer completion/navigation UI, pending assets of the correct kind,
-source-linked diagnostics, artifact origins and `Appears in` backlinks.
+Pending catalog creation of the expected kind, artifact origins and `Appears in`
+backlinks are connected. Remaining: project-relative generated asset paths,
+Writer completion/navigation tooling and source-linked compiler diagnostics.
 
 Acceptance: disk source, Writer and canvas reconcile after save/reopen without
 losing draft text or asset identities. Replace transitional behavior in the same

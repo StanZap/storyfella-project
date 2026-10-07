@@ -12,6 +12,7 @@ The registry (`crates/studio-core/src/registry/mod.rs`) is one id space for ever
 
 ```text
 ArtifactRegistry
+├── story_scenes: Vec<SceneAssociation> — source order, authored keys → UUIDs
 ├── artifacts: Vec<Artifact>
 │   └── Artifact
 │       ├── id: Uuid                     — one id space, c:<ref> resolution
@@ -68,7 +69,7 @@ promoted revision, experiment an edit that has not been made canonical.
 - **Selection is validated.** `select_artifact` ignores ids that do not exist;
   undo/redo prune a selection whose artifact the restored snapshot lacks.
 - **Undo is state restore, never pipeline re-execution.**
-  `snapshot_for_undo` saves the full registry before an operation applies
+  `snapshot_for_undo` saves the registry and exact source text before an operation applies
   (capped at 100 snapshots); `undo`/`redo` swap snapshots and dirty the
   project. A new operation clears the redo stack (history forks).
 - **Every mutation sets `has_unsaved_changes`** — except the no-op paths
@@ -86,7 +87,9 @@ current format evolves (no legacy formats are parsed; the TOML `ProjectStore`
 and the `project_json` storyboard column (schema v3) were removed with the
 models they carried, and the `masks` table (schema v8) was dropped with the
 mask edit path). Schema v9 exports `projects.story_source` to `.sf` before
-dropping the column. The `svs` CLI persists artwork to `.svs-project.db`.
+dropping the column. Schema v10 adds ordered scene/beat name-to-UUID associations
+in `projects.story_scenes_json`; source remains exclusively in `.sf`.
+The `svs` CLI persists artwork to `.svs-project.db`.
 
 ### The GUI save flow
 

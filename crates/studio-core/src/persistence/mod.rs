@@ -174,6 +174,18 @@ impl ProjectDb {
     }
 
     fn write_snapshot(&self, registry: &ArtifactRegistry) -> Result<(), StoreError> {
+        crate::authoring::validate_associations(registry).map_err(|value| StoreError::Corrupt {
+            path: self.path.clone(),
+            column: "projects.story_scenes_json".into(),
+            value,
+        })?;
+        let story_scenes_json =
+            serde_json::to_string(&registry.story_scenes).map_err(|source| {
+                StoreError::Serialize {
+                    path: self.path.clone(),
+                    source,
+                }
+            })?;
         let mut conn = self.conn.lock();
         let project_id = single_project_id(&conn)?;
         let tx = conn.transaction().map_err(|source| StoreError::Save {
@@ -201,11 +213,14 @@ impl ProjectDb {
                 })?;
         }
         let now = unix_now();
-        tx.execute("UPDATE projects SET updated_at = ?1", [now])
-            .map_err(|source| StoreError::Save {
-                path: self.path.clone(),
-                source,
-            })?;
+        tx.execute(
+            "UPDATE projects SET updated_at = ?1, story_scenes_json = ?2",
+            params![now, story_scenes_json],
+        )
+        .map_err(|source| StoreError::Save {
+            path: self.path.clone(),
+            source,
+        })?;
 
         for artifact in &registry.artifacts {
             let drafts_json = serde_json::to_string(&artifact.drafts).map_err(|source| {
@@ -697,6 +712,27 @@ impl ProjectDb {
         }
 
         registry.artifacts = artifacts;
+        let story_scenes_json: String = conn
+            .query_row("SELECT story_scenes_json FROM projects", [], |row| {
+                row.get(0)
+            })
+            .map_err(|source| StoreError::Load {
+                path: self.path.clone(),
+                source,
+            })?;
+        registry.story_scenes =
+            serde_json::from_str(&story_scenes_json).map_err(|error| StoreError::Corrupt {
+                path: self.path.clone(),
+                column: "projects.story_scenes_json".into(),
+                value: error.to_string(),
+            })?;
+        crate::authoring::validate_associations(&registry).map_err(|value| {
+            StoreError::Corrupt {
+                path: self.path.clone(),
+                column: "projects.story_scenes_json".into(),
+                value,
+            }
+        })?;
         Ok(StoredProject {
             story: StoryDocument::open(&source_path(&self.path))?,
             id: project_id,
@@ -834,7 +870,7 @@ impl ProjectDb {
 /// databases; `schema_meta` records what has been applied.
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
-    SCHEMA_V9,
+    SCHEMA_V9, SCHEMA_V10,
 ];
 
 /// Schema version 2 — the GUI carried the legacy `Project` model
@@ -881,6 +917,10 @@ DROP TABLE IF EXISTS masks;";
 
 /// The draft is exported by `migrate` before this SQL runs.
 const SCHEMA_V9: &str = "ALTER TABLE projects DROP COLUMN story_source;";
+
+/// Ordered compiler-name → artwork UUID associations, never a second source.
+const SCHEMA_V10: &str =
+    "ALTER TABLE projects ADD COLUMN story_scenes_json TEXT NOT NULL DEFAULT '[]';";
 
 const SCHEMA_V1: &str = "
 CREATE TABLE projects (
