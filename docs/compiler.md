@@ -2,7 +2,7 @@
 
 `storyfella-compiler` validates and lowers stories without Studio, a project database,
 GUI or inference backend. It emits a typed, serializable version-1 `StoryPlan`.
-The runtime is the next execution layer; compilation itself performs no playback.
+The [runtime](runtime.md) is the execution layer; compilation performs no playback.
 
 ## Flow semantics
 
@@ -99,6 +99,6 @@ round-trip. CLI process tests check JSON/exit behavior and prove that model conf
 and project databases are unnecessary.
 
 Studio [`.sf` persistence](story-files.md), registry synchronization and authoring
-tools are implemented. Next: the shared headless runtime, preview/Player and
+tools and shared headless runtime are implemented. Next: preview/Player and
 media capability validation. Timing, save-state compatibility, expressions,
 imports and speech performance annotations require their own contracts.

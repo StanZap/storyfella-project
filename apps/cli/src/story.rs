@@ -20,6 +20,8 @@ pub struct SourceArgs {
 
 #[derive(Subcommand)]
 pub enum StoryCommand {
+    /// Execute a compiled JSON plan with a JSON array of runtime commands.
+    Trace { plan: PathBuf, commands: PathBuf },
     /// Export a project's read-only asset context for external editors.
     Catalog { project: PathBuf },
     /// Print source validity, linking readiness and positioned diagnostics as JSON.
@@ -63,6 +65,17 @@ fn check_report<'a>(result: &'a Compilation, source: &Source) -> CheckReport<'a>
 
 pub fn run(command: StoryCommand) -> Result<()> {
     let (args, emit_plan) = match command {
+        StoryCommand::Trace { plan, commands } => {
+            let plan = serde_json::from_slice(&std::fs::read(plan)?)?;
+            let commands: Vec<storyfella_runtime::Command> =
+                serde_json::from_slice(&std::fs::read(commands)?)?;
+            let (mut runtime, mut events) = storyfella_runtime::Runtime::start(plan)?;
+            for command in commands {
+                events.extend(runtime.dispatch(command)?);
+            }
+            println!("{}", serde_json::to_string_pretty(&events)?);
+            return Ok(());
+        }
         StoryCommand::Check(args) => (args, false),
         StoryCommand::Compile(args) => (args, true),
         StoryCommand::Catalog { project } => {

@@ -175,6 +175,30 @@ fn malformed_binding_schema_is_rejected() {
 }
 
 #[test]
+fn trace_executes_real_runtime_and_rejects_corrupt_imported_plan() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "story.sf",
+        "scene first\n  narrate: Hello\nscene second\n  narrate: World\n",
+    );
+    let compiled = fixture.json(&["story", "compile", "story.sf"], true);
+    fixture.write("plan.json", &serde_json::to_string(&compiled).unwrap());
+    fixture.write("commands.json", r#"["Advance","Advance"]"#);
+    let events = fixture.json(&["story", "trace", "plan.json", "commands.json"], true);
+    assert!(events
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e.get("Completed").is_some()));
+    let mut bad = compiled;
+    bad["entry"] = serde_json::json!("missing");
+    fixture.write("plan.json", &serde_json::to_string(&bad).unwrap());
+    let output = fixture.run(&["story", "trace", "plan.json", "commands.json"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Invalid story plan"));
+}
+
+#[test]
 fn catalog_entries_without_images_are_resolved_but_report_pending_artwork() {
     let fixture = Fixture::new();
     fixture.write("story.sf", "scene first\n  prop: lantern\n");

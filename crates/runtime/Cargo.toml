@@ -1,0 +1,14 @@
+[package]
+name = "storyfella-runtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Deterministic, host-driven Storyfella story execution."
+
+[dependencies]
+storyfella-compiler.workspace = true
+storyfella-language.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true

@@ -669,7 +669,10 @@ plan to ship, with its status; update it when work lands.
    Schema v9 exports existing Writer drafts before removing the source column;
    disk conflicts, copy/reload and project pair moves are covered. See
    [story-files.md](story-files.md). Schema v10 persists source/registry associations.
-   Story runtime and portable image paths remain planned.
+   The shared headless runtime and CLI trace are implemented: typed events,
+   manual advance/choice/jump/end/pause/restart, bounded automatic transitions,
+   imported-plan validation and exact-plan save/restore. See [runtime.md](runtime.md).
+   Visual preview/Player and portable image paths remain planned.
 10. **LSP tooling:** `storyfella-lsp` exposes shared language analysis to
     external editors. — **🔧 single-document tooling implemented.** Stdio, full-document
     sync, UTF-16, versioned diagnostics, completion, definitions, references and

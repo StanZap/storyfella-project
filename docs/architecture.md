@@ -15,8 +15,8 @@ and [execution plan](language-plan.md) for implemented scope and next milestones
 | `apps/player` / `storyfella-player` | Minimal executable now; standalone playback later | GUI framework undecided; playback will consume the same runtime as Studio preview |
 | `xtask` | Build, launch, package and validation commands | Developer tooling only |
 
-Language, compiler and LSP are implemented below; story runtime remains
-reserved until implementation begins. No placeholder crates are added.
+Language, compiler, LSP and story runtime are implemented below. No placeholder
+crates are added; [runtime.md](runtime.md) records the execution contract.
 
 | Language/execution crate | Responsibility | Dependency boundary |
 | --- | --- | --- |
@@ -27,9 +27,9 @@ reserved until implementation begins. No placeholder crates are added.
 
 The compiler emits a versioned, source-mapped story plan with sequential scene
 fallthrough and explicit terminal instructions; see [compiler.md](compiler.md).
-The runtime will consume that representation when its implementation begins.
+The runtime consumes that representation with bounded host-driven execution.
 Existing Studio core `runtime/` supervises creative generation through Clipforge;
-it is distinct from the future story execution runtime. FineWineTTS and Clipforge
+it is distinct from the story execution runtime. FineWineTTS and Clipforge
 remain separate repositories. The inference path dependency stays
 `../clipforge/crates/inference` after the repository-directory rename.
 

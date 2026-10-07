@@ -4,7 +4,7 @@ Current shape: the artifact registry + typed operation layer (`crates/studio-cor
 
 # Layout
 
-A Cargo workspace: eight packages.
+A Cargo workspace: nine packages.
 
 | Path | Package | Owns |
 | :--- | :--- | :--- |
@@ -12,6 +12,7 @@ A Cargo workspace: eight packages.
 | `crates/language` | `storyfella-language` | lossless lexer, recovering parser, typed AST, source positions and shared analysis/services; independent of Studio |
 | `crates/compiler` | `storyfella-compiler` | deterministic, versioned story plans with scene flow, exact asset revision bindings, source maps and readiness; independent of Studio |
 | `crates/lsp` | `storyfella-lsp` | stdio LSP transport over the shared language analysis |
+| `crates/runtime` | `storyfella-runtime` | deterministic story execution, events and verified save/restore; no GUI/inference |
 | `apps/studio` | `storyfella-studio` | the Dioxus app — `ui/`, `state/`, `commands.rs`, `driver/`, `app/`, plus `Dioxus.toml`, `tailwind.css`, `assets/`, `package.json` |
 | `apps/cli` | `svs-cli` | `svs`, `model_setup`, `vlm_probe`, the VLM fixture example and its fixtures |
 | `apps/player` | `storyfella-player` | minimal standalone executable; GUI framework undecided; story playback will use the shared story runtime |
@@ -24,9 +25,8 @@ it, so the boundary stays visible at every call site.
 ### Storyfella boundaries
 
 `storyfella-language`, `storyfella-compiler` and `storyfella-lsp` are implemented.
-Reserve `storyfella-runtime`; do not add empty crates or workspace members.
-Add it when implementation begins, following
-`docs/architecture.md` → Storyfella workspace boundaries.
+`storyfella-runtime` is implemented with a real CLI trace caller; see
+`docs/runtime.md`. Do not add empty crates or workspace members.
 Language analysis and compilation must remain independent of Studio, GUI
 frameworks, and inference backends. The story runtime owns execution, state,
 and timing; Studio preview and Player will consume the same runtime. The LSP
@@ -152,7 +152,8 @@ error-code registry (item 7) are implemented and validated:
   identity persistence, pending catalog creation, origins/backlinks and joint
   source/registry undo are implemented. Shared Writer completion/navigation,
   compiler diagnostics, rename, formatting, and catalog-backed LSP semantic
-  tokens are implemented. Shared playback is next; `docs/ROADMAP.md` §12 remains
+  tokens and shared headless execution are implemented. Visual playback hosts
+  are next; `docs/ROADMAP.md` §12 remains
   authoritative.
 
 # Validation

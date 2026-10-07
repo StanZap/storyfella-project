@@ -20,6 +20,7 @@ path = "src/bin/vlm_probe.rs"
 [dependencies]
 storyfella-compiler.workspace = true
 storyfella-language.workspace = true
+storyfella-runtime.workspace = true
 storyfella-studio-core = { path = "../../crates/studio-core" }
 anyhow.workspace = true
 base64.workspace = true

@@ -2,7 +2,7 @@
 
 Status: the language front end, compiler, Writer adapter and initial stdio LSP are
 implemented, including Studio `.sf` persistence and scene/beat registry associations.
-Authoring tools are implemented; playback is the next milestone in
+Authoring tools and headless execution are implemented; visual hosts are next in
 [the execution plan](language-plan.md). This syntax is a first editable design,
 anchored to the current Writer; it is not a compatibility layer for the prototype.
 
@@ -136,7 +136,8 @@ external asset definition locations or code actions are advertised.
 The [compiler](compiler.md) records sequential scene fallthrough, ordered beats,
 and explicit branch/jump/end instructions; it does not execute choices, load voices
 or generate assets. Expressions, variables, includes, speech annotations and
-timing units remain unspecified. No placeholder runtime crate exists.
+timing units remain unspecified. The [runtime](runtime.md) executes ready plans
+with manual advancement, bounded flow and verified save/restore.
 Studio reads and writes authoritative [`.sf` files](story-files.md); SQLite
 stores the project's artwork and metadata. Language analysis itself remains
 independent of storage.
