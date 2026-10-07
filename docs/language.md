@@ -2,7 +2,7 @@
 
 Status: the language front end, compiler, Writer adapter and initial stdio LSP are
 implemented, including Studio `.sf` persistence and scene/beat registry associations.
-Authoring tools and headless execution are implemented; visual hosts are next in
+Authoring tools, headless execution and basic visual hosts are implemented in
 [the execution plan](language-plan.md). This syntax is a first editable design,
 anchored to the current Writer; it is not a compatibility layer for the prototype.
 

@@ -111,5 +111,5 @@ new declaration requires its terminating newline before reconciliation; explicit
 save/open snapshots also accept complete declarations at EOF. This prevents
 typed name prefixes from creating placeholder artwork.
 
-Project-relative image paths and playback remain work in
-[the language plan](language-plan.md).
+Basic snapshot playback is implemented in [preview and Player](playback.md).
+Project-relative image paths remain work in [the language plan](language-plan.md).

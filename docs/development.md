@@ -4,20 +4,21 @@ This document covers setting up a machine and the day-to-day commands for the
 Rust application.
 
 The repository directory is `storyfella`, beside the separate `clipforge` and
-`finewinetts` repositories. Studio remains in Dioxus. Player has no GUI framework
-or playback implementation yet:
+`finewinetts` repositories. Studio and the visual Player use Dioxus desktop:
 
 ```sh
 cargo build -p storyfella-player
-cargo run -p storyfella-player
+cargo run -p storyfella-player -- /absolute/project.sf
 ```
 
-Future language/compiler/runtime/LSP responsibilities are documented in
-[`architecture.md`](architecture.md#storyfella-workspace-boundaries); add those
-crates only when implementation begins. Existing CLI and user-data identities
+Language/compiler/runtime/LSP responsibilities are documented in
+[`architecture.md`](architecture.md#storyfella-workspace-boundaries), and
+[playback.md](playback.md) documents preview, Player inputs and fixtures. Existing CLI and user-data identities
 remain unchanged. CI checks formatting, all workspace targets and tests, builds
 CLI/Player, and builds and runs Studio's backend-free smoke plan through dx.
-If the Clipforge repository is private, configure the Actions secret
+Plan runs keep created projects, generated artwork and cache under `.svs-e2e/`,
+along with their hermetic config and logs. Normal launches retain user project
+storage. If the Clipforge repository is private, configure the Actions secret
 `CLIPFORGE_READ_TOKEN` with read access to `StanZap/clipforge`; the normal
 workflow token only grants access to this repository. Local builds consume the
 sibling checkout and do not need that secret.
@@ -63,9 +64,9 @@ the core tests never compile the toolkit or the WebKit stack. `apps/studio`
 `model_setup`, and `vlm_probe` binaries. Both application crates depend on
 `storyfella-studio-core` and name it explicitly (`storyfella_studio_core::…`) rather than re-exporting it.
 
-`apps/player` (package `storyfella-player`) currently prints a placeholder
-message and has no dependencies. It will consume the shared story runtime
-when playback implementation begins; the GUI framework remains undecided.
+`apps/player` (package `storyfella-player`) uses shared Dioxus presentation from
+`crates/playback-ui`, the GUI-free host/resource adapter in Studio core and the
+independent `crates/runtime` execution engine. It does not consume Studio state.
 
 The native-inference runtime is **not** owned by this workspace: it is the
 sibling `clipforge` project's crate, package **`clipforge-inference`**, pulled in

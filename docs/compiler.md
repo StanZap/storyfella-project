@@ -99,6 +99,7 @@ round-trip. CLI process tests check JSON/exit behavior and prove that model conf
 and project databases are unnecessary.
 
 Studio [`.sf` persistence](story-files.md), registry synchronization and authoring
-tools and shared headless runtime are implemented. Next: preview/Player and
-media capability validation. Timing, save-state compatibility, expressions,
+tools, shared headless runtime and basic visual preview/Player are implemented.
+Hosts validate exact image resources; see [playback.md](playback.md). Further
+media semantics, timing, save-state compatibility, expressions,
 imports and speech performance annotations require their own contracts.

@@ -64,10 +64,23 @@ pub fn validate_plan(plan: &StoryPlan) -> Result<Vec<AssetBinding>, Error> {
         ));
     }
     if !plan.readiness.ready() {
+        let pending = plan
+            .readiness
+            .pending_assets
+            .iter()
+            .map(|a| a.name.value.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let directions = plan
+            .readiness
+            .unsupported_directions
+            .iter()
+            .map(|d| format!("{:?}: {}", d.kind, d.text.value))
+            .collect::<Vec<_>>()
+            .join("; ");
         return Err(Error::NotReady(format!(
-            "{} pending asset uses, {} unsupported directions; resolve them before playback",
-            plan.readiness.pending_assets.len(),
-            plan.readiness.unsupported_directions.len()
+            "pending artwork [{}]; unsupported directions [{}]. Resolve these before playback",
+            pending, directions
         )));
     }
     Ok(bindings)

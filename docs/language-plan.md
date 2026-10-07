@@ -71,7 +71,7 @@ Acceptance: disk source, Writer and canvas reconcile after save/reopen without
 losing draft text or asset identities. Replace transitional behavior in the same
 change; leave no parallel legacy parser or document store.
 
-## 4. Shared story runtime and preview — headless execution implemented
+## 4. Shared story runtime and preview — implemented manual playback slice
 
 `storyfella-runtime` implements a deterministic state machine consuming the
 compiled representation. The host supplies visuals/audio and receives playback
@@ -79,10 +79,13 @@ events; runtime owns scene/beat state, choices and timing. Implement explicit
 advance, choice selection, jump, end, pause/resume, restart and verified
 save/restore. Imported plans are compiler-validated and automatic transitions
 bounded. The CLI trace is a real caller. [runtime.md](runtime.md) defines the
-contract. Studio preview and visual Player hosts are next.
+contract. Studio preview and visual Player share resource resolution and Dioxus
+controls; [playback.md](playback.md) defines snapshot/open/restore behavior.
 
 Acceptance: headless execution traces cover branching, invalid choices, restored
-state and deterministic replay. Then validate the Studio preview flow and Player.
+state and deterministic replay. The desktop playback plan covers both routes,
+restoration and pinned visuals. Native keyboard and source-return checks verify
+the actual controls in both hosts.
 
 ## 5. Expressive performance and media
 

@@ -46,9 +46,14 @@ const KEY_BRIDGE: &str = r#"
             const tag = active ? active.tagName : "";
             // A focused text field owns every key it receives.
             if (tag === "INPUT" || tag === "TEXTAREA" ||
+                tag === "SELECT" ||
                 (active && active.isContentEditable)) {
                 return;
             }
+            if (active && active.closest('[data-owns-keys]') &&
+                ["Enter", "ArrowRight", " "].includes(event.key)) { return; }
+            // Native buttons own Enter; claiming it prevents their click.
+            if (tag === "BUTTON" && event.key === "Enter") { return; }
             if ((event.ctrlKey || event.metaKey) &&
                 (event.key === "z" || event.key === "Z")) {
                 event.preventDefault();

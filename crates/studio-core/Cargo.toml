@@ -8,6 +8,8 @@ description = "Storyfella Studio domain layer: artifact registry, typed operatio
 [dependencies]
 storyfella-language.workspace = true
 storyfella-compiler.workspace = true
+storyfella-runtime.workspace = true
+base64.workspace = true
 anyhow.workspace = true
 clipforge-inference.workspace = true
 directories.workspace = true

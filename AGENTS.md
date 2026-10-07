@@ -4,7 +4,7 @@ Current shape: the artifact registry + typed operation layer (`crates/studio-cor
 
 # Layout
 
-A Cargo workspace: nine packages.
+A Cargo workspace: ten packages.
 
 | Path | Package | Owns |
 | :--- | :--- | :--- |
@@ -15,7 +15,8 @@ A Cargo workspace: nine packages.
 | `crates/runtime` | `storyfella-runtime` | deterministic story execution, events and verified save/restore; no GUI/inference |
 | `apps/studio` | `storyfella-studio` | the Dioxus app — `ui/`, `state/`, `commands.rs`, `driver/`, `app/`, plus `Dioxus.toml`, `tailwind.css`, `assets/`, `package.json` |
 | `apps/cli` | `svs-cli` | `svs`, `model_setup`, `vlm_probe`, the VLM fixture example and its fixtures |
-| `apps/player` | `storyfella-player` | minimal standalone executable; GUI framework undecided; story playback will use the shared story runtime |
+| `apps/player` | `storyfella-player` | standalone Dioxus visual Player; same runtime/resources/controls as Studio preview |
+| `crates/playback-ui` | `storyfella-playback-ui` | shared Dioxus presentation and playback controls; independent of Studio state |
 | `xtask` | `xtask` | `cargo xtask` — the developer task runner (build/run/bundle/check/test); not part of any shipped artifact |
 
 `crates/studio-core` never depends on the GUI. `apps/studio` and `apps/cli` both depend on
@@ -29,9 +30,9 @@ it, so the boundary stays visible at every call site.
 `docs/runtime.md`. Do not add empty crates or workspace members.
 Language analysis and compilation must remain independent of Studio, GUI
 frameworks, and inference backends. The story runtime owns execution, state,
-and timing; Studio preview and Player will consume the same runtime. The LSP
+and timing; Studio preview and Player consume the same runtime. The LSP
 exposes shared language analysis to external editors. Studio core stays GUI-free.
-Its existing `runtime/` is the creative inference adapter, not the future story
+Its existing `runtime/` is the creative inference adapter, separate from story
 execution runtime. Clipforge and FineWineTTS remain separate repositories.
 See `docs/language.md`, `docs/compiler.md` and `docs/language-plan.md` for implemented language scope
 and the remaining compiler, persistence and story-execution milestones.
@@ -152,8 +153,8 @@ error-code registry (item 7) are implemented and validated:
   identity persistence, pending catalog creation, origins/backlinks and joint
   source/registry undo are implemented. Shared Writer completion/navigation,
   compiler diagnostics, rename, formatting, and catalog-backed LSP semantic
-  tokens and shared headless execution are implemented. Visual playback hosts
-  are next; `docs/ROADMAP.md` §12 remains
+  tokens, shared headless execution, Studio preview and the visual Player are
+  implemented. See `docs/playback.md`; `docs/ROADMAP.md` §12 remains
   authoritative.
 
 # Validation
@@ -166,7 +167,7 @@ cargo test --workspace
 cargo fmt --all -- --check
 ```
 
-That is `cargo xtask check` (+ `test`), which wraps the same commands from the workspace root. Do not modify `Cargo.toml` features or add dependencies without a strong reason — dependencies live in `[workspace.dependencies]` at the root and are added there once, then referenced from a member with `name.workspace = true`; the `desktop` feature lives in `apps/studio`.
+That is `cargo xtask check` (+ `test`), which wraps the same commands from the workspace root. Do not modify `Cargo.toml` features or add dependencies without a strong reason — dependencies live in `[workspace.dependencies]` at the root and are added there once, then referenced from a member with `name.workspace = true`; the `desktop` feature lives in `apps/studio` and `apps/player`.
 
 Run `cargo clippy -p <changed-package> --all-targets -- -D warnings` for changed
 Rust packages. Fix warnings introduced by the change; do not silence them to

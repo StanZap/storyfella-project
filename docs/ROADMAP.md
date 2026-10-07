@@ -375,7 +375,7 @@ Storyfella is a DSL and toolkit for interactive narrative experiences. It is
 `../storyfella-old-project-inspiration` prototype is reference material only,
 not code to integrate. `storyfella-language` owns lexing, parsing, AST and shared
 analysis; `storyfella-lsp` exposes it to external editors. Compiler and runtime
-will be separate crates when implemented. See [the language contract](language.md)
+are independent crates. See [the language contract](language.md)
 and [execution plan](language-plan.md). The sequencer becomes the
 visual-authoring surface for `.sf` projects.
 Three surfaces share one artifact registry:
@@ -532,10 +532,10 @@ reference).
 **Workspace restructuring: implemented.** Studio is `apps/studio`
 (`storyfella-studio`), with GUI-free `crates/studio-core`
 (`storyfella-studio-core`). `apps/cli` and `xtask` remain; `apps/player`
-is a minimal executable with its GUI framework undecided. Language, compiler
-and LSP are implemented; the story runtime remains reserved in
+is a visual Dioxus desktop host. Language, compiler,
+LSP and story runtime are implemented as defined in
 [`architecture.md`](architecture.md#storyfella-workspace-boundaries).
-Studio preview and Player will share execution through that runtime. Studio
+Studio preview and Player share execution, resource checks and controls. Studio
 now edits authoritative `.sf` files; [the language execution plan](language-plan.md)
 tracks the remaining integration and execution work.
 
@@ -653,10 +653,11 @@ plan to ship, with its status; update it when work lands.
    removals detach artwork. Joint source/registry undo, pending catalog creation,
    source origins and backlinks are connected. Writer keyboard completion,
    exact caret navigation, explicit identity-preserving rename, formatting and
-   compiler diagnostics are implemented. Re-sync and playback remain.
+   compiler diagnostics are implemented. Fixed-snapshot visual preview is
+   implemented; source changes require applying a new draft. Re-sync remains.
 9. **Storyfella DSL (in-repo):** `storyfella-language` (lexer/parser/shared
    analysis) and `storyfella-compiler` (validation/lowering); DSL asset references
-   and round-trip to canvas. `storyfella-runtime` will own story execution,
+   and round-trip to canvas. `storyfella-runtime` owns story execution,
    state and timing, shared by Studio preview and standalone Player.
    — **🔧 first slice implemented.** `storyfella-language` provides lossless
    tokens, a recovering typed AST, source positions, diagnostics, symbol/reference
@@ -672,7 +673,11 @@ plan to ship, with its status; update it when work lands.
    The shared headless runtime and CLI trace are implemented: typed events,
    manual advance/choice/jump/end/pause/restart, bounded automatic transitions,
    imported-plan validation and exact-plan save/restore. See [runtime.md](runtime.md).
-   Visual preview/Player and portable image paths remain planned.
+   Studio preview and standalone visual Player share checked resources and
+   Dioxus controls: still visuals, text/choices, pause/restart, save/restore and
+   source snapshots/Writer return. The 22-step fixture-backed desktop plan checks
+   actual execution. See [playback.md](playback.md). Portable image paths,
+   packaging/export and expressive media/voice remain planned.
 10. **LSP tooling:** `storyfella-lsp` exposes shared language analysis to
     external editors. — **🔧 single-document tooling implemented.** Stdio, full-document
     sync, UTF-16, versioned diagnostics, completion, definitions, references and

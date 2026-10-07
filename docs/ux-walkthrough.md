@@ -46,8 +46,8 @@ Valid `.sf` analysis now synchronizes ordered scene/beat associations into the
 registry. The scope panel opens their artwork and creates missing catalog assets;
 resolution refreshes immediately. Artwork and revisions survive edits, invalid
 drafts and removal. Canvas shows source origins and `Appears in` links. The tour
-asserts the resulting source sequence. Positioned compiler diagnostics and
-completion are the next authoring increment.
+asserts the resulting source sequence. Precise keyboard completion, positioned
+compiler diagnostics, navigation, rename and formatting are implemented.
 
 Acceptance scenario: write a harbor beat using Mara and a lantern, create its
 missing asset, revise the dialogue, save, and reopen. The scene order, beat
@@ -55,9 +55,11 @@ identities, and artwork stay consistent across Writer and Canvas.
 
 ## 3. Play the story
 
-Build the shared story execution runtime, then expose it in Studio preview
-and Player. Start with dialogue, thought, narration, scene fallthrough, choices,
-`goto`, and `end`. Show the source position of the current beat in Studio.
+Studio Preview and the standalone visual Player share manual runtime execution,
+exact resource checks and controls for dialogue, thought, narration, fallthrough,
+choices, goto and end. Preview retains a fixed snapshot; its source link returns
+to the executing Writer line. See [playback.md](playback.md) for launch commands
+and the isolated two-scene playback fixture.
 
 Acceptance scenario: run a short two-scene story, choose a route, restart,
 and follow the other route. Preview and Player produce the same sequence.
@@ -73,5 +75,6 @@ moving a project.
 Acceptance scenario: preview and share a complete lighthouse scene with its
 images and voice, then open the moved project with its media intact.
 
-The walkthrough and scene synchronization are available now. Playable preview
-and presentation remain implementation milestones.
+The walkthrough, authoring tools, scene synchronization and basic playable
+preview/Player are available. Expressive media/voice and portable presentation
+remain implementation milestones.

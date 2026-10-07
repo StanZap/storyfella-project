@@ -1,0 +1,8 @@
+[application]
+name = "Storyfella Player"
+
+[bundle]
+identifier = "dev.storyfella.player"
+publisher = "Storyfella"
+category = "Entertainment"
+short_description = "Play authored Storyfella stories."

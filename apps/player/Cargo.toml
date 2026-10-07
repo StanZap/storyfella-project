@@ -3,6 +3,15 @@ name = "storyfella-player"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-description = "Standalone Storyfella Player placeholder; GUI framework undecided."
+description = "Standalone visual desktop host for the shared Storyfella runtime."
 
 [dependencies]
+storyfella-playback-ui.workspace = true
+storyfella-studio-core = { path = "../../crates/studio-core" }
+dioxus.workspace = true
+clap.workspace = true
+rfd.workspace = true
+
+[features]
+default = ["desktop"]
+desktop = ["dioxus/desktop"]

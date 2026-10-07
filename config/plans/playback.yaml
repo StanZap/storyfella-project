@@ -1,0 +1,28 @@
+# Generate this isolated fixture with:
+# cargo run -p storyfella-studio-core --example playback_fixture
+name: "Shared story playback"
+description: "Real runtime and pinned procedural artwork; no models or simulated playback."
+speed_ms: 800
+steps:
+  - open_project_file: ".svs-e2e/inputs/playback/lantern.db"
+  - preview: true
+  - expect_playback: { scene: harbor, phase: Text, text: "Ready for the light? 🌊" }
+  - playback: Pause
+  - playback: Resume
+  - playback: Advance
+  - expect_playback: { scene: harbor, phase: Text, text: "The tide is turning." }
+  - playback: Advance
+  - playback: Advance
+  - expect_playback: { scene: harbor, phase: Choice }
+  - playback_bookmark: true
+  - playback: !SelectChoice { index: 0 }
+  - expect_playback: { scene: lighthouse, phase: Text, text: "The lantern shines." }
+  - playback: Advance
+  - expect_playback: { scene: lighthouse, phase: Complete }
+  - playback_restore: true
+  - expect_playback: { scene: harbor, phase: Choice }
+  - playback: !SelectChoice { index: 1 }
+  - expect_playback: { scene: harbor, phase: Text, text: "Ready for the light? 🌊" }
+  - playback: Restart
+  - expect_playback: { scene: harbor, phase: Text, text: "Ready for the light? 🌊" }
+  - expect_no_error: true

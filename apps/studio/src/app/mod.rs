@@ -10,11 +10,17 @@ const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 
 #[component]
 pub fn App() -> Element {
-    let config_result = use_signal(AppConfig::load);
-    let app_state = use_signal(AppState::default);
     // The launch context (set by main.rs from `--plan`/`--mode` args);
     // defaults to an empty launch when the app is started normally.
     let plan_launch = use_context::<PlanLaunch>();
+    let config_launch = plan_launch.clone();
+    let config_result = use_signal(move || {
+        AppConfig::load().map(|mut config| {
+            config_launch.configure_paths(&mut config);
+            config
+        })
+    });
+    let app_state = use_signal(AppState::default);
 
     rsx! {
         document::Title { "Storyfella Studio" }

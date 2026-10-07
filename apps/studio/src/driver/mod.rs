@@ -117,6 +117,12 @@ pub enum StepVerb {
     },
     ExpectImage(String),
     ExpectStorySequence(Vec<String>),
+    OpenProjectFile(String),
+    Preview,
+    Playback(storyfella_runtime::Command),
+    PlaybackBookmark,
+    PlaybackRestore,
+    ExpectPlayback(PlaybackExpectation),
     /// Ask the configured `vision` provider whether an artifact's current
     /// image answers a question about it — a real check that the generation
     /// produced what was asked for, where [`Self::ExpectImage`] only checks
@@ -133,6 +139,14 @@ pub enum StepVerb {
         expect_not: Option<String>,
     },
     ExpectNoError,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlaybackExpectation {
+    pub scene: String,
+    pub phase: storyfella_runtime::Phase,
+    pub text: Option<String>,
 }
 
 impl StepVerb {
@@ -162,6 +176,14 @@ impl StepVerb {
             Self::ExpectArtifactCount { kind, count } => format!("{count} {kind}s exist"),
             Self::ExpectImage(name) => format!("artifact \"{name}\" has an image"),
             Self::ExpectStorySequence(_) => "story scene/beat sequence matches source".into(),
+            Self::OpenProjectFile(path) => format!("open project file {path}"),
+            Self::Preview => "start the current draft in Preview".into(),
+            Self::Playback(command) => format!("playback {command:?}"),
+            Self::PlaybackBookmark => "bookmark playback state".into(),
+            Self::PlaybackRestore => "restore playback bookmark".into(),
+            Self::ExpectPlayback(expected) => {
+                format!("playback is {:?} in {}", expected.phase, expected.scene)
+            }
             Self::ExpectVision { image, .. } => format!("vision check on \"{image}\""),
             Self::ExpectNoError => "no errors are showing".to_owned(),
         }
@@ -211,6 +233,14 @@ impl StepVerb {
             "command" => Self::Command(text(&value)?),
             "compose" => Self::Compose(text(&value)?),
             "expect_project" => Self::ExpectProject(text(&value)?),
+            "open_project_file" => Self::OpenProjectFile(text(&value)?),
+            "preview" => Self::Preview,
+            "playback" => Self::Playback(serde_yaml::from_value(value).map_err(|e| e.to_string())?),
+            "playback_bookmark" => Self::PlaybackBookmark,
+            "playback_restore" => Self::PlaybackRestore,
+            "expect_playback" => {
+                Self::ExpectPlayback(serde_yaml::from_value(value).map_err(|e| e.to_string())?)
+            }
             "expect_story_sequence" => Self::ExpectStorySequence(
                 serde_yaml::from_value(value)
                     .map_err(|e| format!("expect_story_sequence expects declaration keys: {e}"))?,
@@ -543,6 +573,17 @@ impl PlanLaunch {
         set_env_unless_set("SVS_USER_CONFIG", dir.join("app.toml"));
         set_env_unless_set("SVS_USER_PROVIDERS", dir.join("providers.toml"));
     }
+
+    /// Plan-created projects, generated fixtures and cache are scratch artifacts,
+    /// separate from ordinary user project storage and repository source assets.
+    pub fn configure_paths(&self, config: &mut AppConfig) {
+        if self.path.is_some() {
+            let scratch = storyfella_studio_core::paths::root().join(".svs-e2e");
+            config.project_dir = scratch.join("projects");
+            config.asset_dir = scratch.join("artwork");
+            config.cache_dir = scratch.join("cache");
+        }
+    }
 }
 
 /// Sets `key` to `value` unless the environment already defines it (an empty
@@ -624,6 +665,7 @@ pub struct DriveContext {
     pub backend: Signal<storyfella_studio_core::registry::backend::CreativeBackend>,
     pub defaults: Signal<GenerationDefaults>,
     pub screen: Signal<AppScreen>,
+    pub playback: Signal<storyfella_playback_ui::PlaybackModel>,
     /// The canvas composer text — a `compose` step types into it visibly.
     pub composer: Signal<String>,
     /// The two cursors and the palette, so a demo can show state rather
@@ -772,6 +814,67 @@ async fn execute_step(
     vision: &mut Option<vision::VisionSession>,
 ) -> StepStatus {
     match &step.verb {
+        StepVerb::OpenProjectFile(path) => {
+            let path = storyfella_studio_core::paths::root().join(path);
+            match commands::open_project(&path, ctx.app_state) {
+                Ok(()) => StepStatus::Passed,
+                Err(error) => StepStatus::Failed {
+                    reason: error.details,
+                },
+            }
+        }
+        StepVerb::Preview => {
+            crate::ui::preview::start_preview(ctx.playback, ctx.app_state);
+            ctx.screen.set(AppScreen::Preview);
+            let error = ctx.playback.read().error.clone();
+            status(error.is_none(), error.unwrap_or_default())
+        }
+        StepVerb::Playback(command) => {
+            ctx.playback.write().dispatch(command.clone());
+            let error = ctx.playback.read().error.clone();
+            status(error.is_none(), error.unwrap_or_default())
+        }
+        StepVerb::PlaybackBookmark => {
+            ctx.playback.write().bookmark();
+            StepStatus::Passed
+        }
+        StepVerb::PlaybackRestore => {
+            ctx.playback.write().restore_bookmark();
+            let error = ctx.playback.read().error.clone();
+            status(error.is_none(), error.unwrap_or_default())
+        }
+        StepVerb::ExpectPlayback(expected) => {
+            let model = ctx.playback.read();
+            let Some(session) = &model.session else {
+                return StepStatus::Failed {
+                    reason: "no playback session".into(),
+                };
+            };
+            let runtime = &session.runtime;
+            let text = match &runtime.current().kind {
+                storyfella_compiler::InstructionKind::Speech { text, .. }
+                | storyfella_compiler::InstructionKind::Narration { text } => {
+                    Some(text.value.as_str())
+                }
+                _ => None,
+            };
+            let visuals = session.active_visuals();
+            let valid = runtime.state().phase == expected.phase
+                && runtime.plan().scenes[runtime.state().scene].id.0 == expected.scene
+                && expected.text.as_deref().is_none_or(|t| Some(t) == text)
+                && visuals.len() == runtime.state().assets.len()
+                && visuals.iter().all(|v| {
+                    v.image_url.starts_with("data:image/png;base64,")
+                        && !v.binding.revision.is_empty()
+                });
+            status(
+                valid,
+                format!(
+                    "expected {expected:?}; got {:?}, text {text:?}",
+                    runtime.state()
+                ),
+            )
+        }
         StepVerb::GoProjects => {
             ctx.screen.set(AppScreen::Projects);
             StepStatus::Passed

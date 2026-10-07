@@ -2,17 +2,18 @@
 
 ## Storyfella workspace boundaries
 
-Studio, Studio core, the existing CLI, the minimal Player, xtask, the shared
-language front end, compiler and the stdio LSP are workspace members today. The Writer
+Studio, Studio core, CLI, the visual Player, xtask, shared playback UI,
+language, compiler, runtime and stdio LSP are workspace members. The Writer
 and LSP consume the same analysis. See [the language contract](language.md)
 and [execution plan](language-plan.md) for implemented scope and next milestones.
 
 | Component | Responsibility | Dependency boundary |
 | --- | --- | --- |
-| `apps/studio` / `storyfella-studio` | Dioxus authoring UI, project state and creative workflows; future story preview | Consumes GUI-free Studio core; preview will consume the shared story runtime |
+| `apps/studio` / `storyfella-studio` | Dioxus authoring UI, project state, creative workflows and snapshot preview | Consumes GUI-free core and shared playback UI/runtime |
 | `crates/studio-core` / `storyfella-studio-core` | Artifact registry, operations, persistence, config, creative inference adapters | No GUI dependencies; consumes sibling `clipforge-inference` |
 | `apps/cli` / `svs-cli` | Existing `svs`, `model_setup`, and `vlm_probe` tools | Keeps current commands and behavior; consumes Studio core |
-| `apps/player` / `storyfella-player` | Minimal executable now; standalone playback later | GUI framework undecided; playback will consume the same runtime as Studio preview |
+| `apps/player` / `storyfella-player` | Standalone visual Dioxus desktop playback | Shared core resource adapter, playback UI and runtime; no Studio state dependency |
+| `crates/playback-ui` / `storyfella-playback-ui` | Shared visual presentation and controls | Consumes GUI-free host adapter and runtime; no dependency on either app |
 | `xtask` | Build, launch, package and validation commands | Developer tooling only |
 
 Language, compiler, LSP and story runtime are implemented below. No placeholder

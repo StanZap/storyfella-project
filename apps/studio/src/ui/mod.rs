@@ -8,6 +8,7 @@ mod inspector;
 mod keys;
 mod palette;
 mod plans;
+pub mod preview;
 mod projects;
 mod settings;
 pub mod shortcuts;
@@ -102,6 +103,7 @@ pub enum AppScreen {
     Projects,
     Writer,
     Canvas,
+    Preview,
     Plans,
     Settings,
 }
@@ -116,6 +118,7 @@ fn start_plan(
     backend: Signal<CreativeBackend>,
     defaults: Signal<storyfella_studio_core::registry::GenerationDefaults>,
     screen: Signal<AppScreen>,
+    playback: Signal<storyfella_playback_ui::PlaybackModel>,
     composer: Signal<String>,
     writer_caret: WriterCaret,
     grid_cursor: GridCursor,
@@ -136,6 +139,7 @@ fn start_plan(
         backend,
         defaults,
         screen,
+        playback,
         composer,
         writer_caret,
         grid_cursor,
@@ -155,6 +159,12 @@ pub fn Workspace(
     // canvas cannot save until a project file is bound.
     let mut screen = use_signal(|| AppScreen::Projects);
     use_context_provider(|| screen);
+    let mut playback = use_signal(storyfella_playback_ui::PlaybackModel::default);
+    use_context_provider(|| playback);
+    let project_path = app_state.read().project_path.clone();
+    use_effect(use_reactive((&project_path,), move |_| {
+        playback.set(storyfella_playback_ui::PlaybackModel::default());
+    }));
     let backend_config = config.clone();
     // The backend lives in a signal so the Settings model picker can swap
     // the planner model and the canvas picks it up on the next op.
@@ -266,6 +276,7 @@ pub fn Workspace(
                 backend,
                 defaults,
                 screen,
+                playback,
                 composer,
                 writer_caret,
                 grid_cursor,
@@ -425,6 +436,7 @@ pub fn Workspace(
                 backend,
                 defaults,
                 screen,
+                playback,
                 composer,
                 writer_caret,
                 grid_cursor,
@@ -461,6 +473,7 @@ pub fn Workspace(
                 nav { class: "ml-auto flex items-center gap-0.5",
                     ScreenTab { label: "Story", hint: "g s", active: screen() == AppScreen::Writer, onclick: move |_| screen.set(AppScreen::Writer) }
                     ScreenTab { label: "Canvas", hint: "g c", active: screen() == AppScreen::Canvas, onclick: move |_| screen.set(AppScreen::Canvas) }
+                    ScreenTab { label: "Preview", hint: "", active: screen() == AppScreen::Preview, onclick: move |_| screen.set(AppScreen::Preview) }
                     ScreenTab { label: "Projects", hint: "", active: screen() == AppScreen::Projects, onclick: move |_| screen.set(AppScreen::Projects) }
                     ScreenTab { label: "Plans", hint: "", active: screen() == AppScreen::Plans, onclick: move |_| screen.set(AppScreen::Plans) }
                     ScreenTab { label: "Settings", hint: "", active: screen() == AppScreen::Settings, onclick: move |_| screen.set(AppScreen::Settings) }
@@ -484,6 +497,7 @@ pub fn Workspace(
                     AppScreen::Projects => rsx! { Projects { config: config.clone(), app_state, on_open: move |_| screen.set(AppScreen::Canvas) } },
                     AppScreen::Writer => rsx! { Writer { app_state } },
                     AppScreen::Canvas => rsx! { Canvas { app_state, backend, defaults } },
+                    AppScreen::Preview => rsx! { preview::Preview { app_state } },
                     AppScreen::Plans => rsx! { Plans { on_run: on_run_plan } },
                     AppScreen::Settings => rsx! { Settings { config: config.clone(), backend, defaults } },
                 }
