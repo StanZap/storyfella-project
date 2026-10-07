@@ -170,23 +170,22 @@ cd ../..
 
 ### Native generation backend (`sd-server`)
 
-The app spawns the `sd-server` binary from the vendored
-`stable-diffusion.cpp` checkout (it is git-ignored, like `models/`). Qwen-Image-2.1
-support landed upstream in `3f8527a` (`master-929-3f8527a`), so check the tree
-out at least that revision before building. Build it once and place it where the
-image provider's `executable` points (default
-`<model_dir>/runtime/stable-diffusion.cpp/bin/sd-server`, see the
-[`providers.toml`](#providerstoml) section below):
+The app spawns the `sd-server` binary the image provider's `executable` points
+at (default `<model_dir>/runtime/stable-diffusion.cpp/bin/sd-server`, see the
+[`providers.toml`](#providerstoml) section below). The native server is **not**
+part of this project: the sibling `clipforge` workspace owns the vendored
+`stable-diffusion.cpp` checkout (git-ignored, pinned to the `3f8527a` revision
+that added Qwen-Image-2.1 support) and builds it. From the `clipforge` checkout:
 
 ```bash
-# CUDA build for NVIDIA GPUs — the Qwen-Image-2.1 int8 convrot weights need it.
-# Pick the compute capability of your card, e.g. 86 for RTX 3090 (Ampere),
-# 89 for RTX 40-series.
-cmake -S stable-diffusion.cpp -B stable-diffusion.cpp/build \
-  -DSD_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86
-cmake --build stable-diffusion.cpp/build --target sd-server -j
-cp stable-diffusion.cpp/build/bin/sd-server models/runtime/stable-diffusion.cpp/bin/
+cd ../clipforge
+cargo xtask sd-server --model-dir ../storyfella/models
 ```
+
+The task clones the pinned source, builds it with CUDA, and installs the binary
+into the model tree — `--model-dir` names the provider's tree (its own `models`
+by default). `--cuda-architectures` picks the compute capability: 86 for RTX
+3090 (Ampere), 89 for RTX 40-series; the default is 86.
 
 The launcher passes `--model-args qwen_image_2_1_prefix_cache_type=q8_0` and
 `--diffusion-fa`, and points `--diffusion-model`/`--llm`/`--vae` at the

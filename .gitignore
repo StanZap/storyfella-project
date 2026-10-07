@@ -6,9 +6,6 @@ cache/*
 !cache/.gitkeep
 models/*
 !models/.gitkeep
-# Vendored stable-diffusion.cpp checkout (build dependency for sd-server;
-# it has its own git repository and is not part of this project)
-stable-diffusion.cpp/
 .DS_Store
 
 # Generated images imported by the app at runtime. This stays at the workspace

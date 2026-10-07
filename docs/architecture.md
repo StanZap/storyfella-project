@@ -116,9 +116,10 @@ the crate is not a workspace member.
 
 Rust consumes the native server's async `sdcpp` API through the shared crate's
 client, `clipforge_inference::sd::Client` (called via `CreativeRuntime::client`).
-The authoritative field list is `stable-diffusion.cpp/examples/server/api.md` at
-the checked-out revision — read it before adding a field, because anything the
-server does not name in its JSON parser is dropped silently.
+The authoritative field list is `examples/server/api.md` at the pinned upstream
+revision (`leejet/stable-diffusion.cpp` @ `3f8527a`, the revision the `clipforge`
+workspace builds `sd-server` from) — read it before adding a field, because
+anything the server does not name in its JSON parser is dropped silently.
 
 ### Endpoints
 

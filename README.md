@@ -147,7 +147,7 @@ xtask/                cargo xtask — the developer task runner (build, run, bun
 config/               app.toml + plans/*.yaml (data, at the workspace root)
 assets/generated/     Dev runtime data written by generations; project databases
                       store absolute asset paths, so this stays at the root
-docs/ models/ cache/ stable-diffusion.cpp/ .svs-e2e/
+docs/ models/ cache/ .svs-e2e/
 ```
 
 `crates/studio-core` never depends on the GUI; `apps/studio` and `apps/cli` both depend on `storyfella-studio-core`, and the desktop crate names `storyfella_studio_core::…` explicitly rather than re-exporting it.
@@ -169,15 +169,14 @@ In-depth material lives in [`docs/`](docs/README.md): a system [architecture ove
 
 ## Set up the generation backend
 
-Build `sd-server` from the vendored `stable-diffusion.cpp` checkout (at least
-the `3f8527a` revision, which added Qwen-Image-2.1 support) with CUDA and place
-it where `generation.executable` points:
+`sd-server` is built by the sibling `clipforge` workspace, which owns the
+vendored `stable-diffusion.cpp` checkout (git-ignored, pinned to the `3f8527a`
+revision that added Qwen-Image-2.1 support). From the `clipforge` checkout,
+build it and install it into the tree this repo's `providers.toml` names:
 
 ```bash
-cmake -S stable-diffusion.cpp -B stable-diffusion.cpp/build \
-  -DSD_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86
-cmake --build stable-diffusion.cpp/build --target sd-server -j
-cp stable-diffusion.cpp/build/bin/sd-server models/runtime/stable-diffusion.cpp/bin/
+cd ../clipforge
+cargo xtask sd-server --model-dir ../storyfella/models
 ```
 
 Provision the Qwen-Image-2.1 weights (diffusion, text encoder, VAE) from
