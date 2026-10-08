@@ -22,8 +22,6 @@ current product code.
 | [`compiler.md`](compiler.md) | Story flow, versioned plan/source maps, immutable asset linking, readiness and story CLI commands. |
 | [`story-files.md`](story-files.md) | Authoritative `.sf` files, Studio open/save, disk conflicts and SQLite draft migration. |
 | [`language-plan.md`](language-plan.md) | Language/compiler/runtime implementation sequence and acceptance gates. |
-| [`ux-walkthrough.md`](ux-walkthrough.md) | Guided authoring tour, current limitations, and the path to connected scenes and playback. |
-| [`handoff-authoring-playback.md`](handoff-authoring-playback.md) | Next-session handoff for Writer/Canvas synchronization, authoring tools, shared runtime, preview and Player. |
 | [`ROADMAP.md`](ROADMAP.md) | Product design and the feature/status tracker (§12): every planned feature with its status. |
 
 ## Reading order
