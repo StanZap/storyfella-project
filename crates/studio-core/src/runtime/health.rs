@@ -59,6 +59,14 @@ pub struct ServiceHealth {
     pub id: ServiceId,
     pub status: HealthStatus,
     pub detail: String,
+    pub recovery: Option<ServiceRecovery>,
+}
+
+/// A probe's actionable recovery, independent of its human-readable detail.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ServiceRecovery {
+    ConfigureImageFiles,
+    ReplaceImageServer,
 }
 
 impl ServiceHealth {
@@ -67,7 +75,13 @@ impl ServiceHealth {
             id,
             status,
             detail: detail.into(),
+            recovery: None,
         }
+    }
+
+    fn with_recovery(mut self, recovery: ServiceRecovery) -> Self {
+        self.recovery = Some(recovery);
+        self
     }
 }
 
@@ -164,14 +178,15 @@ async fn check_generation(config: &AppConfig, runtime: &CreativeRuntime) -> Serv
             ServiceId::ImageGeneration,
             HealthStatus::Offline,
             format!("sd-server binary not found at {}", executable.display()),
-        );
+        )
+        .with_recovery(ServiceRecovery::ConfigureImageFiles);
     }
     if !runtime.has_artifacts() {
         return ServiceHealth::new(
             ServiceId::ImageGeneration,
             HealthStatus::Degraded,
-            "model artifacts missing · run `cargo run --bin model_setup`".to_owned(),
-        );
+            "Model files are missing. Open Settings → Image generation → Model files to prepare them.".to_owned(),
+        ).with_recovery(ServiceRecovery::ConfigureImageFiles);
     }
     let process_running = runtime.is_running();
     match with_timeout(runtime.client().capabilities(), CHECK_TIMEOUT_SECONDS).await {
@@ -185,7 +200,7 @@ async fn check_generation(config: &AppConfig, runtime: &CreativeRuntime) -> Serv
                     "{} is resident on the port — this app did not start it · Take over to replace it",
                     capabilities.model.name
                 ),
-            )
+            ).with_recovery(ServiceRecovery::ReplaceImageServer)
         }
         Ok(capabilities) => ServiceHealth::new(
             ServiceId::ImageGeneration,
@@ -234,6 +249,33 @@ fn truncate(text: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::{truncate, HealthStatus, ServiceHealth, ServiceId};
+
+    #[tokio::test]
+    async fn missing_image_files_offer_setup_before_any_server_action() {
+        let directory = std::env::temp_dir().join(format!("svs-health-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut config =
+            crate::config::AppConfig::load_from(directory.join("absent.toml")).unwrap();
+        config.image.model_dir = directory.join("models");
+        config.image.executable = directory.join("sd-server");
+        config.image.lora_dir = directory.join("loras");
+        let runtime = super::CreativeRuntime::new(&config);
+        let missing_executable = super::check_generation(&config, &runtime).await;
+        assert_eq!(missing_executable.status, HealthStatus::Offline);
+        assert_eq!(
+            missing_executable.recovery,
+            Some(super::ServiceRecovery::ConfigureImageFiles)
+        );
+        std::fs::write(&config.image.executable, b"test file; never executed").unwrap();
+        let missing_models = super::check_generation(&config, &runtime).await;
+        assert_eq!(missing_models.status, HealthStatus::Degraded);
+        assert_eq!(
+            missing_models.recovery,
+            Some(super::ServiceRecovery::ConfigureImageFiles)
+        );
+        assert!(!runtime.is_running());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn service_ids_have_display_labels() {

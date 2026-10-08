@@ -42,7 +42,7 @@ pub enum VisionError {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("no `vision` provider is configured in providers.toml")]
+    #[error("no `vision` provider is configured in storyfella.toml")]
     NotConfigured,
     #[error("could not start the vision server: {0}")]
     Server(String),

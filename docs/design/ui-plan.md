@@ -1,5 +1,10 @@
 # UI/UX plan: getting the prototypes into the app
 
+Historical prototype/implementation plan. Current interaction, visual and
+accessibility requirements and open audit findings live in
+[`DESIGN.md`](../../DESIGN.md); use [ROADMAP §12](../ROADMAP.md#12-suggested-implementation-order)
+for current delivery status. The phase labels below describe this earlier plan.
+
 Status: phases 0–4 complete; phase 5 blocked on the DSL. Supersedes nothing in [`../ROADMAP.md`](../ROADMAP.md); it
 sequences the surface work that roadmap items 4 and 9 assume.
 

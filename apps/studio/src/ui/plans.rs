@@ -38,9 +38,9 @@ fn ModeToggle(mode: GuideMode, mut on_mode: EventHandler<GuideMode>) -> Element 
 }
 
 #[component]
-pub fn Plans(on_run: EventHandler<(Plan, GuideMode)>) -> Element {
+pub fn Plans(on_run: EventHandler<(Plan, GuideMode)>, running: bool) -> Element {
     let mut files = use_signal(|| driver::discover(&storyfella_studio_core::paths::plans_dir()));
-    let mode = use_signal(GuideMode::default);
+    let mut mode = use_signal(GuideMode::default);
 
     let list = files.read().clone();
     let empty = list.is_empty();
@@ -48,7 +48,6 @@ pub fn Plans(on_run: EventHandler<(Plan, GuideMode)>) -> Element {
         let plan = file.plan.clone();
         let error = file.error.clone();
         let path = file.path.display().to_string();
-        let mut mode = mode;
         let run_mode = mode();
         let steps_label = format!("{} steps", plan.steps.len());
         let plan_name = plan.name.clone();
@@ -68,9 +67,10 @@ pub fn Plans(on_run: EventHandler<(Plan, GuideMode)>) -> Element {
                         p { class: "mt-1 font-mono text-[9px] text-zinc-700", "{path}" }
                     }
                     div { class: "flex shrink-0 items-center gap-3",
-                        ModeToggle { mode: run_mode, on_mode: move |value| mode.set(value) }
                         if error.is_none() {
                             button {
+                                disabled: running,
+                                title: if running { "A plan is running. Stop it or wait for it to finish." } else { "Run this plan" },
                                 class: "flex h-8 items-center gap-2 rounded-lg bg-violet-500/15 px-4 text-[10px] font-semibold text-violet-200 ring-1 ring-inset ring-violet-400/25 transition hover:bg-violet-500/25 hover:text-violet-100",
                                 onclick: move |_| on_run.call((plan.clone(), mode())),
                                 Icon { name: IconName::Play, class: "size-3" }
@@ -105,6 +105,7 @@ pub fn Plans(on_run: EventHandler<(Plan, GuideMode)>) -> Element {
                             "Reusable scripts in the app's own language — run them as narrated guides or as regression checks. Plans live in config/plans/."
                         }
                     }
+                    ModeToggle { mode: mode(), on_mode: move |value| mode.set(value) }
                     button {
                         class: "flex h-9 items-center gap-2 rounded-xl bg-white/[0.05] px-4 text-xs font-medium text-zinc-300 transition hover:bg-white/[0.09] hover:text-white",
                         title: "Rescan the plans directory",

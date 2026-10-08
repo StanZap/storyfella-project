@@ -67,6 +67,9 @@ This is intentionally a desktop-only application. Web, mobile, and WASM targets 
 
 ## Product surface
 
+[DESIGN.md](DESIGN.md) defines Studio's shared UI/UX rules and tracks the open
+findings from the app-wide usability audit.
+
 - **Projects** creates a fresh story and reopens paired `.sf`/`.db` projects.
 - **Writer** preserves exact drafts, reconciles valid scene/beat declarations with
   Canvas identities, and supplies precise completion, navigation, diagnostics,
@@ -91,7 +94,7 @@ This is intentionally a desktop-only application. Web, mobile, and WASM targets 
   and model residency, and can start or stop the resident runtime. The
   Intelligence section discovers the endpoint's model list into a searchable
   planner picker (`SearchSelect` — filter, arrows, Enter; selection applies
-  immediately and `config/app.toml` holds the default).
+  immediately and `config/storyfella.toml` holds the default).
 
 The shell deliberately uses a small reusable component vocabulary, low-contrast boundaries, and progressive disclosure instead of a dense card dashboard. Styling is primarily Tailwind CSS 4 utility classes in RSX, with a small shared CSS layer for global browser behavior and form controls.
 
@@ -144,15 +147,15 @@ crates/runtime/       Independent deterministic story execution
 crates/playback-ui/   Shared Dioxus presentation and controls
 xtask/                cargo xtask — the developer task runner (build, run, bundle,
                       check, test); not part of any shipped artifact
-config/               app.toml + plans/*.yaml (data, at the workspace root)
+config/               storyfella.toml + plans/*.yaml (data, at the workspace root)
 assets/generated/     Dev runtime data written by generations; project databases
                       store absolute asset paths, so this stays at the root
-docs/ models/ cache/ .svs-e2e/
+docs/ cache/ .svs-e2e/
 ```
 
 `crates/studio-core` never depends on the GUI; `apps/studio` and `apps/cli` both depend on `storyfella-studio-core`, and the desktop crate names `storyfella_studio_core::…` explicitly rather than re-exporting it.
 
-Self-resolved paths anchor to a **project root** instead of the working directory (see `crates/studio-core/src/paths.rs`): `$SVS_HOME` wins, otherwise the nearest ancestor of the working directory (then of the executable) holding `config/app.toml`. Relative paths in `config/app.toml` resolve against that root, and unset values fall back to platform-appropriate application directories via the Rust `directories` crate. A user-level `app.toml` in that platform config directory (`paths::user_config_path()`) is layered over the checked-in file for machine-local secrets and overrides.
+Configuration uses `config/storyfella.toml`, with one user-level `storyfella.toml` overlay for application settings, inference and secrets (`paths::user_config_path()`, overridden by `SVS_USER_CONFIG`). Explicit relative paths resolve against `$SVS_HOME` or the discovered checkout/configuration root. Model storage defaults to the OS-local Storyfella data folder in development and release builds: `~/Library/Application Support/Storyfella/models` on macOS, `%LOCALAPPDATA%\Storyfella\models` on Windows, and `$XDG_DATA_HOME/storyfella/models` (normally `~/.local/share/storyfella/models`) on Linux. Settings → Image generation offers Change location and Open folder. Location changes require restart; selecting an existing model tree reuses its files. Old user app/provider settings migrate once without deleting originals.
 
 ## Documentation
 
@@ -172,11 +175,12 @@ In-depth material lives in [`docs/`](docs/README.md): a system [architecture ove
 `sd-server` is built by the sibling `clipforge` workspace, which owns the
 vendored `stable-diffusion.cpp` checkout (git-ignored, pinned to the `3f8527a`
 revision that added Qwen-Image-2.1 support). From the `clipforge` checkout,
-build it and install it into the tree this repo's `providers.toml` names:
+build it and install it into the Models folder shown in Studio Settings. For
+the default Linux destination:
 
 ```bash
 cd ../clipforge
-cargo xtask sd-server --model-dir ../storyfella/models
+cargo xtask sd-server --model-dir "${XDG_DATA_HOME:-$HOME/.local/share}/storyfella/models"
 ```
 
 Provision the Qwen-Image-2.1 weights (diffusion, text encoder, VAE) from
@@ -213,7 +217,7 @@ cargo check --workspace --all-targets
 
 This checkout keeps build artifacts in gitignored `target/` through `.cargo/config.toml`. Cargo, tests and inherited subprocesses use ignored `.cargo/tmp/` for temporary files. Keep task scratch files and desktop-plan projects under `.svs-e2e/`. Use a checkout path without `:`, which macOS and Linux treat as a separator in dynamic-library path lists.
 
-Configuration lives in `config/app.toml`. The default LLM endpoint URL is `http://localhost:1234/v1`; update `model` to the identifier loaded in the endpoint. `api_key` is optional.
+Configuration lives in `config/storyfella.toml`. The default LLM endpoint URL is `http://localhost:1234/v1`; update `model` to the identifier loaded in the endpoint. `api_key` is optional.
 
 ## How generation runs
 

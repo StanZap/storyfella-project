@@ -104,7 +104,7 @@ steps:
     wait_ms: 5000
 
   - caret: 17
-    message: "The handoff beat ties dialogue to brass_lantern. Canvas now follows the valid source sequence; removed declarations keep their artwork detached. Playable preview is the next milestone."
+    message: "The handoff beat ties dialogue to brass_lantern. Canvas follows the valid source sequence; removed declarations keep their artwork detached. Preview plays stories whose referenced artwork is ready."
     wait_ms: 5000
 
   - expect_artifact: { name: "mara", kind: character }

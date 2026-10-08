@@ -16,11 +16,16 @@ pub fn Preview(app_state: Signal<AppState>) -> Element {
     let model = use_context::<Signal<PlaybackModel>>();
     let mut screen = use_context::<Signal<AppScreen>>();
     let caret = use_context::<WriterCaret>();
-    let changed = model
-        .read()
-        .session
-        .as_ref()
-        .is_some_and(|s| s.runtime.plan().source != app_state.read().story.source());
+    let changed = model.read().session.as_ref().is_some_and(|s| {
+        let state = app_state.read();
+        let catalog =
+            storyfella_studio_core::authoring::AssetCatalog::from_registry(&state.registry);
+        let analysis = storyfella_language::analyze(state.story.source(), &catalog.assets);
+        storyfella_compiler::compile_analysis(&analysis, &catalog.bindings)
+            .plan
+            .as_ref()
+            != Some(s.runtime.plan())
+    });
     rsx! {
         PlaybackPanel { model, draft_changed: changed,
             on_apply: move |_| start_preview(model, app_state),

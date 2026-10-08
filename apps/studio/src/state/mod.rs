@@ -31,6 +31,7 @@ pub struct AppState {
     pub selected_artifact_id: Option<Uuid>,
     /// Exact Writer text, bound `.sf` path and disk snapshot for conflict checks.
     pub story: StoryDocument,
+    description_drafts: std::collections::BTreeMap<Uuid, String>,
     operation_in_progress: bool,
     saved_associations: Vec<storyfella_studio_core::authoring::SceneAssociation>,
     /// Registry snapshots taken before each applied operation — undo is
@@ -40,6 +41,54 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub fn description_draft(&self, id: Uuid) -> Option<&str> {
+        self.description_drafts.get(&id).map(String::as_str)
+    }
+
+    pub fn set_description_draft(&mut self, id: Uuid, text: String) {
+        if self
+            .registry
+            .artifact(id)
+            .is_some_and(|artifact| artifact.description == text)
+        {
+            self.description_drafts.remove(&id);
+        } else {
+            self.description_drafts.insert(id, text);
+        }
+    }
+
+    pub fn discard_description_draft(&mut self, id: Uuid) {
+        self.description_drafts.remove(&id);
+    }
+
+    pub fn has_description_drafts(&self) -> bool {
+        !self.description_drafts.is_empty()
+    }
+
+    pub fn apply_description_drafts(&mut self) -> Result<(), String> {
+        if self
+            .description_drafts
+            .values()
+            .any(|text| text.trim().is_empty())
+        {
+            return Err(
+                "Descriptions cannot be empty. Complete or discard the empty draft first.".into(),
+            );
+        }
+        if self.has_description_drafts() {
+            let mut registry = self.registry.clone();
+            for (id, text) in &self.description_drafts {
+                registry
+                    .set_description(*id, text.clone())
+                    .map_err(|error| error.to_string())?;
+            }
+            self.snapshot_for_undo();
+            self.registry = registry;
+            self.description_drafts.clear();
+            self.has_unsaved_changes = true;
+        }
+        Ok(())
+    }
     /// Replaces the in-memory state with a snapshot loaded from disk.
     /// The caller is responsible for saving before navigating away.
     pub fn open_project(&mut self, stored: StoredProject, path: PathBuf) {
@@ -50,6 +99,7 @@ impl AppState {
         self.project_path = Some(path);
         self.has_unsaved_changes = false;
         self.selected_artifact_id = None;
+        self.description_drafts.clear();
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.reconcile_story();
@@ -210,6 +260,11 @@ impl AppState {
             }
         }
         self.registry.loras = finished.loras;
+        self.description_drafts.retain(|id, draft| {
+            self.registry
+                .artifact(*id)
+                .is_some_and(|artifact| artifact.description != *draft)
+        });
         self.registry.log.extend(
             finished
                 .log
@@ -440,6 +495,73 @@ mod tests {
             state.registry, registry,
             "partial drafts do not mutate artwork"
         );
+    }
+
+    #[test]
+    fn description_drafts_survive_selection_and_operations_until_applied() {
+        let mut state = state_with("mia");
+        let id = state.registry.artifacts[0].id;
+        state.set_description_draft(id, "A new canonical description 🌊".into());
+        state.clear_selection();
+        assert_eq!(
+            state.description_draft(id),
+            Some("A new canonical description 🌊")
+        );
+        assert_eq!(
+            state.registry.artifact(id).unwrap().description,
+            "A test character"
+        );
+        let baseline = state.registry.clone();
+        state.finish_operation(&baseline, baseline.clone());
+        assert!(state.has_description_drafts());
+        state.apply_description_drafts().unwrap();
+        assert!(!state.has_description_drafts());
+        assert!(state.has_unsaved_changes);
+        assert_eq!(
+            state.registry.artifact(id).unwrap().description,
+            "A new canonical description 🌊"
+        );
+        state.undo();
+        assert_eq!(
+            state.registry.artifact(id).unwrap().description,
+            "A test character"
+        );
+    }
+
+    #[test]
+    fn a_missing_artifact_keeps_all_description_drafts_unapplied() {
+        let mut state = state_with("mia");
+        let id = state.registry.artifacts[0].id;
+        let missing = uuid::Uuid::from_u128(u128::MAX);
+        state.set_description_draft(id, "Pending description".into());
+        state.set_description_draft(missing, "Removed artifact draft".into());
+        let registry = state.registry.clone();
+        let undo_count = state.undo_stack.len();
+        let dirty = state.has_unsaved_changes;
+        assert!(state.apply_description_drafts().is_err());
+        assert_eq!(state.registry, registry);
+        assert_eq!(state.undo_stack.len(), undo_count);
+        assert_eq!(state.has_unsaved_changes, dirty);
+        assert_eq!(state.description_draft(id), Some("Pending description"));
+        assert_eq!(
+            state.description_draft(missing),
+            Some("Removed artifact draft")
+        );
+    }
+
+    #[test]
+    fn empty_description_cannot_be_applied_or_lost_by_failed_apply() {
+        let mut state = state_with("mia");
+        let id = state.registry.artifacts[0].id;
+        state.set_description_draft(id, " ".into());
+        assert!(state.apply_description_drafts().is_err());
+        assert_eq!(state.description_draft(id), Some(" "));
+        assert_eq!(
+            state.registry.artifact(id).unwrap().description,
+            "A test character"
+        );
+        state.discard_description_draft(id);
+        assert!(!state.has_description_drafts());
     }
 
     #[test]

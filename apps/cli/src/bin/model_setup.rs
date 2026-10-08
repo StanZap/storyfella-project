@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use clipforge_inference::{Capability, ModelStore, Providers};
-use storyfella_studio_core::paths;
+use clipforge_inference::ModelStore;
+use storyfella_studio_core::config::AppConfig;
 
 #[derive(Debug, Parser)]
 #[command(about = "Download and verify the Qwen-Image-2.1 model artifacts")]
@@ -10,11 +10,9 @@ struct Arguments {}
 #[tokio::main]
 async fn main() -> Result<()> {
     Arguments::parse();
-    let providers = Providers::load_or_built_in(&paths::providers_path())
-        .context("failed to load the providers registry")?;
-    let deployment = providers
-        .image_deployment(Capability::T2i)
-        .context("failed to resolve the image generation provider")?;
+    let deployment = AppConfig::load()
+        .context("failed to load storyfella.toml")?
+        .image;
 
     // The provider names the model tree; artifacts it overrides with a local
     // file are never downloaded.

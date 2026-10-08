@@ -129,7 +129,7 @@ check` gates a script.
 
 `run` and `plan` build with `dx` (never plain `cargo`, which skips the asset
 pipeline) and launch the binary from the workspace root so the app's
-project-root path resolution finds `config/app.toml`. `-l`/`--log` tees the
+project-root path resolution finds `config/storyfella.toml`. `-l`/`--log` tees the
 app's stdout/stderr to `.svs-e2e/logs/app-<unix>.log` for the GUI live-test
 workflow. `bundle` writes to `dist/` (git-ignored) and lists each artifact.
 
@@ -172,19 +172,19 @@ cd ../..
 
 The app spawns the `sd-server` binary the image provider's `executable` points
 at (default `<model_dir>/runtime/stable-diffusion.cpp/bin/sd-server`, see the
-[`providers.toml`](#providerstoml) section below). The native server is **not**
+[`storyfella.toml`](#inference-settings) section below). The native server is **not**
 part of this project: the sibling `clipforge` workspace owns the vendored
 `stable-diffusion.cpp` checkout (git-ignored, pinned to the `3f8527a` revision
 that added Qwen-Image-2.1 support) and builds it. From the `clipforge` checkout:
 
 ```bash
 cd ../clipforge
-cargo xtask sd-server --model-dir ../storyfella/models
+cargo xtask sd-server --model-dir "${XDG_DATA_HOME:-$HOME/.local/share}/storyfella/models"
 ```
 
 The task clones the pinned source, builds it with CUDA, and installs the binary
-into the model tree — `--model-dir` names the provider's tree (its own `models`
-by default). `--cuda-architectures` picks the compute capability: 86 for RTX
+into the model tree — pass the Models folder shown in Studio Settings (the
+example uses Linux's default). `--cuda-architectures` picks the compute capability: 86 for RTX
 3090 (Ampere), 89 for RTX 40-series; the default is 86.
 
 The launcher passes `--model-args qwen_image_2_1_prefix_cache_type=q8_0` and
@@ -286,7 +286,7 @@ Two inputs are still missing before a bundle is more than an empty shell (see
   (sidecar binaries) and/or `[bundle] resources` (data files); both keys are inert
   until the file exists. Shipping it also needs the code change named in item 11:
   resolve it relative to the bundle root instead of the provider's `executable`
-  in `providers.toml`.
+  in `storyfella.toml`.
 
 ## Run the generation backend
 
@@ -299,7 +299,7 @@ cargo run -p svs-cli --bin svs -- runtime serve --force   # Ctrl-C to stop
 ```
 
 `--force` kills stale `sd-server` processes from interrupted sessions that hold
-the configured port (7861 in the checked-in `providers.toml`). Only the
+the configured port (7861 in the checked-in `storyfella.toml`). Only the
 `qwen-image-2.1` profile is served. See
 [`runtime-lifecycle.md`](runtime-lifecycle.md).
 
@@ -411,28 +411,16 @@ checkout rather than `/tmp`.
 Planner quality is model-sensitive: the `modify`/`variant` grounding is a
 subtraction task (restate the artifact's traits as invariants, minus the one the
 edit changes), and a weaker planner either keeps the old trait or invents one.
-`.svs-e2e/scripts/grounding_suite.py` runs a fixed base image through a fixed
-set of instructions against one or more planner models and judges each result
-with `svs eval --expect`, so "is DeepSeek as good as bonsai at grounding?" is
-one command:
-
-```bash
-python3 .svs-e2e/scripts/grounding_suite.py --model prism-ml/bonsai-27b \
-  --model deepseek-chat --base-url https://api.deepseek.com/v1 \
-  --api-key-env DEEPSEEK_API_KEY
-```
-
-It needs a resident generation backend (`svs runtime start`) and a `vision`
-provider for `svs eval`, and refuses up front without them (so a missing judge
-does not fail every case after the generations were already paid for). Each
-model runs against its own copy of a freshly bootstrapped base project, so every
-model sees the identical base revision; the planner is aimed at the model
-through a scratch providers overlay (`$SVS_USER_PROVIDERS`) with
-`$SVS_USER_CONFIG` emptied, so runs are comparable across sessions and never
-touch the real user config. `--dry-run` prints every command without running
-anything. The report lands in `.svs-e2e/logs/<date>-grounding-suite.md` (and
-`.json`). Note that overriding `model` selects the served model only for an
-`openai` provider — a managed `llamacpp` provider serves `model_path`.
+Compare models through the Rust `svs` CLI using the same base image and edit
+instructions, then judge outputs with `svs eval --expect`. Keep a separate
+project copy per model so each starts from the identical revision. Configure
+planner and vision sections in a scratch general settings file under
+`.svs-e2e/` and point `SVS_USER_CONFIG` at that file; retain the vision endpoint
+when overriding the planner. Run the image backend with `svs runtime serve`.
+Store outputs and judgments under `.svs-e2e/quality/` and `.svs-e2e/logs/`.
+Scratch experiment scripts are local tools, not a shipped regression suite.
+Overriding `model` selects the served model only for an `openai` provider; a
+managed `llamacpp` provider serves `model_path`.
 
 ## CLI tools
 
@@ -444,21 +432,22 @@ anything. The report lands in `.svs-e2e/logs/<date>-grounding-suite.md` (and
 | `cargo run -p svs-cli --example generate_vlm_fixtures` | Regenerate the deterministic probe fixtures |
 | `cargo run -p svs-cli --bin svs -- --help` | Operation CLI (typed ops, stacks, runtime serve, log, eval) — see [`api-slice-1.md`](api-slice-1.md) for the command reference and the light/LLM/generation session split |
 
-`model_setup` provisions into the image provider's model tree (the
-`model_dir` named in `providers.toml`, rooted at `models/` in this checkout).
+`model_setup` provisions into the image provider's model tree: the OS-local
+Storyfella models folder by default, or the explicit `model_dir` override
+in `storyfella.toml`.
 The `svs` CLI needs no provisioned models for the model-only and
 LLM-assisted tiers; only the visual ops (`create`/`variant`/`regenerate`/`modify`)
 touch the generation backend.
 
 ## Configuration reference
 
-Configuration lives in [`config/app.toml`](../config/app.toml) and is loaded by
+Configuration lives in [`config/storyfella.toml`](../config/storyfella.toml) and is loaded by
 `crates/studio-core/src/config.rs`. Missing sections fall back to defaults. Relative
 paths in the file resolve against the project root (see the `paths` note below).
 That file is checked in and shared, so a **user config** is layered over it, key
 by key, for machine-local choices and secrets (see the `user config` note below).
-The `text`/`vision` LLM endpoints are **not** here: they resolve from
-[`providers.toml`](#providerstoml) (see below).
+The same file declares `text`/`vision` LLM endpoints under its
+[inference settings](#inference-settings) sections (see below).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -481,19 +470,19 @@ The `text`/`vision` LLM endpoints are **not** here: they resolve from
 Configured relative paths (`paths.*` and the plan directory) resolve against the
 **project root**, not the working directory: `crates/studio-core/src/paths.rs` picks
 `$SVS_HOME` first, otherwise the nearest ancestor of the working directory (then
-of the executable) that holds `config/app.toml`, so commands do not need to be
-run from the repository root. The checked-in `config/app.toml` raises
+of the executable) that holds `config/storyfella.toml`, so commands do not need to be
+run from the repository root. The checked-in `config/storyfella.toml` raises
 `generation.sizes.character` to `1024x1536` (the full Qwen portrait canvas).
 
 ### User config
 
-A second, user-level file is read after `config/app.toml` and merged over it
+A second, user-level file is read after `config/storyfella.toml` and merged over it
 (deep merge: tables combine key by key, every other value replaces). It lives in
 the platform application config directory resolved by `directories::ProjectDirs`
-(`paths::user_config_path`) — on Linux `~/.config/smartvisualsequencer/app.toml`
+(`paths::user_config_path`) — on Linux `~/.config/smartvisualsequencer/storyfella.toml`
 (`$XDG_CONFIG_HOME`), on macOS
-`~/Library/Application Support/dev.Smart-Visual-Sequencer.Smart-Visual-Sequencer/app.toml`,
-and on Windows `%APPDATA%\Smart Visual Sequencer\Smart Visual Sequencer\config\app.toml`.
+`~/Library/Application Support/dev.Smart-Visual-Sequencer.Smart-Visual-Sequencer/storyfella.toml`,
+and on Windows `%APPDATA%\Smart Visual Sequencer\Smart Visual Sequencer\config\storyfella.toml`.
 `$SVS_USER_CONFIG` overrides the path, which is how tests and scratch roots keep
 it out of the picture; when it is unset and the platform has no config directory
 there is no user layer.
@@ -501,7 +490,7 @@ there is no user layer.
 Because it is merged rather than substituted, it only needs the keys it changes:
 
 ```toml
-# ~/.config/smartvisualsequencer/app.toml
+# ~/.config/smartvisualsequencer/storyfella.toml
 [generation.sizes]
 character = "1024x1536"
 ```
@@ -509,15 +498,17 @@ character = "1024x1536"
 The Settings generation pickers write here (never to the checked-in file), which
 keeps the per-machine generation defaults. This file is outside the checkout, so
 it is not gitignored — it is simply not in the repository to begin with. The
-planner-model picker writes to the **user providers overlay** instead (see
-[`providers.toml`](#providerstoml)).
+planner-model picker writes to this same general file. On first run, existing
+user `app.toml` and `providers.toml` are combined into it. The originals remain
+untouched; an existing `storyfella.toml` is authoritative and never re-migrated.
+`SVS_USER_CONFIG` is the single overlay override.
 
-### providers.toml
+### Inference settings
 
 The image backend — the `sd-server` executable, its model tree, LoRA root,
-endpoint, and weights — is resolved from `<root>/providers.toml`, anchored to the
-project root like every other path (`crates/studio-core/src/paths.rs`,
-`providers_path()`). `crates/studio-core/src/config.rs` loads it through the shared
+endpoint, and weights — is resolved from `<root>/config/storyfella.toml`, anchored to the
+configuration root (`crates/studio-core/src/paths.rs`,
+`config_path()`). `crates/studio-core/src/config.rs` loads it through the shared
 `clipforge_inference::Providers` registry and keeps the resolved
 `ImageDeployment` on `AppConfig::image`; the LoRA root shown in Settings is the
 provider's `lora_dir`.
@@ -532,7 +523,8 @@ kind = "sdcpp"                   # the native sd.cpp server
 architecture = "qwen-image-2.1"  # must be a profile the app serves
 capabilities = ["t2i", "edit"]
 base_url = "http://127.0.0.1:7861"
-model_dir = "models"             # relative to this file (the repo root)
+# Omit model_dir to use the OS-native models folder.
+# model_dir = "/absolute/path/to/existing/models"
 # lora_dir / executable default beneath model_dir.
 
 # Override any artifact with a local file instead of downloading it.
@@ -543,15 +535,32 @@ diffusion = "/abs/path/to/qwen-image-2.1-UC-int8_convrot.safetensors"
 `architecture` is validated against the served profile list: a provider may
 change *where* a model comes from, not *which* model it is, and any other value
 is rejected at load. Relative paths in the file (`model_dir`, `lora_dir`,
-`executable`, and the `weights` entries) resolve against the file's directory.
+`executable`, and the `weights` entries) resolve against the configuration root.
 An absent file falls back to the built-in image provider (the standard
-Qwen-Image-2.1 tree under `models/`). The `text` and `vision` capabilities have
+Qwen-Image-2.1 tree under the OS-native models directory). The `text` and `vision` capabilities have
 no built-in default: when no provider serves one, `AppConfig` leaves it `None`
 and the app **degrades** rather than failing to start — the planner falls back
 to manual slash commands and `svs eval` reports that no `vision` provider is
 configured. `model_setup` provisions through this same
 deployment: it downloads the artifacts whose `needs_download()` is true and
 prints the local override it skips for the rest.
+
+Large model data uses `directories::BaseDirs::data_local_dir()` and the Storyfella
+application folder, with the same policy in development and release builds:
+
+| OS | Default model directory |
+| --- | --- |
+| macOS | `~/Library/Application Support/Storyfella/models` |
+| Windows | `%LOCALAPPDATA%\Storyfella\models` |
+| Linux | `$XDG_DATA_HOME/storyfella/models`, normally `~/.local/share/storyfella/models` |
+
+Settings → Image generation → Model files offers **Change location…** and
+**Open folder**. A selected folder is saved before the success message appears;
+restart applies it consistently to downloads and the runtime. Downloads are
+paused until that restart. Existing model files are not moved or deleted: choose
+their model-tree folder to reuse them. An explicit executable, LoRA root or weight
+override remains independent of the model folder. CLI provisioning reads the
+same merged settings as Studio. Configuration writes are staged atomically.
 
 The same registry routes the LLM capabilities. `text` (the planner) and
 `vision` (`svs eval`, future vision steps) each name a provider:
@@ -582,13 +591,13 @@ point at a remote, text-only model — for example DeepSeek — while vision kee
 local multimodal endpoint. `api_key` is an inline secret; prefer `api_key_env`,
 which reads it from the named environment variable at load time.
 
-A **user providers overlay** layers over this file exactly like `app.toml`:
-`paths::user_providers_path()` (on Linux
-`~/.config/smartvisualsequencer/providers.toml`, `$SVS_USER_PROVIDERS` overrides).
+A single **user settings overlay** holds application and inference overrides:
+`paths::user_config_path()` (on Linux
+`~/.config/smartvisualsequencer/storyfella.toml`, `$SVS_USER_CONFIG` overrides).
 Because the files are deep-merged, the overlay only needs what it changes:
 
 ```toml
-# ~/.config/smartvisualsequencer/providers.toml
+# ~/.config/smartvisualsequencer/storyfella.toml
 [defaults]
 text = "deepseek"
 
@@ -610,7 +619,7 @@ resolved endpoints and persists the planner-model pick under
   checkout path without that character and keep build output in local `target/`.
 - **Generation says the runtime is not ready / job fails** — the `sd-server`
   binary or model artifacts are missing. Run `cargo run -p svs-cli --bin model_setup`
-  and confirm the provider's `executable` in `providers.toml`.
+  and confirm the provider's `executable` in `storyfella.toml`.
 - **`generation server on 127.0.0.1:7861 has … loaded; … needs the server restarted`** —
   the resident `sd-server` has a different model loaded than the requested
   profile. Ops restart their own server automatically; a stale server from
@@ -618,7 +627,7 @@ resolved endpoints and persists the planner-model pick under
   Settings (or `svs runtime serve --force`), which stops the process holding
   the port and starts ours, then rerun.
 - **LLM endpoint calls fail** — confirm the endpoint is running, the configured
-  model is loaded, and the relevant provider's `base_url` in `providers.toml`
+  model is loaded, and the relevant provider's `base_url` in `storyfella.toml`
   matches its `/v1` endpoint (planning uses `text`, `svs eval` uses `vision`).
   A managed `llamacpp` provider must have `model_path` (and `mmproj` for vision)
   on disk.

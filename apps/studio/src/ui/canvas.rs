@@ -35,7 +35,6 @@ use super::{
     generated_asset_url,
     icons::{Icon, IconName},
     inspector::Inspector,
-    palette::{self, Palette},
     shortcuts,
 };
 
@@ -62,6 +61,11 @@ pub fn Canvas(
     // Owned by the Workspace: the composer's text is the same signal the
     // automation driver types into (a `compose` step writes it visibly).
     let mut composer = use_context::<Signal<String>>();
+    let mut requests = use_signal(Vec::<(String, Option<Uuid>)>::new);
+    let project_path = app_state.read().project_path.clone();
+    use_effect(use_reactive(&project_path, move |_| {
+        requests.set(Vec::new())
+    }));
     let filter = use_signal(String::new);
     let activity = use_signal(OpActivity::default);
     let mut error_report = use_context::<Signal<Option<ReportedError>>>();
@@ -125,11 +129,12 @@ pub fn Canvas(
     let viewing = selected.is_some();
     let filter_query = filter.read().clone();
     let last_key = use_context::<Signal<Option<super::keys::KeyEvent>>>();
+    let screen = use_context::<Signal<super::AppScreen>>();
     use_effect(move || {
         let Some((_, press)) = last_key() else {
             return;
         };
-        if *palette_open.peek() {
+        if *palette_open.peek() || *screen.peek() != super::AppScreen::Canvas {
             return;
         }
         let ids = super::gallery::ordered_ids(
@@ -242,7 +247,6 @@ pub fn Canvas(
         if input.is_empty() {
             return;
         }
-        composer.set(String::new());
         let defaults = defaults.read().clone();
         if is_slash_command(&input) {
             let ui = ExecutionUi {
@@ -253,6 +257,12 @@ pub fn Canvas(
                 commands::run_slash_command(app_state, backend(), defaults, ui, &input)
             {
                 error_report.set(Some(report.log()));
+            } else {
+                requests
+                    .write()
+                    .insert(0, (composer(), app_state.read().selected_artifact_id));
+                requests.write().truncate(10);
+                composer.set(String::new());
             }
         } else {
             // Free text: the LLM proposes the operations; the user approves.
@@ -277,6 +287,9 @@ pub fn Canvas(
                     StackProposalModal {
                         operations,
                         on_approve: move |selected: Vec<Operation>| {
+                            requests.write().insert(0, (composer(), app_state.read().selected_artifact_id));
+                            requests.write().truncate(10);
+                            composer.set(String::new());
                             proposal.set(None);
                             let ui = ExecutionUi {
                                 activity,
@@ -344,25 +357,11 @@ pub fn Canvas(
                 target_hint,
                 ref_candidates,
                 onsubmit: submit,
-            }
-        }
-        if palette_open() {
-            Palette {
-                app_state,
-                open: palette_open,
-                onpick: move |action| {
-                    match action {
-                        palette::Action::Compose(command) => {
-                            composer.set(command);
-                            // The palette hands the caret to the bar, so
-                            // the completion for the first argument opens
-                            // without another keystroke.
-                            document::eval(
-                                "const el = document.getElementById(\"svs-cmdbar\");
-                                 if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }",
-                            );
-                        }
-                        palette::Action::Open(id) => app_state.write().select_artifact(id),
+                requests,
+                on_restore: move |index: usize| {
+                    if let Some((request, target)) = requests.read().get(index) {
+                        composer.set(request.clone());
+                        if let Some(target) = target { app_state.write().select_artifact(*target); }
                     }
                 },
             }
@@ -513,7 +512,7 @@ fn StackProposalModal(
         if selected_count == 1 { "" } else { "s" }
     );
     rsx! {
-        div { class: "fixed inset-0 z-50 grid place-items-center bg-black/60 p-6 backdrop-blur-sm",
+        super::dialog::Dialog { title: "Review proposed operations", on_close: on_cancel,
             div { class: "w-full max-w-2xl rounded-2xl bg-zinc-950 p-6 shadow-[0_30px_90px_rgba(0,0,0,.5)] ring-1 ring-white/[0.09]",
                 div { class: "mb-1 flex items-center gap-2",
                     span { class: "size-2 animate-pulse rounded-full bg-violet-400" }
@@ -532,6 +531,7 @@ fn StackProposalModal(
                                 "flex items-start gap-3 rounded-lg bg-white/[0.03] px-3 py-2.5 ring-1 ring-inset ring-white/[0.05]"
                             },
                             input {
+                                aria_label: "Run {op.operation.summary()}",
                                 r#type: "checkbox",
                                 class: "mt-0.5 size-3.5 accent-violet-500",
                                 checked: selected.read().get(index).copied().unwrap_or(false),
@@ -651,6 +651,7 @@ fn Detail(
             .collect();
         rsx! {
             Inspector {
+                key: "{artifact.id}",
                 artifact: artifact.clone(),
                 reference,
                 bound_loras,
@@ -966,7 +967,7 @@ fn ArtifactDetail(
                                         "experiment"
                                     }
                                     button {
-                                        class: "shrink-0 rounded-md bg-amber-400/15 px-2 py-1 text-[10px] font-semibold text-amber-300 opacity-0 transition hover:bg-amber-400/25 group-hover:opacity-100 disabled:opacity-30",
+                                        class: "shrink-0 rounded-md bg-amber-400/15 px-2 py-1 text-[10px] font-semibold text-amber-300 transition hover:bg-amber-400/25 disabled:opacity-30",
                                         disabled,
                                         title: "Make this the artifact's description, so later edits build on it",
                                         onclick: {
@@ -1222,6 +1223,8 @@ fn Composer(
     /// as resolving.
     ref_candidates: Vec<RefCandidate>,
     onsubmit: EventHandler<()>,
+    requests: Signal<Vec<(String, Option<Uuid>)>>,
+    on_restore: EventHandler<usize>,
 ) -> Element {
     let empty = value.read().trim().is_empty();
     let busy = activity.read().is_busy();
@@ -1232,6 +1235,13 @@ fn Composer(
     rsx! {
         footer { class: "pointer-events-none absolute inset-x-0 bottom-0 z-30 px-6 pb-5",
             div { class: "pointer-events-auto mx-auto w-full max-w-2xl",
+                if !requests.read().is_empty() {
+                    select { aria_label: "Restore a submitted request", disabled, class: "mb-2 max-w-full rounded bg-zinc-900 px-3 py-1 text-xs text-zinc-300",
+                        value: "", oninput: move |event| { if let Ok(index) = event.value().parse::<usize>() { on_restore.call(index); } },
+                        option { value: "", "Restore a submitted request…" }
+                        for (index, (request, _)) in requests.read().iter().enumerate() { option { value: "{index}", "{request}" } }
+                    }
+                }
                 // One opaque box: the target chip rides inside it at the top,
                 // above the field rather than beside it, so the field still
                 // owns its full width when the text wraps.
@@ -1397,12 +1407,8 @@ fn ToolRail(mut tool: Signal<super::tools::Tool>, disabled: bool) -> Element {
                     IconAction {
                         key: "{item.action()}",
                         icon: item.icon(),
-                        title: if item.available() {
-                            shortcuts::tooltip(item.label(), item.action())
-                        } else {
-                            format!("{} — not yet implemented", item.label())
-                        },
-                        disabled: disabled || !item.available(),
+                        title: shortcuts::tooltip(item.label(), item.action()),
+                        disabled,
                         active: tool() == item,
                         onclick: move |_| tool.set(item),
                     }

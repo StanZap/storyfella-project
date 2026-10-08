@@ -127,16 +127,21 @@ pub fn ordered_ids(registry: &ArtifactRegistry, query: &str) -> Vec<Uuid> {
 #[component]
 pub fn Gallery(
     app_state: Signal<AppState>,
-    filter: Signal<String>,
+    mut filter: Signal<String>,
     mut composer: Signal<String>,
     /// The keyboard cursor, as an index into [`ordered_ids`].
     cursor: Signal<usize>,
     disabled: bool,
 ) -> Element {
+    let (filter_id, filter_mount) = super::text_input::use_text_value(filter(), None);
     let registry = app_state.read().registry.clone();
     let query = filter.read().to_ascii_lowercase();
     let empty = registry.artifacts.is_empty();
-    let focused = ordered_ids(&registry, &query).get(*cursor.read()).copied();
+    let ids = ordered_ids(&registry, &query);
+    let result_count = ids.len();
+    let focused = ids
+        .get((*cursor.read()).min(result_count.saturating_sub(1)))
+        .copied();
 
     let groups = GROUPS.into_iter().filter_map(|kind| {
         let tiles = tiles_for(&registry, kind, &query);
@@ -173,15 +178,17 @@ pub fn Gallery(
         div { class: "min-h-0 w-full flex-1 overflow-y-auto",
             div { class: "sticky top-0 z-10 flex items-center gap-3 border-b border-white/[0.05] bg-zinc-950/80 px-6 py-3 backdrop-blur-xl",
                 p { class: "text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-600",
-                    "Artifacts"
+                    "Artifacts · {result_count} shown"
                 }
                 p { class: "text-[10px] text-zinc-700",
                     "{super::shortcuts::hint_line(super::shortcuts::Scope::Grid)}"
                 }
                 input {
                     class: "ml-auto h-8 w-56 rounded-lg bg-white/[0.045] px-3 text-[11px] text-zinc-200 outline-none ring-1 ring-inset ring-white/[0.06] transition placeholder:text-zinc-700 focus:ring-violet-400/40",
+                    aria_label: "Filter artifacts",
                     placeholder: "Filter…",
-                    value: "{filter}",
+                    id: filter_id,
+                    onmounted: filter_mount,
                     disabled,
                     oninput: move |event| filter.set(event.value()),
                 }
@@ -224,6 +231,11 @@ pub fn Gallery(
                         "New character"
                     }
                 }
+            } else if focused.is_none() {
+                div { role: "status", class: "px-6 py-16 text-center",
+                    p { "No artifacts match this filter." }
+                    button { class: "mt-3 rounded bg-violet-400/15 px-3 py-2", onclick: move |_| filter.set(String::new()), "Clear filter" }
+                }
             } else {
                 div { class: "space-y-8 px-6 pb-28 pt-6", {groups} }
             }
@@ -252,7 +264,7 @@ fn TileCard(tile: Tile, focused: bool, onopen: EventHandler<Uuid>) -> Element {
 
                 if let Some(url) = tile.image.clone() {
                     img {
-                        class: "absolute inset-0 size-full rounded-[10px] object-cover ring-1 ring-inset ring-white/[0.11] transition group-hover:ring-white/20",
+                        class: "absolute inset-0 size-full rounded-[10px] object-contain ring-1 ring-inset ring-white/[0.11] transition group-hover:ring-white/20",
                         class: if focused { "ring-2 ring-violet-400" } else { "" },
                         class: if tile.working { "opacity-40" } else { "" },
                         src: "{url}",

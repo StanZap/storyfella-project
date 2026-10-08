@@ -18,12 +18,12 @@ use crate::{
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppConfig {
-    /// The `text` deployment resolved from `providers.toml` — the planner's
+    /// The `text` deployment resolved from `storyfella.toml` — the planner's
     /// OpenAI-compatible endpoint, model, key and timeout. `None` when no
     /// provider serves `text`: the planner is a soft dependency, so the app
     /// still runs and its LLM steps degrade to manual input.
     pub text: Option<ChatDeployment>,
-    /// The `vision` deployment resolved from `providers.toml` — what `svs eval`
+    /// The `vision` deployment resolved from `storyfella.toml` — what `svs eval`
     /// and future vision steps call. `None` when no provider serves `vision`.
     pub vision: Option<ChatDeployment>,
     /// The provider id serving `text`, kept so Settings can persist a model
@@ -35,14 +35,14 @@ pub struct AppConfig {
     /// The provider id serving `t2i`, kept so Settings can persist the
     /// residency choice under the right `[providers.<id>]` section.
     pub image_provider_id: Option<String>,
-    /// The image-generation deployment resolved from `providers.toml`: the
+    /// The image-generation deployment resolved from `storyfella.toml`: the
     /// `sd-server` executable, model tree, LoRA root, endpoint, and weights.
     pub image: ImageDeployment,
     pub cache_dir: PathBuf,
     pub asset_dir: PathBuf,
     /// Where the GUI keeps `.svs-project.db` files (the Projects screen).
     pub project_dir: PathBuf,
-    /// The user-level config layered over `config/app.toml` (see
+    /// The user-level config layered over `config/storyfella.toml` (see
     /// [`paths::user_config_path`]). `None` when the platform has no config
     /// directory, or the config was read from an explicit path. The Settings
     /// screen shows it so machine-local secrets have a known home.
@@ -195,22 +195,19 @@ struct PathOverrides {
 }
 
 impl AppConfig {
-    /// Loads the effective config: `config/app.toml` beneath the project root
+    /// Loads the effective config: `config/storyfella.toml` beneath the project root
     /// (see [`crate::paths`]), with the user config layered over it.
     pub fn load() -> Result<Self, ConfigError> {
-        Self::load_layered(
-            paths::config_path(),
-            paths::user_config_path(),
-            paths::user_providers_path(),
-        )
+        let user = paths::user_config_path();
+        if let Some(path) = &user {
+            migrate_user_config(path)?;
+        }
+        Self::load_layered(paths::config_path(), user)
     }
 
-    /// Loads exactly one file, with no user layer. The path is explicit, so a
-    /// caller that names the file itself (tests, tooling) gets only that file —
-    /// and only the checked-in `providers.toml`, never the user providers
-    /// overlay, so the result does not depend on the machine running it.
+    /// Loads one complete settings file without the machine's user overlay.
     pub fn load_from(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
-        Self::load_layered(path.as_ref().to_path_buf(), None, None)
+        Self::load_layered(path.as_ref().to_path_buf(), None)
     }
 
     /// The planner's [`LlmConfig`] — the `text` provider deployment, or `None`
@@ -223,13 +220,8 @@ impl AppConfig {
     /// Reads `base`, merges `user` over it (deeply; see [`merge_toml`]), and
     /// resolves the result. A missing file contributes nothing rather than
     /// failing, so the default config needs neither file to exist. The
-    /// providers registry layers `user_providers` over the checked-in
-    /// `providers.toml`; `None` skips that overlay ([`Self::load_from`]).
-    fn load_layered(
-        base: PathBuf,
-        user: Option<PathBuf>,
-        user_providers: Option<PathBuf>,
-    ) -> Result<Self, ConfigError> {
+    /// same merged value supplies both application and inference settings.
+    fn load_layered(base: PathBuf, user: Option<PathBuf>) -> Result<Self, ConfigError> {
         let path = base.as_path();
         let mut value = read_config_value(path)?;
         if let Some(overlay) = user.as_deref() {
@@ -240,16 +232,18 @@ impl AppConfig {
         // A type error in the merged tree is most likely in the overlay — the
         // file the user just edited — so blame the user path when there is one.
         let parse_path = user.clone().unwrap_or_else(|| base.clone());
-        let file: FileConfig = value.try_into().map_err(|source| ConfigError::Parse {
-            path: parse_path,
-            source,
-        })?;
+        let file: FileConfig = value
+            .clone()
+            .try_into()
+            .map_err(|source| ConfigError::Parse {
+                path: parse_path,
+                source,
+            })?;
 
         // The deployments — the `sd-server` image backend and the chat
         // (`text`/`vision`) endpoints — come from the providers registry at
-        // the project root (`providers.toml`), with the user-level providers
-        // file layered over it.
-        let providers = load_providers(user_providers.as_deref())?;
+        // same general settings file and user overlay.
+        let providers = providers_from_value(&value)?;
         let image = providers.image_deployment(Capability::T2i)?;
         // The chat capabilities are optional: an unconfigured planner or vision
         // endpoint leaves the app fully usable, with those features degraded.
@@ -329,12 +323,15 @@ impl AppConfig {
         })
     }
 
-    /// Persists the planner model to the user providers file (see
-    /// [`paths::user_providers_path`]) — the Settings picker writes here so the
+    /// Persists the planner model to the user settings file (see
+    /// [`paths::user_config_path`]) — the Settings picker writes here so the
     /// choice survives restarts without touching the checked-in
-    /// `providers.toml`. Every other line in the file is left untouched.
+    /// `storyfella.toml`. Every other line in the file is left untouched.
     pub fn persist_text_model(&self, model: &str) -> Result<(), ConfigError> {
-        let path = paths::user_providers_path().ok_or(ConfigError::PlatformDirectories)?;
+        let path = self
+            .user_config_path
+            .as_ref()
+            .ok_or(ConfigError::PlatformDirectories)?;
         let provider_id = self
             .text_provider_id
             .as_deref()
@@ -355,14 +352,7 @@ impl AppConfig {
         model: &str,
     ) -> Result<(), ConfigError> {
         let path = path.as_ref();
-        let contents = if path.exists() {
-            fs::read_to_string(path).map_err(|source| ConfigError::Read {
-                path: path.to_path_buf(),
-                source,
-            })?
-        } else {
-            String::new()
-        };
+        let contents = read_config_contents(path)?;
         let mut lines: Vec<String> = contents.lines().map(str::to_owned).collect();
         let section = format!("providers.{provider_id}");
         write_key(&mut lines, &section, "model", Some(format!("{model:?}")));
@@ -372,10 +362,13 @@ impl AppConfig {
     /// Persists the generation defaults (steps, per-kind sizes, LoRA bindings)
     /// to the user config (see [`paths::user_config_path`]) — the Settings
     /// screen writes here so the choices survive restarts without touching the
-    /// checked-in `config/app.toml`. Line-preserving: only the touched keys
+    /// checked-in `config/storyfella.toml`. Line-preserving: only the touched keys
     /// change.
     pub fn persist_generation_defaults(&self) -> Result<(), ConfigError> {
-        let path = paths::user_config_path().ok_or(ConfigError::PlatformDirectories)?;
+        let path = self
+            .user_config_path
+            .as_ref()
+            .ok_or(ConfigError::PlatformDirectories)?;
         Self::persist_generation_defaults_to(path, &self.generation_defaults)
     }
 
@@ -385,14 +378,7 @@ impl AppConfig {
         defaults: &GenerationDefaults,
     ) -> Result<(), ConfigError> {
         let path = path.as_ref();
-        let contents = if path.exists() {
-            fs::read_to_string(path).map_err(|source| ConfigError::Read {
-                path: path.to_path_buf(),
-                source,
-            })?
-        } else {
-            String::new()
-        };
+        let contents = read_config_contents(path)?;
         let mut lines: Vec<String> = contents.lines().map(str::to_owned).collect();
 
         // Sizes are written quoted (TOML strings); the loader parses WxH.
@@ -477,12 +463,15 @@ impl AppConfig {
         write_config_file(path, lines.join("\n"))
     }
 
-    /// Persists the image provider's residency to the user providers file (see
-    /// [`paths::user_providers_path`]) — the Settings control writes here so
+    /// Persists the image provider's residency to the user settings file (see
+    /// [`paths::user_config_path`]) — the Settings control writes here so
     /// the choice survives restarts without touching the checked-in
-    /// `providers.toml`.
+    /// `storyfella.toml`.
     pub fn persist_image_residency(&self, residency: &str) -> Result<(), ConfigError> {
-        let path = paths::user_providers_path().ok_or(ConfigError::PlatformDirectories)?;
+        let path = self
+            .user_config_path
+            .as_ref()
+            .ok_or(ConfigError::PlatformDirectories)?;
         let provider_id = self
             .image_provider_id
             .as_deref()
@@ -501,14 +490,7 @@ impl AppConfig {
         residency: &str,
     ) -> Result<(), ConfigError> {
         let path = path.as_ref();
-        let contents = if path.exists() {
-            fs::read_to_string(path).map_err(|source| ConfigError::Read {
-                path: path.to_path_buf(),
-                source,
-            })?
-        } else {
-            String::new()
-        };
+        let contents = read_config_contents(path)?;
         let mut lines: Vec<String> = contents.lines().map(str::to_owned).collect();
         let section = format!("providers.{provider_id}");
         write_key(
@@ -523,7 +505,10 @@ impl AppConfig {
     /// Persists the prewarm choice to the user config (see
     /// [`paths::user_config_path`]), line-preserving like the other settings.
     pub fn persist_prewarm(&self, enabled: bool) -> Result<(), ConfigError> {
-        let path = paths::user_config_path().ok_or(ConfigError::PlatformDirectories)?;
+        let path = self
+            .user_config_path
+            .as_ref()
+            .ok_or(ConfigError::PlatformDirectories)?;
         Self::persist_prewarm_to(path, enabled)
     }
 
@@ -531,30 +516,66 @@ impl AppConfig {
     /// arbitrary path; creates the file when it does not exist yet.
     pub fn persist_prewarm_to(path: impl AsRef<Path>, enabled: bool) -> Result<(), ConfigError> {
         let path = path.as_ref();
-        let contents = if path.exists() {
-            fs::read_to_string(path).map_err(|source| ConfigError::Read {
-                path: path.to_path_buf(),
-                source,
-            })?
-        } else {
-            String::new()
-        };
+        let contents = read_config_contents(path)?;
         let mut lines: Vec<String> = contents.lines().map(str::to_owned).collect();
         write_key(&mut lines, "runtime", "prewarm", Some(enabled.to_string()));
         write_config_file(path, lines.join("\n"))
+    }
+
+    /// Save an absolute model-tree override in the same general settings file.
+    /// Files stay in place: selecting an existing tree reuses its downloads.
+    pub fn persist_model_dir(&self, directory: &Path) -> Result<(), ConfigError> {
+        let path = self
+            .user_config_path
+            .as_ref()
+            .ok_or(ConfigError::PlatformDirectories)?;
+        let provider = self
+            .image_provider_id
+            .as_deref()
+            .ok_or(ConfigError::Providers(ProviderError::NoProvider(
+                Capability::T2i,
+            )))?;
+        Self::persist_model_dir_to(path, provider, directory)
+    }
+
+    pub fn persist_model_dir_to(
+        path: &Path,
+        provider: &str,
+        directory: &Path,
+    ) -> Result<(), ConfigError> {
+        let directory = std::path::absolute(directory).map_err(|source| ConfigError::Read {
+            path: directory.to_owned(),
+            source,
+        })?;
+        let contents = read_config_contents(path)?;
+        let encoded = toml::Value::String(directory.to_string_lossy().into_owned()).to_string();
+        let mut lines = contents.lines().map(str::to_owned).collect();
+        write_key(
+            &mut lines,
+            &format!("providers.{provider}"),
+            "model_dir",
+            Some(encoded),
+        );
+        write_config_file(path, lines.join("\n"))
+    }
+}
+
+/// Missing settings contribute nothing; other read failures remain actionable.
+fn read_config_contents(path: &Path) -> Result<String, ConfigError> {
+    match fs::read_to_string(path) {
+        Ok(contents) => Ok(contents),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(source) => Err(ConfigError::Read {
+            path: path.to_owned(),
+            source,
+        }),
     }
 }
 
 /// Reads a config file as a TOML value; a missing file is an empty table, so
 /// the merge treats it as contributing nothing.
 fn read_config_value(path: &Path) -> Result<toml::Value, ConfigError> {
-    if !path.exists() {
-        return Ok(toml::Value::Table(toml::Table::new()));
-    }
-    let contents = fs::read_to_string(path).map_err(|source| ConfigError::Read {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let contents = read_config_contents(path)?;
     toml::from_str(&contents).map_err(|source| ConfigError::Parse {
         path: path.to_path_buf(),
         source,
@@ -581,34 +602,86 @@ fn merge_toml(base: &mut toml::Value, overlay: toml::Value) {
     }
 }
 
-/// The providers registry: the checked-in `providers.toml` at the project root
-/// with the user-level providers file at `user` layered over it, key by key.
-/// The two files are merged as TOML and the assembled text is parsed by the
-/// shared registry, so a user override only needs the keys it changes. `None`
-/// reads only the checked-in file (tests and tooling).
-fn load_providers(user: Option<&Path>) -> Result<Providers, ConfigError> {
-    providers_from_files(&paths::providers_path(), user)
-}
-
-/// The testable core of [`load_providers`]: merges `user` (when present) over
-/// `base` and parses the result. Relative paths resolve against the project
-/// root.
-fn providers_from_files(base: &Path, user: Option<&Path>) -> Result<Providers, ConfigError> {
-    let root = paths::root();
-    let mut value = read_config_value(base)?;
-    if let Some(user) = user {
-        if user != base && user.exists() {
-            merge_toml(&mut value, read_config_value(user)?);
+/// Extract inference sections from general settings; the shared registry owns
+/// validation. Inject the host's storage default before resolving deployments.
+fn providers_from_value(value: &toml::Value) -> Result<Providers, ConfigError> {
+    let mut registry = toml::Table::new();
+    for key in ["defaults", "providers"] {
+        if let Some(section) = value.get(key) {
+            registry.insert(key.into(), section.clone());
         }
     }
-    let contents = toml::to_string(&value).map_err(|source| ConfigError::Serialize { source })?;
-    let providers = Providers::from_toml(&contents, &root).map_err(ConfigError::Providers)?;
-    // An absent (or empty) registry still serves the built-in image provider;
-    // only the `text`/`vision` capabilities need an explicit declaration.
-    if providers.list().next().is_none() {
-        return Ok(Providers::built_in());
+    let empty = match registry.get("providers") {
+        None => true,
+        Some(toml::Value::Table(providers)) => providers.is_empty(),
+        Some(_) => false,
+    };
+    if empty {
+        let built_in = format!(
+            "[defaults]\n\
+             t2i = 'qwen-image'\n\
+             edit = 'qwen-image'\n\
+             [providers.qwen-image]\n\
+             kind = 'sdcpp'\n\
+             architecture = '{}'\n\
+             capabilities = ['t2i', 'edit']\n\
+             base_url = '{}'\n",
+            sd::qwen_image_2_1().id,
+            sd::DEFAULT_BASE_URL,
+        );
+        let mut built_in = toml::from_str(&built_in).expect("built-in provider configuration");
+        merge_toml(&mut built_in, toml::Value::Table(registry));
+        registry = built_in
+            .as_table()
+            .expect("built-in settings table")
+            .clone();
     }
-    Ok(providers)
+    let models = paths::model_dir().ok_or(ConfigError::PlatformDirectories)?;
+    if let Some(providers) = registry
+        .get_mut("providers")
+        .and_then(toml::Value::as_table_mut)
+    {
+        for provider in providers
+            .iter_mut()
+            .filter_map(|(_, value)| value.as_table_mut())
+        {
+            if matches!(
+                provider.get("kind").and_then(toml::Value::as_str),
+                Some("sdcpp" | "llamacpp")
+            ) {
+                provider
+                    .entry("model_dir")
+                    .or_insert_with(|| toml::Value::String(models.to_string_lossy().into_owned()));
+            }
+        }
+    }
+    let contents =
+        toml::to_string(&registry).map_err(|source| ConfigError::Serialize { source })?;
+    Providers::from_toml(&contents, &paths::root()).map_err(ConfigError::Providers)
+}
+
+/// One-time settings migration, not a second runtime config format. The new
+/// file is authoritative once present; originals remain available for recovery.
+fn migrate_user_config(destination: &Path) -> Result<(), ConfigError> {
+    if destination.exists() {
+        return Ok(());
+    }
+    let Some(directory) = destination.parent() else {
+        return Ok(());
+    };
+    let old_app = directory.join("app.toml");
+    let old_providers = directory.join("providers.toml");
+    if destination == old_app
+        || destination == old_providers
+        || (!old_app.exists() && !old_providers.exists())
+    {
+        return Ok(());
+    }
+    let mut settings = read_config_value(&old_app)?;
+    merge_toml(&mut settings, read_config_value(&old_providers)?);
+    let contents =
+        toml::to_string_pretty(&settings).map_err(|source| ConfigError::Serialize { source })?;
+    atomic_write_config(destination, &contents, true)
 }
 
 /// Writes a config file, creating its directory first — the user config lives
@@ -622,8 +695,40 @@ fn write_config_file(path: &Path, contents: String) -> Result<(), ConfigError> {
     }
     let mut output = contents;
     output.push('\n');
-    fs::write(path, output).map_err(|source| ConfigError::Write {
-        path: path.to_path_buf(),
+    atomic_write_config(path, &output, false)
+}
+
+/// Stage beside the destination so failures cannot truncate an existing config.
+/// Migration publishes without replacing a configuration another process wrote.
+fn atomic_write_config(path: &Path, contents: &str, new_only: bool) -> Result<(), ConfigError> {
+    use std::io::Write;
+    let staged = path.with_extension(format!("{}.pending", uuid::Uuid::new_v4()));
+    let result = (|| -> std::io::Result<()> {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&staged)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        if new_only {
+            match fs::hard_link(&staged, path) {
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+                result => result,
+            }
+        } else {
+            fs::rename(&staged, path)
+        }
+    })();
+    if staged.exists() {
+        let _ = fs::remove_file(&staged);
+    }
+    result.map_err(|source| ConfigError::Write {
+        path: path.to_owned(),
         source,
     })
 }
@@ -878,10 +983,7 @@ mod tests {
 
     #[test]
     fn text_and_vision_deployments_come_from_the_providers_registry() {
-        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("temp dir should create");
-        let path = dir.join("app.toml");
-        let config = AppConfig::load_from(&path).expect("config should load from a missing file");
+        let config = AppConfig::load_from(paths::config_path()).expect("unified config loads");
 
         assert_eq!(config.text_provider_id.as_deref(), Some("planner"));
         let text = config.text.as_ref().expect("text deployment");
@@ -901,6 +1003,110 @@ mod tests {
     }
 
     #[test]
+    fn default_model_storage_is_os_local_even_without_a_config_file() {
+        let path = std::env::temp_dir().join(format!("absent-{}.toml", uuid::Uuid::new_v4()));
+        let config = AppConfig::load_from(&path).unwrap();
+        assert_eq!(config.image.model_dir, paths::model_dir().unwrap());
+        assert!(config.image.executable.starts_with(&config.image.model_dir));
+        assert!(config.image.lora_dir.starts_with(&config.image.model_dir));
+        assert!(config.text.is_none());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn malformed_provider_sections_are_rejected_instead_of_becoming_defaults() {
+        for settings in ["providers = 'invalid'", "defaults = 'invalid'"] {
+            let value = toml::from_str(settings).unwrap();
+            assert!(matches!(
+                providers_from_value(&value),
+                Err(ConfigError::Providers(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn one_overlay_preserves_app_settings_provider_choices_and_existing_models() {
+        let directory = std::env::temp_dir().join(format!("svs-unified-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let base = directory.join("base.toml");
+        let user = directory.join("storyfella.toml");
+        std::fs::write(
+            &base,
+            std::fs::read_to_string(paths::config_path()).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            &user,
+            "# retain this comment\n[providers.planner]\napi_key_env = 'TEST_PLANNER_KEY'\n",
+        )
+        .unwrap();
+        AppConfig::persist_text_model_to(&user, "planner", "chosen-model").unwrap();
+        AppConfig::persist_prewarm_to(&user, true).unwrap();
+        let model_dir = directory.join("existing models");
+        AppConfig::persist_model_dir_to(&user, "qwen-image", &model_dir).unwrap();
+        let config = AppConfig::load_layered(base.clone(), Some(user.clone())).unwrap();
+        let image_path = config.image.artifact_plan()[0].path.clone();
+        std::fs::create_dir_all(image_path.parent().unwrap()).unwrap();
+        std::fs::write(&image_path, b"existing bytes stay in place").unwrap();
+        let mut defaults = config.generation_defaults.clone();
+        defaults.steps = 7;
+        AppConfig::persist_generation_defaults_to(&user, &defaults).unwrap();
+        AppConfig::persist_image_residency_to(&user, "qwen-image", "lowvram").unwrap();
+        let config = AppConfig::load_layered(base, Some(user.clone())).unwrap();
+        assert_eq!(config.image.model_dir, model_dir);
+        assert_eq!(config.text.as_ref().unwrap().model, "chosen-model");
+        assert_eq!(config.generation_defaults.steps, 7);
+        assert!(config.prewarm);
+        assert!(crate::runtime::image_artifacts(&config)[0].is_present());
+        assert_eq!(
+            std::fs::read(&image_path).unwrap(),
+            b"existing bytes stay in place"
+        );
+        let saved = std::fs::read_to_string(user).unwrap();
+        assert!(saved.contains("retain this comment"));
+        assert!(saved.contains("TEST_PLANNER_KEY"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn migration_combines_old_settings_once_without_overwriting_or_deleting_sources() {
+        let directory =
+            std::env::temp_dir().join(format!("svs-migration-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let old_app = directory.join("app.toml");
+        let old_providers = directory.join("providers.toml");
+        let destination = directory.join("storyfella.toml");
+        let original_app = "[generation]\nsteps = 9\n";
+        let original_providers =
+            "[providers.planner]\nmodel = 'chosen'\napi_key = 'test-only-secret'\n";
+        std::fs::write(&old_app, original_app).unwrap();
+        std::fs::write(&old_providers, "invalid = [").unwrap();
+        assert!(migrate_user_config(&destination).is_err());
+        assert!(!destination.exists());
+        std::fs::write(&old_providers, original_providers).unwrap();
+        migrate_user_config(&destination).unwrap();
+        let value = read_config_value(&destination).unwrap();
+        assert_eq!(value["generation"]["steps"].as_integer(), Some(9));
+        assert_eq!(
+            value["providers"]["planner"]["api_key"].as_str(),
+            Some("test-only-secret")
+        );
+        assert_eq!(std::fs::read_to_string(old_app).unwrap(), original_app);
+        assert_eq!(
+            std::fs::read_to_string(&old_providers).unwrap(),
+            original_providers
+        );
+        std::fs::write(&destination, "[generation]\nsteps = 12\n").unwrap();
+        migrate_user_config(&destination).unwrap();
+        assert_eq!(
+            read_config_value(&destination).unwrap()["generation"]["steps"].as_integer(),
+            Some(12)
+        );
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 3);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn an_image_only_registry_leaves_chat_capabilities_unconfigured() {
         // The planner and vision endpoints are soft dependencies: a registry
         // that serves only images resolves no `text`/`vision` deployment rather
@@ -916,7 +1122,8 @@ mod tests {
         )
         .expect("fixture should write");
 
-        let providers = providers_from_files(&base, None).expect("image-only registry loads");
+        let providers = providers_from_value(&read_config_value(&base).unwrap())
+            .expect("image-only registry loads");
         assert!(providers.image_deployment(Capability::T2i).is_ok());
         assert!(
             providers.chat_deployment(Capability::Text).is_err(),
@@ -946,7 +1153,9 @@ mod tests {
         )
         .expect("user fixture should write");
 
-        let providers = providers_from_files(&base, Some(&user)).expect("providers should merge");
+        let mut value = read_config_value(&base).unwrap();
+        merge_toml(&mut value, read_config_value(&user).unwrap());
+        let providers = providers_from_value(&value).expect("providers should merge");
         let text = providers
             .chat_deployment(Capability::Text)
             .expect("text resolves");
@@ -1064,8 +1273,8 @@ mod tests {
         )
         .expect("user fixture should write");
 
-        let config = AppConfig::load_layered(base, Some(user.clone()), None)
-            .expect("layered config should load");
+        let config =
+            AppConfig::load_layered(base, Some(user.clone())).expect("layered config should load");
         // The user file sets one nested key without clobbering the base's.
         assert_eq!(config.generation_defaults.steps, 25);
         assert_eq!(config.generation_defaults.cfg_scale, 7.5);
@@ -1086,8 +1295,7 @@ mod tests {
         std::fs::write(&base, "[generation]\nsteps = 25\n").expect("base fixture");
         std::fs::write(&user, "[generation]\nsteps = 8\n").expect("user fixture");
 
-        let config =
-            AppConfig::load_layered(base, Some(user), None).expect("layered config should load");
+        let config = AppConfig::load_layered(base, Some(user)).expect("layered config should load");
         assert_eq!(config.generation_defaults.steps, 8);
     }
 
@@ -1098,7 +1306,7 @@ mod tests {
         let base = dir.join("app.toml");
         std::fs::write(&base, "[generation]\nsteps = 10\n").expect("base fixture");
 
-        let config = AppConfig::load_layered(base, Some(dir.join("absent.toml")), None)
+        let config = AppConfig::load_layered(base, Some(dir.join("absent.toml")))
             .expect("a missing user config is fine");
         assert_eq!(config.generation_defaults.steps, 10);
     }

@@ -57,7 +57,7 @@ HTTP.
   Rust that keeps the **Qwen-Image-2.1** diffusion model resident. Rust never
   links an ML framework; it is only HTTP client to the server's `sdcpp` API.
 - **The LLM endpoints** (text and vision) are OpenAI-compatible services
-  accessed directly from Rust and resolved from `providers.toml` as separate
+  accessed directly from Rust and resolved from `storyfella.toml` as separate
   capabilities. An `openai` provider is external and never started; a
   `llamacpp` provider is a managed `llama-server` the app starts on demand.
   `crates/studio-core/src/llm/` is the client; the planner business logic lives in
@@ -97,7 +97,7 @@ HTTP.
 
 The generation server is started with `--listen-ip 127.0.0.1 --listen-port 7861`
 and serves only on loopback; the image provider's `base_url` in
-`providers.toml` names both the address the client calls and the port the
+`storyfella.toml` names both the address the client calls and the port the
 runtime binds. See [`runtime-lifecycle.md`](runtime-lifecycle.md).
 
 ### The shared inference runtime
@@ -129,7 +129,7 @@ anything the server does not name in its JSON parser is dropped silently.
 | `GET` | `/sdcpp/v1/jobs/{id}` | Poll a submitted job |
 | `GET` | `/sdcpp/v1/capabilities` | Report the resident model |
 
-The base URL is the image provider's `base_url` in `providers.toml`
+The base URL is the image provider's `base_url` in `storyfella.toml`
 (`http://127.0.0.1:7861` in the checked-in file).
 
 ### Request body (`POST /sdcpp/v1/img_gen`)
@@ -272,23 +272,24 @@ card, so the planner/LLM cannot run concurrently with a generation. Free VRAM
 
 ## Directory resolution
 
-Runtime, model, cache, and asset paths resolve against the **project root**
+Explicit relative runtime, model, cache, and asset paths resolve against the **project root**
 (`crates/studio-core/src/paths.rs`): `$SVS_HOME` if set, otherwise the nearest
 ancestor of the working directory (then of the executable) holding
-`config/app.toml`. Relative paths in [`config/app.toml`](../config/app.toml)
+`config/storyfella.toml`. Relative paths in [`config/storyfella.toml`](../config/storyfella.toml)
 resolve against that root, and unset values fall back to platform-appropriate
 application directories via the `directories` crate
 (`ProjectDirs::from("dev", "Smart Visual Sequencer", "Smart Visual Sequencer")`).
-The config itself is layered: a user-level `app.toml` in that same platform
+The config itself is layered: a user-level `storyfella.toml` in that same platform
 config directory (`paths::user_config_path()`) is deep-merged over the root file
 key by key, so machine-local secrets and overrides stay out of the repository.
 The image deployment — the `sd-server` executable, model tree, LoRA root,
-endpoint, and weights — is resolved from [`providers.toml`](../providers.toml) at
-that same root (also via `paths::providers_path()`); the deployment's
+endpoint, and weights — is resolved from [`storyfella.toml`](../config/storyfella.toml) at
+that same root (also via `paths::config_path()`); the deployment's
 `AppConfig::image` is what the runtime, the health probe, `model_setup`, and
 Settings read. The checked-in config points `cache/` and `assets/` at the
-repository for development, while `providers.toml` roots the model tree at
-`models/`.
+repository for development. Model storage defaults to the OS-local Storyfella
+data folder in both development and release builds; Settings can save an
+absolute override. See [model storage](development.md#inference-settings).
 
 ## What is deliberately absent
 

@@ -1,5 +1,8 @@
 # Story authoring UX plan
 
+Use [`DESIGN.md`](../DESIGN.md) for the central UI/UX standard, app-wide audit
+and acceptance checks. This walkthrough provides the authoring scenarios.
+
 Start with the existing desktop app and a short guided story. The first pass
 should answer whether writing, finding assets, and changing their appearance
 feel connected. Use the feedback to shape scene synchronization and preview.

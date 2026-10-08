@@ -10,7 +10,7 @@ use storyfella_studio_core::registry::{
 };
 use storyfella_studio_core::runtime::{
     check_all as check_services, image_artifacts, provision_image_model, CreativeRuntime,
-    HealthStatus, ModelArtifactStatus, ServiceHealth, ServiceId,
+    HealthStatus, ModelArtifactStatus, ServiceHealth, ServiceId, ServiceRecovery,
 };
 
 use super::{
@@ -18,6 +18,11 @@ use super::{
     icons::{Icon, IconName},
     AutosaveMode,
 };
+
+#[derive(Clone, Copy)]
+pub struct PersistedDefaults(pub Signal<GenerationDefaults>);
+#[derive(Clone, Copy)]
+struct RefreshHealth(EventHandler<()>);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum SettingsSection {
@@ -72,28 +77,36 @@ impl ServiceAction {
 
 /// The controls a service offers at a given status. The resident generation
 /// server can be started when it is down, and restarted or stopped while it is
-/// up; when it is not ours (a foreign server holds the port, or it is down),
-/// Take over clears the port and starts ours. External (text/vision) endpoints
+/// up; a foreign server needs explicit takeover, and missing files need setup.
+/// External (text/vision) endpoints
 /// are never started or stopped here.
-fn actions_for(service: ServiceId, status: HealthStatus) -> Vec<ServiceAction> {
-    match (service, status) {
-        (ServiceId::Llm | ServiceId::Vision, _) => Vec::new(),
-        (ServiceId::ImageGeneration, HealthStatus::Online) => {
+fn actions_for(
+    service: ServiceId,
+    status: HealthStatus,
+    recovery: Option<ServiceRecovery>,
+) -> Vec<ServiceAction> {
+    match (service, status, recovery) {
+        (ServiceId::Llm | ServiceId::Vision, _, _) => Vec::new(),
+        (ServiceId::ImageGeneration, _, Some(ServiceRecovery::ConfigureImageFiles)) => Vec::new(),
+        (ServiceId::ImageGeneration, _, Some(ServiceRecovery::ReplaceImageServer)) => {
+            vec![ServiceAction::TakeOver]
+        }
+        (ServiceId::ImageGeneration, HealthStatus::Online, None) => {
             vec![ServiceAction::Restart, ServiceAction::Stop]
         }
-        (ServiceId::ImageGeneration, _) => vec![ServiceAction::Start, ServiceAction::TakeOver],
+        (ServiceId::ImageGeneration, _, None) => vec![ServiceAction::Start],
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{actions_for, ServiceAction};
-    use storyfella_studio_core::runtime::{HealthStatus, ServiceId};
+    use storyfella_studio_core::runtime::{HealthStatus, ServiceId, ServiceRecovery};
 
     #[test]
     fn external_services_have_no_controls() {
-        assert!(actions_for(ServiceId::Llm, HealthStatus::Online).is_empty());
-        assert!(actions_for(ServiceId::Vision, HealthStatus::Online).is_empty());
+        assert!(actions_for(ServiceId::Llm, HealthStatus::Online, None).is_empty());
+        assert!(actions_for(ServiceId::Vision, HealthStatus::Online, None).is_empty());
     }
 
     #[test]
@@ -104,13 +117,27 @@ mod tests {
             HealthStatus::Offline,
         ] {
             assert_eq!(
-                actions_for(ServiceId::ImageGeneration, status),
-                vec![ServiceAction::Start, ServiceAction::TakeOver]
+                actions_for(ServiceId::ImageGeneration, status, None),
+                vec![ServiceAction::Start]
             );
         }
         assert_eq!(
-            actions_for(ServiceId::ImageGeneration, HealthStatus::Online),
+            actions_for(ServiceId::ImageGeneration, HealthStatus::Online, None),
             vec![ServiceAction::Restart, ServiceAction::Stop]
+        );
+        assert!(actions_for(
+            ServiceId::ImageGeneration,
+            HealthStatus::Offline,
+            Some(ServiceRecovery::ConfigureImageFiles)
+        )
+        .is_empty());
+        assert_eq!(
+            actions_for(
+                ServiceId::ImageGeneration,
+                HealthStatus::Degraded,
+                Some(ServiceRecovery::ReplaceImageServer)
+            ),
+            vec![ServiceAction::TakeOver]
         );
     }
 }
@@ -170,9 +197,27 @@ pub fn Settings(
         );
     };
 
+    let refresh_runtime = runtime.clone();
+    let refresh_config = config.clone();
+    use_context_provider(|| {
+        RefreshHealth(EventHandler::new(move |_| {
+            run_checks(
+                refresh_runtime.clone(),
+                refresh_config.clone(),
+                lm_model,
+                health,
+                checking,
+                checked_at,
+            );
+        }))
+    });
     let operate_runtime = runtime.clone();
     let operate_config = config.clone();
     let on_operate = move |(service, action): (ServiceId, ServiceAction)| {
+        if action == ServiceAction::TakeOver && rfd::MessageDialog::new()
+            .set_title("Replace the running image server?")
+            .set_description("This stops the image server using this port, including work started outside Storyfella, then starts Storyfella’s configured server.")
+            .set_buttons(rfd::MessageButtons::YesNo).show() != rfd::MessageDialogResult::Yes { return; }
         operate_service(
             operate_runtime.clone(),
             operate_config.clone(),
@@ -204,13 +249,11 @@ pub fn Settings(
             }
             div { class: "min-h-0 overflow-y-auto px-10 py-9",
                 div { class: "mx-auto max-w-3xl",
-                    match section() {
-                        SettingsSection::Status => rsx! { StatusSettings { health, checking, checked_at, busy, operation_error, on_check: on_check.clone(), on_operate: on_operate.clone() } },
-                        SettingsSection::General => rsx! { GeneralSettings {} },
-                        SettingsSection::Intelligence => rsx! { IntelligenceSettings { config: config.clone(), backend, health, lm_model, models_state, on_check: on_check.clone() } },
-                        SettingsSection::Generation => rsx! { GenerationSettings { config: config.clone(), defaults, backend } },
-                        SettingsSection::Storage => rsx! { StorageSettings { config: config.clone() } },
-                    }
+                    div { hidden: section() != SettingsSection::Status, StatusSettings { health, checking, checked_at, busy, operation_error, on_check: on_check.clone(), on_operate: on_operate.clone(), on_setup: move |_| section.set(SettingsSection::Generation) } }
+                    div { hidden: section() != SettingsSection::General, GeneralSettings {} }
+                    div { hidden: section() != SettingsSection::Intelligence, IntelligenceSettings { config: config.clone(), backend, health, lm_model, models_state, on_check: on_check.clone() } }
+                    div { hidden: section() != SettingsSection::Generation, GenerationSettings { config: config.clone(), defaults, backend } }
+                    div { hidden: section() != SettingsSection::Storage, StorageSettings { config: config.clone() } }
                 }
             }
         }
@@ -349,6 +392,7 @@ fn StatusSettings(
     operation_error: Signal<Option<ReportedError>>,
     on_check: EventHandler<MouseEvent>,
     on_operate: EventHandler<(ServiceId, ServiceAction)>,
+    on_setup: EventHandler<()>,
 ) -> Element {
     let services = health.read().clone();
     let last_checked = checked_at();
@@ -403,7 +447,10 @@ fn StatusSettings(
                             if busy_service == Some(service.id) {
                                 span { class: "size-3 animate-spin rounded-full border border-zinc-600 border-t-white" }
                             } else {
-                                for action in actions_for(service.id, service.status) {
+                                if service.recovery == Some(ServiceRecovery::ConfigureImageFiles) {
+                                    button { onclick: move |_| on_setup.call(()), "Set up image engine" }
+                                } else {
+                                for action in actions_for(service.id, service.status, service.recovery) {
                                     button {
                                         class: "h-7 rounded-md bg-white/[0.06] px-2.5 text-[10px] font-medium text-zinc-400 transition hover:bg-white/[0.1] hover:text-white disabled:cursor-not-allowed disabled:opacity-40",
                                         disabled: is_busy,
@@ -413,6 +460,7 @@ fn StatusSettings(
                                         },
                                         "{action.label()}"
                                     }
+                                }
                                 }
                             }
                             StatusDot { status: service.status }
@@ -437,13 +485,14 @@ fn GeneralSettings() -> Element {
         }
         div { class: "border-y border-white/[0.06]",
             SettingRow { title: "Appearance", description: "Interface theme used throughout the app.",
-                select { class: "setting-control", option { "Dark" } }
+                p { class: "text-sm text-zinc-300", "Dark theme" }
             }
             SettingRow { title: "Background generation", description: "Continue queued jobs while you read or present other scenes.",
-                Toggle { enabled: true }
+                p { class: "text-sm text-zinc-300", "Jobs continue while you use other screens." }
             }
             SettingRow { title: "Autosave", description: "Save project changes locally as you work.", last: true,
                 select {
+                    aria_label: "Autosave for this session",
                     class: "setting-control",
                     // oninput + option-level selected — the pattern that
                     // actually commits on <select> in Dioxus.
@@ -478,21 +527,23 @@ fn IntelligenceSettings(
     // Applying a pick: swap the live client, persist to the user config,
     // and re-check so the Status screen reflects the new model.
     let persist_config = config.clone();
+    let mut error_report = use_context::<Signal<Option<ReportedError>>>();
+    let refresh = use_context::<RefreshHealth>().0;
     let on_select = move |model: String| {
         if backend.read().llm_model().as_deref() == Some(model.as_str()) {
             return;
         }
+        if let Err(error) = persist_config.persist_text_model(&model) {
+            error_report.set(Some(error.report().log()));
+            return;
+        }
         lm_model.set(model.clone());
         backend.write().set_llm_model(model.clone());
-        if let Err(error) = persist_config.persist_text_model(&model) {
-            tracing::error!("could not persist planner model to config: {error}");
-        }
+        refresh.call(());
     };
     // Where a machine-local secret (an API key, a different endpoint) belongs:
-    // the user config layered over the checked-in `config/app.toml`.
-    let user_config = config
-        .user_config_path
-        .as_ref()
+    // the user config layered over the checked-in `config/storyfella.toml`.
+    let user_config = storyfella_studio_core::paths::user_config_path()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| "platform config directory unavailable".to_owned());
     let text_endpoint = config
@@ -514,7 +565,7 @@ fn IntelligenceSettings(
         SectionHeading {
             eyebrow: "Planner & vision",
             title: "Intelligence",
-            description: "Planning (`text`) and visual understanding (`vision`) resolve from providers in providers.toml. An external endpoint is never bundled or started by the app; a managed native server is started on demand."
+            description: "Planning (`text`) and visual understanding (`vision`) resolve from the inference sections in storyfella.toml. An external endpoint is never bundled or started by the app; a managed native server is started on demand."
         }
         div { class: "mb-8 flex items-center justify-between border-y border-white/[0.06] py-4",
             div { class: "flex items-center gap-3",
@@ -527,7 +578,7 @@ fn IntelligenceSettings(
             SettingRow { title: "Base URL", description: "OpenAI-compatible API endpoint serving the `text` provider.",
                 input { class: "setting-control", value: "{text_endpoint}", readonly: true }
             }
-            SettingRow { title: "Planner model", description: "Model identifier loaded in the endpoint. Picking one applies it immediately and saves it to the user providers file.",
+            SettingRow { title: "Planner model", description: "Model identifier loaded in the endpoint. Picking one applies it immediately and saves it to your storyfella.toml settings.",
                 ModelPicker { config: config.clone(), lm_model, models_state, on_select }
             }
             SettingRow { title: "Vision endpoint", description: "OpenAI-compatible API endpoint serving the `vision` provider (`svs eval`).",
@@ -536,11 +587,11 @@ fn IntelligenceSettings(
             SettingRow { title: "Request timeout", description: "Maximum wait for planning and visual analysis.",
                 div { class: "flex items-center gap-3", input { class: "setting-control", value: "{text_timeout}", readonly: true } span { class: "text-[10px] text-zinc-700", "seconds" } }
             }
-            SettingRow { title: "User config", description: "Layered over config/app.toml. Put an api_key or a per-machine override here — it is not checked into the repository.", last: true,
+            SettingRow { title: "Application configuration", description: "storyfella.toml stores application settings, models, endpoints and API keys. File edits take effect after restarting Studio.", last: true,
                 input { class: "setting-control", value: "{user_config}", readonly: true }
             }
         }
-        p { class: "mt-4 text-[10px] leading-5 text-zinc-700", "Model discovery connects to the configured Base URL. Model, generation, and secret choices are saved to the user config and apply immediately — no restart needed." }
+        p { class: "mt-4 text-[10px] leading-5 text-zinc-700", "A model selection is saved before it is applied. Failed saves leave the previous model selected. Endpoints and API keys are configured in storyfella.toml." }
     }
 }
 
@@ -580,6 +631,7 @@ fn ModelPicker(
                             span { class: "shrink-0 text-[9px] text-amber-300/70", "not in the endpoint's list" }
                         }
                         SearchSelect {
+                            label: "Planner model",
                             options: options,
                             value: current.clone(),
                             on_select: on_select,
@@ -595,6 +647,7 @@ fn ModelPicker(
                 }
                 ModelListState::Empty => rsx! {
                     SearchSelect {
+                        label: "Planner model",
                         options: Vec::new(),
                         value: lm_model(),
                         empty_message: "No models discovered yet — test the connection.".to_owned(),
@@ -621,12 +674,15 @@ fn GenerationSettings(
 ) -> Element {
     let mut prewarm = use_context::<Signal<bool>>();
     let mut residency = use_context::<Signal<String>>();
+    let mut error_report = use_context::<Signal<Option<ReportedError>>>();
+    let refresh = use_context::<RefreshHealth>().0;
     let persist_config = config.clone();
     let on_prewarm = move |enabled: bool| {
-        prewarm.set(enabled);
         if let Err(error) = persist_config.persist_prewarm(enabled) {
-            tracing::error!("could not persist prewarm: {error}");
+            error_report.set(Some(error.report().log()));
+            return;
         }
+        prewarm.set(enabled);
     };
     // Changing residency is a launch-flag change: persist it, and restart a
     // running server so the new mode takes effect now. The runtime keeps a
@@ -634,15 +690,20 @@ fn GenerationSettings(
     let residency_config = config.clone();
     let mut residency_backend = backend;
     let on_residency = EventHandler::new(move |value: String| {
-        residency.set(value.clone());
         if let Err(error) = residency_config.persist_image_residency(&value) {
-            tracing::error!("could not persist image residency: {error}");
+            error_report.set(Some(error.report().log()));
+            return;
         }
+        residency.set(value.clone());
         let was_running = residency_backend.read().runtime().is_running();
         spawn(async move {
             if was_running {
                 let runtime = residency_backend.read().runtime();
-                let _ = runtime.stop_generation_runtime().await;
+                if let Err(error) = runtime.stop_generation_runtime().await {
+                    error_report.set(Some(error.report().log()));
+                    refresh.call(());
+                    return;
+                }
             }
             if !residency_backend.write().set_image_residency(&value) {
                 tracing::error!("unknown image residency {value:?}");
@@ -650,16 +711,18 @@ fn GenerationSettings(
             if was_running {
                 let runtime = residency_backend.read().runtime();
                 if let Err(error) = runtime.ensure_ready().await {
-                    let _ = error.report().log();
+                    error_report.set(Some(error.report().log()));
                 }
             }
+            refresh.call(());
         });
     });
     let sizes = defaults.read().sizes;
     let steps = defaults.read().steps;
     let cfg_scale = defaults.read().cfg_scale;
-    let size_error = use_signal(|| None::<String>);
     let mut steps_error = use_signal(|| None::<String>);
+    let mut steps_draft = use_signal(|| steps.to_string());
+    let (steps_id, steps_mount) = super::text_input::use_text_value(steps_draft(), None);
     // The lora dir shown here and the bindings share the same defaults.
     let lora_dir = config.image.lora_dir.clone();
     // Discovered adapters, reloadable: symlinked or newly dropped files
@@ -690,7 +753,11 @@ fn GenerationSettings(
                         r#type: "number",
                         min: 1,
                         max: 50,
-                        value: "{steps}",
+                        aria_label: "Steps per image",
+                        aria_invalid: steps_error().is_some(),
+                        id: steps_id,
+                        onmounted: steps_mount,
+                        oninput: move |event| steps_draft.set(event.value()),
                         onchange: {
                             let mut defaults = defaults;
                             move |event| {
@@ -709,16 +776,19 @@ fn GenerationSettings(
                 }
             }
             SettingRow { title: "Character size", description: "Default canvas for character images (WxH, multiples of 32).",
-                SizeField { label: "512×768", value: sizes.character, error: size_error, defaults, kind: "character" }
+                SizeField { label: "512×768", value: sizes.character, defaults, kind: "character" }
             }
             SettingRow { title: "Environment size", description: "Default canvas for environment images.",
-                SizeField { label: "1024×576", value: sizes.environment, error: size_error, defaults, kind: "environment" }
+                SizeField { label: "1024×576", value: sizes.environment, defaults, kind: "environment" }
             }
             SettingRow { title: "Object size", description: "Default canvas for object images.",
-                SizeField { label: "768×768", value: sizes.object, error: size_error, defaults, kind: "object" }
+                SizeField { label: "768×768", value: sizes.object, defaults, kind: "object" }
             }
-            SettingRow { title: "Scene / beat size", description: "Default canvas for scene and beat images.",
-                SizeField { label: "1024×576", value: sizes.scene, error: size_error, defaults, kind: "scene" }
+            SettingRow { title: "Scene size", description: "Default canvas for scene images.",
+                SizeField { label: "1024×576", value: sizes.scene, defaults, kind: "scene" }
+            }
+            SettingRow { title: "Beat size", description: "Default canvas for beat images.",
+                SizeField { label: "1024×576", value: sizes.beat, defaults, kind: "beat" }
             }
             SettingRow { title: "LoRA directory", description: "Adapters are discovered here (subfolders and symlinks included).",
                 div { class: "flex items-center justify-between gap-3",
@@ -736,10 +806,11 @@ fn GenerationSettings(
                 }
             }
             SettingRow { title: "Prewarm on project open", description: "Start the resident server as soon as a project opens, so the first generation is not a multi-minute weight load. Leave it off while another local model shares the card.",
-                Toggle { enabled: prewarm(), onchange: on_prewarm }
+                Toggle { label: "Prewarm on project open", enabled: prewarm(), onchange: on_prewarm }
             }
             SettingRow { title: "Residency", description: "How the weights are held on the GPU. `resident` is fastest (measured peak ≈23 GiB); `lowvram` pages them from system RAM (`--offload-to-cpu`) for ≈9 GiB at t2i and ≈16 GiB at an edit, at +7% / +0.5% sampling time. A running server restarts into the new mode.", last: true,
                 select {
+                    aria_label: "Image residency",
                     class: "setting-control",
                     oninput: move |event| on_residency.call(event.value()),
                     option { selected: residency() == "resident", value: "resident", "Resident (fastest)" }
@@ -757,17 +828,26 @@ fn GenerationSettings(
 }
 
 /// Writes the live defaults back to the user config (line-preserving).
-fn persist_defaults(defaults: Signal<GenerationDefaults>) {
+fn persist_defaults(mut defaults: Signal<GenerationDefaults>) {
+    let mut baseline = consume_context::<PersistedDefaults>().0;
+    let mut error_report = consume_context::<Signal<Option<ReportedError>>>();
     let snapshot = defaults.read().clone();
     let path = match storyfella_studio_core::paths::user_config_path() {
         Some(path) => path,
         None => {
-            tracing::error!("could not resolve the user config path; defaults not saved");
+            defaults.set(baseline());
+            error_report.set(Some(ReportedError::plain(
+                storyfella_studio_core::errors::ErrorCode::ConfigWrite,
+                "Could not resolve the user config path. Settings were not changed.",
+            )));
             return;
         }
     };
     if let Err(error) = AppConfig::persist_generation_defaults_to(path, &snapshot) {
-        tracing::error!("could not persist generation defaults: {error}");
+        defaults.set(baseline());
+        error_report.set(Some(error.report().log()));
+    } else {
+        baseline.set(snapshot);
     }
 }
 
@@ -777,7 +857,6 @@ fn persist_defaults(defaults: Signal<GenerationDefaults>) {
 fn SizeField(
     label: String,
     value: Option<(u32, u32)>,
-    error: Signal<Option<String>>,
     mut defaults: Signal<GenerationDefaults>,
     kind: &'static str,
 ) -> Element {
@@ -785,15 +864,22 @@ fn SizeField(
         .map(|(width, height)| format!("{width}x{height}"))
         .unwrap_or_default();
     let kind_label = kind.to_owned();
+    let mut error = use_signal(|| None::<String>);
+    let mut draft = use_signal(|| current);
+    let (draft_id, draft_mount) = super::text_input::use_text_value(draft(), None);
     rsx! {
         div { class: "flex items-center gap-3",
             if let Some(message) = error() {
                 p { class: "truncate text-[9px] text-rose-300/80", "{message}" }
             }
             input {
+                aria_label: "{kind} image size",
+                aria_invalid: error().is_some(),
                 class: "setting-control w-24",
                 placeholder: "{label}",
-                value: "{current}",
+                id: draft_id,
+                onmounted: draft_mount,
+                oninput: move |event| draft.set(event.value()),
                 onchange: {
                     let mut defaults = defaults;
                     move |event| {
@@ -859,6 +945,29 @@ fn artifact_detail(status: &ModelArtifactStatus) -> String {
 /// gaps, so a first run does not need a terminal.
 #[component]
 fn ModelFiles(config: AppConfig) -> Element {
+    let mut repair_error = use_signal(|| None::<String>);
+    let mut pending_directory = use_signal(|| None::<std::path::PathBuf>);
+    let change_config = config.clone();
+    let change_location = move |_| {
+        let Some(directory) = rfd::FileDialog::new()
+            .set_title("Choose model folder")
+            .set_directory(&change_config.image.model_dir)
+            .pick_folder()
+        else {
+            return;
+        };
+        match change_config.persist_model_dir(&directory) {
+            Ok(()) => {
+                repair_error.set(None);
+                pending_directory.set(Some(directory));
+            }
+            Err(error) => repair_error.set(Some(error.to_string())),
+        }
+    };
+    let model_directory = config.image.model_dir.clone();
+    let configuration_path = storyfella_studio_core::paths::user_config_path()
+        .filter(|path| path.exists())
+        .unwrap_or_else(storyfella_studio_core::paths::config_path);
     let artifacts = image_artifacts(&config);
     let mut state = use_signal(|| ModelPrepState::Idle);
     let current = state();
@@ -867,6 +976,16 @@ fn ModelFiles(config: AppConfig) -> Element {
         .iter()
         .filter(|status| status.needs_download())
         .count();
+    let blocked_overrides = artifacts
+        .iter()
+        .filter(|status| status.local_override.is_some() && !status.is_present())
+        .count();
+    let executable_ready = config.image.executable.is_file();
+    let bytes_to_download: u64 = artifacts
+        .iter()
+        .filter(|status| status.needs_download())
+        .map(|status| status.size_bytes)
+        .sum();
 
     let prepare_config = config.clone();
     let on_prepare = move |_event: MouseEvent| {
@@ -942,7 +1061,7 @@ fn ModelFiles(config: AppConfig) -> Element {
                         }
                     }
                     ModelPrepState::Done => rsx! {
-                        p { class: "text-[10px] text-emerald-300/80", "Model files are downloaded and verified." }
+                        p { class: "text-[10px] text-emerald-300/80", "Download finished. Review all file states and check runtime status before generating." }
                     },
                     ModelPrepState::Failed(error) => rsx! {
                         div { class: "flex items-start gap-3",
@@ -956,7 +1075,7 @@ fn ModelFiles(config: AppConfig) -> Element {
                     ModelPrepState::Idle => rsx! {
                         p { class: "text-[10px] text-zinc-600",
                             if missing == 0 {
-                                "All model files are present."
+                                "No downloadable files are missing."
                             } else {
                                 "{missing} of {artifacts.len()} files still to download."
                             }
@@ -966,17 +1085,41 @@ fn ModelFiles(config: AppConfig) -> Element {
             }
             button {
                 class: "shrink-0 rounded-lg bg-white/[0.06] px-3.5 py-2 text-[10px] font-medium text-zinc-300 transition hover:bg-white/[0.1] hover:text-white disabled:cursor-not-allowed disabled:opacity-40",
-                disabled: running || missing == 0,
+                disabled: running || missing == 0 || pending_directory().is_some(),
                 onclick: on_prepare,
                 if running {
                     "Preparing…"
                 } else if missing == 0 {
-                    "Model ready"
+                    "No downloads needed"
                 } else {
                     "Prepare model"
                 }
             }
         }
+        p { class: "mt-3 text-xs text-zinc-300", "Download: {human_bytes(bytes_to_download)} · Destination: {config.image.model_dir.display()}" }
+        div { class: "mt-3 flex flex-wrap items-center gap-3",
+            button { disabled: running, title: if running { "Wait for this download before changing its destination" } else { "Choose an existing model tree or a new download destination" }, class: "rounded bg-white/10 px-3 py-2", onclick: change_location, "Change location…" }
+            button { class: "rounded bg-white/10 px-3 py-2", onclick: move |_| {
+                let directory = pending_directory().unwrap_or_else(|| model_directory.clone());
+                let result = std::fs::create_dir_all(&directory).map_err(|error| error.to_string())
+                    .and_then(|_| super::components::open_path(&directory));
+                repair_error.set(result.err());
+            }, "Open folder" }
+        }
+        if let Some(directory) = pending_directory() {
+            p { role: "status", class: "mt-3 text-xs text-violet-200", "Saved location: {directory.display()}. Restart Studio to use it. Existing files stay in place; choosing their folder reuses downloads. Preparation is paused until restart." }
+        }
+        if blocked_overrides > 0 {
+            p { role: "alert", class: "mt-3 text-xs text-amber-300", "{blocked_overrides} configured local weight files are missing. Repair their paths in storyfella.toml; downloading cannot replace a local override." }
+        }
+        if !executable_ready {
+            p { role: "alert", class: "mt-3 text-xs text-amber-300", "The generation executable is missing: {config.image.executable.display()}. Configure an installed sd-server executable in storyfella.toml." }
+        }
+        if blocked_overrides > 0 || !executable_ready {
+            button { class: "mt-3 rounded bg-white/10 px-3 py-2", onclick: move |_| repair_error.set(super::components::open_path(&configuration_path).err()), "Open configuration" }
+        }
+        if let Some(message) = repair_error() { p { role: "alert", "{message}" } }
+        p { class: "mt-2 text-xs text-zinc-400", "Downloads continue across screens. Quitting stops this app’s download; verified files are reused when you prepare again." }
     }
 }
 
@@ -1005,7 +1148,7 @@ fn LoRASettings(
                     || bindings.kinds.environment.is_some()
                     || bindings.kinds.object.is_some();
                 let summary = if files.is_empty() {
-                    "No .safetensors adapters found in the LoRA directory. Drop adapter files there (or configure lora_dir in config/app.toml) and they will appear here."
+                    "No .safetensors adapters found in the LoRA directory. Drop adapter files there (or configure lora_dir in config/storyfella.toml) and they will appear here."
                         .to_owned()
                 } else {
                     format!(
@@ -1160,18 +1303,21 @@ fn StorageSettings(config: AppConfig) -> Element {
 
 #[component]
 fn PathRow(title: String, path: String, #[props(default)] last: bool) -> Element {
+    let mut error = use_signal(|| None::<String>);
+    let reveal_path = path.clone();
     rsx! {
         SettingRow { title, description: "Resolved local path", last,
             div { class: "flex min-w-0 items-center gap-3",
                 code { class: "min-w-0 flex-1 truncate text-[10px] text-zinc-500", title: "{path}", "{path}" }
-                button { class: "shrink-0 rounded-lg bg-white/[0.05] px-2.5 py-1.5 text-[9px] text-zinc-500 hover:text-white", "Reveal" }
+                button { class: "shrink-0 rounded-lg bg-white/[0.05] px-2.5 py-1.5 text-[9px] text-zinc-500 hover:text-white", onclick: move |_| error.set(super::components::open_path(std::path::Path::new(&reveal_path)).err()), "Reveal" }
+                if let Some(message) = error() { p { role: "alert", class: "text-xs text-rose-300", "{message}" } }
             }
         }
     }
 }
 
 #[component]
-fn Toggle(enabled: bool, #[props(default)] onchange: EventHandler<bool>) -> Element {
+fn Toggle(label: String, enabled: bool, onchange: EventHandler<bool>) -> Element {
     let track = if enabled {
         "bg-violet-500/70"
     } else {
@@ -1186,6 +1332,7 @@ fn Toggle(enabled: bool, #[props(default)] onchange: EventHandler<bool>) -> Elem
         button {
             class: "relative ml-auto h-5 w-10 rounded-full {track} transition disabled:cursor-not-allowed disabled:opacity-40",
             role: "switch",
+            aria_label: label,
             aria_checked: "{enabled}",
             onclick: move |_| onchange.call(!enabled),
             span { class: "absolute left-0 top-0.5 size-4 rounded-full bg-white shadow-sm transition {knob}" }

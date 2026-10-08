@@ -120,7 +120,7 @@ impl CreativeBackend {
 
     /// Swaps the planner model at runtime. The backend lives in app state
     /// (a signal), so the canvas's next proposal/plan/draft uses the new
-    /// model immediately; `config/app.toml` persists the choice across runs.
+    /// model immediately; `config/storyfella.toml` persists the choice across runs.
     pub fn set_llm_model(&mut self, model: String) {
         if let Some(client) = &mut self.llm {
             client.set_model(model);

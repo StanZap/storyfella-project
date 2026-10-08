@@ -1,6 +1,8 @@
 pub mod canvas;
+mod close;
 mod cmdbar;
-mod components;
+pub(crate) mod components;
+mod dialog;
 pub mod gallery;
 mod guide;
 mod icons;
@@ -12,8 +14,11 @@ pub mod preview;
 mod projects;
 mod settings;
 pub mod shortcuts;
+mod text_input;
 pub mod tools;
 pub mod writer;
+
+pub const QUIT_MENU_ID: &str = "storyfella-quit";
 
 use std::{
     path::{Path, PathBuf},
@@ -25,7 +30,6 @@ use dioxus::prelude::*;
 use storyfella_studio_core::config::AppConfig;
 use storyfella_studio_core::errors::{CodedError, ReportedError};
 use storyfella_studio_core::registry::backend::CreativeBackend;
-use storyfella_studio_core::runtime::HealthStatus;
 
 use crate::{
     commands::{self, ExecutionUi},
@@ -34,7 +38,7 @@ use crate::{
 };
 
 use canvas::Canvas;
-use components::{ErrorToast, StatusDot};
+use components::{ErrorDetailsHost, ErrorToast};
 use guide::GuideCard;
 use icons::{Icon, IconName};
 use plans::Plans;
@@ -81,6 +85,22 @@ pub fn persist_state(app_state: Signal<AppState>, mut error_report: Signal<Optio
     if let Err(error) = commands::save_project(app_state) {
         error_report.set(Some(error.log()));
     }
+}
+
+/// Explicit Save applies description drafts; autosave leaves drafts editable.
+fn save_current_project(
+    mut app_state: Signal<AppState>,
+    mut error_report: Signal<Option<ReportedError>>,
+) {
+    let result = app_state.write().apply_description_drafts();
+    if let Err(message) = result {
+        error_report.set(Some(ReportedError::plain(
+            storyfella_studio_core::errors::ErrorCode::AppCommandInvalid,
+            message,
+        )));
+        return;
+    }
+    persist_state(app_state, error_report);
 }
 
 /// Precise Writer position and the grid's independent selection.
@@ -130,7 +150,12 @@ fn start_plan(
     mode: GuideMode,
     exit_on_done: bool,
 ) {
-    if session.read().is_some() {
+    if app_state.read().operation_in_progress()
+        || session
+            .read()
+            .as_ref()
+            .is_some_and(|run| matches!(run.state, driver::GuideState::Running))
+    {
         return;
     }
     let ctx = DriveContext {
@@ -159,6 +184,7 @@ pub fn Workspace(
     // canvas cannot save until a project file is bound.
     let mut screen = use_signal(|| AppScreen::Projects);
     use_context_provider(|| screen);
+    use_context_provider(|| app_state);
     let mut playback = use_signal(storyfella_playback_ui::PlaybackModel::default);
     use_context_provider(|| playback);
     let project_path = app_state.read().project_path.clone();
@@ -195,6 +221,8 @@ pub fn Workspace(
     // with the canvas ops and editable in Settings, which persists them.
     let defaults = use_signal(|| config.generation_defaults.clone());
     use_context_provider(|| defaults);
+    let persisted_defaults = use_signal(|| config.generation_defaults.clone());
+    use_context_provider(|| settings::PersistedDefaults(persisted_defaults));
 
     // Prewarm: start the resident generation server when a project opens, so
     // the first generation is not a multi-minute weight load. Editable in
@@ -209,12 +237,12 @@ pub fn Workspace(
 
     // The app-wide error surface: every failure is reported here (coded
     // log + banner + details modal), whatever screen is showing.
-    let error_report = use_signal(|| None::<ReportedError>);
+    let mut error_report = use_signal(|| None::<ReportedError>);
     use_context_provider(|| error_report);
 
     // The canvas composer text: owned here so the driver can type into it
     // (the visible fidelity of a `compose` step), consumed by the canvas.
-    let composer = use_signal(String::new);
+    let mut composer = use_signal(String::new);
     use_context_provider(|| composer);
 
     // Whether the command palette is showing. Owned here because the
@@ -308,7 +336,7 @@ pub fn Workspace(
         let backend = prewarm_backend.read().clone();
         spawn(async move {
             if let Err(error) = backend.ensure_ready().await {
-                let _ = error.report().log();
+                error_report.set(Some(error.report().log()));
             }
         });
     });
@@ -344,38 +372,10 @@ pub fn Workspace(
         });
     });
 
-    // Cmd/Ctrl+S always saves, whatever the autosave mode.
-    let shortcut_app_state = app_state;
-    let shortcut_error_report = error_report;
-    // These are *global* hotkeys, so registration fails when another
-    // instance already holds them — a foreseeable condition, not a bug in
-    // this process. Panicking took the whole UI down with it; the in-app
-    // Save and palette controls work regardless, so a warning is the honest
-    // response.
-    if let Err(error) = dioxus::desktop::use_global_shortcut("CmdOrCtrl+S", move |_| {
-        persist_state(shortcut_app_state, shortcut_error_report);
-    }) {
-        tracing::warn!(
-            ?error,
-            "Ctrl+S is held by another process; use the Save control"
-        );
-    }
-
-    // The palette is opened from here rather than from the canvas so the
-    // shortcut registers once for the app, not once per screen mount.
     let mut palette_open = use_context::<Signal<bool>>();
-    if let Err(error) = dioxus::desktop::use_global_shortcut("CmdOrCtrl+K", move |_| {
-        let showing = *palette_open.peek();
-        palette_open.set(!showing);
-    }) {
-        tracing::warn!(
-            ?error,
-            "Ctrl+K is held by another process; use the palette control"
-        );
-    }
 
     let project_name = app_state.read().project_name.clone();
-    let dirty = app_state.read().has_unsaved_changes;
+    let dirty = app_state.read().has_unsaved_changes || app_state.read().has_description_drafts();
     let artifact_count = app_state.read().registry.artifacts.len();
 
     // The one key listener for the app. Screens observe `last_key` rather
@@ -383,12 +383,20 @@ pub fn Workspace(
     // against `window`, so a second one would never receive anything.
     let mut last_key = use_signal(|| None::<keys::KeyEvent>);
     use_context_provider(|| last_key);
-    let mut goto = use_signal(|| false);
+    let mut goto = use_signal(|| None::<std::time::Instant>);
     let mut tick = use_signal(|| 0u64);
     keys::use_keys(move |press| {
         // `Ctrl/Cmd+Z` and `+Shift+Z` (claimed by the bridge in `keys.rs`) are
         // the header's undo/redo, so the key and the button cannot disagree.
         match press.key.as_str() {
+            "save" => {
+                save_current_project(app_state, error_report);
+                return;
+            }
+            "palette" => {
+                palette_open.set(true);
+                return;
+            }
             "undo" => {
                 app_state.write().undo();
                 return;
@@ -401,8 +409,11 @@ pub fn Workspace(
         }
         // `g` then `s`/`c` switches screens, matching the tab hints. The
         // pending `g` lives here because the pair spans two presses.
-        if *goto.peek() {
-            goto.set(false);
+        if goto
+            .peek()
+            .is_some_and(|started| started.elapsed() < Duration::from_secs(1))
+        {
+            goto.set(None);
             match press.key.as_str() {
                 "s" => {
                     screen.set(AppScreen::Writer);
@@ -415,7 +426,7 @@ pub fn Workspace(
                 _ => {}
             }
         } else if press.key == "g" {
-            goto.set(true);
+            goto.set(Some(std::time::Instant::now()));
             return;
         }
         let next = *tick.peek() + 1;
@@ -455,9 +466,9 @@ pub fn Workspace(
         // The prototype's chrome: a top bar of screen tabs, the work, and a
         // status bar. The old icon rail is gone — with two primary screens
         // and a palette, a permanent 64px column was navigation nobody used.
-        main { class: "grid h-screen min-h-[640px] min-w-[900px] grid-rows-[44px_minmax(0,1fr)_26px] overflow-hidden bg-[#0b0b0e] font-sans text-zinc-100 selection:bg-violet-500/30",
+        main { class: "studio-shell grid h-screen grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden bg-[#0b0b0e] font-sans text-zinc-100 selection:bg-violet-500/30",
 
-            header { class: "flex min-w-0 items-center gap-3.5 border-b border-white/[0.055] bg-[#101014] px-3.5",
+            header { class: "flex min-w-0 flex-wrap items-center gap-3.5 border-b border-white/[0.055] bg-[#101014] px-3.5 py-2",
                 button {
                     class: "text-[11px] font-semibold uppercase tracking-[0.04em] text-zinc-600 transition hover:text-zinc-400",
                     onclick: move |_| screen.set(AppScreen::Projects),
@@ -480,43 +491,58 @@ pub fn Workspace(
                 }
 
                 div { class: "flex items-center gap-1",
-                    button { class: "grid size-7 place-items-center rounded-lg text-zinc-600 transition hover:bg-white/[0.05] hover:text-zinc-200 disabled:opacity-30", title: shortcuts::tooltip("Undo", "undo"), disabled: !app_state.read().can_undo(), onclick: move |_| { app_state.write().undo(); },
+                    button { class: "rounded-lg px-3 py-1 text-xs text-zinc-300", onclick: move |_| palette_open.set(true), "Commands…" }
+                    button { aria_label: "Undo", class: "grid size-7 place-items-center rounded-lg text-zinc-600 transition hover:bg-white/[0.05] hover:text-zinc-200 disabled:opacity-30", title: shortcuts::tooltip("Undo", "undo"), disabled: !app_state.read().can_undo(), onclick: move |_| { app_state.write().undo(); },
                         Icon { name: IconName::Undo, class: "size-3" }
                     }
-                    button { class: "grid size-7 place-items-center rounded-lg text-zinc-600 transition hover:bg-white/[0.05] hover:text-zinc-200 disabled:opacity-30", title: shortcuts::tooltip("Redo", "redo"), disabled: !app_state.read().can_redo(), onclick: move |_| { app_state.write().redo(); },
+                    button { aria_label: "Redo", class: "grid size-7 place-items-center rounded-lg text-zinc-600 transition hover:bg-white/[0.05] hover:text-zinc-200 disabled:opacity-30", title: shortcuts::tooltip("Redo", "redo"), disabled: !app_state.read().can_redo(), onclick: move |_| { app_state.write().redo(); },
                         Icon { name: IconName::Redo, class: "size-3" }
                     }
-                    button { class: "grid size-7 place-items-center rounded-lg text-zinc-600 transition hover:bg-white/[0.05] hover:text-zinc-200 disabled:opacity-30", title: "Save (Cmd/Ctrl+S)", disabled: !dirty, onclick: move |_| persist_state(app_state, error_report),
+                    button { aria_label: "Save project", class: "grid size-7 place-items-center rounded-lg text-zinc-600 transition hover:bg-white/[0.05] hover:text-zinc-200 disabled:opacity-30", title: "Save project and descriptions (Cmd/Ctrl+S)", disabled: !dirty, onclick: move |_| save_current_project(app_state, error_report),
                         Icon { name: IconName::Save, class: "size-3" }
                     }
                 }
             }
 
             div { class: "min-h-0 min-w-0",
-                match screen() {
-                    AppScreen::Projects => rsx! { Projects { config: config.clone(), app_state, on_open: move |_| screen.set(AppScreen::Canvas) } },
-                    AppScreen::Writer => rsx! { Writer { app_state } },
-                    AppScreen::Canvas => rsx! { Canvas { app_state, backend, defaults } },
-                    AppScreen::Preview => rsx! { preview::Preview { app_state } },
-                    AppScreen::Plans => rsx! { Plans { on_run: on_run_plan } },
-                    AppScreen::Settings => rsx! { Settings { config: config.clone(), backend, defaults } },
-                }
+                // Keep task owners and drafts alive while navigating. Hidden screens
+                // are excluded from focus and accessibility by the native attribute.
+                div { hidden: screen() != AppScreen::Projects, class: "h-full", Projects { config: config.clone(), app_state, on_open: move |_| screen.set(AppScreen::Canvas) } }
+                div { hidden: screen() != AppScreen::Writer, class: "h-full", Writer { app_state } }
+                div { hidden: screen() != AppScreen::Canvas, class: "h-full", Canvas { app_state, backend, defaults } }
+                div { hidden: screen() != AppScreen::Preview, class: "h-full", preview::Preview { app_state } }
+                div { hidden: screen() != AppScreen::Plans, class: "h-full", Plans { on_run: on_run_plan, running: app_state.read().operation_in_progress() || session.read().as_ref().is_some_and(|run| matches!(run.state, driver::GuideState::Running)) } }
+                div { hidden: screen() != AppScreen::Settings, class: "h-full", Settings { config: config.clone(), backend, defaults } }
             }
 
             // Status bar: where the keyboard hints and counts live, so they
             // stop crowding the surfaces they describe.
             footer { class: "flex items-center gap-3 border-t border-white/[0.055] bg-[#101014] px-3 font-mono text-[10.5px] text-zinc-600",
                 span { class: "rounded bg-violet-400/15 px-2 py-0.5 text-[10px] font-bold tracking-[0.08em] text-violet-300",
-                    "NORMAL"
+                    if app_state.read().operation_in_progress() { "Working…" } else if dirty { "Unsaved changes" } else if app_state.read().project_path.is_some() { "Saved" } else { "No project open" }
                 }
                 span { "{artifact_count} artifacts" }
                 div { class: "ml-auto flex items-center gap-3",
-                    StatusDot { status: HealthStatus::Idle }
-                    span { class: "font-sans text-zinc-700", "⌃K palette · ⌃S save" }
+                    span { class: "font-sans text-zinc-700", "Cmd/Ctrl+K commands · Cmd/Ctrl+S save" }
                 }
             }
         }
         ErrorToast { error_report }
+        ErrorDetailsHost {}
+        close::CloseGuard { config: config.clone(), app_state, composer }
+        if palette_open() {
+            palette::Palette { app_state, open: palette_open, onpick: move |action| {
+                screen.set(AppScreen::Canvas);
+                match action {
+                    palette::Action::Compose(command) => composer.set(command),
+                    palette::Action::Open(id) => app_state.write().select_artifact(id),
+                }
+                spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    document::eval("document.getElementById('svs-cmdbar')?.focus()");
+                });
+            } }
+        }
         {guide_overlay(session)}
     }
 }

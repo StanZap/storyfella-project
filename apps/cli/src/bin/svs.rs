@@ -448,7 +448,7 @@ async fn run(cli: Cli) -> Result<()> {
             let (operation, cli_options) = build_operation(op)?;
             // The config is always loaded: the LoRA ops resolve the
             // `lora_dir` through the generation defaults.
-            let config = AppConfig::load().context("could not load config/app.toml")?;
+            let config = AppConfig::load().context("could not load config/storyfella.toml")?;
             let needs_backend =
                 operation_needs_backend(&operation, cli_options.manual_text.as_deref());
             let backend = if needs_backend {
@@ -500,7 +500,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Eval { eval } => run_eval(eval).await,
         Command::Runtime { runtime } => {
-            let config = AppConfig::load().context("could not load config/app.toml")?;
+            let config = AppConfig::load().context("could not load config/storyfella.toml")?;
             match runtime {
                 RuntimeCommand::Serve { model, force } => {
                     if force {
@@ -562,11 +562,11 @@ async fn run(cli: Cli) -> Result<()> {
 /// `--expect`/`--expect-not` gate the exit code so evaluation can gate a
 /// test script.
 async fn run_eval(eval: EvalArgs) -> Result<()> {
-    let config = AppConfig::load().context("could not load config/app.toml")?;
+    let config = AppConfig::load().context("could not load config/storyfella.toml")?;
     let mut deployment = config
         .vision
         .clone()
-        .context("no `vision` provider is configured in providers.toml")?;
+        .context("no `vision` provider is configured in storyfella.toml")?;
     if let Some(model) = &eval.model {
         deployment.model = model.clone();
     }
@@ -1353,7 +1353,7 @@ async fn run_stack(
         .operations
         .iter()
         .any(|op| operation_needs_backend(op, None));
-    let config = AppConfig::load().context("could not load config/app.toml")?;
+    let config = AppConfig::load().context("could not load config/storyfella.toml")?;
     let backend = if needs_backend {
         Some(CreativeBackend::new(&config))
     } else {
@@ -1394,7 +1394,7 @@ async fn run_stack(
 /// emits as JSON against the closed vocabulary Rust defines.
 async fn propose_stack(project_path: &Path, message: &str, out: Option<PathBuf>) -> Result<()> {
     let registry = load_project(project_path)?;
-    let config = AppConfig::load().context("could not load config/app.toml")?;
+    let config = AppConfig::load().context("could not load config/storyfella.toml")?;
     let backend = CreativeBackend::new(&config);
 
     let stack = backend

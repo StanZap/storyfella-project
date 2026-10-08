@@ -50,7 +50,7 @@ cmake --build stable-diffusion.cpp/build --target sd-server --config Release -j
 
 On Linux/CUDA, replace `-DSD_METAL=ON` with `-DSD_CUDA=ON`.
 
-Place the resulting binary at `models/runtime/stable-diffusion.cpp/bin/sd-server`, or set `generation.executable` in `config/app.toml`.
+Place the resulting binary at `<model_dir>/runtime/stable-diffusion.cpp/bin/sd-server`, using the Models folder shown in Settings, or set `providers.qwen-image.executable` in your user `storyfella.toml`.
 
 Probe a running profile twice to separate first-request and warm latency:
 

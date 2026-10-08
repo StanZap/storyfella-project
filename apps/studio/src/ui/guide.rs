@@ -84,7 +84,8 @@ pub fn GuideCard(mut session: Signal<Option<GuideSession>>) -> Element {
                         }
                         button {
                             class: "grid size-7 place-items-center rounded-lg text-zinc-600 transition hover:bg-white/[0.06] hover:text-zinc-300",
-                            title: "Stop the run",
+                            aria_label: "Stop after the current operation",
+                            title: "Stop the plan. The current generation finishes in the background.",
                             onclick: move |_| session.set(None),
                             Icon { name: IconName::Close, class: "size-3.5" }
                         }

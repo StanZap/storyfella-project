@@ -1,7 +1,7 @@
 //! Where the app finds its files.
 //!
-//! Every path the app resolves for itself — the config file, the plan
-//! directory, and the `paths.*` directories the config points at — is anchored
+//! Explicit relative paths — the config file, the plan
+//! directory, and the `paths.*` directories the config points at — are anchored
 //! to one **project root** rather than the process working directory. That is
 //! what lets the GUI, the `svs` CLI, the plan driver and (later) the packaged
 //! bundle agree on where things are, whichever directory they are launched
@@ -11,11 +11,14 @@
 //!
 //! 1. `$SVS_HOME`, when set and non-empty;
 //! 2. the nearest ancestor of the working directory that holds
-//!    `config/app.toml` — the checkout, for every dev invocation;
-//! 3. the nearest ancestor of the *executable* that holds `config/app.toml`,
+//!    `config/storyfella.toml` — the checkout, for every dev invocation;
+//! 3. the nearest ancestor of the *executable* that holds `config/storyfella.toml`,
 //!    which is how a packaged bundle resolves the resources shipped beside it;
 //! 4. the working directory, which leaves a config-less run on the platform
 //!    application directories, exactly as it behaved before anchoring.
+//!
+//! Model storage defaults to OS-local Storyfella application data in all builds;
+//! it is independent of the checkout unless explicitly overridden.
 //!
 //! Layered over that root config is one **user config** file in the platform
 //! application *config* directory (see [`user_config_path`]). It is only read —
@@ -24,7 +27,7 @@
 
 use std::path::{Path, PathBuf};
 
-use directories::ProjectDirs;
+use directories::{BaseDirs, ProjectDirs};
 
 /// The `directories` identity every platform path the app resolves shares: the
 /// config, cache, and data (assets/projects) directories.
@@ -35,19 +38,13 @@ pub const APP_ORGANIZATION: &str = "Smart Visual Sequencer";
 pub const APP_APPLICATION: &str = "Smart Visual Sequencer";
 
 /// The config file, relative to the project root.
-pub const CONFIG_FILE: &str = "config/app.toml";
+pub const CONFIG_FILE: &str = "config/storyfella.toml";
 
 /// The user config's file name, inside [`user_config_path`]'s directory.
-pub const USER_CONFIG_FILE: &str = "app.toml";
-
-/// The user providers file name, inside [`user_providers_path`]'s directory.
-pub const USER_PROVIDERS_FILE: &str = "providers.toml";
+pub const USER_CONFIG_FILE: &str = "storyfella.toml";
 
 /// Where plans live, relative to the project root.
 pub const PLANS_DIR: &str = "config/plans";
-
-/// The providers registry file, relative to the project root.
-pub const PROVIDERS_FILE: &str = "providers.toml";
 
 /// The project root — see the module comment for the search order.
 pub fn root() -> PathBuf {
@@ -80,11 +77,6 @@ pub fn plans_dir() -> PathBuf {
     root().join(PLANS_DIR)
 }
 
-/// The resolved providers registry file.
-pub fn providers_path() -> PathBuf {
-    root().join(PROVIDERS_FILE)
-}
-
 /// The platform application directories, or `None` where the platform has no
 /// home directory. One identity for every `ProjectDirs` the app builds.
 pub fn project_dirs() -> Option<ProjectDirs> {
@@ -93,7 +85,7 @@ pub fn project_dirs() -> Option<ProjectDirs> {
 
 /// The user-level config file layered over [`config_path`] — the platform
 /// application *config* directory (on Linux,
-/// `~/.config/smartvisualsequencer/app.toml`).
+/// `~/.config/smartvisualsequencer/storyfella.toml`).
 ///
 /// `$SVS_USER_CONFIG` overrides the location when set and non-empty, which
 /// lets tests and scratch runs point it at a temporary file. `None` when it is
@@ -109,22 +101,17 @@ pub fn user_config_path() -> Option<PathBuf> {
     project_dirs().map(|dirs| dirs.config_dir().join(USER_CONFIG_FILE))
 }
 
-/// The user-level providers file layered over [`providers_path`] — the platform
-/// application *config* directory (on Linux,
-/// `~/.config/smartvisualsequencer/providers.toml`).
-///
-/// `$SVS_USER_PROVIDERS` overrides the location when set and non-empty, which
-/// lets tests and scratch runs point it at a temporary file. `None` when it is
-/// unset and the platform has no config directory, meaning there is no user
-/// layer.
-pub fn user_providers_path() -> Option<PathBuf> {
-    if let Some(value) = std::env::var_os("SVS_USER_PROVIDERS") {
-        let path = PathBuf::from(value);
-        if !path.as_os_str().is_empty() {
-            return Some(path);
-        }
-    }
-    project_dirs().map(|dirs| dirs.config_dir().join(USER_PROVIDERS_FILE))
+/// Large model files belong in local application data, never roaming config,
+/// the checkout, or the installed bundle. Resolves XDG/Windows/macOS through
+/// the native directory helper; does not create folders while reading config.
+pub fn model_dir() -> Option<PathBuf> {
+    let dirs = BaseDirs::new()?;
+    let name = if cfg!(any(target_os = "macos", target_os = "windows")) {
+        "Storyfella"
+    } else {
+        "storyfella"
+    };
+    Some(dirs.data_local_dir().join(name).join("models"))
 }
 
 /// `path` made absolute against [`root`] — unless it already is absolute, so a
@@ -151,7 +138,7 @@ fn find_root(start: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    /// A temp tree with `config/app.toml` at `root/` and a nested directory
+    /// A temp tree with `config/storyfella.toml` at `root/` and a nested directory
     /// below it, so the upward search has something to find and something to
     /// search from.
     fn nested_tree() -> (PathBuf, PathBuf) {
@@ -189,14 +176,11 @@ mod tests {
     fn the_module_constants_stay_relative_to_the_root() {
         // The constants are what `root()` searches for; a path-separator typo
         // here would make every search fail silently.
-        assert_eq!(config_path(), root().join("config/app.toml"));
+        assert_eq!(config_path(), root().join(CONFIG_FILE));
         assert_eq!(plans_dir(), root().join("config/plans"));
-        assert_eq!(providers_path(), root().join("providers.toml"));
         assert!(Path::new(CONFIG_FILE).is_relative());
         assert!(Path::new(PLANS_DIR).is_relative());
-        assert!(Path::new(PROVIDERS_FILE).is_relative());
         assert!(Path::new(USER_CONFIG_FILE).is_relative());
-        assert!(Path::new(USER_PROVIDERS_FILE).is_relative());
     }
 
     #[test]
@@ -208,21 +192,18 @@ mod tests {
         let path = user_config_path().expect("the platform exposes a config directory");
         assert_eq!(path, dirs.config_dir().join(USER_CONFIG_FILE));
         #[cfg(target_os = "linux")]
-        assert!(path.ends_with("smartvisualsequencer/app.toml"), "{path:?}");
+        assert!(
+            path.ends_with("smartvisualsequencer/storyfella.toml"),
+            "{path:?}"
+        );
     }
 
     #[test]
-    fn the_user_providers_lives_in_the_platform_config_dir() {
-        if std::env::var_os("SVS_USER_PROVIDERS").is_some() {
-            return; // an explicit override is the user's choice; nothing to assert
-        }
-        let dirs = project_dirs().expect("the platform exposes application directories");
-        let path = user_providers_path().expect("the platform exposes a config directory");
-        assert_eq!(path, dirs.config_dir().join(USER_PROVIDERS_FILE));
-        #[cfg(target_os = "linux")]
-        assert!(
-            path.ends_with("smartvisualsequencer/providers.toml"),
-            "{path:?}"
-        );
+    fn models_live_in_local_application_data() {
+        let dirs = BaseDirs::new().expect("platform directories");
+        let path = model_dir().expect("model directory");
+        assert!(path.starts_with(dirs.data_local_dir()));
+        assert!(path.ends_with("models"));
+        assert!(!path.starts_with(root()));
     }
 }

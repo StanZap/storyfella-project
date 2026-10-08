@@ -430,7 +430,7 @@ pub struct LoraEntry {
     pub artifact_id: Option<Uuid>,
 }
 
-/// Configurable per-kind default generation sizes (`config/app.toml`
+/// Configurable per-kind default generation sizes (`config/storyfella.toml`
 /// `[generation.sizes]`). The built-in [`ArtifactKind::default_size`]
 /// values remain the fallback for kinds without an override, so an
 /// absent key and a default-size key behave identically.
@@ -584,7 +584,7 @@ impl KindLoraBindings {
     }
 }
 
-/// Configurable generation behavior, built once from `config/app.toml` and
+/// Configurable generation behavior, built once from `config/storyfella.toml` and
 /// shared by the canvas ops and the CLI: the per-kind default sizes, the
 /// default step count, and the use-case LoRA bindings. The Settings screen
 /// edits and persists it; the canvas holds it in a context signal.
@@ -1049,6 +1049,14 @@ impl ArtifactRegistry {
     pub fn set_default_steps(&mut self, id: Uuid, steps: Option<u32>) -> Result<(), RegistryError> {
         let artifact = self.artifact_mut(id).ok_or(RegistryError::NoArtifact(id))?;
         artifact.default_steps = steps;
+        Ok(())
+    }
+
+    /// Release a canvas override; subsequent generations use project defaults.
+    pub fn clear_default_size(&mut self, id: Uuid) -> Result<(), RegistryError> {
+        self.artifact_mut(id)
+            .ok_or(RegistryError::NoArtifact(id))?
+            .default_size = None;
         Ok(())
     }
 

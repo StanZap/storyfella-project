@@ -288,6 +288,8 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
     let mut completion_index = use_signal(|| 0usize);
     let mut show_references = use_signal(|| false);
     let mut rename_name = use_signal(String::new);
+    let (rename_id, rename_mount) = super::text_input::use_text_value(rename_name(), None);
+    let mut problem_filter = use_signal(|| "all".to_owned());
     let mut edit_error = use_signal(|| None::<String>);
     let source = app_state.read().story.source().to_owned();
     let mut previous_source = use_signal(|| source.clone());
@@ -471,7 +473,7 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                     // sits over it transparently, exactly as the command bar
                     // does, so highlighting and the caret share metrics.
                     div { class: "relative min-h-0 flex-1 overflow-auto",
-                        div { class: "pointer-events-none absolute inset-0 z-10 px-4 py-3 font-mono text-[12.5px] leading-[1.75] whitespace-pre-wrap",
+                        div { aria_hidden: "true", class: "pointer-events-none absolute inset-0 z-10 px-4 py-3 font-mono text-[12.5px] leading-[1.75] whitespace-pre-wrap",
                             for (index , line) in lines.iter().enumerate() {
                                 div {
                                     key: "{index}",
@@ -487,6 +489,7 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                             }
                         }
                         textarea {
+                            aria_label: "Story source",
                             id: "svs-writer",
                             class: "absolute inset-x-0 top-0 z-20 min-h-full w-full resize-none overflow-hidden bg-transparent px-4 py-3 font-mono text-[12.5px] leading-[1.75] text-transparent caret-violet-400 outline-none",
                             spellcheck: "false",
@@ -512,7 +515,8 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                                     match event.key() {
                                         Key::ArrowDown => { event.prevent_default(); completion_index.set((selected_completion + 1) % key_completions.len()); }
                                         Key::ArrowUp => { event.prevent_default(); completion_index.set((selected_completion + key_completions.len() - 1) % key_completions.len()); }
-                                        Key::Enter | Key::Tab => { event.prevent_default(); accept_completion(app_state, caret, &key_completions[selected_completion]); show_completions.set(false); }
+                                        Key::Enter => { event.prevent_default(); accept_completion(app_state, caret, &key_completions[selected_completion]); show_completions.set(false); }
+                                        Key::Tab if !event.modifiers().contains(Modifiers::SHIFT) => { event.prevent_default(); accept_completion(app_state, caret, &key_completions[selected_completion]); show_completions.set(false); }
                                         Key::Escape => { event.prevent_default(); show_completions.set(false); }
                                         _ => {}
                                     }
@@ -540,7 +544,7 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                             let result = storyfella_language::format(&analysis).and_then(|edits| storyfella_language::apply_edits(analysis.document.source.text(), &edits));
                             match result { Ok(source) => { app_state.write().set_story_source(source); edit_error.set(None); }, Err(error) => edit_error.set(Some(error)) }
                         }, "Format" }
-                        input { class: "w-28 rounded bg-white/[0.05] px-2 py-1 font-mono text-zinc-200", placeholder: "New symbol name", value: "{rename_name}", oninput: move |event| rename_name.set(event.value()) }
+                        input { id: rename_id, onmounted: rename_mount, aria_label: "New symbol name", class: "w-28 rounded bg-white/[0.05] px-2 py-1 font-mono text-zinc-200", placeholder: "New symbol name", oninput: move |event| rename_name.set(event.value()) }
                         button { onclick: move |_| {
                             let offset = storyfella_language::Source::new(app_state.read().story.source()).offset(cursor()).unwrap_or(0);
                             edit_error.set(app_state.write().rename_story_symbol(offset, &rename_name()).err());
@@ -554,13 +558,29 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                             }
                         }
                     }
-                    for diagnostic in compilation.diagnostics.iter().take(4) {
+                    div { class: "flex items-center gap-3 px-4 py-1",
+                        p { role: "status", class: "text-xs text-zinc-300",
+                            "{compilation.diagnostics.iter().filter(|d| d.severity == Severity::Error).count()} errors · {compilation.diagnostics.iter().filter(|d| d.severity != Severity::Error).count()} warnings"
+                        }
+                        select { aria_label: "Filter story problems", class: "rounded bg-zinc-900 px-2 py-1 text-xs text-zinc-200", oninput: move |event| problem_filter.set(event.value()),
+                            option { value: "all", selected: problem_filter() == "all", "All problems" }
+                            option { value: "errors", selected: problem_filter() == "errors", "Errors" }
+                            option { value: "warnings", selected: problem_filter() == "warnings", "Warnings" }
+                        }
+                    }
+                    div { class: "max-h-40 overflow-y-auto flex flex-col",
+                    for diagnostic in compilation.diagnostics.iter().filter(|d| match problem_filter().as_str() {
+                        "errors" => d.severity == Severity::Error,
+                        "warnings" => d.severity != Severity::Error,
+                        _ => true,
+                    }) {
                         if let Some(position) = analysis.document.source.position(diagnostic.span.start) {
                             button { class: if diagnostic.severity == Severity::Error { "px-4 py-1 text-left font-mono text-[11px] text-rose-300" } else { "px-4 py-1 text-left font-mono text-[11px] text-amber-300" },
                                 onclick: move |_| { cursor.set(position); focus_position(position); },
                                 "{position.line + 1}:{position.character + 1} · {diagnostic.code} · {diagnostic.message}"
                             }
                         }
+                    }
                     }
                     if let Some(plan) = &compilation.plan {
                         p { class: "px-4 py-1 text-[11px] text-zinc-500", "Playback readiness: {plan.readiness.pending_assets.len()} pending asset uses · {plan.readiness.unsupported_directions.len()} unsupported directions" }

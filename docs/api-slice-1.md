@@ -109,7 +109,7 @@ svs --project p.db log [c:<ref>]
 
 `create --size WxH` sets the artifact's default generation size (kind
 defaults otherwise: character 512×768, object 768×768, environment/scene/beat
-1024×576; the checked-in `config/app.toml` raises character to 1024×1536);
+1024×576; the checked-in `config/storyfella.toml` raises character to 1024×1536);
 `regenerate`/`modify` honor it, and `--size`/`--steps` on those
 commands override it per run. Variants inherit the base artifact's size.
 `create`/`variant` of visual kinds generate the first image at that size as
@@ -162,15 +162,15 @@ svs --project p.db runtime serve --force   # Ctrl-C to stop
 
 ### LLM endpoints
 
-Text (planning/grounding) and vision (`svs eval`) resolve from `providers.toml`
+Text (planning/grounding) and vision (`svs eval`) resolve from `storyfella.toml`
 as separate capabilities (`text`/`vision`), so the planner can be a remote,
 text-only model — DeepSeek, say — while vision stays on a local multimodal
 endpoint. Each provider's `model` must match a model id its endpoint serves
 (`curl http://localhost:1234/v1/models` lists them); the checked-in
-`providers.toml` points `text` at the larger planner model and `vision` at the
+`storyfella.toml` points `text` at the larger planner model and `vision` at the
 vision model used on the dev machine. A machine-local secret or override goes in
-the user providers overlay (`~/.config/smartvisualsequencer/providers.toml`,
-`$SVS_USER_PROVIDERS` overrides).
+the general user settings overlay (`~/.config/smartvisualsequencer/storyfella.toml`,
+`$SVS_USER_CONFIG` overrides).
 
 ### Platform notes (measured)
 
@@ -181,7 +181,7 @@ the user providers overlay (`~/.config/smartvisualsequencer/providers.toml`,
 - The 20-minute job cap in `CreativeRuntime::wait_for_job` only matters on
   slow hardware.
 - `model_setup` runs once per machine (artifacts land in the image provider's
-  `model_dir` from `providers.toml`, `models/` in this checkout).
+  OS-local models folder by default, or the `model_dir` override from `storyfella.toml`).
 
 ## Divergences from the design doc (deferred, by directive)
 
@@ -214,7 +214,7 @@ the user providers overlay (`~/.config/smartvisualsequencer/providers.toml`,
 
 ## After slice 1: generation quality controls + LoRA registry
 
-- **Configurable defaults** (`config/app.toml`, editable in Settings →
+- **Configurable defaults** (`config/storyfella.toml`, editable in Settings →
   Image generation, persisted line-preserving): `[generation] steps`,
   `[generation] cfg_scale`/`sample_method`, `[generation.sizes]` per kind
   (`WxH` strings), and `[lora]` bindings (`character`, `environment`,

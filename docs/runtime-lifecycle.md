@@ -4,8 +4,8 @@ Rust supervises one child process and one external service:
 
 | Process | Rust owner | Port | Started when |
 | --- | --- | --- | --- |
-| `sd-server` (stable-diffusion.cpp) | `sd::Runtime` in the shared `clipforge-inference` crate (`../clipforge/crates/inference/src/sd/runtime.rs`) | the image provider's `base_url` (`127.0.0.1:7861` in the checked-in `providers.toml`) | First generation request, or manually from Settings |
-| LLM endpoint | external, user-run | user-configured (`config/app.toml`) | external |
+| `sd-server` (stable-diffusion.cpp) | `sd::Runtime` in the shared `clipforge-inference` crate (`../clipforge/crates/inference/src/sd/runtime.rs`) | the image provider's `base_url` (`127.0.0.1:7861` in the checked-in `storyfella.toml`) | First generation request, or manually from Settings |
+| LLM endpoint | external, user-run | user-configured (`config/storyfella.toml`) | external |
 
 The desktop app does **not** start `sd-server` at launch. The shell reports it as
 idle until a generation request triggers `CreativeRuntime::ensure_ready`. This
@@ -38,7 +38,7 @@ ensure_profile_ready()
     │     mismatched server owned by another session → ProfileMismatch)
     │
     ├─ sd::Runtime::ensure_ready(<host>, <port>)
-    │    (the image provider's `base_url` in providers.toml)
+    │    (the image provider's `base_url` in storyfella.toml)
     │
     └─ Poll /sdcpp/v1/capabilities every 500 ms until the model matches,
        or a 600 s deadline → ReadinessTimeout
@@ -106,9 +106,8 @@ sd-server \
 ```
 
 `<model_dir>`, `<lora_dir>`, and the listen address are the image provider's
-`model_dir`, `lora_dir`, and `base_url` from [`providers.toml`](../providers.toml).
-A provider that declares a `weights.diffusion` override — the checked-in file
-points at the uncensored int8 DiT — has the server load that local file as
+`model_dir`, `lora_dir`, and `base_url` from [`storyfella.toml`](../config/storyfella.toml).
+A provider that declares a `weights.diffusion` override has the server load that local file as
 `--diffusion-model` instead of the profile's own tree.
 
 `--model-args qwen_image_2_1_prefix_cache_type=q8_0` pins an explicit quantized
@@ -126,7 +125,7 @@ generation never unloads them. There is a single generation profile —
 `qwen-image-2.1` — so there is no profile switching.
 
 Residency is a **launch-time** choice (`sd::Residency`), set per `sdcpp`
-provider in `providers.toml` under `residency`, or in Settings → Image
+provider in `storyfella.toml` under `residency`, or in Settings → Image
 generation → Residency. There is no unload endpoint, so changing it restarts
 the server; the Settings control persists the choice and restarts a running
 server into the new mode.
@@ -175,8 +174,8 @@ first run does not need a terminal.
 > `Comfy-Org/Qwen-Image-2.1` repository on 2026-10-01: all three remote paths,
 > sizes, and SHA-256 digests match.
 
-Expected layout below the image provider's `model_dir` (the checked-in
-`providers.toml` roots it at `models/`):
+Expected layout below the image provider's `model_dir` (OS-local Storyfella model
+storage by default; a user-selected existing tree can override it):
 
 ```text
 models/

@@ -163,24 +163,6 @@ pub const SHORTCUTS: &[Shortcut] = &[
         label: "Put the canvas tools away",
         scope: Scope::Detail,
     },
-    Shortcut {
-        action: "tool-crop",
-        keys: "c",
-        label: "Crop the image (not yet implemented)",
-        scope: Scope::Detail,
-    },
-    Shortcut {
-        action: "tool-scale",
-        keys: "t",
-        label: "Scale the image (not yet implemented)",
-        scope: Scope::Detail,
-    },
-    Shortcut {
-        action: "tool-colour",
-        keys: "k",
-        label: "Pick a colour (not yet implemented)",
-        scope: Scope::Detail,
-    },
 ];
 
 /// The shortcut for an action, if it has one.

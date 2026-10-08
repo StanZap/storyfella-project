@@ -227,6 +227,7 @@ pub fn CommandBar(
     });
 
     let text = value.read().clone();
+    let (_, mount_text) = super::text_input::use_text_value(text.clone(), Some(BAR_ID));
     let position = (*caret.read()).min(text.len());
     let known: Vec<String> = refs.iter().map(|item| item.name.clone()).collect();
 
@@ -280,11 +281,12 @@ pub fn CommandBar(
                     div { class: "px-3 pb-1 pt-2 text-[9.5px] uppercase tracking-[0.07em] text-zinc-600",
                         "{completions.head}"
                     }
-                    div { class: "max-h-[260px] overflow-y-auto pb-1",
+                    div { id: "command-completions", role: "listbox", aria_label: "Command completions", class: "max-h-[260px] overflow-y-auto pb-1",
                         for (slot , item) in completions.items.iter().enumerate() {
                             CompletionRow {
                                 key: "{item.label}",
                                 item: item.clone(),
+                                id: format!("command-option-{slot}"),
                                 active: slot == index,
                                 label: item.label.clone(),
                                 onpick: move |label: String| {
@@ -309,17 +311,21 @@ pub fn CommandBar(
                 // would have to scroll, and the layer would have to chase its
                 // scrollLeft on every keystroke.
                 div { class: "relative min-w-0 flex-1",
-                    div { class: "pointer-events-none absolute inset-0 z-10 whitespace-pre-wrap break-words font-mono text-[12.5px] leading-5",
+                    div { aria_hidden: "true", class: "pointer-events-none absolute inset-0 z-10 whitespace-pre-wrap break-words font-mono text-[12.5px] leading-5",
                         for (slot , segment) in segments.iter().enumerate() {
                             span { key: "{slot}", class: segment.class, "{segment.text}" }
                         }
                     }
                     textarea {
                         id: BAR_ID,
+                        aria_label: "Command or change request",
+                        aria_autocomplete: "list",
+                        aria_controls: if showing { "command-completions" } else { "" },
+                        aria_activedescendant: if showing { format!("command-option-{index}") } else { String::new() },
                         class: "relative z-20 block max-h-40 w-full resize-none overflow-y-auto bg-transparent font-mono text-[12.5px] leading-5 text-transparent caret-violet-400 outline-none placeholder:text-zinc-700 disabled:opacity-40",
                         rows: "1",
                         placeholder: "type / for the operations, or describe a change in plain language",
-                        value: "{text}",
+                        onmounted: mount_text,
                         disabled,
                         // WebKit rewrites `--` to an em dash and straight to
                         // curly quotes; the tokenizer normalizes both, but the
@@ -343,7 +349,7 @@ pub fn CommandBar(
                         onfocusout: move |_| focused.set(false),
                         onkeydown: move |event| {
                             match event.key() {
-                                Key::Tab => {
+                                Key::Tab if showing && !event.modifiers().contains(Modifiers::SHIFT) && labels.get(index).is_some() => {
                                     event.prevent_default();
                                     if let Some(label) = labels.get(index) {
                                         splice(value, caret, selected, label, replace);
@@ -380,6 +386,7 @@ pub fn CommandBar(
 
 #[component]
 fn CompletionRow(
+    id: String,
     item: Completion,
     active: bool,
     label: String,
@@ -388,6 +395,9 @@ fn CompletionRow(
     let (glyph, badge) = completion_badge(item.kind);
     rsx! {
         div {
+            id,
+            role: "option",
+            aria_selected: active,
             class: if active { "flex cursor-pointer items-center gap-2.5 bg-violet-400/15 px-3 py-1.5" } else { "flex cursor-pointer items-center gap-2.5 px-3 py-1.5" },
             // mousedown, not click: the input must not lose focus first.
             onmousedown: move |event| {

@@ -19,10 +19,18 @@ use storyfella_studio_core::registry::{Artifact, LoraEntry};
 /// The canvas sizes offered as presets. Not a closed set — the parser takes
 /// any multiple of 32 within bounds — but these are the ones the draft-then-
 /// commit workflow actually uses.
-const SIZE_PRESETS: [(u32, u32); 4] = [(384, 576), (512, 768), (768, 1152), (1024, 1536)];
+const SIZE_PRESETS: [(u32, u32); 7] = [
+    (384, 576),
+    (512, 768),
+    (768, 1152),
+    (1024, 1536),
+    (1024, 576),
+    (768, 768),
+    (1024, 1024),
+];
 
 /// Steps the slider snaps to, cheapest first.
-const STEP_STOPS: [u32; 6] = [4, 6, 8, 12, 16, 24];
+const STEP_STOPS: [u32; 7] = [4, 6, 8, 12, 16, 24, 25];
 
 /// How much one press moves an adapter's weight. Small enough that the
 /// visible effect of a step is a nudge rather than a different image.
@@ -84,19 +92,28 @@ pub fn Inspector(
     /// Runs a command through the same path as the command bar.
     onrun: EventHandler<String>,
 ) -> Element {
-    let mut draft = use_signal(|| artifact.description.clone());
-    // The description belongs to the artifact, not to this component: when
-    // the selection changes, or a promote rewrites it, the field must follow.
-    use_effect(use_reactive(&artifact.description, move |description| {
-        draft.set(description);
-    }));
+    let mut app_state = use_context::<Signal<crate::state::AppState>>();
+    let draft = app_state
+        .read()
+        .description_draft(artifact.id)
+        .unwrap_or(&artifact.description)
+        .to_owned();
+    let artifact_id = artifact.id;
+    let (description_id, description_mount) =
+        super::text_input::use_text_value(draft.clone(), None);
+    let defaults = use_context::<Signal<storyfella_studio_core::registry::GenerationDefaults>>();
 
     let size = artifact
         .default_size
-        .or_else(|| artifact.kind.default_size());
+        .or_else(|| defaults.read().size_for(artifact.kind));
     let steps = artifact.default_steps;
     let seed = artifact.default_seed;
-    let dirty = *draft.read() != artifact.description;
+    let dirty = draft != artifact.description;
+    let effective_steps = steps.unwrap_or(defaults.read().steps);
+    let mut custom_size = use_signal(String::new);
+    let (size_id, size_mount) = super::text_input::use_text_value(custom_size(), None);
+    let mut custom_error = use_signal(|| None::<String>);
+    let custom_ref = reference.clone();
     let visual = artifact.kind.is_visual();
 
     // The commands are built here, one owned string per control, because a
@@ -123,6 +140,7 @@ pub fn Inspector(
         })
         .collect();
     let steps_auto = format!("/set {reference} --steps auto");
+    let size_auto = format!("/set {reference} --size auto");
     let seed_toggle = if seed.is_some() {
         format!("/set {reference} --seed random")
     } else {
@@ -163,11 +181,13 @@ pub fn Inspector(
                         }
                     }
                     textarea {
+                        aria_label: "Canonical artifact description",
                         class: "block min-h-[104px] w-full resize-y rounded-[9px] bg-white/[0.03] px-2.5 py-2 text-[12px] leading-6 text-zinc-200 outline-none ring-1 ring-inset ring-white/[0.06] transition focus:bg-white/[0.05] focus:ring-violet-400/40 disabled:opacity-40",
-                        value: "{draft}",
+                        id: description_id,
+                        onmounted: description_mount,
                         disabled,
                         spellcheck: "false",
-                        oninput: move |event| draft.set(event.value()),
+                        oninput: move |event| app_state.write().set_description_draft(artifact_id, event.value()),
                     }
                     div { class: "mt-1.5 flex items-center gap-2",
                         p { class: "flex-1 text-[10px] leading-4 text-zinc-600",
@@ -175,11 +195,14 @@ pub fn Inspector(
                         }
                         button {
                             class: "rounded-md bg-violet-400/15 px-2.5 py-1 text-[11px] font-semibold text-violet-200 transition hover:bg-violet-400/25 disabled:opacity-30",
-                            disabled: disabled || !dirty || draft.read().trim().is_empty(),
+                            disabled: disabled || !dirty || draft.trim().is_empty(),
                             onclick: move |_| {
-                                onrun.call(describe_command(&describe_ref, &draft.read()));
+                                onrun.call(describe_command(&describe_ref, &draft));
                             },
-                            "Save"
+                            "Apply description"
+                        }
+                        if dirty {
+                            button { disabled, onclick: move |_| app_state.write().discard_description_draft(artifact_id), "Discard draft" }
                         }
                     }
                 }
@@ -203,8 +226,20 @@ pub fn Inspector(
                             }
                         }
                         p { class: "mt-1.5 text-[10px] leading-4 text-zinc-600",
-                            "Resize re-renders at the new canvas."
+                            {size.map(|(width, height)| format!("Effective size: {width}×{height}{}", if artifact.default_size.is_none() { " (inherited)" } else { "" })).unwrap_or_default()}
+                            " · Resize generates a new image."
                         }
+                        button { disabled: disabled || artifact.default_size.is_none(), onclick: move |_| onrun.call(size_auto.clone()), "Use project size on next generation" }
+                        input { id: size_id, onmounted: size_mount, class: "setting-control mt-2", aria_label: "Custom canvas size", placeholder: "Custom width x height", disabled,
+                            oninput: move |event| custom_size.set(event.value()) }
+                        button { disabled, onclick: move |_| {
+                            let size = custom_size().replace('×', "x");
+                            let dimensions = size.split_once('x').and_then(|(w, h)| Some((w.trim().parse::<u32>().ok()?, h.trim().parse::<u32>().ok()?)))
+                                .filter(|&(w, h)| storyfella_studio_core::registry::pipeline::is_valid_size(w, h));
+                            if let Some((width, height)) = dimensions { custom_error.set(None); onrun.call(format!("/resize {custom_ref} {width}x{height}")); }
+                            else { custom_error.set(Some("Use width x height, multiples of 32 within supported bounds.".into())); }
+                        }, "Generate at custom size" }
+                        if let Some(error) = custom_error() { p { role: "alert", "{error}" } }
                     }
 
                     // ------------------------------------------------ steps
@@ -216,7 +251,7 @@ pub fn Inspector(
                             span { class: "ml-auto font-mono text-[11px] text-zinc-300",
                                 match steps {
                                     Some(steps) => format!("{steps}"),
-                                    None => "auto".to_owned(),
+                                    None => format!("{effective_steps} (inherited)"),
                                 }
                             }
                         }

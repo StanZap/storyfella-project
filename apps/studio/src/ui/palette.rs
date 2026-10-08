@@ -89,6 +89,13 @@ pub fn Palette(
     let count = found.len();
     let index = (*selected.read()).min(count.saturating_sub(1));
     let actions: Vec<Action> = found.iter().map(|entry| entry.action.clone()).collect();
+    let active_id = format!("palette-option-{index}");
+    let scroll_id = active_id.clone();
+    use_effect(use_reactive(&scroll_id, move |id| {
+        document::eval(&format!(
+            "document.getElementById('{id}')?.scrollIntoView({{block:'nearest'}})"
+        ));
+    }));
 
     let mut dismiss = move || {
         open.set(false);
@@ -97,20 +104,23 @@ pub fn Palette(
     };
 
     rsx! {
-        div {
-            class: "fixed inset-0 z-50 flex items-start justify-center bg-black/55 pt-[13vh]",
-            onclick: move |_| dismiss(),
+        super::dialog::Dialog { title: "Commands and artifacts", on_close: move |_| dismiss(),
             div {
                 class: "w-[min(560px,90vw)] overflow-hidden rounded-2xl bg-[#17171d] shadow-[0_40px_100px_rgba(0,0,0,.7)] ring-1 ring-white/[0.09]",
-                // The backdrop closes on click; the panel must not.
+                // Keep palette interactions inside the shared native dialog.
                 onclick: move |event| event.stop_propagation(),
 
                 div { class: "flex items-center gap-2.5 border-b border-white/[0.06] px-4 py-3",
                     span { class: "font-mono text-[13px] text-violet-300", ">" }
                     input {
+                        aria_label: "Search commands and artifacts",
+                        role: "combobox",
+                        aria_expanded: "true",
+                        aria_controls: "palette-results",
+                        aria_autocomplete: "list",
+                        aria_activedescendant: if count > 0 { active_id } else { String::new() },
                         class: "flex-1 bg-transparent font-mono text-[13px] text-zinc-100 outline-none placeholder:text-zinc-700",
                         placeholder: "Search commands and artifacts…",
-                        value: "{query}",
                         autofocus: true,
                         autocomplete: "off",
                         spellcheck: "false",
@@ -145,7 +155,8 @@ pub fn Palette(
                     }
                 }
 
-                div { class: "max-h-[330px] overflow-y-auto p-1.5",
+                p { role: "status", class: "px-4 py-2 text-xs text-zinc-300", "{count} results" }
+                div { id: "palette-results", role: "listbox", aria_label: "Commands and artifacts", class: "max-h-[330px] overflow-y-auto p-1.5",
                     if found.is_empty() {
                         p { class: "px-3 py-4 text-center text-[11px] text-zinc-600",
                             "Nothing matches."
@@ -155,6 +166,7 @@ pub fn Palette(
                         PaletteRow {
                             key: "{entry.label}",
                             entry: entry.clone(),
+                            id: format!("palette-option-{slot}"),
                             active: slot == index,
                             onpick: move |action: Action| {
                                 onpick.call(action);
@@ -164,21 +176,22 @@ pub fn Palette(
                     }
                 }
 
-                p { class: "border-t border-white/[0.06] bg-white/[0.015] px-4 py-2 text-[10.5px] text-zinc-600",
-                    "The same vocabulary as the command bar and the "
-                    span { class: "font-mono", "svs" }
-                    " CLI."
-                }
+                button { class: "w-full border-t border-white/[0.06] px-4 py-2 text-xs text-zinc-300", onclick: move |_| dismiss(), "Close (Escape)" }
             }
         }
     }
 }
 
 #[component]
-fn PaletteRow(entry: Entry, active: bool, onpick: EventHandler<Action>) -> Element {
+fn PaletteRow(id: String, entry: Entry, active: bool, onpick: EventHandler<Action>) -> Element {
     let action = entry.action.clone();
     rsx! {
-        div {
+        button {
+            id,
+            role: "option",
+            aria_selected: active,
+            tabindex: "-1",
+            r#type: "button",
             class: if active { "flex cursor-pointer items-center gap-2.5 rounded-lg bg-violet-400/15 px-3 py-2" } else { "flex cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 hover:bg-white/[0.04]" },
             onclick: move |_| onpick.call(action.clone()),
             span {

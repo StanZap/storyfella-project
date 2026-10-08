@@ -79,7 +79,7 @@ pub fn PlaybackPanel(
                 div { class: "sf-header-actions",
                     if draft_changed { span { class: "sf-draft-changed", title: "Apply draft to preview your latest source.", "Draft changed" } }
                     if let Some(on_apply) = on_apply {
-                        button { class: "sf-text-button", title: "Start a new snapshot of the current draft", onclick: move |_| { panel.set(None); on_apply.call(()); }, "Apply draft" }
+                        button { class: "sf-text-button", title: "Start at the beginning with current source and artwork. Replaces the preview and its bookmark only if compilation succeeds.", onclick: move |_| { panel.set(None); on_apply.call(()); }, if model.read().session.is_some() { "Restart with draft" } else { "Start preview" } }
                     }
                     if let (Some(on_source), Some(span)) = (on_source, span) {
                         button { class: "sf-text-button", onclick: move |_| on_source.call(span), "Edit source" }

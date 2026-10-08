@@ -557,21 +557,20 @@ impl PlanLaunch {
         Self { path, mode }
     }
 
-    /// Points a `--plan` run at scratch user-level config files under
+    /// Points a `--plan` run at a scratch user-level config file under
     /// `.svs-e2e/hermetic/`, so the driver never reads or writes the
-    /// developer's real `~/.config/smartvisualsequencer/{app,providers}.toml`.
+    /// developer's real machine-local settings.
     ///
-    /// The files need not exist: a missing overlay contributes nothing, so the
-    /// run sees exactly the checked-in `config/app.toml` and `providers.toml`.
-    /// An explicit `$SVS_USER_CONFIG` / `$SVS_USER_PROVIDERS` already in the
+    /// The file need not exist: a missing overlay contributes nothing, so the
+    /// run sees exactly the checked-in `config/storyfella.toml`.
+    /// An explicit `$SVS_USER_CONFIG` already in the
     /// environment wins, so a run can still be aimed at a specific config.
     pub fn make_hermetic(&self) {
         if self.path.is_none() {
             return;
         }
         let dir = storyfella_studio_core::paths::root().join(".svs-e2e/hermetic");
-        set_env_unless_set("SVS_USER_CONFIG", dir.join("app.toml"));
-        set_env_unless_set("SVS_USER_PROVIDERS", dir.join("providers.toml"));
+        set_env_unless_set("SVS_USER_CONFIG", dir.join("storyfella.toml"));
     }
 
     /// Plan-created projects, generated fixtures and cache are scratch artifacts,
@@ -1226,7 +1225,7 @@ async fn execute_step(
         } => {
             let Some(deployment) = ctx.config.vision.clone() else {
                 return StepStatus::Failed {
-                    reason: "no `vision` provider is configured in providers.toml".to_owned(),
+                    reason: "no `vision` provider is configured in storyfella.toml".to_owned(),
                 };
             };
             if vision.is_none() {

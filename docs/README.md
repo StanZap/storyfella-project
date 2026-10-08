@@ -12,6 +12,7 @@ current product code.
 
 | Document | Purpose |
 | --- | --- |
+| [`DESIGN.md`](../DESIGN.md) | Central Studio UI/UX rules, visual/accessibility standards, prioritized audit and acceptance checks. |
 | [`architecture.md`](architecture.md) | System boundaries, the Rust → `sd-server` (`sdcpp`) contract (the client lives in the shared `clipforge-inference` crate), process model, and the creative data flow from prompt to revision. |
 | [`development.md`](development.md) | Prerequisites, build/run/test commands (including end-to-end plans), configuration, and troubleshooting. |
 | [`api-slice-1.md`](api-slice-1.md) | The artifact registry, the typed operation/pipeline layer, and the `svs` CLI — the vocabulary shared by the CLI and the canvas. |
@@ -24,6 +25,8 @@ current product code.
 | [`ROADMAP.md`](ROADMAP.md) | Product design and the feature/status tracker (§12): every planned feature with its status. |
 
 ## Reading order
+
+For user-facing work, read [`DESIGN.md`](../DESIGN.md) first.
 
 1. Start with [`architecture.md`](architecture.md) to see the moving parts and
    the Rust → `sd-server` HTTP boundary.

@@ -5,11 +5,7 @@
 //! the tools live in a rail of their own rather than beside the icon actions
 //! in the chrome bar.
 //!
-//! The rail is built to grow. [`Tool`] carries every tool the canvas is
-//! planned to have, each with its own icon, shortcut and tooltip, and the
-//! ones without an implementation are listed as disabled rather than hidden:
-//! a visible, dimmed tool tells you the canvas is going to have it, where an
-//! absent one tells you nothing.
+//! Only implemented tools belong in the rail and shortcut registry.
 
 use crate::ui::icons::IconName;
 
@@ -18,47 +14,28 @@ use crate::ui::icons::IconName;
 pub enum Tool {
     #[default]
     Pointer,
-    /// Not yet implemented — see [`Tool::available`].
-    Crop,
-    Scale,
-    Colour,
 }
 
 impl Tool {
     /// Every tool in rail order.
-    pub const ALL: [Tool; 4] = [Tool::Pointer, Tool::Crop, Tool::Scale, Tool::Colour];
-
-    /// Whether the tool does anything yet. Unavailable tools still appear in
-    /// the rail, disabled, so the shape of the toolset is visible.
-    pub fn available(&self) -> bool {
-        matches!(self, Tool::Pointer)
-    }
+    pub const ALL: [Tool; 1] = [Tool::Pointer];
 
     /// The stable action name, matching the shortcut registry.
     pub fn action(&self) -> &'static str {
         match self {
             Tool::Pointer => "tool-pointer",
-            Tool::Crop => "tool-crop",
-            Tool::Scale => "tool-scale",
-            Tool::Colour => "tool-colour",
         }
     }
 
     pub fn label(&self) -> &'static str {
         match self {
             Tool::Pointer => "Pointer",
-            Tool::Crop => "Crop",
-            Tool::Scale => "Scale",
-            Tool::Colour => "Colour",
         }
     }
 
     pub fn icon(&self) -> IconName {
         match self {
             Tool::Pointer => IconName::Arrow,
-            Tool::Crop => IconName::Crop,
-            Tool::Scale => IconName::Scale,
-            Tool::Colour => IconName::Colour,
         }
     }
 
@@ -68,10 +45,6 @@ impl Tool {
             // `v` and `e` are already the artifact scope's new-variant and
             // toggle-history; a tool rail is not worth rebinding either.
             Tool::Pointer => 'p',
-            Tool::Crop => 'c',
-            // `t` for transform: `s` is the tail of the `g s` chord.
-            Tool::Scale => 't',
-            Tool::Colour => 'k',
         }
     }
 
@@ -85,10 +58,7 @@ impl Tool {
 
     /// The tool a key selects, if it selects one and that tool works.
     pub fn from_key(key: char) -> Option<Tool> {
-        Tool::ALL
-            .iter()
-            .copied()
-            .find(|tool| tool.key() == key && tool.available())
+        Tool::ALL.iter().copied().find(|tool| tool.key() == key)
     }
 }
 
@@ -127,7 +97,7 @@ mod tests {
         assert_eq!(
             Tool::from_key('c'),
             None,
-            "crop is listed but not implemented, so its key must not select it"
+            "planned tools have no production bindings"
         );
     }
 }

@@ -26,10 +26,23 @@ pub fn Projects(
     on_open: EventHandler<MouseEvent>,
 ) -> Element {
     let mut name = use_signal(String::new);
+    let (name_id, name_mount) = super::text_input::use_text_value(name(), None);
     let mut error_report = use_context::<Signal<Option<ReportedError>>>();
-    let recent = use_signal(|| scan_projects(&config.project_dir));
+    let mut recent = use_signal(|| scan_projects(&config.project_dir));
+    let mut scan_errors = use_signal(Vec::<String>::new);
+    let opened = app_state.read().project_path.clone();
+    let recent_dir = config.project_dir.clone();
+    use_effect(use_reactive(&opened, move |path| {
+        if let Some(path) = path {
+            if let Err(error) = remember_project(&recent_dir, &path) {
+                scan_errors.set(vec![error]);
+            }
+        }
+        recent.set(scan_projects(&recent_dir));
+    }));
+    let refresh_dir = config.project_dir.clone();
 
-    let recent_list = recent.read().clone();
+    let (recent_list, load_errors) = recent.read().clone();
     let recent_items = recent_list.iter().cloned().map(|item| {
         rsx! {
             button {
@@ -137,8 +150,14 @@ pub fn Projects(
 
                 div { class: "grid grid-cols-[minmax(0,1.4fr)_minmax(260px,.8fr)] gap-10",
                     div {
-                        h2 { class: "mb-4 text-[11px] font-medium text-zinc-500", "Recent" }
-                        if recent.read().is_empty() {
+                        div { class: "mb-4 flex items-center justify-between",
+                            h2 { class: "text-sm font-medium text-zinc-300", "Recent" }
+                            button { onclick: move |_| { scan_errors.set(Vec::new()); recent.set(scan_projects(&refresh_dir)); }, "Refresh" }
+                        }
+                        for message in load_errors.iter().chain(scan_errors.read().iter()) {
+                            p { role: "alert", class: "mb-3 break-words text-xs text-amber-300", "{message}" }
+                        }
+                        if recent.read().0.is_empty() {
                             div { class: "grid min-h-44 place-items-center border-y border-white/[0.05]",
                                 div { class: "text-center",
                                     Icon { name: IconName::Sparkles, class: "mx-auto mb-3 size-6 text-zinc-700" }
@@ -155,9 +174,11 @@ pub fn Projects(
                         h2 { class: "text-sm font-medium text-zinc-200", "Start a new story" }
                         p { class: "mt-2 text-xs leading-5 text-zinc-600", "Begin with an idea. Structure and visuals can evolve as you work." }
                         input {
+                            aria_label: "Story name",
                             class: "mt-6 h-10 w-full border-b border-white/[0.1] bg-transparent text-sm text-zinc-100 outline-none transition placeholder:text-zinc-700 focus:border-violet-400/60",
                             placeholder: "Story name",
-                            value: "{name}",
+                            id: name_id,
+                            onmounted: name_mount,
                             oninput: move |event| name.set(event.value()),
                         }
                         button {
@@ -188,25 +209,117 @@ pub fn Projects(
 
 /// Opens every `.svs-project.db` in the projects directory to read its name
 /// and headline counts, newest first.
-fn scan_projects(project_dir: &Path) -> Vec<RecentProject> {
-    let mut projects: Vec<RecentProject> = match std::fs::read_dir(project_dir) {
-        Ok(entries) => entries
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let path = entry.path();
-                if path.extension().and_then(|ext| ext.to_str()) != Some("db") {
-                    return None;
+fn recent_paths(project_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let index = project_dir.join("recent-projects.json");
+    if !index.exists() {
+        return Ok(Vec::new());
+    }
+    let bytes = std::fs::read(&index)
+        .map_err(|error| format!("Cannot read {}: {error}", index.display()))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Cannot read recent projects index: {error}"))
+}
+
+fn remember_project(project_dir: &Path, path: &Path) -> Result<(), String> {
+    let mut paths = recent_paths(project_dir)?;
+    let path = path.canonicalize().map_err(|error| error.to_string())?;
+    paths.retain(|old| old != &path);
+    paths.insert(0, path);
+    paths.truncate(30);
+    std::fs::create_dir_all(project_dir).map_err(|error| error.to_string())?;
+    let index = project_dir.join("recent-projects.json");
+    let temporary = project_dir.join("recent-projects.json.tmp");
+    std::fs::write(
+        &temporary,
+        serde_json::to_vec_pretty(&paths).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    std::fs::rename(temporary, index)
+        .map_err(|error| format!("Could not remember the opened project: {error}"))
+}
+
+fn scan_projects(project_dir: &Path) -> (Vec<RecentProject>, Vec<String>) {
+    let mut errors = Vec::new();
+    let mut paths = recent_paths(project_dir).unwrap_or_else(|error| {
+        errors.push(error);
+        Vec::new()
+    });
+    match std::fs::read_dir(project_dir) {
+        Ok(entries) => {
+            let mut discovered = Vec::new();
+            for entry in entries {
+                match entry {
+                    Ok(entry) if entry.path().extension().is_some_and(|ext| ext == "db") => {
+                        discovered.push(entry.path())
+                    }
+                    Ok(_) => {}
+                    Err(error) => errors.push(format!("Could not read a project entry: {error}")),
                 }
-                let stored = ProjectDb::open(&path).ok()?.load().ok()?;
-                Some(RecentProject {
+            }
+            discovered.sort_by_key(|path| {
+                std::cmp::Reverse(path.metadata().and_then(|meta| meta.modified()).ok())
+            });
+            for path in discovered {
+                let path = path.canonicalize().unwrap_or(path);
+                if !paths.contains(&path) {
+                    paths.push(path);
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => errors.push(format!("Cannot read {}: {error}", project_dir.display())),
+    }
+    let projects = paths
+        .into_iter()
+        .filter_map(|path| {
+            if !path.is_file() {
+                errors.push(format!("Recent project is unavailable: {}", path.display()));
+                return None;
+            }
+            match ProjectDb::open(&path).and_then(|db| db.load()) {
+                Ok(stored) => Some(RecentProject {
                     path,
                     name: stored.name,
                     artifacts: stored.registry.artifacts.len(),
-                })
-            })
-            .collect(),
-        Err(_) => Vec::new(),
-    };
-    projects.sort_by(|a, b| b.name.cmp(&a.name));
-    projects
+                }),
+                Err(error) => {
+                    errors.push(format!("Cannot load {}: {error}", path.display()));
+                    None
+                }
+            }
+        })
+        .collect();
+    (projects, errors)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn external_opens_are_deduplicated_and_ordered_and_corrupt_index_is_preserved() {
+        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.svs-e2e/tests")
+            .join(format!("recents-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let index_dir = directory.join("index");
+        let first = directory.join("external-first.sf");
+        let second = directory.join("external-second.sf");
+        std::fs::write(&first, "scene first\n  end\n").unwrap();
+        std::fs::write(&second, "scene second\n  end\n").unwrap();
+        remember_project(&index_dir, &first).unwrap();
+        remember_project(&index_dir, &second).unwrap();
+        remember_project(&index_dir, &first).unwrap();
+        assert_eq!(
+            recent_paths(&index_dir).unwrap(),
+            vec![
+                first.canonicalize().unwrap(),
+                second.canonicalize().unwrap()
+            ]
+        );
+        let index = index_dir.join("recent-projects.json");
+        std::fs::write(&index, "broken index").unwrap();
+        assert!(remember_project(&index_dir, &first).is_err());
+        assert_eq!(std::fs::read_to_string(index).unwrap(), "broken index");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }

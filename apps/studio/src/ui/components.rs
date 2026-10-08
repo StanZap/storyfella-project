@@ -1,10 +1,23 @@
-use std::rc::Rc;
-
 use dioxus::prelude::*;
 
 use storyfella_studio_core::{errors::ReportedError, runtime::HealthStatus};
 
+use super::dialog::Dialog;
 use super::icons::{Icon, IconName};
+
+#[derive(Clone, Copy)]
+pub struct ErrorDetails(pub Signal<Option<ReportedError>>);
+
+#[component]
+pub fn ErrorDetailsHost() -> Element {
+    let mut details = use_context::<ErrorDetails>().0;
+    let report = details.read().clone();
+    rsx! {
+        if let Some(error) = report {
+            ErrorDetailsModal { error, on_close: move |_| details.set(None) }
+        }
+    }
+}
 
 #[component]
 pub fn RailButton(
@@ -62,16 +75,23 @@ pub fn SettingRow(
     #[props(default)] last: bool,
     children: Element,
 ) -> Element {
+    let row_id = use_hook(|| format!("setting-{}", uuid::Uuid::new_v4()));
+    let label_id = format!("{row_id}-label");
+    let description_id = format!("{row_id}-description");
+    let mount_id = row_id.clone();
     let border = if last {
         ""
     } else {
         "border-b border-white/[0.055]"
     };
     rsx! {
-        div { class: "grid min-h-20 grid-cols-[minmax(180px,1fr)_minmax(260px,1.2fr)] items-center gap-8 py-4 {border}",
+        div { id: row_id, role: "group", aria_label: title.clone(), class: "grid min-h-20 grid-cols-[minmax(180px,1fr)_minmax(260px,1.2fr)] items-center gap-8 py-4 {border}",
+            onmounted: move |_| { document::eval(&format!(
+                "document.getElementById('{mount_id}').querySelectorAll('input,textarea,select,button[role=switch]').forEach(control => {{ if (!control.hasAttribute('aria-label')) control.setAttribute('aria-labelledby', '{mount_id}-label'); control.setAttribute('aria-describedby', '{mount_id}-description'); }});"
+            )); },
             div {
-                p { class: "text-[13px] font-medium text-zinc-200", "{title}" }
-                p { class: "mt-1 text-xs leading-5 text-zinc-600", "{description}" }
+                p { id: label_id, class: "text-[13px] font-medium text-zinc-200", "{title}" }
+                p { id: description_id, class: "mt-1 text-xs leading-5 text-zinc-600", "{description}" }
             }
             {children}
         }
@@ -97,12 +117,12 @@ pub fn EmptyVisual(icon: IconName, title: String, description: String) -> Elemen
 /// `Signal<Option<ReportedError>>` context.
 #[component]
 pub fn ErrorToast(error_report: Signal<Option<ReportedError>>) -> Element {
-    let mut show_details = use_signal(|| false);
+    let mut details = use_context::<ErrorDetails>().0;
     let report = error_report.read().clone();
     match report {
         None => rsx! { Fragment {} },
         Some(report) => rsx! {
-            div { class: "fixed bottom-6 right-6 z-40 w-full max-w-sm",
+            div { class: "fixed right-4 top-14 z-40 w-[min(384px,calc(100vw-32px))]", role: "alert",
                 div { class: "flex items-start gap-3 rounded-xl bg-zinc-900/95 p-4 shadow-[0_18px_60px_rgba(0,0,0,.5)] ring-1 ring-inset ring-rose-400/25 backdrop-blur-xl",
                     span { class: "mt-1 size-1.5 shrink-0 rounded-full bg-rose-400" }
                     div { class: "min-w-0 flex-1",
@@ -111,7 +131,7 @@ pub fn ErrorToast(error_report: Signal<Option<ReportedError>>) -> Element {
                     }
                     button {
                         class: "shrink-0 rounded-lg bg-white/[0.06] px-2.5 py-1.5 text-[9px] font-medium text-zinc-400 transition hover:bg-white/[0.1] hover:text-white",
-                        onclick: move |_| show_details.set(true),
+                        onclick: move |_| details.set(Some(report.clone())),
                         "Details"
                     }
                     button {
@@ -123,34 +143,31 @@ pub fn ErrorToast(error_report: Signal<Option<ReportedError>>) -> Element {
                     }
                 }
             }
-            if show_details() {
-                ErrorDetailsModal {
-                    error: report,
-                    on_close: move |_| show_details.set(false),
-                }
-            }
         },
     }
 }
 
 /// The full error report: code chip, the error text, the remediation hint,
-/// and copy — the Copy button and a click on the error text both put the
-/// whole report on the clipboard.
+/// and an explicit Copy action. Diagnostic text stays selectable.
 #[component]
 fn ErrorDetailsModal(error: ReportedError, on_close: EventHandler<()>) -> Element {
-    let mut copied = use_signal(|| false);
-    // `Rc` keeps the closure `Clone` so one handler can serve both the copy
-    // button and the click-to-copy on the error text.
-    let copy_text = Rc::new(error.copy_text());
+    let mut copy_status = use_signal(|| "Copy".to_owned());
+    let copy_text = error.copy_text();
     let copy_action = move |_| {
-        copy_to_clipboard((*copy_text).clone());
-        copied.set(true);
+        let text = copy_text.clone();
+        spawn(async move {
+            copy_status.set(
+                if copy_to_clipboard(text).await {
+                    "Copied"
+                } else {
+                    "Copy failed — retry"
+                }
+                .to_owned(),
+            );
+        });
     };
-    let copied_label = if copied() { "Copied" } else { "Copy" };
     rsx! {
-        div {
-            class: "fixed inset-0 z-50 grid place-items-center bg-black/60 p-6 backdrop-blur-sm",
-            onclick: move |_| on_close.call(()),
+        Dialog { title: "Error details", on_close,
             div {
                 class: "w-full max-w-xl rounded-2xl bg-zinc-950 p-6 shadow-[0_30px_90px_rgba(0,0,0,.5)] ring-1 ring-white/[0.09]",
                 onclick: move |event| event.stop_propagation(),
@@ -161,9 +178,7 @@ fn ErrorDetailsModal(error: ReportedError, on_close: EventHandler<()>) -> Elemen
                 }
                 h2 { class: "mb-1 text-base font-semibold text-zinc-100", "{error.code.message()}" }
                 p {
-                    class: "max-h-44 cursor-pointer overflow-y-auto whitespace-pre-wrap rounded-lg bg-white/[0.035] px-3 py-2.5 font-mono text-[10px] leading-4 text-zinc-300 ring-1 ring-inset ring-white/[0.06] transition hover:ring-rose-400/30",
-                    title: "Click to copy the error",
-                    onclick: copy_action.clone(),
+                    class: "max-h-44 overflow-y-auto whitespace-pre-wrap rounded-lg bg-white/[0.035] px-3 py-2.5 font-mono text-xs leading-5 text-zinc-300 ring-1 ring-inset ring-white/[0.06] select-text",
                     "{error.details}"
                 }
                 if !error.context.is_empty() {
@@ -181,12 +196,12 @@ fn ErrorDetailsModal(error: ReportedError, on_close: EventHandler<()>) -> Elemen
                     button {
                         class: "flex h-8 items-center gap-2 rounded-lg bg-white/[0.05] px-3.5 text-[10px] font-medium text-zinc-300 ring-1 ring-inset ring-white/[0.07] transition hover:bg-white/[0.09] hover:text-white",
                         onclick: copy_action,
-                        if copied() {
+                        if copy_status() == "Copied" {
                             Icon { name: IconName::Check, class: "size-3" }
                         } else {
                             Icon { name: IconName::Copy, class: "size-3" }
                         }
-                        "{copied_label}"
+                        "{copy_status}"
                     }
                     button {
                         class: "flex h-8 items-center rounded-lg bg-zinc-100 px-3.5 text-[10px] font-semibold text-zinc-950 transition hover:bg-white",
@@ -199,17 +214,14 @@ fn ErrorDetailsModal(error: ReportedError, on_close: EventHandler<()>) -> Elemen
     }
 }
 
-/// Pushes a report onto the shared error surface (the Workspace's
-/// `Signal<Option<ReportedError>>` context): the toast appears and its
-/// Details modal opens the full report. Used by inline error rows that
-/// keep a report locally (Settings) while the modal stays global.
+/// Opens the shared report directly from an inline error row.
 #[component]
 pub fn ErrorDetailsButton(error: ReportedError) -> Element {
-    let mut error_report = use_context::<Signal<Option<ReportedError>>>();
+    let mut details = use_context::<ErrorDetails>().0;
     rsx! {
         button {
             class: "shrink-0 rounded-lg bg-white/[0.06] px-2.5 py-1.5 text-[9px] font-medium text-zinc-400 transition hover:bg-white/[0.1] hover:text-white",
-            onclick: move |_| error_report.set(Some(error.clone())),
+            onclick: move |_| details.set(Some(error.clone())),
             "Details"
         }
     }
@@ -217,10 +229,10 @@ pub fn ErrorDetailsButton(error: ReportedError) -> Element {
 
 /// Puts `text` on the clipboard through the webview: `navigator.clipboard`
 /// first, with the execCommand fallback for webviews without the async API.
-fn copy_to_clipboard(text: String) {
+async fn copy_to_clipboard(text: String) -> bool {
     let escaped = serde_json::to_string(&text).unwrap_or_else(|_| "\"\"".to_owned());
-    dioxus::document::eval(&format!(
-        r#"(() => {{
+    let mut evaluation = dioxus::document::eval(&format!(
+        r#"(async () => {{
             const value = {escaped};
             const fallback = () => {{
                 const ta = document.createElement('textarea');
@@ -229,16 +241,19 @@ fn copy_to_clipboard(text: String) {
                 ta.style.opacity = '0';
                 document.body.appendChild(ta);
                 ta.select();
-                document.execCommand('copy');
+                const success = document.execCommand('copy');
                 document.body.removeChild(ta);
+                return success;
             }};
             if (navigator.clipboard && navigator.clipboard.writeText) {{
-                navigator.clipboard.writeText(value).catch(fallback);
+                try {{ await navigator.clipboard.writeText(value); dioxus.send(true); }}
+                catch (_) {{ dioxus.send(fallback()); }}
             }} else {{
-                fallback();
+                dioxus.send(fallback());
             }}
         }})()"#,
     ));
+    evaluation.recv::<bool>().await.unwrap_or(false)
 }
 
 /// Case-insensitive substring match over one or more candidates — the app's
@@ -272,14 +287,15 @@ pub fn matching(options: &[String], query: &str) -> Vec<String> {
 /// A native `select` is right for a handful of fixed options (`Autosave`); it
 /// is wrong for a list discovered at runtime that can run to dozens of entries
 /// — the LLM endpoint's model ids, a LoRA directory. The interaction is deliberately
-/// the command palette's: type to filter, arrows to move, Enter to pick, Esc or
-/// a click away to dismiss. One search idiom, not two.
+/// the command palette's: type to filter, arrows to move, Enter to pick, Escape
+/// or Cancel to dismiss. One search idiom, not two.
 ///
 /// The component stays dumb about *where* the options come from: a caller with a
 /// loading or failed discovery renders its own spinner or error row instead of
 /// mounting this.
 #[component]
 pub fn SearchSelect(
+    #[props(default = "Choose a value".to_owned())] label: String,
     options: Vec<String>,
     value: String,
     /// Shown in the list when nothing matches — or when there are no options
@@ -291,6 +307,23 @@ pub fn SearchSelect(
     let mut open = use_signal(|| false);
     let mut query = use_signal(String::new);
     let mut highlight = use_signal(|| 0usize);
+    let id = use_hook(|| format!("select-{}", uuid::Uuid::new_v4()));
+    let list_id = format!("{id}-list");
+    let filtered_count = matching(&options, &query.read()).len();
+    let active_id = if filtered_count > 0 {
+        format!(
+            "{id}-option-{}",
+            (*highlight.read()).min(filtered_count - 1)
+        )
+    } else {
+        String::new()
+    };
+    let scroll_id = active_id.clone();
+    use_effect(use_reactive(&scroll_id, move |id| {
+        document::eval(&format!(
+            "document.getElementById('{id}')?.scrollIntoView({{block:'nearest'}})"
+        ));
+    }));
 
     let matched = matching(&options, &query.read());
     let total = options.len();
@@ -311,7 +344,9 @@ pub fn SearchSelect(
             button {
                 class: "setting-control flex items-center justify-between gap-2 text-left",
                 title: "{value}",
-                aria_label: "Choose a value",
+                aria_label: label.clone(),
+                aria_haspopup: "dialog",
+                aria_expanded: open(),
                 onclick: move |_| {
                     if open() {
                         dismiss();
@@ -325,14 +360,19 @@ pub fn SearchSelect(
             }
 
             if open() {
-                // A click anywhere else dismisses, the way the palette closes —
-                // one behaviour for every popup in the app.
-                div { class: "fixed inset-0 z-40", onclick: move |_| dismiss() }
-                div { class: "absolute right-0 top-[calc(100%+6px)] z-50 w-[min(420px,76vw)] overflow-hidden rounded-xl bg-[#17171d] shadow-[0_30px_80px_rgba(0,0,0,.6)] ring-1 ring-white/[0.09]",
+                // Use the shared searchable-dialog behavior and focus contract.
+                Dialog { title: label.clone(), on_close: move |_| dismiss(),
+                div { class: "w-[min(420px,90vw)] overflow-hidden rounded-xl bg-[#17171d]",
+                    h2 { class: "px-3.5 pt-3 text-sm font-semibold", "{label}" }
                     input {
+                        aria_label: "Filter {label}",
+                        role: "combobox",
+                        aria_expanded: "true",
+                        aria_controls: list_id.clone(),
+                        aria_activedescendant: active_id,
+                        aria_autocomplete: "list",
                         class: "w-full border-b border-white/[0.06] bg-transparent px-3.5 py-2.5 font-mono text-[11.5px] text-zinc-100 outline-none placeholder:text-zinc-700",
                         placeholder: "Search…",
-                        value: "{query}",
                         autofocus: true,
                         autocomplete: "off",
                         spellcheck: "false",
@@ -365,12 +405,16 @@ pub fn SearchSelect(
                             }
                         },
                     }
-                    div { class: "max-h-64 overflow-y-auto p-1.5",
+                    div { id: list_id, role: "listbox", aria_label: label.clone(), class: "max-h-64 overflow-y-auto p-1.5",
                         if count == 0 {
                             p { class: "px-3 py-4 text-center text-[11px] text-zinc-600", "{empty_message}" }
                         }
                         for (slot , option) in matched.iter().enumerate() {
                             button {
+                                id: "{id}-option-{slot}",
+                                role: "option",
+                                aria_selected: slot == index,
+                                tabindex: "-1",
                                 key: "{option}",
                                 class: if slot == index { "flex w-full items-center gap-2 rounded-lg bg-violet-400/15 px-3 py-1.5 text-left" } else { "flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left hover:bg-white/[0.04]" },
                                 onclick: {
@@ -391,9 +435,34 @@ pub fn SearchSelect(
                         span { if count == total { "{total} shown" } else { "{count} of {total}" } }
                         span { "↑↓ move · ↵ pick · esc close" }
                     }
+                    button { class: "w-full px-3 py-2 text-xs", onclick: move |_| dismiss(), "Cancel" }
+                }
                 }
             }
         }
+    }
+}
+
+/// Open the resolved path using the desktop's file manager/default application.
+pub fn open_path(path: &std::path::Path) -> Result<(), String> {
+    if !path.exists() {
+        return Err(format!("Path does not exist: {}", path.display()));
+    }
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    let status = std::process::Command::new(program)
+        .arg(path)
+        .status()
+        .map_err(|error| error.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Could not open {} ({status})", path.display()))
     }
 }
 

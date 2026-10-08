@@ -589,7 +589,7 @@ plan to ship, with its status; update it when work lands.
    highlighting remain deferred (§6).
 5. **Generation quality controls:** configurable per-kind default sizes
    (`[generation.sizes]`), default step count (`[generation] steps`), and
-   the Settings screen to edit them live (persisted to `config/app.toml`,
+   the Settings screen to edit them live (persisted to `config/storyfella.toml`,
    applied to the next generation — canvas and CLI). The LLM expresses
    size/steps/adapters only when the user asks (the visual ops carry
    `size`/`steps`/`loras`; the `resize` op sets the default size and
@@ -713,6 +713,19 @@ plan to ship, with its status; update it when work lands.
    payload. Still missing for a shippable bundle: an icon (PNG) and that
    payload, plus resolving it relative to the bundle root. — **⏳ planned**
 
+12. **Studio UI/UX remediation:** shared interaction, visual and accessibility
+    rules and the 2026-10-07 app-wide audit are documented in
+    [`DESIGN.md`](../DESIGN.md). All 25 findings now have implementation changes:
+    direct error reports, shared native dialogs, draft/Quit protection, retained
+    command input, truthful settings/runtime feedback, accessible controls,
+    readable styling, useful recents/filters and safe preview replacement.
+    Model storage now defaults to OS-local Storyfella data in all builds, with
+    Change location/Open folder controls and explicit restart feedback. One
+    `storyfella.toml` contains application and inference settings; old user
+    settings migrate once while preserving originals and existing model files.
+    §9 records changes, regression evidence and remaining cross-platform,
+    assistive-technology and failure-injection coverage. — **✅ remediation implemented; broader manual acceptance tracked in DESIGN.md**
+
 ## 13. Implementation handoff
 
 Design status: the canvas (roadmap item 4) replaced the legacy storyboard
@@ -725,7 +738,7 @@ registry, and UX fixes.
 
 Text and vision are now capability-routed providers: the single `[llm]` section
 is gone, replaced by `text` and `vision` capabilities resolved from
-`providers.toml` (layered with a user providers overlay, so a key stays out of
+`storyfella.toml` (layered with one user settings overlay, so a key stays out of
 git) — so a remote, text-only planner no longer blinds `svs eval`. The
 `clipforge-inference` runtime is generalized to a shared native-server
 supervisor, and a `llamacpp` provider can start a managed `llama-server` on

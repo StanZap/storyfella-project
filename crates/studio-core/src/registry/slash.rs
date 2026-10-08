@@ -91,7 +91,7 @@ pub const OPS: &[OpSpec] = &[
     OpSpec {
         name: "/set",
         params: &["c:<ref>"],
-        flags: &["--steps", "--seed"],
+        flags: &["--steps", "--seed", "--size"],
         summary: "stored generation defaults; renders nothing",
     },
     OpSpec {
@@ -316,17 +316,25 @@ fn parse_resize(tokens: &[Token]) -> Result<Operation, SlashError> {
     })
 }
 
-/// `/set c:<ref> [--steps N|auto] [--seed N|random]`.
+/// `/set c:<ref> [--steps N|auto] [--seed N|random] [--size auto]`.
 ///
 /// `auto` and `random` clear a stored default rather than setting one —
 /// which is why the fields are `Option<Option<_>>`: absent means "leave it
 /// alone", `Some(None)` means "unpin it".
 fn parse_set(tokens: &[Token]) -> Result<Operation, SlashError> {
     let target = parse_ref(tokens, "set")?;
-    let (extra, flags) = split_flags(tokens, 2, &["--steps", "--seed"])?;
+    let (extra, flags) = split_flags(tokens, 2, &["--steps", "--seed", "--size"])?;
+    let reset_size = match flag_value(&flags, "--size") {
+        Some("auto") => true,
+        None => false,
+        Some(_) => return Err(SlashError(
+            "Use --size auto to inherit the project size, or /resize to generate at a new size."
+                .into(),
+        )),
+    };
     if !extra.trim().is_empty() {
         return Err(SlashError(format!(
-            "unexpected argument {:?}; set takes only options: /set c:<ref> [--steps N|auto] [--seed N|random]",
+            "unexpected argument {:?}; set takes only options: /set c:<ref> [--steps N|auto] [--seed N|random] [--size auto]",
             extra.trim()
         )));
     }
@@ -344,14 +352,15 @@ fn parse_set(tokens: &[Token]) -> Result<Operation, SlashError> {
         })?)),
         None => None,
     };
-    if steps.is_none() && seed.is_none() {
+    if steps.is_none() && seed.is_none() && !reset_size {
         return Err(SlashError(
-            "set needs something to set: /set c:<ref> [--steps N|auto] [--seed N|random]"
+            "set needs something to set: /set c:<ref> [--steps N|auto] [--seed N|random] [--size auto]"
                 .to_owned(),
         ));
     }
     Ok(Operation::Set {
         target,
+        reset_size,
         steps,
         seed,
     })
@@ -779,7 +788,12 @@ mod tests {
 
         for op in OPS {
             for flag in op.flags {
-                let input = format!("{} {flag} {}", base(op.name), value(flag));
+                let flag_value = if op.name == "/set" && *flag == "--size" {
+                    "auto"
+                } else {
+                    value(flag)
+                };
+                let input = format!("{} {flag} {flag_value}", base(op.name));
                 if let Err(error) = parse_slash(&input) {
                     assert!(
                         !error.0.starts_with("unknown option"),

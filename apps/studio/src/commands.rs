@@ -305,7 +305,47 @@ pub fn open_project(path: &Path, mut app_state: Signal<AppState>) -> Result<(), 
     Ok(())
 }
 
+/// Bind an unbound draft to the exact destination chosen in the native dialog.
+pub fn save_new_project(path: &Path, mut app_state: Signal<AppState>) -> Result<(), ReportedError> {
+    ensure_project_idle(app_state)?;
+    if app_state.read().project_path.is_some()
+        || path.exists()
+        || path.with_extension("sf").exists()
+    {
+        return Err(ReportedError::plain(
+            ErrorCode::StoreSave,
+            "Choose a new project file; existing projects and story sources are never overwritten.",
+        ));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| ReportedError::plain(ErrorCode::StoreSave, error.to_string()))?;
+    }
+    let registry = app_state.read().registry.clone();
+    let source = app_state.read().story.source().to_owned();
+    let db = ProjectDb::open(path).map_err(|error| error.report())?;
+    db.rename_project(
+        path.file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or("Untitled"),
+    )
+    .map_err(|error| error.report())?;
+    db.save_registry(&registry)
+        .map_err(|error| error.report())?;
+    let mut stored = db.load().map_err(|error| error.report())?;
+    stored.story.set_source(source);
+    stored.story.save().map_err(|error| error.report())?;
+    app_state.write().open_project(stored, path.to_owned());
+    Ok(())
+}
+
 fn ensure_project_idle(app_state: Signal<AppState>) -> Result<(), ReportedError> {
+    if app_state.read().has_description_drafts() {
+        return Err(ReportedError::plain(
+            ErrorCode::AppCommandInvalid,
+            "Apply or discard the description drafts in Canvas before switching projects.",
+        ));
+    }
     if app_state.read().operation_in_progress() {
         return Err(ReportedError::plain(
             ErrorCode::AppCommandInvalid,
@@ -388,7 +428,32 @@ mod tests {
     #[component]
     fn PersistenceProbe(directory: PathBuf) -> Element {
         let mut state = use_signal(crate::state::AppState::default);
+        let mut unbound = use_signal(crate::state::AppState::default);
         use_hook(move || {
+            unbound
+                .write()
+                .set_story_source("scene exact\n  end\n".into());
+            let exact = directory.join("Exact chosen filename.db");
+            super::save_new_project(&exact, unbound).unwrap();
+            assert_eq!(
+                unbound.read().project_path.as_deref(),
+                Some(exact.as_path())
+            );
+            assert_eq!(
+                std::fs::read_to_string(exact.with_extension("sf")).unwrap(),
+                "scene exact\n  end\n"
+            );
+            assert!(!unbound.read().has_unsaved_changes);
+            assert!(super::save_new_project(&exact, state).is_err());
+            let collision = directory.join("Existing source.db");
+            let existing_source = collision.with_extension("sf");
+            std::fs::write(&existing_source, "scene existing\n  end\n").unwrap();
+            assert!(super::save_new_project(&collision, state).is_err());
+            assert!(!collision.exists());
+            assert_eq!(
+                std::fs::read_to_string(existing_source).unwrap(),
+                "scene existing\n  end\n"
+            );
             // Starting a project preserves an unbound Writer draft.
             state
                 .write()
@@ -414,6 +479,25 @@ mod tests {
             super::reload_story(state).unwrap();
             assert_eq!(state.read().story.source(), "external edits");
             super::save_project(state).unwrap();
+
+            let id = state
+                .write()
+                .registry
+                .create_artifact(
+                    storyfella_studio_core::registry::ArtifactKind::Character,
+                    storyfella_studio_core::registry::CreateArtifact {
+                        name: "draft protected".into(),
+                        description: "Canon".into(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            state
+                .write()
+                .set_description_draft(id, "Still editing".into());
+            assert!(super::open_project(&another, state).is_err());
+            assert_eq!(state.read().description_draft(id), Some("Still editing"));
+            state.write().discard_description_draft(id);
 
             // Source success followed by DB failure must retain the new disk
             // snapshot, keep the project dirty, and allow a normal retry.

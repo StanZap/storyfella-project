@@ -31,19 +31,30 @@ pub struct KeyPress {
 
 /// Streams key presses that no text field claimed.
 ///
-/// `Ctrl`/`Cmd` chords are left alone so the global shortcuts (`Ctrl+K`,
-/// `Ctrl+S`) keep working, and the navigation keys are prevented from
-/// scrolling the page. The one exception is `Ctrl/Cmd+Z` (and `+Shift+Z`
-/// for redo): undo is a whole-app action with a button in the header, so the
-/// bridge claims it here rather than leaving it to the webview.
+/// The bridge dispatches focused-window Save and palette shortcuts. Text
+/// fields keep their editing keys, including undo; elsewhere Ctrl/Cmd+Z
+/// dispatches project undo (Shift adds redo). Navigation does not scroll the page.
 const KEY_BRIDGE: &str = r#"
     if (!window.__svsKeys) {
         window.__svsKeys = true;
+        // macOS WebKit does not focus buttons on pointer activation. Give
+        // dialogs a real originating focus target, including accessibility clicks.
+        document.addEventListener('click', (event) => {
+            const button = event.target.closest?.('button');
+            if (button && !button.disabled) { button.focus(); }
+        }, true);
         const NAV = ["j", "k", "h", "l", "g", "n", "/", "Enter", "Escape",
-                     "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
+                     "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+                     "s", "c", "[", "]", "v", "r", "m", "e", "f", "p"];
         document.addEventListener("keydown", (event) => {
             const active = document.activeElement;
             const tag = active ? active.tagName : "";
+            if (document.querySelector('dialog[open]')) { return; }
+            if ((event.ctrlKey || event.metaKey) && ['s', 'k'].includes(event.key.toLowerCase())) {
+                event.preventDefault();
+                dioxus.send([event.key.toLowerCase() === 's' ? 'save' : 'palette', 1]);
+                return;
+            }
             // A focused text field owns every key it receives.
             if (tag === "INPUT" || tag === "TEXTAREA" ||
                 tag === "SELECT" ||

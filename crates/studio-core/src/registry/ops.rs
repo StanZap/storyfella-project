@@ -107,6 +107,8 @@ pub enum Operation {
     /// the distinction the inspector needs to unpin a seed.
     Set {
         target: Ref,
+        #[serde(default)]
+        reset_size: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         steps: Option<Option<u32>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -270,10 +272,14 @@ impl Operation {
             ),
             Operation::Set {
                 target,
+                reset_size,
                 steps,
                 seed,
             } => {
                 let mut parts = Vec::new();
+                if *reset_size {
+                    parts.push("--size auto".to_owned());
+                }
                 if let Some(steps) = steps {
                     parts.push(match steps {
                         Some(value) => format!("--steps {value}"),
@@ -1446,10 +1452,14 @@ pub async fn execute(
         }
         Operation::Set {
             target,
+            reset_size,
             steps,
             seed,
         } => {
             let id = registry.resolve(target)?;
+            if *reset_size {
+                registry.clear_default_size(id)?;
+            }
             if let Some(steps) = steps {
                 registry.set_default_steps(id, *steps)?;
             }
@@ -2443,6 +2453,47 @@ mod tests {
             compile(&registry, &empty, &defaults),
             Err(CompileError::EmptyDescription)
         ));
+    }
+
+    #[test]
+    fn resetting_canvas_inherits_project_size_without_rendering() {
+        let defaults = test_defaults();
+        let mut registry = ArtifactRegistry::new();
+        let id = registry
+            .create_artifact(
+                ArtifactKind::Character,
+                CreateArtifact {
+                    name: "mara".into(),
+                    description: "Mara".into(),
+                    default_size: Some((512, 768)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let op = crate::registry::slash::parse_slash("/set c:mara --size auto").unwrap();
+        assert_eq!(
+            serde_json::from_str::<Operation>(&serde_json::to_string(&op).unwrap()).unwrap(),
+            op
+        );
+        assert!(matches!(
+            compile(&registry, &op, &defaults).unwrap(),
+            CompiledOp::Direct
+        ));
+        let options = ExecuteOptions {
+            backend: None,
+            run: RunOptions::new(std::env::temp_dir()),
+            generation: Default::default(),
+            defaults: &defaults,
+            manual_text: None,
+            origin: OpOrigin::User,
+        };
+        let outcome = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(execute(&mut registry, &op, &options))
+            .unwrap();
+        assert!(outcome.revision_id.is_none());
+        assert_eq!(registry.artifact(id).unwrap().default_size, None);
+        assert!(crate::registry::slash::parse_slash("/set c:mara --size 1024x1024").is_err());
     }
 
     #[test]
