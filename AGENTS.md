@@ -14,7 +14,7 @@ A Cargo workspace: eleven packages.
 | `crates/lsp` | `storyfella-lsp` | stdio LSP transport over the shared language analysis |
 | `crates/runtime` | `storyfella-runtime` | deterministic story execution, events and verified save/restore; no GUI/inference |
 | `apps/studio` | `storyfella-studio` | the Dioxus app — `ui/`, `state/`, `commands.rs`, `driver/`, `app/`, plus `Dioxus.toml`, `tailwind.css`, `assets/`, `package.json` |
-| `apps/atelier` | `storyfella-atelier` | independent GPUI drawing/image app, binary `atelier`; `.atelier` projects and Atelier data/Keychain identities; hosted API adapters currently app-local |
+| `apps/atelier` | `storyfella-atelier` | independent GPUI drawing/image app, binary `atelier`; `.atelier` projects and Atelier data/Keychain identities; hosted images through Clipforge |
 | `apps/cli` | `svs-cli` | `svs`, `model_setup`, `vlm_probe`, the VLM fixture example and its fixtures |
 | `apps/player` | `storyfella-player` | standalone Dioxus visual Player; same runtime/resources/controls as Studio preview |
 | `crates/playback-ui` | `storyfella-playback-ui` | shared Dioxus presentation and playback controls; independent of Studio state |
@@ -47,7 +47,11 @@ bundle at `dist/atelier/Atelier.app`). Preserve its Atelier data directory,
 Keychain service and `com.storyfella.atelier` bundle identity. The vendored
 `gpui-pre-apple` patch enables its shared BGRA Metal surfaces. The existing
 FineWineTTS review app still uses GPUI, so that repository retains its patch.
-Atelier's hosted APIs have not moved to Clipforge yet; see `docs/atelier.md`.
+Atelier's hosted API wire code and model presets live in
+`clipforge-inference::images`. The GPUI worker owns a Tokio runtime and adapts
+raw output bytes to its document references; Keychain/cache and ComfyUI workflow
+execution stay app-owned. Studio's creative runtime still uses the native
+`sd` API; hosted-provider UI integration remains separate. See `docs/atelier.md`.
 
 ### The shared inference runtime (`clipforge-inference`)
 

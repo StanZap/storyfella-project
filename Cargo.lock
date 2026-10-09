@@ -1123,9 +1123,11 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.0",
  "futures-util",
+ "image",
  "parking_lot",
  "reqwest",
  "serde",
+ "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.19",
  "tokio",
@@ -8635,6 +8637,7 @@ dependencies = [
  "anyhow",
  "base64 0.23.0",
  "block2 0.6.2",
+ "clipforge-inference",
  "core-foundation 0.10.1",
  "core-video",
  "gpui-kit",
@@ -8648,6 +8651,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tiny-skia",
+ "tokio",
 ]
 
 [[package]]

@@ -31,8 +31,8 @@ Atelier is the separate GPUI drawing and image-generation app, moved from
 FineWineTTS with its existing project storage and macOS Keychain identity intact.
 Run `cargo xtask atelier`; on macOS,
 `sh apps/atelier/package-macos.sh` builds `dist/atelier/Atelier.app`.
-Its hosted providers currently remain app-local. See [Atelier](apps/atelier/README.md)
-and [the shared AI integration plan](docs/atelier.md).
+Its hosted image providers use the shared Clipforge API. See [Atelier](apps/atelier/README.md)
+and [the shared AI boundary](docs/atelier.md).
 
 Check or compile `.sf` stories without loading models or opening a project DB:
 

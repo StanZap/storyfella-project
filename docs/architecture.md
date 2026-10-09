@@ -10,7 +10,7 @@ and [execution plan](language-plan.md) for implemented scope and next milestones
 | Component | Responsibility | Dependency boundary |
 | --- | --- | --- |
 | `apps/studio` / `storyfella-studio` | Dioxus authoring UI, project state, creative workflows and snapshot preview | Consumes GUI-free core and shared playback UI/runtime |
-| `apps/atelier` / `storyfella-atelier` | Independent GPUI drawing and image-generation app | Owns its current sketchbook documents and hosted adapters; no Dioxus dependency; shared AI integration pending |
+| `apps/atelier` / `storyfella-atelier` | Independent GPUI drawing and image-generation app | Owns sketchbook documents, credentials and ComfyUI workflow; uses Clipforge's hosted image client; no Dioxus dependency |
 | `crates/studio-core` / `storyfella-studio-core` | Artifact registry, operations, persistence, config, creative inference adapters | No GUI dependencies; consumes sibling `clipforge-inference` |
 | `apps/cli` / `svs-cli` | Existing `svs`, `model_setup`, and `vlm_probe` tools | Keeps current commands and behavior; consumes Studio core |
 | `apps/player` / `storyfella-player` | Standalone visual Dioxus desktop playback | Shared core resource adapter, playback UI and runtime; no Studio state dependency |
@@ -43,9 +43,9 @@ the old location; those paths are not silently rewritten by this restructuring.
 
 ## Existing Studio architecture
 
-Atelier lives alongside Studio as a separate GPUI application; its hosted
-generation and ComfyUI adapters currently remain app-local. It does not yet
-consume Clipforge. [Atelier's integration plan](atelier.md) records the shared
+Atelier lives alongside Studio as a separate GPUI application. Its hosted
+generation/editing uses `clipforge_inference::images::Client`; ComfyUI workflows
+remain app-local. [Atelier's integration](atelier.md) records the shared
 AI boundary and the remaining image-workspace work. The Studio architecture
 below describes the Dioxus application.
 

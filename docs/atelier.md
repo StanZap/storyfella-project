@@ -42,46 +42,67 @@ because its review application also uses GPUI.
 ## What is connected now
 
 Atelier owns its sketchbook document, drawing renderer, storage workers and
-generation interface. It calls Replicate, fal.ai, Alibaba and GPT Image directly
-through its hosted adapters, or submits a workflow to an existing ComfyUI server.
+generation interface. Replicate, fal.ai, Alibaba and GPT Image requests use
+`clipforge_inference::images::Client`. A thin app adapter resolves the selected
+create/edit model and the existing environment/Keychain credential, owns a
+Tokio runtime on the GPUI worker, then converts original result bytes and
+metadata into a document reference. ComfyUI workflows remain app-local.
 Generated images become references, not editable image layers. The UI uses
 800 px previews and references are normalized to at most 1600 px per edge.
 
 Studio consumes the sibling `clipforge-inference` crate for native image
 inference, managed llama-server lifecycle and shared chat/vision infrastructure.
-Atelier does not consume it yet. Relocation does not expose Atelier's hosted
-providers in Studio or add text/vision assistance to Atelier.
+Atelier now consumes that same crate for hosted images. Studio's image runtime
+still uses its native deployment adapter; hosted-provider selection is not
+yet exposed in Studio, and Atelier has no text/vision assistant.
 
-## Planned shared AI interface
+## Shared AI interface
 
-Clipforge is the intended home for AI execution shared by Studio and Atelier:
-local managed servers, external services, capability discovery and provider
-adapters. Storyfella owns creative intent, artifact/revision history, scene
-bindings, image files and document persistence. UI framework types stay out of
-the shared engine.
+Clipforge owns AI execution shared by Studio and Atelier: managed native
+servers, OpenAI-compatible text/vision, provider routing and hosted image
+adapters. Storyfella owns creative intent, artifact/revision history, image
+files and document persistence. UI framework types stay out of the engine.
 
-Start with a Rust library contract used by both real callers. An HTTP or MCP
-surface can wrap that same implementation when a separate process needs it;
-neither desktop app should require an extra daemon merely to share Rust code.
-The interface should expose:
+`clipforge_inference::images::Client` exposes one async `generate(Request)`
+contract for managed sd-server and the four hosted image APIs. A source image
+selects instruction editing; the result contains original bytes, provider,
+model and an optional submitted job ID. No paid request is automatically retried.
+Polling/download failures retain a known job ID, and cancellation/timeout
+errors report whether a provider accepted cancellation. Native cancellation
+stops waiting; the served sd-server API has no verified per-job cancel endpoint.
 
-- Capability routing for text, vision, image creation and image editing.
-- Explicit support for reference counts, masks, output sizes, alpha and seeds.
-  Unsupported operations must be reported before submission rather than silently
-  dropping inputs. Model-specific options remain typed adapter details.
-- Shared job progress, result metadata and errors, including whether cancellation
-  reaches the provider or merely stops local waiting. Retry policy must avoid
-  submitting another paid generation without knowing the original job's state.
-- Credential resolution without secrets in projects, logs or request metadata.
-- Local process ownership, readiness and GPU residency coordination. Hosted
-  services have no local Start/Stop lifecycle, and must not evict a local model
-  solely because a request uses a remote image service.
+The registry accepts image kinds `sdcpp`, `fal`, `replicate`, `alibaba` and
+`gptimage`. Resolve a client for `t2i` or `edit`; model routes that differ
+between create/edit should be separate provider entries. Hosted credentials
+can be passed as redacted `ApiKey` values or resolved from registry
+`api_key_env`. Atelier keeps the existing `Atelier` Keychain namespace and
+session cache and does not serialize keys into projects or settings.
 
-This interface is planned. The current `clipforge-inference` provider registry
-already routes text/vision and native images; hosted image adapters and Atelier's
-consumer integration still need implementation. The first concrete reuse should
-move Atelier's hosted image execution into that shared layer and adapt its
-workers, preserving provider-specific semantics and existing local mock tests.
+Official API origins and model paths are validated before authenticated
+submission. Queue URLs must share the API origin. Image downloads are bounded,
+redirects are disabled and API keys are never sent to image CDNs. Hosted
+requests do not start, stop or evict native servers. The caller owns its runtime
+and output storage; no extra daemon is required.
+
+This first contract supports one source image and the existing adapter payloads.
+It does not expose masks, multiple references, arbitrary provider parameters
+or native LoRA/sampling overrides (those remain on the lower-level `sd` API).
+Replicate maps the app's three aspect ratios; exact output dimensions are
+provider-dependent. Model presets moved from Atelier into Clipforge without
+changing the existing IDs or making paid calls to verify them.
+
+Validation after integration: Storyfella's workspace check/tests and strict
+Atelier/xtask Clippy pass; Clipforge's `cargo xtask ci` passes, including MCP
+smoke tests. Atelier has 28 passing tests and eight opt-in Metal tests; the
+shared inference crate has 65 passing tests. Build-cache exhaustion on macOS
+required clearing only Storyfella's regenerable Cargo incremental cache.
+
+The public hosted client is tested against loopback mock providers for both
+creation and editing, authentication, job polling, inline/CDN images and
+cancellation. Registry checks reject unsupported capabilities and foreign API
+origins. Atelier retains profile migration, settings, credential and ComfyUI
+tests. The Clipforge CLI/MCP image tools still use the native `sd` path; future
+HTTP/MCP exposure can wrap the shared client rather than duplicate adapters.
 
 ## Planned art-workspace milestones
 
@@ -94,5 +115,5 @@ workers, preserving provider-specific semantics and existing local mock tests.
    approved artwork with Studio's existing artifact/revision model rather than
    creating another project store.
 
-Only the repository relocation is implemented here. The workflow milestones
+The relocation and shared hosted image execution are implemented. The workflow milestones
 remain open, and Atelier's prototype document is distinct from Studio's registry.

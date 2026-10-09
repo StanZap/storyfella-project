@@ -29,13 +29,7 @@ impl Provider {
         Self::Comfy,
     ];
     pub fn name(self) -> &'static str {
-        match self {
-            Self::GptImage => "GPT Image",
-            Self::Comfy => "ComfyUI",
-            Self::Fal => "fal.ai",
-            Self::Replicate => "Replicate",
-            Self::Alibaba => "Alibaba Model Studio",
-        }
+        self.hosted().map(|p| p.name()).unwrap_or("ComfyUI")
     }
     pub fn account(self) -> &'static str {
         match self {
@@ -47,37 +41,28 @@ impl Provider {
         }
     }
     pub fn key_env(self) -> &'static str {
-        match self {
-            Self::GptImage => "OPENAI_API_KEY",
-            Self::Comfy => "",
-            Self::Fal => "FAL_KEY",
-            Self::Replicate => "REPLICATE_API_TOKEN",
-            Self::Alibaba => "DASHSCOPE_API_KEY",
-        }
+        self.hosted().map(|p| p.key_env()).unwrap_or("")
     }
     pub fn supports_edit(self) -> bool {
         self != Self::Comfy
     }
+    pub fn hosted(self) -> Option<clipforge_inference::images::HostedProvider> {
+        use clipforge_inference::images::HostedProvider;
+        match self {
+            Self::Fal => Some(HostedProvider::Fal),
+            Self::Replicate => Some(HostedProvider::Replicate),
+            Self::Alibaba => Some(HostedProvider::Alibaba),
+            Self::GptImage => Some(HostedProvider::GptImage),
+            Self::Comfy => None,
+        }
+    }
     pub fn defaults(self) -> ProviderProfile {
-        let (model, edit_model, endpoint) = match self {
-            Self::GptImage => (
-                "gpt-image-2.5-flare",
-                "gpt-image-2.5-flare",
-                "https://api.openai.com/v1",
-            ),
-            Self::Comfy => ("", "", "http://127.0.0.1:8188"),
-            Self::Fal => (
-                "alibaba/qwen-image-3/text-to-image",
-                "alibaba/qwen-image-3/edit",
-                "https://queue.fal.run",
-            ),
-            Self::Replicate => (
-                "alibaba/qwen-image-3",
-                "alibaba/qwen-image-3",
-                "https://api.replicate.com/v1",
-            ),
-            // A workspace-specific regional endpoint must be entered in Settings.
-            Self::Alibaba => ("qwen-image-3.0", "qwen-image-3.0", ""),
+        let (model, edit_model, endpoint) = match self.hosted() {
+            Some(provider) => {
+                let (model, edit_model) = provider.default_models();
+                (model, edit_model, provider.default_endpoint())
+            }
+            None => ("", "", "http://127.0.0.1:8188"),
         };
         ProviderProfile {
             model: model.into(),
@@ -86,57 +71,9 @@ impl Provider {
         }
     }
     pub fn presets(self) -> Vec<(&'static str, &'static str, &'static str)> {
-        match self {
-            Self::Fal => vec![
-                (
-                    "Qwen Image 3",
-                    "alibaba/qwen-image-3/text-to-image",
-                    "alibaba/qwen-image-3/edit",
-                ),
-                (
-                    "Qwen 2512 / Edit 2511",
-                    "fal-ai/qwen-image-2512",
-                    "fal-ai/qwen-image-edit-2511",
-                ),
-                (
-                    "Z-Image Turbo",
-                    "fal-ai/z-image/turbo",
-                    "fal-ai/z-image/turbo/image-to-image",
-                ),
-                ("FLUX Schnell · create only", "fal-ai/flux/schnell", ""),
-            ],
-            Self::Replicate => vec![
-                (
-                    "Qwen Image 3",
-                    "alibaba/qwen-image-3",
-                    "alibaba/qwen-image-3",
-                ),
-                (
-                    "Qwen 2512 / Image Edit",
-                    "qwen/qwen-image-2512",
-                    "qwen/qwen-image-edit",
-                ),
-            ],
-            Self::Alibaba => vec![
-                ("Qwen Image 3", "qwen-image-3.0", "qwen-image-3.0"),
-                (
-                    "Qwen Image 3 Pro",
-                    "qwen-image-3.0-pro",
-                    "qwen-image-3.0-pro",
-                ),
-                (
-                    "Qwen Image 2.1 Pro",
-                    "qwen-image-2.1-pro",
-                    "qwen-image-2.1-pro",
-                ),
-            ],
-            Self::GptImage => vec![(
-                "GPT Image Flare",
-                "gpt-image-2.5-flare",
-                "gpt-image-2.5-flare",
-            )],
-            Self::Comfy => vec![],
-        }
+        self.hosted()
+            .map(|p| p.presets().to_vec())
+            .unwrap_or_default()
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -161,10 +98,11 @@ pub struct Settings {
 }
 impl Default for Settings {
     fn default() -> Self {
+        let profile = Provider::GptImage.defaults();
         Self {
             provider: Provider::GptImage,
-            model: "gpt-image-2.5-flare".into(),
-            edit_model: "gpt-image-2.5-flare".into(),
+            model: profile.model,
+            edit_model: profile.edit_model,
             endpoint: "http://127.0.0.1:8188".into(),
             profiles: Default::default(),
             workflow: Value::Null,
@@ -204,7 +142,7 @@ pub struct Request {
     pub prompt: String,
     pub size: (u32, u32),
     pub source: Option<Arc<Reference>>,
-    pub progress: Option<Box<dyn Fn(String) + Send>>,
+    pub progress: Option<Box<dyn Fn(String) + Send + Sync>>,
     pub cancel: Arc<AtomicBool>,
 }
 pub(crate) fn cancelled(flag: &AtomicBool) -> Result<()> {
@@ -329,20 +267,19 @@ pub fn generate(request: Request) -> Result<Reference> {
         "Enter a reference prompt"
     );
     cancelled(&request.cancel)?;
+    if request.settings.provider != Provider::Comfy {
+        return crate::hosted_images::generate(request);
+    }
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(300))
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
-    if request.settings.provider == Provider::Comfy {
-        ensure!(
-            request.source.is_none(),
-            "ComfyUI editing is not configured; choose a hosted provider"
-        );
-        comfy(&client, request)
-    } else {
-        crate::hosted_images::generate(&client, request)
-    }
+    ensure!(
+        request.source.is_none(),
+        "ComfyUI editing is not configured; choose a hosted provider"
+    );
+    comfy(&client, request)
 }
 pub fn prepare_workflow(
     settings: &Settings,

@@ -9,6 +9,31 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
     time::Duration,
 };
+#[test]
+fn provider_profiles_and_legacy_settings_round_trip() {
+    let mut settings: Settings = serde_json::from_value(
+        serde_json::json!({"provider":"Comfy","endpoint":"http://localhost:8188","model":"legacy"}),
+    )
+    .unwrap();
+    settings.select_provider(Provider::Alibaba);
+    settings.model = "qwen-image-2.1-pro".into();
+    settings.edit_model = "qwen-image-2.1-pro".into();
+    settings.endpoint =
+        "https://workspace.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1".into();
+    settings.select_provider(Provider::Fal);
+    let mut settings: Settings =
+        serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+    settings.select_provider(Provider::Alibaba);
+    assert_eq!(settings.model, "qwen-image-2.1-pro");
+    assert_eq!(settings.edit_model, "qwen-image-2.1-pro");
+    assert!(settings.endpoint.contains("workspace"));
+    settings.select_provider(Provider::Comfy);
+    assert_eq!(settings.endpoint, "http://localhost:8188");
+    assert_eq!(settings.model, "legacy");
+    assert!(!serde_json::to_string(&settings)
+        .unwrap()
+        .contains("api_key"));
+}
 fn doc() -> Document {
     Document {
         width: 128,
