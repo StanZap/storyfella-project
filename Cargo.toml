@@ -26,6 +26,7 @@ authors = ["Stanley <Zapata>"]
 # One place for versions, so a bump cannot land in three manifests with two
 # different values.
 [workspace.dependencies]
+storyfella-studio-core = { path = "crates/studio-core" }
 storyfella-language = { path = "crates/language" }
 storyfella-compiler = { path = "crates/compiler" }
 storyfella-runtime = { path = "crates/runtime" }

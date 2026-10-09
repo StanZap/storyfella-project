@@ -52,6 +52,16 @@ Atelier's hosted API wire code and model presets live in
 raw output bytes to its document references; Keychain/cache and ComfyUI workflow
 execution stay app-owned. Studio's creative runtime still uses the native
 `sd` API; hosted-provider UI integration remains separate. See `docs/atelier.md`.
+Atelier's shared library stores immutable full-resolution originals plus global
+metadata and mask drafts under `data_dir/library`; `.atelier` projects embed
+their own references/image layers. `editor.rs`/`editor_ui.rs` own the large-image
+workflow; `edit.rs` owns mask encoding and protected-pixel compositing. Provider
+mask/reference capabilities and wire formats belong only in Clipforge. Approved
+`.sfart` exchange lives in GUI-free `studio-core::artwork`; Studio imports through
+`AppState::import_artwork` (completed revision, undo, normal persistence), never
+through generation. Use isolated `.svs-e2e` data for live UI checks. On macOS,
+duplicate old Atelier bundle registrations can misdirect automation by name;
+give disposable test bundles a distinct identity, preserving the shipped one.
 
 ### The shared inference runtime (`clipforge-inference`)
 

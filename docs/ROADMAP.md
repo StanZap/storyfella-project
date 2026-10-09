@@ -548,8 +548,13 @@ sources, project/data identity and macOS renderer patch. Studio remains Dioxus.
 **Shared hosted image execution: implemented in Atelier.** Clipforge owns the
 async adapters for Replicate, fal.ai, Alibaba and GPT Image, shared presets,
 job polling/cancellation and result metadata. Atelier retains its credential
-and document boundaries. Studio's hosted-provider UI and the large-image editing
-workspace remain **planned**; see [Atelier](atelier.md).
+and document boundaries. **Art editing and reuse: implemented.** Full-resolution
+originals, a cross-project library, zoomable inspection, version branches,
+before/after, editable image layers with placement, durable masks and supported
+multi-reference editing are available in Atelier. Approved originals and painted
+canvases import into Studio's completed revisions through portable `.sfart`
+packages. Studio's hosted-provider selection and a text/vision art assistant
+remain **planned**; see [Atelier](atelier.md) for limits and verification.
 
 1. **The API:** artifact domain model (artifact kinds, variants, scenes,
    beats — the registry), typed operation set + pipeline builder (closed

@@ -57,6 +57,317 @@ fn temporary(name: &str) -> std::path::PathBuf {
     path
 }
 
+fn colored_reference(name: &str, color: [u8; 4], width: u32, height: u32) -> document::Reference {
+    let image = image::RgbaImage::from_pixel(width, height, image::Rgba(color));
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image)
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    document::reference_from_bytes(name.into(), &bytes.into_inner(), "Test original".into())
+        .unwrap()
+}
+
+#[test]
+fn originals_keep_resolution_bytes_and_alpha_across_library_and_projects() {
+    use base64::Engine;
+    let directory = temporary("shared-originals");
+    let library = directory.join("library");
+    let original = colored_reference("Original", [12, 34, 56, 128], 2400, 1200);
+    let id = crate::library::id(&original);
+    crate::library::store(&library, &original).unwrap();
+    crate::library::store(&library, &original).unwrap();
+    let loaded = crate::library::load(&library).unwrap();
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].image, original.image);
+    assert_eq!(
+        document::decode_reference(&loaded[0]).unwrap().width(),
+        2400
+    );
+    assert_eq!(
+        document::decode_reference(&loaded[0])
+            .unwrap()
+            .to_rgba8()
+            .get_pixel(0, 0)
+            .0,
+        [12, 34, 56, 128]
+    );
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(&original.image)
+        .unwrap();
+    assert_eq!(
+        std::fs::read(library.join(format!("{id}.image"))).unwrap(),
+        raw
+    );
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(library.join(format!("{id}.json"))).unwrap())
+            .unwrap();
+    assert!(metadata.get("image").is_none());
+    for title in ["Project A", "Project B"] {
+        let mut project = doc();
+        project.title = title.into();
+        project.references.push(Arc::new(loaded[0].clone()));
+        project.reference = Some(0);
+        document::save(&directory.join(format!("{title}.atelier")), &project).unwrap();
+    }
+    let mut renamed = original.clone();
+    renamed.name = "Library rename".into();
+    renamed.favorite = true;
+    renamed.tags = "house, reference".into();
+    crate::library::update(&library, &renamed, crate::library::Update::Details).unwrap();
+    crate::library::update(&library, &renamed, crate::library::Update::Favorite).unwrap();
+    assert_eq!(
+        crate::library::load(&library).unwrap()[0].name,
+        "Library rename"
+    );
+    let project = document::load(&directory.join("Project B.atelier")).unwrap();
+    assert_eq!(project.references[0].name, "Original");
+    assert_eq!(crate::library::id(&project.references[0]), id);
+    assert_eq!(project.references[0].image, original.image);
+    std::fs::remove_file(library.join(format!("{id}.image"))).unwrap();
+    assert!(crate::library::load(&library).is_err());
+    assert!(document::load(&directory.join("Project A.atelier")).is_ok());
+}
+
+#[test]
+fn edit_families_include_branches_and_ancestors_without_unrelated_images() {
+    let original = colored_reference("Original", [255, 0, 0, 255], 128, 96);
+    let mut first = colored_reference("First edit", [0, 255, 0, 255], 128, 96);
+    first.parent = Some(crate::library::id(&original));
+    let mut second = colored_reference("Second edit", [0, 0, 255, 255], 128, 96);
+    second.parent = Some(crate::library::id(&first));
+    let mut branch = colored_reference("Other branch", [255, 255, 0, 255], 128, 96);
+    branch.parent = Some(crate::library::id(&original));
+    let unrelated = colored_reference("Other original", [255, 0, 255, 255], 128, 96);
+    let all = [original, first, second, branch, unrelated].map(Arc::new);
+    let family = crate::library::family(&all[2], &all);
+    assert_eq!(family.len(), 4);
+    for image in &all[..4] {
+        assert!(family.contains(&crate::library::id(image)));
+    }
+    assert!(!family.contains(&crate::library::id(&all[4])));
+}
+
+#[test]
+fn image_layers_paint_erase_transform_and_survive_undo_and_save() {
+    let mut project = doc();
+    project.layers[0].image = Some(document::ImageLayer {
+        reference: Arc::new(colored_reference("Blue", [0, 80, 255, 255], 128, 96)),
+        transform: [1., 0., 0., 1., 0., 0.],
+    });
+    let original = document::raster(&project, 128, true).unwrap();
+    assert_eq!(original.get_pixel(60, 48).0, [0, 80, 255, 255]);
+    let mut history = History::new();
+    history.checkpoint(&project);
+    project.layers[0].strokes.push(stroke(Tool::Eraser, 48.));
+    let erased = document::raster(&project, 128, true).unwrap();
+    assert_eq!(erased.get_pixel(60, 48)[3], 0);
+    assert_eq!(erased.get_pixel(60, 5).0, [0, 80, 255, 255]);
+    assert!(history.undo(&mut project));
+    assert_eq!(document::raster(&project, 128, true).unwrap(), original);
+    project.rotate();
+    project.flip();
+    let transformed = document::raster(&project, 128, true).unwrap();
+    assert_eq!(transformed.dimensions(), (96, 128));
+    assert_eq!(transformed.get_pixel(60, 48).0, [0, 80, 255, 255]);
+    project.resize(192, 256, true).unwrap();
+    assert_eq!(
+        document::raster(&project, 256, true)
+            .unwrap()
+            .get_pixel(120, 96)
+            .0,
+        [0, 80, 255, 255]
+    );
+    let path = temporary("image-layer").join("project.atelier");
+    document::save(&path, &project).unwrap();
+    assert_eq!(
+        document::raster(&document::load(&path).unwrap(), 256, true).unwrap(),
+        document::raster(&project, 256, true).unwrap()
+    );
+    project.layers[0].image.as_mut().unwrap().transform[0] = f32::NAN;
+    assert!(project.validate().is_err());
+}
+
+#[test]
+fn image_layer_placement_moves_painted_marks_and_rejects_invalid_changes() {
+    let mut project = doc();
+    project.layers[0].image = Some(document::ImageLayer {
+        reference: Arc::new(colored_reference("Blue", [0, 80, 255, 255], 128, 96)),
+        transform: [1., 0., 0., 1., 0., 0.],
+    });
+    project.layers[0].strokes.push(stroke(Tool::Eraser, 48.));
+    project.reposition_image_layer(16., 8., 0.5).unwrap();
+    let moved = document::raster(&project, 128, true).unwrap();
+    assert_eq!(moved.get_pixel(78, 56)[3], 0);
+    assert_eq!(moved.get_pixel(78, 36).0, [0, 80, 255, 255]);
+    let before = serde_json::to_vec(&project).unwrap();
+    assert!(project.reposition_image_layer(f32::NAN, 0., 1.).is_err());
+    assert!(project.reposition_image_layer(0., 0., 0.000001).is_err());
+    assert_eq!(serde_json::to_vec(&project).unwrap(), before);
+    project.validate().unwrap();
+}
+
+#[test]
+fn masks_use_white_for_editable_pixels_black_for_protected_and_erase_correctly() {
+    let mut mask = crate::edit::MaskDraft {
+        width: 128,
+        height: 96,
+        strokes: vec![stroke(Tool::Pencil, 48.)],
+    };
+    let image = image::load_from_memory(&mask.png().unwrap())
+        .unwrap()
+        .to_rgba8();
+    assert_eq!(image.dimensions(), (128, 96));
+    assert_eq!(image.get_pixel(60, 48).0, [255, 255, 255, 255]);
+    assert_eq!(image.get_pixel(60, 5).0, [0, 0, 0, 255]);
+    mask.strokes.push(Stroke {
+        points: vec![Point { x: 60., y: 48. }].into(),
+        size: 20.,
+        tool: Tool::Eraser,
+        ..stroke(Tool::Eraser, 48.)
+    });
+    let image = image::load_from_memory(&mask.png().unwrap())
+        .unwrap()
+        .to_rgba8();
+    assert_eq!(image.get_pixel(60, 48).0, [0, 0, 0, 255]);
+    assert_eq!(image.get_pixel(20, 48).0, [255, 255, 255, 255]);
+    mask.strokes.clear();
+    assert!(mask.png().is_err());
+    mask.strokes.push(stroke(Tool::Pencil, 48.));
+    Arc::make_mut(&mut mask.strokes[0].points)[0].x = f32::NAN;
+    assert!(mask.validate().is_err());
+}
+
+#[test]
+fn mask_drafts_reload_with_their_image_and_invalid_drafts_are_reported() {
+    let directory = temporary("mask-drafts");
+    let reference = Arc::new(colored_reference("Image", [1, 2, 3, 255], 128, 96));
+    let id = crate::library::id(&reference);
+    let workers = worker::start();
+    let draft = crate::edit::MaskDraft {
+        width: 128,
+        height: 96,
+        strokes: vec![stroke(Tool::Pencil, 48.)],
+    };
+    workers
+        .storage
+        .send(Storage::MaskDraft(directory.clone(), id.clone(), 1, draft))
+        .unwrap();
+    assert!(matches!(
+        workers.events.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Event::MaskSaved(_, 1, Ok(()))
+    ));
+    workers
+        .storage
+        .send(Storage::OpenImage(reference.clone(), directory.clone()))
+        .unwrap();
+    match workers.events.recv_timeout(Duration::from_secs(5)).unwrap() {
+        Event::OpenedImage(loaded, Ok((image, mask))) => {
+            assert_eq!(loaded, id);
+            assert_eq!(image.dimensions(), (128, 96));
+            assert_eq!(mask.strokes.len(), 1);
+        }
+        _ => panic!("Image and mask should reload"),
+    }
+    std::fs::write(directory.join(format!("{id}.mask")), b"broken").unwrap();
+    workers
+        .storage
+        .send(Storage::OpenImage(reference, directory))
+        .unwrap();
+    assert!(matches!(
+        workers.events.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Event::OpenedImage(_, Err(_))
+    ));
+}
+
+#[test]
+fn masked_edits_preserve_protected_pixels_even_if_the_provider_changes_them() {
+    let original = colored_reference("Original", [10, 40, 90, 128], 128, 96);
+    let generated = colored_reference("Changed", [240, 20, 30, 255], 128, 96);
+    let mask = crate::edit::MaskDraft {
+        width: 128,
+        height: 96,
+        strokes: vec![stroke(Tool::Pencil, 48.)],
+    };
+    let composited = mask.composite(&original, &generated).unwrap();
+    let pixels = document::decode_reference(&composited).unwrap().to_rgba8();
+    assert_eq!(pixels.get_pixel(60, 5).0, [10, 40, 90, 128]);
+    assert_eq!(pixels.get_pixel(60, 48).0, [240, 20, 30, 255]);
+    let wrong_size = colored_reference("Wrong", [240, 20, 30, 255], 256, 192);
+    assert!(mask.composite(&original, &wrong_size).is_err());
+}
+
+#[test]
+#[ignore = "Creates deterministic fixtures for the live Atelier UX walkthrough"]
+fn prepare_workflow_fixture() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/atelier-workflow");
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut image = image::RgbaImage::from_fn(2048, 1024, |_, y| {
+        image::Rgba(if y < 700 {
+            [125, 190, 230, 255]
+        } else {
+            [65, 125, 60, 255]
+        })
+    });
+    for y in 350..800 {
+        for x in 650..1400 {
+            image.put_pixel(x, y, image::Rgba([168, 95, 42, 255]));
+        }
+    }
+    for y in 535..800 {
+        for x in 930..1100 {
+            image.put_pixel(x, y, image::Rgba([65, 40, 30, 255]));
+        }
+    }
+    for y in 440..570 {
+        for x in 730..870 {
+            image.put_pixel(x, y, image::Rgba([230, 225, 170, 255]));
+        }
+    }
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image.clone())
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    let original = document::reference_from_bytes(
+        "Cabin original".into(),
+        &bytes.into_inner(),
+        "Deterministic local UX fixture · no API call".into(),
+    )
+    .unwrap();
+    for y in 0..350 {
+        for x in 0..2048 {
+            image.put_pixel(x, y, image::Rgba([235, 160, 120, 255]));
+        }
+    }
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image)
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    let mut edited = document::reference_from_bytes(
+        "Cabin sunset".into(),
+        &bytes.into_inner(),
+        "Deterministic edited fixture · no API call".into(),
+    )
+    .unwrap();
+    edited.parent = Some(crate::library::id(&original));
+    edited.prompt = "Change the sky to sunset".into();
+    for reference in [&original, &edited] {
+        crate::library::store(&directory.join("library"), reference).unwrap();
+    }
+    let palette = colored_reference("Blue palette", [30, 90, 220, 255], 256, 256);
+    crate::library::store(&directory.join("library"), &palette).unwrap();
+    let mut project = Document {
+        title: "Atelier workflow check".into(),
+        width: 1024,
+        height: 768,
+        ..Document::default()
+    };
+    project.references.push(Arc::new(original));
+    project.reference = Some(0);
+    document::save(&directory.join("recovery.atelier"), &project).unwrap();
+    println!("Live UX data: {}", directory.display());
+}
+
 #[test]
 fn viewport_inverts_every_rotation_and_mirror() {
     for turns in 0..4 {
@@ -86,6 +397,7 @@ fn eraser_removes_only_active_layer_and_reveals_lower_layer() {
         visible: true,
         opacity: 1.,
         strokes: vec![stroke(Tool::Pencil, 48.), stroke(Tool::Eraser, 48.)],
+        image: None,
     });
     let visible = document::raster(&doc, 128, true).unwrap();
     assert!(visible.get_pixel(60, 48)[3] > 240);
@@ -431,6 +743,8 @@ fn comfy_generation_roundtrip_with_local_mock_server() {
         },
         prompt: "A ceramic pitcher".into(),
         source: None,
+        references: vec![],
+        mask: None,
         progress: None,
         size: (1024, 1024),
         cancel: Arc::new(AtomicBool::new(false)),
@@ -446,6 +760,8 @@ fn generation_cancellation_prevents_network_submission() {
         settings: Settings::default(),
         prompt: "Study".into(),
         source: None,
+        references: vec![],
+        mask: None,
         progress: None,
         size: (1024, 1024),
         cancel: Arc::new(AtomicBool::new(true)),
@@ -494,6 +810,87 @@ fn switching_archives_current_study_before_opening_and_reports_failure() {
         Event::Switched(_, result) => assert!(result.is_err()),
         _ => panic!("Unexpected event"),
     }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn mask_save_failure_reports_owned_draft_and_can_be_retried() {
+    let directory = temporary("mask-save-failure");
+    let blocked = directory.join("blocked");
+    std::fs::write(&blocked, b"not a directory").unwrap();
+    let reference = colored_reference("Draft", [30, 60, 90, 255], 128, 96);
+    let id = crate::library::id(&reference);
+    let draft = crate::edit::MaskDraft {
+        width: 128,
+        height: 96,
+        strokes: vec![stroke(Tool::Pencil, 48.)],
+    };
+    let workers = worker::start();
+    for (path, succeeds) in [(blocked, false), (directory.join("library"), true)] {
+        workers
+            .storage
+            .send(Storage::MaskDraft(
+                path.clone(),
+                id.clone(),
+                42,
+                draft.clone(),
+            ))
+            .unwrap();
+        match workers.events.recv_timeout(Duration::from_secs(5)).unwrap() {
+            Event::MaskSaved(saved_id, revision, result) => {
+                assert_eq!(saved_id, id);
+                assert_eq!(revision, 42);
+                assert_eq!(result.is_ok(), succeeds);
+            }
+            _ => panic!("Unexpected event"),
+        }
+        if succeeds {
+            let saved: crate::edit::MaskDraft =
+                serde_json::from_slice(&std::fs::read(path.join(format!("{id}.mask"))).unwrap())
+                    .unwrap();
+            assert_eq!(saved.png().unwrap(), draft.png().unwrap());
+        }
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg_attr(target_os = "macos", ignore = "requires a real Metal device")]
+fn metal_canvas_artwork_package_contains_image_paint_and_erase() {
+    let directory = temporary("canvas-artwork");
+    let path = directory.join("approved.sfart");
+    let mut painting = doc();
+    painting.title = "Approved painting".into();
+    painting.layers[0].image = Some(document::ImageLayer {
+        reference: Arc::new(colored_reference("Base", [20, 100, 200, 255], 128, 96)),
+        transform: [1., 0., 0., 1., 0., 0.],
+    });
+    painting.layers[0].strokes.push(stroke(Tool::Pencil, 30.));
+    painting.layers[0].strokes.push(stroke(Tool::Eraser, 70.));
+    let workers = worker::start();
+    workers
+        .storage
+        .send(Storage::CanvasArtwork(painting, path.clone(), true))
+        .unwrap();
+    match workers
+        .events
+        .recv_timeout(Duration::from_secs(15))
+        .unwrap()
+    {
+        Event::Exported(result) => assert_eq!(result.unwrap(), path),
+        _ => panic!("Unexpected event"),
+    }
+    let artwork = storyfella_studio_core::artwork::ApprovedArtwork::load(&path).unwrap();
+    assert_eq!(artwork.name, "Approved painting");
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(artwork.image)
+        .unwrap();
+    let pixels = image::load_from_memory(&bytes).unwrap().to_rgba8();
+    assert_eq!(pixels.dimensions(), (128, 96));
+    assert_eq!(pixels.get_pixel(60, 10).0, [20, 100, 200, 255]);
+    assert!(pixels.get_pixel(60, 30)[2] < 150, "Paint must be included");
+    assert_eq!(pixels.get_pixel(60, 70)[3], 0, "Erasing must be included");
     std::fs::remove_dir_all(directory).unwrap();
 }
 

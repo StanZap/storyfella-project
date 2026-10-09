@@ -44,11 +44,14 @@ cargo xtask atelier -- --data-dir .svs-e2e/atelier-dev
 - fal.ai, Replicate, Alibaba Model Studio and GPT Image generation/editing, plus local ComfyUI generation, with background jobs, errors and cancellation.
 - Shared icon controls, surface panels and selection styles, accessible icon labels, gentle panel reveal and a reduced-motion setting.
 
-References live in each project. Tags provide lightweight collections. Generated
-references also have independent PNG/metadata copies in the app's `generated`
-folder, so switching studies doesn't discard a generation result. References are
-normalized to at most 1600 px per edge; original imported files remain untouched.
-Projects allow 128 references with a combined embedded image budget of 64 MB.
+The **All projects** library stores full-resolution originals for cross-project
+reuse; **Use** embeds a portable reference in the current project. Open any image
+for zoom/pan, versions, before/after, masks, editable library details and original
+export. **Add to canvas** makes an editable image layer with paint/erase, move,
+scale, opacity and undo. Generated images also retain PNG/metadata copies in
+`generated`. Projects allow 128 references and 24 layers with a combined embedded
+image budget of 64 MB. Originals allow 20 MB, 8192 px per edge and 32 megapixels;
+the shared library currently has a 512 MB encoded in-memory loading budget.
 Canvas limits are 64–8192 px per edge and 32 megapixels.
 
 ## Generation setup
@@ -89,14 +92,17 @@ not a universal mapper for arbitrary model schemas.
 selected reference plus your instruction to the editing model. Every edit adds
 a new reference and keeps the original; select any earlier image to branch from
 it. Outputs are saved locally with provider, model, prompt, source name and hosted
-job ID where available. References retain the existing 1600 px normalization.
+job ID where available. Full-resolution originals remain in the shared library.
 Square, landscape and portrait output use the existing size controls. Actions
 use your provider account and may incur charges.
 
 fal's Qwen Image 3 accepts only opaque editing inputs, so that adapter composites
 transparent references onto white before upload. Other adapters retain source
-alpha. This flow supports one source image and instruction-based edits; multi-image
-selection, mask painting and explicit transparent-output controls are not implemented.
+alpha. Qwen Image 3 (fal) and Qwen Edit 2511 (fal/Replicate) support a source plus
+two ordered references. FLUX Fill (fal/Replicate) supports a painted mask; other
+current routes accept one source and no mask. Unsupported combinations fail
+before submission. Mask drafts are durable; protected source pixels are composited
+back into the edited result. Explicit transparent-output controls are not exposed.
 Qwen prompt expansion is disabled for the default Qwen Image 3 adapters so an edit
 instruction is sent without provider-added detail.
 
@@ -104,6 +110,11 @@ API references: [fal generation](https://fal.ai/models/alibaba/qwen-image-3/text
 [fal editing](https://fal.ai/models/alibaba/qwen-image-3/edit/api),
 [Replicate](https://replicate.com/alibaba/qwen-image-3),
 [OpenAI editing](https://developers.openai.com/api/reference/resources/images/methods/edit).
+
+Approved originals/versions and painted canvases export as `.sfart` packages.
+In Studio's Canvas gallery, **Import Atelier artwork** previews the package and
+adds a completed Character/Environment/Object revision, with undo and project
+persistence. See [workflow and boundaries](../../docs/atelier.md) for the full flow.
 
 For local ComfyUI, configure its HTTP(S) address and load a workflow exported in
 **API format**. Set the positive text node ID, the width/height node ID and the
@@ -169,7 +180,7 @@ Pressure samples and brush type are saved with each stroke and used in previews
 and exports. Older projects retain their solid strokes. Physical tablet hardware
 has not been exercised; the driver must provide AppKit tablet events. Windows and
 Linux currently use constant-pressure pointer input. Tilt, arbitrary-angle
-rotation, selection transforms and a full lesson curriculum remain extensions.
+rotation, freeform stroke selections and a full lesson curriculum remain extensions.
 
 
 ## GPU canvas
@@ -204,7 +215,9 @@ Limits remain 8192 px per edge, 32 megapixels, 24 layers and two million stored
 points. GPU layer textures have a 768 MiB safety budget (12 bytes per occupied
 layer pixel: painted color, pre-stroke color and coverage). Dense multilayer art
 can reach that budget; it is not a promise of unlimited canvas/layer capacity.
-Reference import still stores a 1600 px thumbnail rather than the original image.
+Reference import preserves the original image; separate thumbnails serve the
+library and project reference panels. Legacy projects keep the resolution their
+older versions stored.
 
 Hardware verification on an Apple M3 Max (2026-10-04), with a synthetic 4096×4096
 painting, two layers, 800 strokes and 25,600 points: full rebuild about 98 ms with curve interpolation;

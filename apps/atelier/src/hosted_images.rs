@@ -47,6 +47,12 @@ pub fn generate(request: Request) -> Result<Reference> {
     let prompt = request.prompt.clone();
     let mut image_request = ImageRequest::new(request.prompt, request.size.0, request.size.1);
     image_request.source = source;
+    image_request.references = request
+        .references
+        .iter()
+        .map(|r| STANDARD.decode(&r.image))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    image_request.mask = request.mask.as_ref().map(|mask| mask.png()).transpose()?;
     image_request.cancel = request.cancel;
     image_request.progress = request.progress;
     // The GPUI worker owns its runtime; Clipforge remains async and UI-independent.

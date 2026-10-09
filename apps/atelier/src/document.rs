@@ -62,14 +62,28 @@ pub struct Layer {
     pub visible: bool,
     pub opacity: f32,
     pub strokes: Vec<Stroke>,
+    #[serde(default)]
+    pub image: Option<ImageLayer>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ImageLayer {
+    pub reference: std::sync::Arc<Reference>,
+    /// Original pixel coordinates to canvas coordinates: a,b,c,d,tx,ty.
+    pub transform: [f32; 6],
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Reference {
+    #[serde(skip)]
+    pub fingerprint: String,
     pub name: String,
     pub image: String,
     pub favorite: bool,
     pub tags: String,
     pub provenance: String,
+    #[serde(default)]
+    pub parent: Option<String>,
+    #[serde(default)]
+    pub prompt: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Document {
@@ -95,6 +109,7 @@ impl Default for Document {
                 visible: true,
                 opacity: 1.,
                 strokes: vec![],
+                image: None,
             }],
             active_layer: 0,
             references: vec![],
@@ -104,6 +119,55 @@ impl Default for Document {
     }
 }
 impl Document {
+    pub fn embedded_image_bytes(&self) -> usize {
+        self.references.iter().map(|r| r.image.len()).sum::<usize>()
+            + self
+                .layers
+                .iter()
+                .filter_map(|l| l.image.as_ref())
+                .map(|i| i.reference.image.len())
+                .sum::<usize>()
+    }
+    pub fn reposition_image_layer(&mut self, dx: f32, dy: f32, scale: f32) -> Result<()> {
+        ensure!(
+            dx.is_finite() && dy.is_finite() && scale.is_finite() && scale > 0.,
+            "Invalid layer movement"
+        );
+        let mut layer = self.layers[self.active_layer].clone();
+        let image = layer
+            .image
+            .as_mut()
+            .context("Select an image layer first")?;
+        let cx = self.width as f32 / 2.;
+        let cy = self.height as f32 / 2.;
+        let t = &mut image.transform;
+        for value in &mut t[..4] {
+            *value *= scale;
+        }
+        t[4] = (t[4] - cx) * scale + cx + dx;
+        t[5] = (t[5] - cy) * scale + cy + dy;
+        ensure!(
+            t.iter().all(|v| v.is_finite() && v.abs() < 1_000_000.)
+                && (t[0] * t[3] - t[1] * t[2]).abs() > 0.000001,
+            "Image scale or position limit reached"
+        );
+        for stroke in &mut layer.strokes {
+            stroke.size = (stroke.size * scale).clamp(0.1, 512.);
+            for point in std::sync::Arc::make_mut(&mut stroke.points) {
+                point.x = (point.x - cx) * scale + cx + dx;
+                point.y = (point.y - cy) * scale + cy + dy;
+                ensure!(
+                    point.x.is_finite()
+                        && point.y.is_finite()
+                        && point.x.abs() < 1_000_000.
+                        && point.y.abs() < 1_000_000.,
+                    "Layer position limit reached"
+                );
+            }
+        }
+        self.layers[self.active_layer] = layer;
+        Ok(())
+    }
     pub fn validate(&self) -> Result<()> {
         ensure!(self.version == 1, "Unsupported project version");
         validate_size(self.width, self.height)?;
@@ -119,11 +183,28 @@ impl Document {
             "Invalid references"
         );
         ensure!(
-            self.references.iter().map(|r| r.image.len()).sum::<usize>() <= 64 * 1024 * 1024,
+            self.embedded_image_bytes() <= 64 * 1024 * 1024,
             "Embedded references exceed 64 MB"
         );
         let mut points = 0;
         for layer in &self.layers {
+            if let Some(image) = &layer.image {
+                ensure!(
+                    image
+                        .transform
+                        .iter()
+                        .all(|v| v.is_finite() && v.abs() < 1_000_000.),
+                    "Invalid image layer transform"
+                );
+                ensure!(
+                    (image.transform[0] * image.transform[3]
+                        - image.transform[1] * image.transform[2])
+                        .abs()
+                        > 0.000001,
+                    "Image layer transform has no area"
+                );
+                decode_reference(&image.reference)?;
+            }
             ensure!(
                 layer.opacity.is_finite() && (0. ..=1.).contains(&layer.opacity),
                 "Invalid layer opacity"
@@ -170,6 +251,15 @@ impl Document {
             let sx = width as f32 / self.width as f32;
             let sy = height as f32 / self.height as f32;
             for layer in &mut self.layers {
+                if let Some(image) = &mut layer.image {
+                    let t = &mut image.transform;
+                    t[0] *= sx;
+                    t[2] *= sx;
+                    t[4] *= sx;
+                    t[1] *= sy;
+                    t[3] *= sy;
+                    t[5] *= sy;
+                }
                 for stroke in &mut layer.strokes {
                     stroke.size = (stroke.size * (sx * sy).sqrt()).clamp(0.1, 512.);
                     for p in std::sync::Arc::make_mut(&mut stroke.points) {
@@ -186,6 +276,10 @@ impl Document {
     pub fn rotate(&mut self) {
         let h = self.height as f32;
         for layer in &mut self.layers {
+            if let Some(image) = &mut layer.image {
+                let [a, b, c, d, x, y] = image.transform;
+                image.transform = [-b, a, -d, c, h - y, x];
+            }
             for stroke in &mut layer.strokes {
                 for p in std::sync::Arc::make_mut(&mut stroke.points) {
                     *p = Point { x: h - p.y, y: p.x };
@@ -196,6 +290,10 @@ impl Document {
     }
     pub fn flip(&mut self) {
         for layer in &mut self.layers {
+            if let Some(image) = &mut layer.image {
+                let [a, b, c, d, x, y] = image.transform;
+                image.transform = [-a, b, -c, d, self.width as f32 - x, y];
+            }
             for stroke in &mut layer.strokes {
                 for p in std::sync::Arc::make_mut(&mut stroke.points) {
                     p.x = self.width as f32 - p.x;
@@ -257,9 +355,19 @@ pub fn load(path: &Path) -> Result<Document> {
         fs::metadata(path)?.len() <= 128 * 1024 * 1024,
         "Project exceeds 128 MB"
     );
-    let doc: Document =
+    let mut doc: Document =
         serde_json::from_slice(&fs::read(path)?).context("Not an Atelier project")?;
     doc.validate()?;
+    for reference in &mut doc.references {
+        let reference = std::sync::Arc::make_mut(reference);
+        reference.fingerprint = crate::library::fingerprint(&reference.image);
+    }
+    for layer in &mut doc.layers {
+        if let Some(image) = &mut layer.image {
+            let reference = std::sync::Arc::make_mut(&mut image.reference);
+            reference.fingerprint = crate::library::fingerprint(&reference.image);
+        }
+    }
     Ok(doc)
 }
 pub fn save(path: &Path, doc: &Document) -> Result<()> {
@@ -301,15 +409,20 @@ pub fn reference_from_bytes(name: String, bytes: &[u8], provenance: String) -> R
     limits.max_alloc = Some(128 * 1024 * 1024);
     reader.limits(limits);
     let decoded = reader.decode().context("Unsupported or damaged image")?;
-    let thumb = thumbnail(decoded, 1600);
-    let mut png = std::io::Cursor::new(Vec::new());
-    thumb.write_to(&mut png, image::ImageFormat::Png)?;
+    ensure!(
+        decoded.width() as u64 * decoded.height() as u64 <= MAX_PIXELS,
+        "Image exceeds 32 megapixels"
+    );
+    let image = STANDARD.encode(bytes);
     Ok(Reference {
+        fingerprint: crate::library::fingerprint(&image),
         name,
-        image: STANDARD.encode(png.into_inner()),
+        image,
         favorite: false,
         tags: String::new(),
         provenance,
+        parent: None,
+        prompt: String::new(),
     })
 }
 pub fn thumbnail(image: DynamicImage, edge: u32) -> DynamicImage {
@@ -327,11 +440,16 @@ pub fn decode_reference(reference: &Reference) -> Result<DynamicImage> {
     let bytes = STANDARD.decode(&reference.image)?;
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
     let mut limits = image::Limits::default();
-    limits.max_image_width = Some(1600);
-    limits.max_image_height = Some(1600);
-    limits.max_alloc = Some(16 * 1024 * 1024);
+    limits.max_image_width = Some(MAX_EDGE);
+    limits.max_image_height = Some(MAX_EDGE);
+    limits.max_alloc = Some(128 * 1024 * 1024);
     reader.limits(limits);
-    Ok(reader.decode()?)
+    let image = reader.decode()?;
+    ensure!(
+        image.width() as u64 * image.height() as u64 <= MAX_PIXELS,
+        "Image exceeds 32 megapixels"
+    );
+    Ok(image)
 }
 pub fn raster(doc: &Document, max_edge: u32, transparent: bool) -> Result<RgbaImage> {
     let scale = (max_edge as f32 / doc.width.max(doc.height) as f32).min(1.);
@@ -342,7 +460,7 @@ pub fn raster(doc: &Document, max_edge: u32, transparent: bool) -> Result<RgbaIm
         output.fill(tiny_skia::Color::from_rgba8(255, 253, 248, 255));
     }
     for layer in doc.layers.iter().filter(|l| l.visible && l.opacity > 0.) {
-        let mut pixels = tiny_skia::Pixmap::new(w, h).context("Could not allocate layer")?;
+        let mut pixels = image_layer_pixels(layer, w, h, scale)?;
         for stroke in &layer.strokes {
             if stroke.points.is_empty() {
                 continue;
@@ -414,6 +532,43 @@ pub fn raster(doc: &Document, max_edge: u32, transparent: bool) -> Result<RgbaIm
         }
     }
     RgbaImage::from_raw(w, h, bytes).context("Invalid raster buffer")
+}
+/// Shared image placement for the CPU exporter and Metal layer initialization.
+pub fn image_layer_pixels(
+    layer: &Layer,
+    width: u32,
+    height: u32,
+    scale: f32,
+) -> Result<tiny_skia::Pixmap> {
+    let mut pixels = tiny_skia::Pixmap::new(width, height).context("Could not allocate layer")?;
+    if let Some(image) = &layer.image {
+        let decoded = decode_reference(&image.reference)?.to_rgba8();
+        let (w, h) = decoded.dimensions();
+        let mut bytes = decoded.into_raw();
+        for p in bytes.chunks_exact_mut(4) {
+            for c in 0..3 {
+                p[c] = ((p[c] as u32 * p[3] as u32 + 127) / 255) as u8;
+            }
+        }
+        let source = tiny_skia::Pixmap::from_vec(
+            bytes,
+            tiny_skia::IntSize::from_wh(w, h).context("Invalid image dimensions")?,
+        )
+        .context("Invalid image pixels")?;
+        let [a, b, c, d, x, y] = image.transform.map(|value| value * scale);
+        pixels.draw_pixmap(
+            0,
+            0,
+            source.as_ref(),
+            &tiny_skia::PixmapPaint {
+                quality: tiny_skia::FilterQuality::Bilinear,
+                ..Default::default()
+            },
+            tiny_skia::Transform::from_row(a, b, c, d, x, y),
+            None,
+        );
+    }
+    Ok(pixels)
 }
 #[cfg(any(test, not(target_os = "macos")))]
 pub fn export(path: &Path, doc: &Document, transparent: bool, quality: u8) -> Result<()> {

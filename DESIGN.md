@@ -724,3 +724,57 @@ not. `cmdbar::prefill` is now the one way a prefilled command reaches the bar: i
 sets the text, retries focus across frames until the bar is visible (a Writer or
 palette handoff switches to the canvas first) and puts the caret after the text;
 `cmdbar::focus_field` is the `/` shortcut's focus-only variant.
+
+### Atelier image workspace and approved Studio artwork · 2026-10-09
+
+Atelier preserves original image bytes and exposes a large fitted/100% workspace
+with zoom/pan, immutable edited versions, branching and parent comparison. Its
+shared library has searchable names/tags, favorites, original import, and explicit
+Open / Reference / Use actions. Use embeds a project copy and its preview; global
+library access remains available after switching studies. Image-backed layers
+support paint, erasing, undo/redo, placement, scaling and normal canvas export.
+Mask drafts have independent stroke undo/redo and durable saves. A failed mask
+write retains the draft, exposes Retry, and blocks image/project replacement and
+Quit until saving succeeds. Model presets have unique control IDs even when
+their generation routes match. Settings uses provider dropdowns and a full-height
+scrolling body with a pinned Save action; successful save closes the panel.
+
+Clipforge owns ordered-reference/mask capability checks and provider payloads.
+Unsupported combinations fail before submission. Masked output preserves source
+dimensions and original pixels outside the painted area. Capabilities differ by
+route; this does not imply every provider/model supports masks or multiple inputs.
+
+Studio's new Import Atelier artwork action previews an approved `.sfart` package,
+lets the person choose its name and Character/Environment/Object role, and adds
+a completed revision through AppState. It performs no inference. Errors remain
+in the shared dialog; successful import closes it. Project identity is checked
+across background work. Normal undo/redo and project persistence own the result.
+Both original image versions and painted canvases can produce approved packages.
+This is the implemented Studio handoff UX; its hosted-provider controls and a
+full Studio art-editing workspace remain separate future work.
+
+Verification used isolated `.svs-e2e/atelier-workflow` data and a disposable macOS
+test bundle. Native interactions exercised full-image fit/100%/pan, parent
+comparison, mask paint/erase/undo/reopen, focused prompt and model typing,
+searchable saved tags, favorites, new-study library reuse, image-layer painting,
+erasing/moving/scaling, provider presets and settings save/close. A read-only test
+library verified visible save failure, retained mask, blocked study switch/Quit,
+and successful Retry after restoring access. At about 1,010 logical pixels wide,
+toolbars wrapped, contained library thumbnails remained accurate, and settings
+kept its footer visible while scrolling. Studio's runnable Dioxus build displayed
+the approved preview, imported an Environment, and removed/restored it with
+undo/redo. Workspace persistence tests cover reopening the saved import.
+
+Automated coverage includes original resolution/alpha, library and project
+round trips, lineage, image-layer transforms/erasing, mask polarity/protected
+pixels, failed draft-write retry, approved packages, and Studio import persistence.
+Ten physical Metal tests include paint/erase image-layer pixels and approved
+canvas export. Clipforge mock HTTP tests verify ordered inputs, mask pixels,
+provider field names, and rejection before submission. Paid-provider output and
+Linux/Windows native UX were not exercised in this pass. See `docs/atelier.md`
+for the bounded image/project/library limits and remaining scope.
+
+Repository checks passed: workspace all-target check and tests, strict Clippy
+for Atelier/Studio/Studio core, formatting, the runnable Studio build through
+xtask, and the signed Atelier macOS bundle. Clipforge's `xtask check`, `xtask ci`
+(including MCP smoke), formatting and strict inference-crate Clippy also passed.

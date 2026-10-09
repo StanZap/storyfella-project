@@ -142,6 +142,8 @@ pub struct Request {
     pub prompt: String,
     pub size: (u32, u32),
     pub source: Option<Arc<Reference>>,
+    pub references: Vec<Arc<Reference>>,
+    pub mask: Option<crate::edit::MaskDraft>,
     pub progress: Option<Box<dyn Fn(String) + Send + Sync>>,
     pub cancel: Arc<AtomicBool>,
 }
@@ -270,6 +272,10 @@ pub fn generate(request: Request) -> Result<Reference> {
     if request.settings.provider != Provider::Comfy {
         return crate::hosted_images::generate(request);
     }
+    ensure!(
+        request.references.is_empty() && request.mask.is_none(),
+        "The ComfyUI workflow adapter does not accept additional references or masks"
+    );
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(300))

@@ -1,119 +1,124 @@
 # Atelier and the shared AI boundary
 
 Atelier is `apps/atelier`, package `storyfella-atelier`, binary `atelier`.
-It is a separate GPUI desktop app in the Storyfella workspace; Studio and Player
-remain Dioxus. The move preserves the current app, including working-tree
-changes, the Metal renderer patch, `.atelier` projects, provider profiles and
-credentials. It does not convert either interface to the other framework.
+It remains a separate GPUI app in the Storyfella workspace. Studio and Player
+remain Dioxus; GUI-free artwork exchange lives in `storyfella-studio-core`.
 
 ## Run and data
-
-From the workspace root:
 
 ```sh
 cargo xtask atelier
 cargo xtask atelier -- --data-dir .svs-e2e/atelier-dev
-cargo test -p storyfella-atelier
+sh apps/atelier/package-macos.sh
 ```
 
-`cargo xtask atelier` builds and runs only the GPUI app with Cargo. Studio's
-`cargo xtask run` continues to use Dioxus; `svs` remains the separate CLI.
-Use `-r` for release, `-l` to tee build/app output to
-`.svs-e2e/logs/atelier-<unix>.log`, and `--` to forward Atelier arguments.
+Atelier is explicitly separate from Studio's `cargo xtask run` and the `svs`
+CLI. The macOS bundle is `dist/atelier/Atelier.app`; its identifier remains
+`com.storyfella.atelier`, its Keychain service remains `Atelier`, and data stays
+in `~/Library/Application Support/Atelier` (macOS) or `~/.local/share/Atelier`.
+The root Cargo patch and vendored GPUI Metal renderer remain in this workspace.
+FineWineTTS retains its separate GPUI renderer patch for its review application.
 
-On macOS, `sh apps/atelier/package-macos.sh` creates
-`dist/atelier/Atelier.app`. The bundle identifier remains
-`com.storyfella.atelier`. The default data directory remains
-`~/Library/Application Support/Atelier` on macOS and `~/.local/share/Atelier`
-on other desktop platforms. The macOS Keychain service remains `Atelier`.
-No existing projects or keys are moved by the repository change.
+## Image workflow
 
-The relocated workspace passed `cargo check --workspace --all-targets`,
-`cargo test --workspace`, `cargo fmt --all -- --check` and Atelier's Clippy
-check on macOS. Atelier's suite passed 33 tests; eight physical Metal tests
-remain opt-in. The macOS development bundle builds and passes strict signature
-verification. Linux CI dependencies were updated; Linux runtime validation
-has not been repeated for this relocation.
+**Library → All projects** is the reusable image collection. Importing there
+stores an immutable original without attaching it to the current study.
+**This project** shows embedded references; **Use** adds a library image to the
+project. Saved projects retain their own copies and do not depend on library
+paths. Search matches names/tags; favorites filter the collection. Open an image
+to edit its global name/tags. Project reference metadata remains project-local.
 
-The root Cargo patch points at `vendor/gpui-pre-apple`; its source, patch record
-and licenses travel with the app. FineWineTTS retains its own renderer patch
-because its review application also uses GPUI.
+Imported and generated originals retain their full dimensions and original
+bytes. Display thumbnails are separate. Old projects that already contain a
+1600 px normalized reference retain those pixels; importing the original file
+again is necessary to recover detail that was previously discarded.
 
-## What is connected now
+**Open** enters the large image workspace: fit, 100%, scroll zoom, pan,
+full-resolution PNG export, versions and a labeled before/after comparison.
+Editing an earlier version creates a branch; the source is kept. Parent identity,
+prompt and provider/model/job provenance are stored alongside library originals.
+Browsing another image while a job runs does not redirect that job or force the
+completed version over the image being inspected.
 
-Atelier owns its sketchbook document, drawing renderer, storage workers and
-generation interface. Replicate, fal.ai, Alibaba and GPT Image requests use
-`clipforge_inference::images::Client`. A thin app adapter resolves the selected
-create/edit model and the existing environment/Keychain credential, owns a
-Tokio runtime on the GPUI worker, then converts original result bytes and
-metadata into a document reference. ComfyUI workflows remain app-local.
-Generated images become references, not editable image layers. The UI uses
-800 px previews and references are normalized to at most 1600 px per edge.
+**Add to canvas** creates an image-backed layer. Draw and erase on that layer,
+change opacity/visibility/order, move it by dragging with **Move layer**, or scale
+it with **Smaller/Larger**. Painted marks move with the image. Placement, deletion
+and painting are undoable. Images participate in full-resolution CPU/Metal
+exports, project saves and artwork rotation/flip/resize.
 
-Studio consumes the sibling `clipforge-inference` crate for native image
-inference, managed llama-server lifecycle and shared chat/vision infrastructure.
-Atelier now consumes that same crate for hosted images. Studio's image runtime
-still uses its native deployment adapter; hosted-provider selection is not
-yet exposed in Studio, and Atelier has no text/vision assistant.
+**Paint mask / Erase mask** create a source-resolution draft with undo/redo.
+Drafts save with their image and reload when it is reopened. **Use mask** sends
+the draft to a supported editing model. The shared API uses white for editable
+pixels and black for protected pixels; Atelier composites protected source pixels
+back into a successful result. A masked result must retain source dimensions.
+Failures preserve the draft and expose **Retry mask save**. Window close waits
+for the latest draft and recovery save; errors keep the app open.
 
-## Shared AI interface
+Use card **Reference** actions to add up to two additional inputs. The selected
+source is Image 1; additional references are Images 2 and 3. New-image generation
+does not use the editing basket. Unsupported mask/multi-reference combinations
+fail before credentials are requested or a paid job is submitted.
 
-Clipforge owns AI execution shared by Studio and Atelier: managed native
-servers, OpenAI-compatible text/vision, provider routing and hosted image
-adapters. Storyfella owns creative intent, artifact/revision history, image
-files and document persistence. UI framework types stay out of the engine.
+| Editing route | Ordered images | Mask |
+| --- | --- | --- |
+| fal Qwen Image 3 edit | up to 3 | no |
+| fal Qwen Edit 2511 | up to 3 | no |
+| Replicate Qwen Edit 2511 | up to 3 | no |
+| fal / Replicate FLUX Fill | 1 | yes |
+| Other current adapters | 1 | no |
 
-`clipforge_inference::images::Client` exposes one async `generate(Request)`
-contract for managed sd-server and the four hosted image APIs. A source image
-selects instruction editing; the result contains original bytes, provider,
-model and an optional submitted job ID. No paid request is automatically retried.
-Polling/download failures retain a known job ID, and cancellation/timeout
-errors report whether a provider accepted cancellation. Native cancellation
-stops waiting; the served sd-server API has no verified per-job cancel endpoint.
+Provider constraints live in Clipforge. fal Qwen Image 3 inputs are made opaque
+on white and must fit its 384–2048 px constraints. Hosted inputs are bounded to
+10 MB; originals may be larger, so choose a suitable route/input rather than
+expecting silent downscaling. Arbitrary provider-specific sampling parameters
+and transparent-output requests are not exposed.
 
-The registry accepts image kinds `sdcpp`, `fal`, `replicate`, `alibaba` and
-`gptimage`. Resolve a client for `t2i` or `edit`; model routes that differ
-between create/edit should be separate provider entries. Hosted credentials
-can be passed as redacted `ApiKey` values or resolved from registry
-`api_key_env`. Atelier keeps the existing `Atelier` Keychain namespace and
-session cache and does not serialize keys into projects or settings.
+## Approved artwork in Studio
 
-Official API origins and model paths are validated before authenticated
-submission. Queue URLs must share the API origin. Image downloads are bounded,
-redirects are disabled and API keys are never sent to image CDNs. Hosted
-requests do not start, stop or evict native servers. The caller owns its runtime
-and output storage; no extra daemon is required.
+Export an inspected version with **Export for Studio**, or export the painted
+canvas from Canvas settings with **Export canvas for Studio**. The portable
+`.sfart` package contains full-resolution artwork, name, prompt and provenance.
+Studio's Canvas gallery offers **Import Atelier artwork**, an image preview,
+editable name and Character/Environment/Object role selection. Import creates
+a completed canonical revision through `AppState`, supports undo/redo and normal
+project persistence, and never calls an inference provider. The review and
+write worker stay bound to the project selected when import began.
 
-This first contract supports one source image and the existing adapter payloads.
-It does not expose masks, multiple references, arbitrary provider parameters
-or native LoRA/sampling overrides (those remain on the lower-level `sd` API).
-Replicate maps the app's three aspect ratios; exact output dimensions are
-provider-dependent. Model presets moved from Atelier into Clipforge without
-changing the existing IDs or making paid calls to verify them.
+The two apps still have different project models. This exchange is an explicit
+approval handoff, not a live synchronization layer. Studio's generation runtime
+still uses its native `sd` deployment adapter; hosted-provider selection and an
+Atelier text/vision assistant are separate future work.
 
-Validation after integration: Storyfella's workspace check/tests and strict
-Atelier/xtask Clippy pass; Clipforge's `cargo xtask ci` passes, including MCP
-smoke tests. Atelier has 28 passing tests and eight opt-in Metal tests; the
-shared inference crate has 65 passing tests. Build-cache exhaustion on macOS
-required clearing only Storyfella's regenerable Cargo incremental cache.
+## Execution and limits
 
-The public hosted client is tested against loopback mock providers for both
-creation and editing, authentication, job polling, inline/CDN images and
-cancellation. Registry checks reject unsupported capabilities and foreign API
-origins. Atelier retains profile migration, settings, credential and ComfyUI
-tests. The Clipforge CLI/MCP image tools still use the native `sd` path; future
-HTTP/MCP exposure can wrap the shared client rather than duplicate adapters.
+`clipforge_inference::images::Client::generate(Request)` owns managed/native and
+hosted image execution, route capabilities, masks/reference wire formats, polling,
+cancellation and bounded downloads. The GPUI worker owns its Tokio runtime;
+Atelier owns Keychain/session caching, files, document history and ComfyUI.
+Hosted services never start/stop native servers. No paid request is automatically
+resubmitted; errors preserve a known job ID. API keys never go to image CDNs.
 
-## Planned art-workspace milestones
+Original limits: 20 MB encoded file, 8192 px per edge, 32 megapixels. Project
+limits: 24 layers, 128 references, 64 MB combined embedded image data. The
+current library is loaded on a worker with a 512 MB encoded in-memory budget;
+it is a local collection, without cloud synchronization or pagination.
 
-1. Preserve full-resolution image originals separately from display previews.
-2. Open a selected image in a large zoomable workspace with editing instructions,
-   before/after comparison, version selection and image export.
-3. Add image-backed canvas layers so a generated image can be painted over.
-4. Add masked edits and multiple references for providers that support them.
-5. Reuse the shared engine and GUI-free behavior in Dioxus Studio; integrate
-   approved artwork with Studio's existing artifact/revision model rather than
-   creating another project store.
+## Verification
 
-The relocation and shared hosted image execution are implemented. The workflow milestones
-remain open, and Atelier's prototype document is distinct from Studio's registry.
+Deterministic fixtures can be prepared without paid APIs:
+`cargo test -p storyfella-atelier prepare_workflow_fixture -- --ignored`.
+They stay in `.svs-e2e/atelier-workflow`.
+
+Tests cover raw originals, project/library round trips, branch families, mask
+draft recovery/corruption, protected pixel compositing, image layers and placement,
+provider rejection, credentials, autosaves and ComfyUI mock execution. Physical
+Metal tests verify image layer color/alpha/erasure/transforms and GPUI texture
+sampling. Studio tests cover approved-package validation, asset storage,
+completed revisions, undo/redo and project reload. Clipforge loopback tests
+verify ordered references and exact mask pixels on both hosted wire formats,
+without real keys or paid calls.
+
+Live macOS checks cover library actions, full-size inspection, fitted comparison,
+zoom/pan, mask paint/erase/undo, field typing, image layer paint/erase, artwork
+export, and Studio's role picker/import/undo/redo. Linux runtime behavior and paid
+provider output quality have not been retested here.

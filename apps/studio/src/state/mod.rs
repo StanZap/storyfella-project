@@ -41,6 +41,52 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub fn import_artwork(
+        &mut self,
+        artwork: &storyfella_studio_core::artwork::ApprovedArtwork,
+        kind: storyfella_studio_core::registry::ArtifactKind,
+        asset_path: String,
+    ) -> Result<Uuid, String> {
+        use storyfella_studio_core::registry::{CreateArtifact, RevisionOrigin};
+        if self.operation_in_progress {
+            return Err("Wait for the current operation before importing artwork.".into());
+        }
+        if !kind.is_visual() || artwork.name.trim().is_empty() {
+            return Err("Choose a character, environment or object and enter a name.".into());
+        }
+        if !std::path::Path::new(&asset_path).is_absolute() {
+            return Err("Imported artwork needs a stored image path.".into());
+        }
+        let mut registry = self.registry.clone();
+        let id = registry
+            .create_artifact(
+                kind,
+                CreateArtifact {
+                    name: artwork.name.trim().to_owned(),
+                    description: artwork.provenance.clone(),
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        let revision = registry
+            .start_revision(
+                id,
+                artwork.prompt.clone(),
+                None,
+                Some("Atelier · approved artwork".into()),
+                RevisionOrigin::Canon,
+            )
+            .map_err(|e| e.to_string())?;
+        registry
+            .finish_revision(id, revision, asset_path)
+            .map_err(|e| e.to_string())?;
+        self.snapshot_for_undo();
+        self.registry = registry;
+        self.has_unsaved_changes = true;
+        self.select_artifact(id);
+        self.reconcile_story();
+        Ok(id)
+    }
     pub fn description_draft(&self, id: Uuid) -> Option<&str> {
         self.description_drafts.get(&id).map(String::as_str)
     }
@@ -456,6 +502,43 @@ impl AppState {
 mod tests {
     use super::{AppState, StoryDocument};
     use storyfella_studio_core::registry::{ArtifactKind, ArtifactRegistry, CreateArtifact};
+    #[test]
+    fn approved_artwork_import_creates_a_completed_revision_with_undo_and_project_persistence() {
+        let artwork = storyfella_studio_core::artwork::ApprovedArtwork {
+            version: 1,
+            name: "Cabin".into(),
+            image: String::new(),
+            prompt: "Sunset".into(),
+            provenance: "Atelier · provider/model/prompt".into(),
+        };
+        let mut state = AppState::default();
+        assert!(state
+            .import_artwork(&artwork, ArtifactKind::Story, "/art/cabin.png".into())
+            .is_err());
+        assert!(state.registry.artifacts.is_empty());
+        assert!(!state.can_undo());
+        let id = state
+            .import_artwork(&artwork, ArtifactKind::Environment, "/art/cabin.png".into())
+            .unwrap();
+        assert!(state.has_unsaved_changes);
+        assert_eq!(state.selected_artifact_id, Some(id));
+        let revision = state.registry.latest_image(id).unwrap();
+        assert_eq!(
+            revision.status,
+            storyfella_studio_core::registry::RevisionStatus::Completed
+        );
+        assert_eq!(revision.prompt, "Sunset");
+        assert_eq!(revision.asset_path.as_deref(), Some("/art/cabin.png"));
+        let path =
+            std::env::temp_dir().join(format!("atelier-handoff-{}.db", uuid::Uuid::new_v4()));
+        let db = storyfella_studio_core::persistence::ProjectDb::open(&path).unwrap();
+        db.save_registry(&state.registry).unwrap();
+        assert_eq!(db.load().unwrap().registry.latest_image(id), Some(revision));
+        state.undo();
+        assert!(state.registry.artifact(id).is_none());
+        state.redo();
+        assert!(state.registry.latest_image(id).is_some());
+    }
 
     fn character_registry(name: &str) -> ArtifactRegistry {
         let mut registry = ArtifactRegistry::default();

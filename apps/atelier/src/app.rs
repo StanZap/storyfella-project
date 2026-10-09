@@ -24,6 +24,8 @@ use std::{
 };
 
 pub enum Picker {
+    Artwork,
+    Original,
     Save,
     Open,
     Import,
@@ -34,6 +36,7 @@ pub enum Picker {
 pub enum Page {
     Draw,
     Library,
+    Image,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
@@ -76,6 +79,32 @@ pub struct CanvasTile {
     pub image: CanvasImage,
 }
 pub struct DrawingApp {
+    pub library: Vec<(Arc<document::Reference>, Arc<RenderImage>)>,
+    pub shared_library: bool,
+    pub library_loading: bool,
+    pub library_error: Option<String>,
+    pub opened_image: Option<(Arc<document::Reference>, Arc<RenderImage>, u32, u32)>,
+    pub opening_image: Option<Arc<document::Reference>>,
+    pub image_zoom: f32,
+    pub image_auto_fit: bool,
+    pub image_pan: DocPoint,
+    pub image_drag: Option<gpui_kit::Point<Pixels>>,
+    pub image_bounds: Rc<Cell<Bounds<Pixels>>>,
+    pub comparing: bool,
+    pub comparison: Option<(String, Arc<RenderImage>, u32, u32)>,
+    pub comparison_requested: Option<String>,
+    pub mask: Option<crate::edit::MaskDraft>,
+    pub mask_tool: Tool,
+    pub mask_size: f32,
+    pub mask_active: bool,
+    pub mask_preview: Option<Arc<RenderImage>>,
+    pub mask_revision: u64,
+    pub mask_dirty: bool,
+    pub mask_save_error: Option<String>,
+    pub mask_redo: Vec<Stroke>,
+    pub use_mask: bool,
+    pub input_references: Vec<Arc<document::Reference>>,
+    pub generation_view_id: Option<String>,
     pub studies: Vec<StudyCard>,
     pub show_studies: bool,
     pub studies_loading: bool,
@@ -95,6 +124,8 @@ pub struct DrawingApp {
     pub stabilize: bool,
     pub active_stroke: bool,
     pub last_pan: Option<gpui_kit::Point<Pixels>>,
+    pub moving_image: bool,
+    pub last_image_point: Option<DocPoint>,
     pub hover: Option<gpui_kit::Point<Pixels>>,
     pub bounds: Rc<Cell<Bounds<Pixels>>>,
     pub tiles: std::collections::HashMap<crate::canvas_renderer::TileKey, CanvasTile>,
@@ -168,7 +199,7 @@ pub struct DrawingApp {
     pub generation_size: usize,
     pub editing_image: bool,
     pub focus: FocusHandle,
-    workers: Workers,
+    pub(crate) workers: Workers,
     subscriptions: Vec<Subscription>,
 }
 impl DrawingApp {
@@ -240,6 +271,32 @@ impl DrawingApp {
             .zip(references.iter().cloned())
             .collect();
         let mut app = Self {
+            library: vec![],
+            shared_library: true,
+            library_loading: false,
+            library_error: None,
+            opened_image: None,
+            opening_image: None,
+            image_zoom: 1.,
+            image_auto_fit: true,
+            image_pan: DocPoint { x: 0., y: 0. },
+            image_drag: None,
+            image_bounds: Rc::new(Cell::new(Bounds::default())),
+            comparing: false,
+            comparison: None,
+            comparison_requested: None,
+            mask: None,
+            mask_tool: Tool::Hand,
+            mask_size: 64.,
+            mask_active: false,
+            mask_preview: None,
+            mask_revision: 0,
+            mask_dirty: false,
+            mask_save_error: None,
+            mask_redo: vec![],
+            use_mask: false,
+            input_references: vec![],
+            generation_view_id: None,
             studies: vec![],
             show_studies: false,
             studies_loading: false,
@@ -292,6 +349,8 @@ impl DrawingApp {
             stabilize: false,
             active_stroke: false,
             last_pan: None,
+            moving_image: false,
+            last_image_point: None,
             hover: None,
             bounds: Rc::new(Cell::new(Bounds::default())),
             tiles: std::collections::HashMap::new(),
@@ -365,6 +424,7 @@ impl DrawingApp {
             subscriptions: vec![],
         };
         app.sync_ref_inputs(window, cx);
+        app.refresh_library();
         for select in [
             &app.generation_provider_select,
             &app.settings_provider_select,
@@ -392,6 +452,10 @@ impl DrawingApp {
                 if !this.closing {
                     this.closing = true;
                     this.finish_stroke();
+                    this.finish_mask();
+                    if this.mask_dirty {
+                        this.save_mask();
+                    }
                     this.queue_save(this.data_dir.join("recovery.atelier"), true);
                     cx.notify();
                 }
@@ -401,6 +465,7 @@ impl DrawingApp {
         });
         app.subscriptions.push(cx.on_app_quit(|this, cx| {
             this.finish_stroke();
+            this.finish_mask();
             let path = this.data_dir.join("recovery.atelier");
             let (ack, rx) = mpsc::channel();
             let _ = this.workers.storage.send(Storage::Save {
@@ -433,6 +498,10 @@ impl DrawingApp {
         if !self.closing {
             self.closing = true;
             self.finish_stroke();
+            self.finish_mask();
+            if self.mask_dirty {
+                self.save_mask();
+            }
             self.queue_save(self.data_dir.join("recovery.atelier"), true);
             cx.notify();
         }
@@ -458,6 +527,7 @@ impl DrawingApp {
     pub fn finish_stroke(&mut self) {
         self.active_stroke = false;
         self.last_pan = None;
+        self.last_image_point = None;
     }
     pub fn size(&self) -> f32 {
         if self.tool == Tool::Eraser {
@@ -531,6 +601,28 @@ impl DrawingApp {
         self.sync_ref_inputs(window, cx);
     }
     pub fn edit_reference(&mut self, cx: &mut Context<Self>) {
+        if self.page == Page::Image {
+            let name = self.ref_name.read(cx).value().trim().to_owned();
+            let tags = self.ref_tags.read(cx).value().to_string();
+            if name.is_empty() || name.len() > 512 || tags.len() > 32_768 {
+                self.message(
+                    "Enter a name (up to 512 bytes) and tags (up to 32 KB)",
+                    true,
+                );
+                return;
+            }
+            if let Some((reference, _, _, _)) = &mut self.opened_image {
+                let reference = Arc::make_mut(reference);
+                reference.name = name;
+                reference.tags = tags;
+                let _ = self.workers.storage.send(Storage::LibraryUpdate(
+                    self.data_dir.join("library"),
+                    Arc::new(reference.clone()),
+                    crate::library::Update::Details,
+                ));
+            }
+            return;
+        }
         if let Some(i) = self.doc.reference {
             let name = self.ref_name.read(cx).value().trim().to_owned();
             let tags = self.ref_tags.read(cx).value().to_string();
@@ -542,6 +634,11 @@ impl DrawingApp {
             let reference = Arc::make_mut(&mut self.doc.references[i]);
             reference.name = name;
             reference.tags = tags;
+            let _ = self.workers.storage.send(Storage::LibraryUpdate(
+                self.data_dir.join("library"),
+                self.doc.references[i].clone(),
+                crate::library::Update::Details,
+            ));
             self.changed();
         }
     }
@@ -555,7 +652,23 @@ impl DrawingApp {
         self.checkpoint();
         let reference = Arc::make_mut(&mut self.doc.references[index]);
         reference.favorite = !reference.favorite;
+        let _ = self.workers.storage.send(Storage::LibraryUpdate(
+            self.data_dir.join("library"),
+            self.doc.references[index].clone(),
+            crate::library::Update::Favorite,
+        ));
         self.changed();
+    }
+    pub fn toggle_library_favorite(&mut self, index: usize) {
+        if let Some((reference, _)) = self.library.get_mut(index) {
+            let updated = Arc::make_mut(reference);
+            updated.favorite = !updated.favorite;
+            let _ = self.workers.storage.send(Storage::LibraryUpdate(
+                self.data_dir.join("library"),
+                reference.clone(),
+                crate::library::Update::Favorite,
+            ));
+        }
     }
     pub fn remove_reference(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(i) = self.doc.reference {
@@ -601,7 +714,7 @@ impl DrawingApp {
         }
     }
     pub fn new_document(&mut self, _: &mut Window, _: &mut Context<Self>) {
-        if self.switching {
+        if !self.prepare_project_switch() {
             return;
         }
         self.finish_stroke();
@@ -639,7 +752,7 @@ impl DrawingApp {
         }
     }
     pub fn open_study(&mut self, path: PathBuf) {
-        if self.switching {
+        if !self.prepare_project_switch() {
             return;
         }
         self.finish_stroke();
@@ -664,6 +777,21 @@ impl DrawingApp {
             self.message("Storage worker stopped", true);
         }
     }
+    fn prepare_project_switch(&mut self) -> bool {
+        if self.switching {
+            return false;
+        }
+        self.finish_mask();
+        if self.mask_save_error.is_some() {
+            self.page = Page::Image;
+            self.message("Save the current mask before switching projects", true);
+            return false;
+        }
+        if self.mask_dirty {
+            self.save_mask();
+        }
+        self.mask_save_error.is_none()
+    }
     pub fn add_layer(&mut self) {
         if self.doc.layers.len() >= 24 {
             self.message("Maximum 24 layers", true);
@@ -675,6 +803,7 @@ impl DrawingApp {
             visible: true,
             opacity: 1.,
             strokes: vec![],
+            image: None,
         });
         self.doc.active_layer = self.doc.layers.len() - 1;
         self.changed();
@@ -749,6 +878,17 @@ impl DrawingApp {
         window.focus(&self.focus, cx);
         self.finish_stroke();
         self.tablet.drain();
+        if self.tool == Tool::Hand
+            && self.moving_image
+            && event.button == MouseButton::Left
+            && self.doc.layers[self.doc.active_layer].image.is_some()
+        {
+            if let Some(point) = self.doc_point(event.position) {
+                self.history.checkpoint(&self.doc);
+                self.last_image_point = Some(point);
+            }
+            return;
+        }
         if self.tool == Tool::Hand || event.button == MouseButton::Middle {
             self.last_pan = Some(event.position);
             return;
@@ -797,6 +937,26 @@ impl DrawingApp {
     ) {
         self.hover = Some(event.position);
         self.pen_pressure = pressure;
+        if let Some(last) = self.last_image_point {
+            if event.dragging() {
+                if let Some(point) = self.doc_point(event.position) {
+                    match self
+                        .doc
+                        .reposition_image_layer(point.x - last.x, point.y - last.y, 1.)
+                    {
+                        Ok(()) => {
+                            self.last_image_point = Some(point);
+                            self.changed();
+                        }
+                        Err(error) => self.message(error.to_string(), true),
+                    }
+                }
+            } else {
+                self.last_image_point = None;
+            }
+            cx.notify();
+            return;
+        }
         if let Some(last) = self.last_pan {
             if event.pressed_button.is_some() {
                 self.view.pan.x += f32::from(event.position.x - last.x);
@@ -963,12 +1123,7 @@ impl DrawingApp {
                 self.message("Choose a hosted provider to edit an image", true);
                 return;
             }
-            match self
-                .doc
-                .reference
-                .and_then(|i| self.doc.references.get(i))
-                .cloned()
-            {
+            match self.edit_source() {
                 Some(source) => Some(source),
                 None => {
                     self.message("Select an image from your collection to edit", true);
@@ -978,6 +1133,64 @@ impl DrawingApp {
         } else {
             None
         };
+        let references: Vec<_> = if self.editing_image {
+            self.input_references
+                .iter()
+                .filter(|r| source.as_ref().is_none_or(|source| r.image != source.image))
+                .cloned()
+                .collect()
+        } else {
+            vec![]
+        };
+        let mask = if self.editing_image && self.use_mask {
+            match (&source, &self.opened_image, &self.mask) {
+                (Some(source), Some((opened, _, _, _)), Some(mask))
+                    if source.image == opened.image =>
+                {
+                    Some(mask.clone())
+                }
+                _ => {
+                    self.generation_error = Some(
+                        "Open the selected image to paint its editing mask, or turn off Use mask."
+                            .into(),
+                    );
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        if let Some(provider) = self.settings.provider.hosted() {
+            let model = if self.editing_image {
+                &self.settings.edit_model
+            } else {
+                &self.settings.model
+            };
+            match clipforge_inference::images::HostedDeployment::new(provider, model) {
+                Ok(deployment) => {
+                    if references.len() + usize::from(source.is_some())
+                        > deployment.max_reference_images()
+                    {
+                        self.generation_error = Some("This model accepts only one input image. Choose Qwen Edit 2511 for multiple references, or remove the extra references.".into());
+                        return;
+                    }
+                    if mask.is_some() && !deployment.supports_mask() {
+                        self.generation_error = Some("This model does not accept masks. Choose FLUX Fill in Settings, or turn off Use mask.".into());
+                        return;
+                    }
+                    if deployment.supports_mask()
+                        && mask.as_ref().is_none_or(|mask| mask.strokes.is_empty())
+                    {
+                        self.generation_error = Some("FLUX Fill needs an editing mask. Open the image and paint the area to change.".into());
+                        return;
+                    }
+                }
+                Err(error) => {
+                    self.generation_error = Some(error.to_string());
+                    return;
+                }
+            }
+        }
         let prompt = self.prompt.read(cx).value().to_string();
         if prompt.trim().is_empty() {
             self.message(
@@ -994,18 +1207,28 @@ impl DrawingApp {
         self.generation_error = None;
         self.job_id += 1;
         self.job_epoch = self.epoch;
+        self.generation_view_id = self
+            .opened_image
+            .as_ref()
+            .filter(|_| self.page == Page::Image)
+            .map(|(r, _, _, _)| crate::library::id(r));
         worker::generate(
             providers::Request {
                 settings: self.settings.clone(),
                 prompt,
-                size: [(1024, 1024), (1536, 1024), (1024, 1536)][self.generation_size],
+                size: mask
+                    .as_ref()
+                    .map(|mask| (mask.width, mask.height))
+                    .unwrap_or([(1024, 1024), (1536, 1024), (1024, 1536)][self.generation_size]),
                 source,
+                references,
+                mask,
                 progress: None,
                 cancel: cancel.clone(),
             },
             self.job_id,
             self.workers.sender.clone(),
-            self.data_dir.join("generated"),
+            self.data_dir.clone(),
         );
         self.generation = Some(cancel);
         self.message(
@@ -1062,11 +1285,19 @@ impl DrawingApp {
     pub fn pick(&mut self, picker: Picker, window: &mut Window, cx: &mut Context<Self>) {
         self.finish_stroke();
         let epoch = self.epoch;
+        let import_into_project = self.page != Page::Library || !self.shared_library;
+        let export_image = self.opened_image.as_ref().map(|(r, _, _, _)| r.clone());
+        let export_canvas =
+            (self.page != Page::Image).then(|| (self.doc.clone(), self.transparent));
         let entity = cx.weak_entity();
         match picker {
-            Picker::Save | Picker::Export => {
+            Picker::Save | Picker::Export | Picker::Original | Picker::Artwork => {
                 let suggested = if matches!(picker, Picker::Save) {
                     "Untitled.atelier"
+                } else if matches!(picker, Picker::Artwork) {
+                    "Approved.sfart"
+                } else if matches!(picker, Picker::Original) {
+                    "Original.png"
                 } else if self.jpeg {
                     "Study.jpg"
                 } else {
@@ -1092,6 +1323,39 @@ impl DrawingApp {
                                             path.set_extension("atelier");
                                         }
                                         this.queue_save(path, false);
+                                    } else if matches!(picker, Picker::Artwork) {
+                                        if path.extension().is_none() {
+                                            path.set_extension("sfart");
+                                        }
+                                        if let Some((doc, transparent)) = &export_canvas {
+                                            let _ =
+                                                this.workers.storage.send(Storage::CanvasArtwork(
+                                                    doc.clone(),
+                                                    path,
+                                                    *transparent,
+                                                ));
+                                            this.message(
+                                                "Exporting approved canvas artwork…",
+                                                false,
+                                            );
+                                        } else if let Some(reference) = &export_image {
+                                            let _ = this
+                                                .workers
+                                                .storage
+                                                .send(Storage::Artwork(reference.clone(), path));
+                                            this.message("Exporting approved artwork…", false);
+                                        }
+                                    } else if matches!(picker, Picker::Original) {
+                                        if path.extension().is_none() {
+                                            path.set_extension("png");
+                                        }
+                                        if let Some(reference) = &export_image {
+                                            let _ = this
+                                                .workers
+                                                .storage
+                                                .send(Storage::Original(reference.clone(), path));
+                                            this.message("Exporting original…", false);
+                                        }
                                     } else {
                                         if path.extension().is_none() {
                                             path.set_extension(if this.jpeg {
@@ -1135,41 +1399,29 @@ impl DrawingApp {
                     .spawn(cx, async move |cx| {
                         let result = receiver.await;
                         let _ = entity.update_in(cx, |this, _, cx| {
-                            if epoch != this.epoch {
+                            if epoch != this.epoch && import_into_project {
                                 return;
                             }
                             match result {
                                 Ok(Ok(Some(paths))) if !paths.is_empty() => match picker {
                                     Picker::Open => {
-                                        let archive = this.data_dir.join("sessions").join(format!(
-                                            "before-open-{}.atelier",
-                                            std::time::SystemTime::now()
-                                                .duration_since(std::time::UNIX_EPOCH)
-                                                .unwrap_or_default()
-                                                .as_millis()
-                                        ));
-                                        this.switching = this
-                                            .workers
-                                            .storage
-                                            .send(Storage::Switch {
-                                                epoch: this.epoch,
-                                                previous: this.doc.clone(),
-                                                archive,
-                                                next: Some(paths[0].clone()),
-                                            })
-                                            .is_ok();
+                                        this.open_study(paths[0].clone());
                                     }
                                     Picker::Import => {
-                                        if this.doc.references.len() + paths.len() > 128 {
+                                        if import_into_project
+                                            && this.doc.references.len() + paths.len() > 128
+                                        {
                                             this.message(
                                                 "Maximum 128 references per project",
                                                 true,
                                             );
                                         } else {
-                                            let _ = this
-                                                .workers
-                                                .storage
-                                                .send(Storage::Import(epoch, paths));
+                                            let _ = this.workers.storage.send(Storage::Import(
+                                                epoch,
+                                                paths,
+                                                this.data_dir.join("library"),
+                                                import_into_project,
+                                            ));
                                             this.message("Importing references…", false);
                                         }
                                     }
@@ -1207,6 +1459,12 @@ impl DrawingApp {
         }
     }
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.page == Page::Image && self.image_auto_fit && self.opened_image.is_some() {
+            let bounds = self.image_bounds.get();
+            if f32::from(bounds.size.width) > 48. && f32::from(bounds.size.height) > 48. {
+                self.image_fit();
+            }
+        }
         self.tablet_samples(cx);
         let mut refresh = false;
         while let Ok(event) = self.workers.events.try_recv() {
@@ -1332,7 +1590,11 @@ impl DrawingApp {
                             if epoch == self.epoch {
                                 if automatic && path == self.data_dir.join("recovery.atelier") {
                                     self.autosaved_revision = revision;
-                                    if self.closing && revision == self.revision {
+                                    if self.closing
+                                        && revision == self.revision
+                                        && !self.mask_dirty
+                                        && self.mask_save_error.is_none()
+                                    {
                                         window.remove_window();
                                         return;
                                     }
@@ -1367,6 +1629,12 @@ impl DrawingApp {
                     if epoch != self.epoch {
                         continue;
                     }
+                    // Mask writes precede the switch on the storage queue. Keep
+                    // the current study and draft if that write failed.
+                    if self.mask_save_error.is_some() {
+                        self.page = Page::Image;
+                        continue;
+                    }
                     match result {
                         Ok((doc, images, path)) => {
                             self.finish_stroke();
@@ -1394,16 +1662,146 @@ impl DrawingApp {
                         Err(e) => self.message(format!("Could not switch studies: {e}"), true),
                     }
                 }
-                Event::Imported(epoch, result) => {
+                Event::Library(result) => {
+                    self.library_loading = false;
+                    match result {
+                        Ok(items) => {
+                            self.library = items
+                                .into_iter()
+                                .map(|(reference, image)| {
+                                    (Arc::new(reference), worker::render_image(image))
+                                })
+                                .collect()
+                        }
+                        Err(error) => {
+                            self.library_error = Some(format!("Could not load library: {error:#}"))
+                        }
+                    }
+                }
+                Event::LibraryUpdated(result) => match result {
+                    Ok(()) => self.refresh_library(),
+                    Err(error) => {
+                        self.library_error =
+                            Some(format!("Library details were not saved: {error:#}"));
+                        self.message(format!("Library details were not saved: {error:#}"), true);
+                    }
+                },
+                Event::OpenedImage(id, result) => {
+                    if self
+                        .opening_image
+                        .as_ref()
+                        .is_some_and(|r| crate::library::id(r) == id)
+                    {
+                        let reference = self.opening_image.take().expect("Matched pending image");
+                        match result {
+                            Ok((image, draft)) => {
+                                let width = image.width();
+                                let height = image.height();
+                                if let Some((_, old, _, _)) = self.opened_image.take() {
+                                    let _ = window.drop_image(old);
+                                }
+                                self.opened_image =
+                                    Some((reference, worker::render_image(image), width, height));
+                                if let Some((reference, _, _, _)) = &self.opened_image {
+                                    self.ref_name.update(cx, |s, cx| {
+                                        s.set_value(reference.name.clone(), window, cx)
+                                    });
+                                    self.ref_tags.update(cx, |s, cx| {
+                                        s.set_value(reference.tags.clone(), window, cx)
+                                    });
+                                }
+                                self.mask = Some(draft);
+                                self.mask_dirty = false;
+                                self.mask_save_error = None;
+                                if let Some(old) = self.mask_preview.take() {
+                                    let _ = window.drop_image(old);
+                                }
+                                self.generation_size = if width > height {
+                                    1
+                                } else if height > width {
+                                    2
+                                } else {
+                                    0
+                                };
+                                self.mask_redo.clear();
+                                self.use_mask = false;
+                                self.refresh_mask_preview();
+                                self.image_fit();
+                            }
+                            Err(error) => {
+                                self.message(format!("Could not open image: {error:#}"), true)
+                            }
+                        }
+                    }
+                }
+                Event::ComparedImage(id, result) => {
+                    if self.comparison_requested.as_ref() == Some(&id) {
+                        self.comparison_requested = None;
+                        match result {
+                            Ok(image) => {
+                                let (width, height) = image.dimensions();
+                                if let Some((_, old, _, _)) = self.comparison.take() {
+                                    let _ = window.drop_image(old);
+                                }
+                                self.comparison =
+                                    Some((id, worker::render_image(image), width, height));
+                                self.comparing = true;
+                            }
+                            Err(error) => self.message(
+                                format!("Could not open original version: {error:#}"),
+                                true,
+                            ),
+                        }
+                    }
+                }
+                Event::MaskSaved(id, revision, result) => match result {
+                    Ok(()) => {
+                        if revision == self.mask_revision
+                            && self
+                                .opened_image
+                                .as_ref()
+                                .is_some_and(|(r, _, _, _)| crate::library::id(r) == id)
+                        {
+                            self.mask_dirty = false;
+                            self.mask_save_error = None;
+                        }
+                    }
+                    Err(error) => {
+                        let message = format!("Mask save failed: {error:#}. Check disk space and retry saving the mask.");
+                        self.mask_save_error = Some(message.clone());
+                        self.closing = false;
+                        self.opening_image = None;
+                        self.message(message, true);
+                    }
+                },
+                Event::MaskPreview(revision, result) => {
+                    if revision == self.mask_revision {
+                        match result {
+                            Ok(image) => {
+                                if let Some(old) = self.mask_preview.take() {
+                                    let _ = window.drop_image(old);
+                                }
+                                self.mask_preview = Some(worker::render_image(image));
+                            }
+                            Err(error) => {
+                                self.message(format!("Mask preview failed: {error:#}"), true)
+                            }
+                        }
+                    }
+                }
+                Event::Imported(epoch, into_project, result) => {
+                    self.refresh_library();
+                    if !into_project || epoch != self.epoch {
+                        match result {
+                            Ok(_) => self.message("Images saved to shared library", false),
+                            Err(error) => self.message(format!("Import failed: {error:#}"), true),
+                        }
+                        continue;
+                    }
                     if epoch == self.epoch {
                         match result {
                             Ok(refs) => {
-                                let total = self
-                                    .doc
-                                    .references
-                                    .iter()
-                                    .map(|r| r.image.len())
-                                    .sum::<usize>()
+                                let total = self.doc.embedded_image_bytes()
                                     + refs.iter().map(|(r, _)| r.image.len()).sum::<usize>();
                                 if self.doc.references.len() + refs.len() > 128
                                     || total > 64 * 1024 * 1024
@@ -1433,6 +1831,7 @@ impl DrawingApp {
                     }
                 }
                 Event::Generated(id, result) => {
+                    self.refresh_library();
                     if id == self.job_id {
                         let cancelled = self
                             .generation
@@ -1448,13 +1847,7 @@ impl DrawingApp {
                                 Ok((reference, image)) => {
                                     if self.job_epoch == self.epoch
                                         && self.doc.references.len() < 128
-                                        && self
-                                            .doc
-                                            .references
-                                            .iter()
-                                            .map(|r| r.image.len())
-                                            .sum::<usize>()
-                                            + reference.image.len()
+                                        && self.doc.embedded_image_bytes() + reference.image.len()
                                             <= 64 * 1024 * 1024
                                     {
                                         self.checkpoint();
@@ -1462,14 +1855,24 @@ impl DrawingApp {
                                         let image = worker::render_image(image);
                                         self.reference_cache
                                             .push((reference.clone(), image.clone()));
-                                        self.doc.references.push(reference);
+                                        self.doc.references.push(reference.clone());
                                         self.references.push(image);
                                         self.doc.reference = Some(self.doc.references.len() - 1);
                                         self.changed();
                                         self.sync_ref_inputs(window, cx);
-                                        self.message("Reference ready", false);
+                                        if self.page == Page::Image
+                                            && self.opened_image.as_ref().is_some_and(
+                                                |(r, _, _, _)| {
+                                                    self.generation_view_id.as_ref()
+                                                        == Some(&crate::library::id(r))
+                                                },
+                                            )
+                                        {
+                                            self.open_image(reference, cx);
+                                        }
+                                        self.message("Image ready · original and new version saved to library", false);
                                     } else {
-                                        self.message("Reference saved in the generated folder after switching projects",true);
+                                        self.message("Image saved to the shared library; this project was not changed",false);
                                     }
                                 }
                                 Err(e) => {
@@ -1556,6 +1959,41 @@ impl DrawingApp {
         }
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
+        if self.page == Page::Image {
+            if modifiers.platform || modifiers.control {
+                if key != "z" {
+                    return;
+                }
+                self.undo_mask(modifiers.shift);
+            } else {
+                match key {
+                    "b" => {
+                        self.finish_mask();
+                        self.mask_tool = Tool::Pencil;
+                    }
+                    "e" => {
+                        self.finish_mask();
+                        self.mask_tool = Tool::Eraser;
+                    }
+                    "h" | "escape" => {
+                        self.finish_mask();
+                        self.mask_tool = Tool::Hand;
+                    }
+                    "0" => self.image_fit(),
+                    "1" => {
+                        self.image_auto_fit = false;
+                        self.image_zoom = 1.;
+                        self.image_pan = DocPoint { x: 0., y: 0. };
+                    }
+                    "[" => self.mask_size = (self.mask_size * 0.8).clamp(1., 512.),
+                    "]" => self.mask_size = (self.mask_size * 1.25).clamp(1., 512.),
+                    _ => return,
+                }
+            }
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if modifiers.platform || modifiers.control {
             match key {
                 "z" => {
@@ -1597,7 +2035,6 @@ impl DrawingApp {
                     self.view.mirror = !self.view.mirror;
                     self.view_changed();
                 }
-                "tab" => self.dock = !self.dock,
                 "escape" => {
                     self.finish_stroke();
                     self.panel = Panel::None;

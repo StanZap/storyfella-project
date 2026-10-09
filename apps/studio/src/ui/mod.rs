@@ -1,3 +1,4 @@
+mod artwork_import;
 pub mod canvas;
 mod close;
 mod cmdbar;
@@ -509,7 +510,7 @@ pub fn Workspace(
                 // are excluded from focus and accessibility by the native attribute.
                 div { hidden: screen() != AppScreen::Projects, class: "h-full", Projects { config: config.clone(), app_state, on_open: move |_| screen.set(AppScreen::Canvas) } }
                 div { hidden: screen() != AppScreen::Writer, class: "h-full", Writer { app_state } }
-                div { hidden: screen() != AppScreen::Canvas, class: "h-full", Canvas { app_state, backend, defaults } }
+                div { hidden: screen() != AppScreen::Canvas, class: "h-full", Canvas { app_state, backend, defaults, asset_directory: config.asset_dir.join("generated") } }
                 div { hidden: screen() != AppScreen::Preview, class: "h-full", preview::Preview { app_state } }
                 div { hidden: screen() != AppScreen::Plans, class: "h-full", Plans { on_run: on_run_plan, running: app_state.read().operation_in_progress() || session.read().as_ref().is_some_and(|run| matches!(run.state, driver::GuideState::Running)) } }
                 div { hidden: screen() != AppScreen::Settings, class: "h-full", Settings { config: config.clone(), backend, defaults } }

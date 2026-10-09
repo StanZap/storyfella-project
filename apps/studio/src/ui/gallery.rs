@@ -132,6 +132,7 @@ pub fn Gallery(
     /// The keyboard cursor, as an index into [`ordered_ids`].
     cursor: Signal<usize>,
     disabled: bool,
+    asset_directory: std::path::PathBuf,
 ) -> Element {
     let (filter_id, filter_mount) = super::text_input::use_text_value(filter(), None);
     let registry = app_state.read().registry.clone();
@@ -177,6 +178,7 @@ pub fn Gallery(
     rsx! {
         div { class: "min-h-0 w-full flex-1 overflow-y-auto",
             div { class: "sticky top-0 z-10 flex items-center gap-3 border-b border-white/[0.05] bg-zinc-950/80 px-6 py-3 backdrop-blur-xl",
+                super::artwork_import::ArtworkImport { app_state, asset_directory, disabled }
                 p { class: "text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-600",
                     "Artifacts · {result_count} shown"
                 }

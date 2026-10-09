@@ -474,6 +474,45 @@ impl Renderer {
             self.layers = (0..doc.layers.len()).map(|_| HashMap::new()).collect();
             self.bytes = 0;
             self.presented.clear();
+            for (layer, item) in doc
+                .layers
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| l.image.is_some())
+            {
+                let pixels = crate::document::image_layer_pixels(item, doc.width, doc.height, 1.)?;
+                let image = image::RgbaImage::from_raw(doc.width, doc.height, pixels.take())
+                    .context("Invalid image layer pixels")?;
+                for y in (0..doc.height).step_by(TILE as usize) {
+                    for x in (0..doc.width).step_by(TILE as usize) {
+                        let width = TILE.min(doc.width - x);
+                        let height = TILE.min(doc.height - y);
+                        let bytes = width as usize * height as usize * 12;
+                        ensure!(self.bytes + bytes <= CACHE_BYTES, "Image layers exceed the 768 MiB GPU cache. Reduce canvas size or remove a layer.");
+                        let part =
+                            image::imageops::crop_imm(&image, x, y, width, height).to_image();
+                        let painted = self.texture(width, height, MTLPixelFormat::RGBA8Unorm);
+                        painted.replace_region(
+                            MTLRegion::new_2d(0, 0, width as u64, height as u64),
+                            0,
+                            part.as_ptr().cast(),
+                            width as u64 * 4,
+                        );
+                        let base = self.texture(width, height, MTLPixelFormat::RGBA8Unorm);
+                        let coverage = self.texture(width, height, MTLPixelFormat::R32Float);
+                        self.layers[layer].insert(
+                            TileKey(x / TILE, y / TILE),
+                            LayerTile {
+                                base,
+                                painted,
+                                coverage,
+                                stroke: None,
+                            },
+                        );
+                        self.bytes += bytes;
+                    }
+                }
+            }
         }
         let queue = self.queue.clone();
         let command = queue.new_command_buffer();
@@ -572,7 +611,8 @@ fn can_append(old: &Document, new: &Document) -> bool {
         && old.height == new.height
         && old.layers.len() == new.layers.len()
         && old.layers.iter().zip(&new.layers).all(|(a, b)| {
-            a.strokes.len() <= b.strokes.len()
+            a.image == b.image
+                && a.strokes.len() <= b.strokes.len()
                 && a.strokes.iter().enumerate().all(|(i, s)| {
                     let n = &b.strokes[i];
                     if std::sync::Arc::ptr_eq(&s.points, &n.points)
@@ -733,6 +773,7 @@ mod tests {
                 visible: true,
                 opacity: 0.5,
                 strokes: vec![line(490., 200., Brush::Ink)],
+                image: None,
             });
             renderer.render(&doc, Viewport::default(), false).unwrap();
             let mut eraser = line(490., 200., Brush::Ink);
@@ -796,6 +837,71 @@ mod tests {
             let values: std::collections::HashSet<_> =
                 (20..100).map(|x| image.get_pixel(x, 48)[0]).collect();
             assert!(values.len() > 20);
+        });
+    }
+    #[test]
+    #[ignore = "Requires a physical Metal device"]
+    fn metal_image_layers_preserve_color_alpha_erase_and_transforms() {
+        objc2::rc::autoreleasepool(|_| {
+            let original = image::RgbaImage::from_pixel(128, 96, image::Rgba([20, 80, 180, 128]));
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            original
+                .write_to(&mut bytes, image::ImageFormat::Png)
+                .unwrap();
+            let reference = crate::document::reference_from_bytes(
+                "Imported".into(),
+                &bytes.into_inner(),
+                "Metal image layer test".into(),
+            )
+            .unwrap();
+            let mut doc = Document {
+                width: 128,
+                height: 96,
+                ..Document::default()
+            };
+            doc.layers[0].image = Some(crate::document::ImageLayer {
+                reference: std::sync::Arc::new(reference),
+                transform: [1., 0., 0., 1., 0., 0.],
+            });
+            let mut renderer = Renderer::new().unwrap();
+            let actual = renderer.export(&doc, true).unwrap();
+            for (a, b) in actual
+                .get_pixel(64, 48)
+                .0
+                .into_iter()
+                .zip([20u8, 80, 180, 128])
+            {
+                assert!(a.abs_diff(b) <= 1);
+            }
+            let mut eraser = line(10., 48., Brush::Ink);
+            std::sync::Arc::make_mut(&mut eraser.points)[1].x = 110.;
+            eraser.tool = Tool::Eraser;
+            eraser.size = 20.;
+            eraser.opacity = 1.;
+            doc.layers[0].strokes.push(eraser);
+            let erased = renderer.export(&doc, true).unwrap();
+            assert_eq!(erased.get_pixel(64, 48)[3], 0);
+            assert_eq!(erased.get_pixel(64, 20)[3], 128);
+            doc.layers[0].strokes.clear();
+            for step in 0..3 {
+                match step {
+                    0 => doc.rotate(),
+                    1 => doc.flip(),
+                    _ => {
+                        doc.resize(192, 192, true).unwrap();
+                    }
+                }
+                let reused = renderer.export(&doc, true).unwrap();
+                let fresh = Renderer::new().unwrap().export(&doc, true).unwrap();
+                assert_eq!(reused, fresh);
+                let cpu = crate::document::raster(&doc, 192, true).unwrap();
+                assert_eq!(reused.dimensions(), cpu.dimensions());
+                for (gpu, cpu) in reused.pixels().zip(cpu.pixels()) {
+                    for (a, b) in gpu.0.into_iter().zip(cpu.0) {
+                        assert!(a.abs_diff(b) <= 2);
+                    }
+                }
+            }
         });
     }
     #[test]
@@ -1022,6 +1128,7 @@ mod tests {
                         visible: true,
                         opacity: 0.7,
                         strokes: vec![],
+                        image: None,
                     });
                 }
                 for i in 0..400 {

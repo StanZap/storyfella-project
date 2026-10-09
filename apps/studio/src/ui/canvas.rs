@@ -57,6 +57,7 @@ pub fn Canvas(
     app_state: Signal<AppState>,
     backend: Signal<CreativeBackend>,
     defaults: Signal<storyfella_studio_core::registry::GenerationDefaults>,
+    asset_directory: std::path::PathBuf,
 ) -> Element {
     // Owned by the Workspace: the composer's text is the same signal the
     // automation driver types into (a `compose` step writes it visibly).
@@ -316,6 +317,7 @@ pub fn Canvas(
                     cursor: grid_cursor,
                     composer,
                     disabled,
+                    asset_directory: asset_directory.clone(),
                 }
             } else {
                 Detail {

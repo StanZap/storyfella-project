@@ -1,11 +1,15 @@
 mod app;
 mod canvas_renderer;
 mod document;
+mod edit;
+mod editor;
+mod editor_ui;
 #[cfg(target_os = "macos")]
 mod gpu_canvas;
 #[cfg(target_os = "macos")]
 mod gpu_surface;
 mod hosted_images;
+mod library;
 mod providers;
 mod stroke_curve;
 mod tablet;
@@ -46,7 +50,6 @@ fn main() {
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
-            cx.on_action(|_: &Quit, cx| cx.quit());
             cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
             cx.set_menus([Menu::new("Atelier").items([MenuItem::action("Quit Atelier", Quit)])]);
             gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Light, None, cx);

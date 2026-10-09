@@ -20,6 +20,12 @@ pub struct Study {
     pub note: String,
 }
 pub enum Event {
+    Library(Result<Vec<(Reference, RgbaImage)>>),
+    OpenedImage(String, Result<(RgbaImage, crate::edit::MaskDraft)>),
+    ComparedImage(String, Result<RgbaImage>),
+    MaskSaved(String, u64, Result<()>),
+    LibraryUpdated(Result<()>),
+    MaskPreview(u64, Result<RgbaImage>),
     Studies(Result<Vec<Study>>),
     Raster(u64, Result<crate::canvas_renderer::TileBatch>),
     Saved {
@@ -31,7 +37,7 @@ pub enum Event {
     },
     Exported(Result<PathBuf>),
     Switched(u64, Result<(Document, Vec<RgbaImage>, Option<PathBuf>)>),
-    Imported(u64, Result<Vec<(Reference, RgbaImage)>>),
+    Imported(u64, bool, Result<Vec<(Reference, RgbaImage)>>),
     Generated(u64, Result<(Reference, RgbaImage)>),
     GenerationProgress(u64, String),
     Workflow(Result<serde_json::Value>),
@@ -39,6 +45,14 @@ pub enum Event {
     SettingsApplied(Result<()>),
 }
 pub enum Storage {
+    Artwork(Arc<Reference>, PathBuf),
+    CanvasArtwork(Document, PathBuf, bool),
+    Library(PathBuf, Vec<Arc<Reference>>),
+    LibraryUpdate(PathBuf, Arc<Reference>, crate::library::Update),
+    OpenImage(Arc<Reference>, PathBuf),
+    CompareImage(Arc<Reference>),
+    MaskDraft(PathBuf, String, u64, crate::edit::MaskDraft),
+    Original(Arc<Reference>, PathBuf),
     Save {
         doc: Document,
         path: PathBuf,
@@ -53,13 +67,14 @@ pub enum Storage {
         archive: PathBuf,
         next: Option<PathBuf>,
     },
-    Import(u64, Vec<PathBuf>),
+    Import(u64, Vec<PathBuf>, PathBuf, bool),
     Workflow(PathBuf),
     Settings(providers::Settings, PathBuf),
     ApplySettings(providers::Settings, PathBuf, Option<String>),
     Barrier(Sender<()>),
 }
 pub struct Workers {
+    pub mask: Sender<(u64, crate::edit::MaskDraft)>,
     pub storage: Sender<Storage>,
     pub render: Sender<(u64, Document, Viewport, bool)>,
     pub events: Receiver<Event>,
@@ -67,11 +82,136 @@ pub struct Workers {
 }
 pub fn start() -> Workers {
     let (sender, events) = mpsc::channel();
+    let (mask, mask_queue) = mpsc::channel::<(u64, crate::edit::MaskDraft)>();
+    let mask_sender = sender.clone();
+    std::thread::spawn(move || {
+        while let Ok(mut pending) = mask_queue.recv() {
+            while let Ok(next) = mask_queue.try_recv() {
+                pending = next;
+            }
+            let (revision, draft) = pending;
+            if mask_sender
+                .send(Event::MaskPreview(revision, draft.preview(1024)))
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
     let (storage, queue) = mpsc::channel();
     let tx = sender.clone();
     std::thread::spawn(move || {
         while let Ok(command) = queue.recv() {
             let event = match command {
+                Storage::Artwork(reference, path) => Event::Exported((|| {
+                    storyfella_studio_core::artwork::ApprovedArtwork {
+                        version: 1,
+                        name: reference.name.clone(),
+                        image: reference.image.clone(),
+                        prompt: reference.prompt.clone(),
+                        provenance: reference.provenance.clone(),
+                    }
+                    .save(&path)?;
+                    Ok(path)
+                })()),
+                Storage::CanvasArtwork(doc, path, transparent) => Event::Exported((|| {
+                    #[cfg(target_os = "macos")]
+                    let image = objc2::rc::autoreleasepool(|_| {
+                        crate::gpu_canvas::Renderer::new()?.export(&doc, transparent)
+                    })?;
+                    #[cfg(not(target_os = "macos"))]
+                    let image = document::raster(&doc, doc.width.max(doc.height), transparent)?;
+                    let mut bytes = std::io::Cursor::new(Vec::new());
+                    image.write_to(&mut bytes, image::ImageFormat::Png)?;
+                    let reference = document::reference_from_bytes(
+                        doc.title,
+                        &bytes.into_inner(),
+                        "Approved Atelier canvas · image layers and painted artwork".into(),
+                    )?;
+                    storyfella_studio_core::artwork::ApprovedArtwork {
+                        version: 1,
+                        name: reference.name,
+                        image: reference.image,
+                        prompt: doc.note,
+                        provenance: reference.provenance,
+                    }
+                    .save(&path)?;
+                    Ok(path)
+                })(
+                )),
+                Storage::Library(directory, references) => Event::Library((|| {
+                    for reference in references {
+                        crate::library::store(&directory, &reference)?;
+                    }
+                    crate::library::load(&directory)?
+                        .into_iter()
+                        .map(|reference| {
+                            let image =
+                                document::thumbnail(document::decode_reference(&reference)?, 360)
+                                    .to_rgba8();
+                            Ok((reference, image))
+                        })
+                        .collect()
+                })()),
+                Storage::LibraryUpdate(directory, reference, update) => {
+                    Event::LibraryUpdated(crate::library::update(&directory, &reference, update))
+                }
+                Storage::OpenImage(reference, directory) => Event::OpenedImage(
+                    crate::library::id(&reference),
+                    (|| {
+                        let image = document::decode_reference(&reference)?.to_rgba8();
+                        let path =
+                            directory.join(format!("{}.mask", crate::library::id(&reference)));
+                        let draft = if path.exists() {
+                            anyhow::ensure!(
+                                std::fs::metadata(&path)?.len() <= 16 * 1024 * 1024,
+                                "Mask draft exceeds 16 MB"
+                            );
+                            let draft: crate::edit::MaskDraft =
+                                serde_json::from_slice(&std::fs::read(&path)?)?;
+                            draft.validate()?;
+                            anyhow::ensure!(
+                                (draft.width, draft.height) == image.dimensions(),
+                                "Saved mask dimensions do not match the image"
+                            );
+                            draft
+                        } else {
+                            crate::edit::MaskDraft {
+                                width: image.width(),
+                                height: image.height(),
+                                strokes: vec![],
+                            }
+                        };
+                        Ok((image, draft))
+                    })(),
+                ),
+                Storage::CompareImage(reference) => Event::ComparedImage(
+                    crate::library::id(&reference),
+                    document::decode_reference(&reference).map(|image| image.to_rgba8()),
+                ),
+                Storage::MaskDraft(directory, id, revision, draft) => Event::MaskSaved(
+                    id.clone(),
+                    revision,
+                    (|| {
+                        draft.validate()?;
+                        anyhow::ensure!(
+                            id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()),
+                            "Invalid mask identifier"
+                        );
+                        document::atomic_write(
+                            &directory.join(format!("{id}.mask")),
+                            &serde_json::to_vec(&draft)?,
+                        )
+                    })(),
+                ),
+                Storage::Original(reference, path) => Event::Exported((|| {
+                    document::export_image(
+                        &path,
+                        document::decode_reference(&reference)?.to_rgba8(),
+                        95,
+                    )?;
+                    Ok(path)
+                })()),
                 Storage::Save {
                     doc,
                     path,
@@ -126,8 +266,9 @@ pub fn start() -> Workers {
                         Ok((doc, images, next))
                     })(),
                 ),
-                Storage::Import(epoch, paths) => Event::Imported(
+                Storage::Import(epoch, paths, directory, into_project) => Event::Imported(
                     epoch,
+                    into_project,
                     (|| {
                         let mut refs = vec![];
                         for path in paths {
@@ -156,9 +297,16 @@ pub fn start() -> Workers {
                                 refs.iter()
                                     .map(|(reference, _)| reference.image.len())
                                     .sum::<usize>()
-                                    <= 64 * 1024 * 1024,
-                                "Selected references exceed 64 MB"
+                                    <= if into_project {
+                                        64 * 1024 * 1024
+                                    } else {
+                                        512 * 1024 * 1024
+                                    },
+                                "Selected images exceed the import size limit"
                             );
+                        }
+                        for (reference, _) in &refs {
+                            crate::library::store(&directory, reference)?;
                         }
                         Ok(refs)
                     })(),
@@ -217,6 +365,7 @@ pub fn start() -> Workers {
         }
     });
     Workers {
+        mask,
         storage,
         render,
         events,
@@ -237,11 +386,37 @@ pub(crate) fn apply_settings(
 }
 pub fn generate(mut request: Request, id: u64, sender: Sender<Event>, directory: PathBuf) {
     std::thread::spawn(move || {
+        let originals: Vec<_> = request
+            .source
+            .iter()
+            .chain(&request.references)
+            .cloned()
+            .collect();
+        let mask = request.mask.clone();
+        let source = request.source.clone();
+        let parent = request
+            .source
+            .as_ref()
+            .map(|source| crate::library::id(source));
+        let prompt = request.prompt.clone();
         let progress_sender = sender.clone();
         request.progress = Some(Box::new(move |message| {
             let _ = progress_sender.send(Event::GenerationProgress(id, message));
         }));
-        let result = providers::generate(request).and_then(|reference| {
+        let result = (|| {
+            for original in &originals {
+                crate::library::store(&directory.join("library"), original)?;
+            }
+            providers::generate(request)
+        })()
+        .and_then(|mut reference| {
+            if let (Some(mask), Some(source)) = (&mask, &source) {
+                reference = mask.composite(source, &reference)?;
+            }
+            reference.parent = parent;
+            reference.prompt = prompt;
+            crate::library::store(&directory.join("library"), &reference)?;
+            let directory = directory.join("generated");
             let decoded = document::decode_reference(&reference)?;
             let image = document::thumbnail(decoded.clone(), 800).to_rgba8();
             let stem = format!(

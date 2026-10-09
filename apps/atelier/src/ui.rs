@@ -16,10 +16,10 @@ use gpui_kit::{
 };
 use std::time::Duration;
 
-const WINE: u32 = 0x790e26;
+pub(crate) const WINE: u32 = 0x790e26;
 const INK: u32 = 0x201d26;
 const MUTED: u32 = 0x756b79;
-const BORDER: u32 = 0xe1dce5;
+pub(crate) const BORDER: u32 = 0xe1dce5;
 const SURFACE: u32 = 0xf7f6f8;
 pub fn panel() -> Div {
     div()
@@ -28,13 +28,13 @@ pub fn panel() -> Div {
         .border_color(rgb(BORDER))
         .rounded_lg()
 }
-fn row() -> Div {
+pub(crate) fn row() -> Div {
     div().flex().items_center().gap_2()
 }
-fn column() -> Div {
+pub(crate) fn column() -> Div {
     div().flex().flex_col().gap_3()
 }
-fn label(text: impl Into<SharedString>) -> Div {
+pub(crate) fn label(text: impl Into<SharedString>) -> Div {
     div().text_xs().text_color(rgb(MUTED)).child(text.into())
 }
 fn separator() -> Div {
@@ -74,7 +74,7 @@ fn icon(name: &str) -> Icon {
     };
     Icon::default().data(format!("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'>{path}</svg>").as_bytes())
 }
-fn tool_button(id: impl Into<ElementId>, name: &str, tooltip: &'static str) -> Button {
+pub(crate) fn tool_button(id: impl Into<ElementId>, name: &str, tooltip: &'static str) -> Button {
     Button::new(id)
         .ghost()
         .small()
@@ -83,7 +83,7 @@ fn tool_button(id: impl Into<ElementId>, name: &str, tooltip: &'static str) -> B
         .tooltip(tooltip)
 }
 
-trait AtelierSelection {
+pub(crate) trait AtelierSelection {
     fn atelier_selected(self, selected: bool, cx: &App) -> Self;
 }
 impl AtelierSelection for Button {
@@ -110,10 +110,10 @@ fn field(name: &'static str, input: &Entity<InputState>) -> Div {
 
 impl DrawingApp {
     pub fn render_workspace(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let main = if self.page == Page::Draw {
-            self.draw_workspace(cx).into_any_element()
-        } else {
-            self.library(cx).into_any_element()
+        let main = match self.page {
+            Page::Draw => self.draw_workspace(cx).into_any_element(),
+            Page::Library => self.library(cx).into_any_element(),
+            Page::Image => self.image_workspace(cx).into_any_element(),
         };
         let overlay = match self.panel {
             Panel::Brushes => Some(self.brush_settings(cx)),
@@ -185,6 +185,7 @@ impl DrawingApp {
                     .label("Draw")
                     .atelier_selected(self.page == Page::Draw, cx)
                     .on_click(cx.listener(|this, _, window, cx| {
+                        this.finish_mask();
                         this.page = Page::Draw;
                         window.focus(&this.focus, cx);
                         cx.notify();
@@ -198,6 +199,7 @@ impl DrawingApp {
                     .atelier_selected(self.page == Page::Library, cx)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.finish_stroke();
+                        this.finish_mask();
                         this.page = Page::Library;
                         cx.notify();
                     })),
@@ -425,7 +427,7 @@ impl DrawingApp {
                     })),
             )
             .child(
-                tool_button("dock", "panel", "Toggle panels · Tab")
+                tool_button("dock", "panel", "Toggle panels")
                     .atelier_selected(self.dock, cx)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.dock = !this.dock;
@@ -977,6 +979,15 @@ impl DrawingApp {
                         })),
                 ),
         );
+        if self.doc.layers[self.doc.active_layer].image.is_some() {
+            layers = layers.child(label("Image layer · move, scale, draw or erase"))
+                .child(row().flex_wrap()
+                    .child(Button::new("move-image-layer").ghost().small().label("Move layer").atelier_selected(self.moving_image && self.tool == Tool::Hand,cx)
+                        .on_click(cx.listener(|this,_,_,cx| { this.finish_stroke(); this.moving_image = !this.moving_image; this.tool = Tool::Hand; cx.notify(); })))
+                    .children([("smaller-image-layer","Smaller",0.8),("larger-image-layer","Larger",1.25)].into_iter().map(|(id,label,scale)| Button::new(id).small().label(label)
+                        .on_click(cx.listener(move |this,_,_,cx| { this.checkpoint(); match this.doc.reposition_image_layer(0.,0.,scale) { Ok(()) => this.changed(), Err(error) => this.message(error.to_string(),true) } cx.notify(); })))))
+                .child(label("Move layer: drag on the canvas. Scale keeps painted marks aligned. Undo restores the previous placement."));
+        }
         dock.child(layers).child(self.practice(cx))
     }
     fn practice(&self, cx: &mut Context<Self>) -> Div {
@@ -1074,13 +1085,27 @@ impl DrawingApp {
     fn library_navigation(&self, cx: &mut Context<Self>) -> Div {
         row()
             .child(
+                Button::new("library-shared")
+                    .ghost()
+                    .small()
+                    .label("All projects")
+                    .atelier_selected(self.shared_library && !self.show_studies, cx)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.show_studies = false;
+                        this.shared_library = true;
+                        this.refresh_library();
+                        cx.notify();
+                    })),
+            )
+            .child(
                 Button::new("library-references")
                     .ghost()
                     .small()
-                    .label("References")
-                    .atelier_selected(!self.show_studies, cx)
+                    .label("This project")
+                    .atelier_selected(!self.shared_library && !self.show_studies, cx)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.show_studies = false;
+                        this.shared_library = false;
                         cx.notify();
                     })),
             )
@@ -1201,59 +1226,136 @@ impl DrawingApp {
             .flex_wrap()
             .content_start()
             .gap_4();
-        for (i, reference) in self.doc.references.iter().enumerate().filter(|(_, r)| {
+        let items: Vec<_> = if self.shared_library {
+            self.library
+                .iter()
+                .map(|(reference, image)| (reference.clone(), image.clone()))
+                .collect()
+        } else {
+            self.doc
+                .references
+                .iter()
+                .cloned()
+                .zip(self.references.iter().cloned())
+                .collect()
+        };
+        for (i, (reference, image)) in items.iter().enumerate().filter(|(_, (r, _))| {
             (!self.favorite_filter || r.favorite)
                 && format!("{} {}", r.name, r.tags)
                     .to_lowercase()
                     .contains(&query)
         }) {
-            if let Some(image) = self.references.get(i) {
+            {
+                let open = reference.clone();
                 cards = cards.child(
                     panel()
                         .w(px(218.))
                         .overflow_hidden()
-                        .when(self.doc.reference == Some(i), |p| p.border_color(rgb(WINE)))
+                        .when(!self.shared_library && self.doc.reference == Some(i), |p| {
+                            p.border_color(rgb(WINE))
+                        })
                         .child(
                             div()
                                 .id(format!("reference-image-{i}"))
                                 .h(px(190.))
                                 .w_full()
+                                .overflow_hidden()
                                 .cursor_pointer()
                                 .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.select_reference(i, window, cx);
+                                    if !this.shared_library {
+                                        this.select_reference(i, window, cx);
+                                    }
+                                    this.open_image(open.clone(), cx);
                                     cx.notify();
                                 }))
-                                .child(img(image.clone()).size_full().object_fit(ObjectFit::Cover)),
+                                .child(
+                                    img(image.clone())
+                                        .size_full()
+                                        .object_fit(ObjectFit::Contain),
+                                ),
                         )
                         .child(
-                            row()
-                                .px_2()
-                                .py_2()
+                            column()
+                                .gap_1()
                                 .child(
-                                    div()
-                                        .flex_1()
-                                        .overflow_hidden()
-                                        .child(reference.name.clone()),
+                                    row()
+                                        .px_2()
+                                        .py_2()
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .overflow_hidden()
+                                                .child(reference.name.clone()),
+                                        )
+                                        .child(
+                                            tool_button(
+                                                format!("favorite-{i}"),
+                                                "heart",
+                                                "Favorite image",
+                                            )
+                                            .atelier_selected(reference.favorite, cx)
+                                            .on_click(
+                                                cx.listener(move |this, _, _, cx| {
+                                                    if this.shared_library {
+                                                        this.toggle_library_favorite(i);
+                                                    } else {
+                                                        this.toggle_favorite(i);
+                                                    }
+                                                    cx.notify();
+                                                }),
+                                            ),
+                                        ),
                                 )
                                 .child(
-                                    tool_button(
-                                        format!("favorite-{i}"),
-                                        "heart",
-                                        "Favorite reference",
-                                    )
-                                    .atelier_selected(reference.favorite, cx)
-                                    .on_click(cx.listener(
-                                        move |this, _, _, cx| {
-                                            this.toggle_favorite(i);
-                                            cx.notify();
-                                        },
-                                    )),
+                                    row()
+                                        .px_2()
+                                        .pb_2()
+                                        .child(
+                                            Button::new(format!("open-image-{i}"))
+                                                .ghost()
+                                                .small()
+                                                .label("Open")
+                                                .on_click(cx.listener({
+                                                    let reference = reference.clone();
+                                                    move |this, _, _, cx| {
+                                                        this.open_image(reference.clone(), cx)
+                                                    }
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new(format!("input-reference-{i}"))
+                                                .ghost()
+                                                .small()
+                                                .label("Reference")
+                                                .tooltip("Add as an additional AI reference")
+                                                .on_click(cx.listener({
+                                                    let reference = reference.clone();
+                                                    move |this, _, _, cx| {
+                                                        this.add_input_reference(reference.clone());
+                                                        cx.notify();
+                                                    }
+                                                })),
+                                        )
+                                        .when(self.shared_library, |row| {
+                                            row.child(
+                                                Button::new(format!("use-library-{i}"))
+                                                    .small()
+                                                    .label("Use")
+                                                    .tooltip("Use as a reference in this project")
+                                                    .on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            this.use_library_image(i, window, cx);
+                                                            cx.notify();
+                                                        },
+                                                    )),
+                                            )
+                                        }),
                                 ),
                         ),
                 );
             }
         }
-        if self.doc.references.is_empty() {
+        if items.is_empty() && !self.library_loading {
             cards = cards.child(
                 column()
                     .w_full()
@@ -1285,7 +1387,7 @@ impl DrawingApp {
                                 div()
                                     .text_xl()
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child("References"),
+                                    .child("Image library"),
                             )
                             .child(div().flex_1())
                             .child(
@@ -1308,8 +1410,12 @@ impl DrawingApp {
                     )
                     .child(self.library_navigation(cx))
                     .child(Input::new(&self.search))
+                    .when(self.shared_library, |p| p.child(label("Originals available across every Atelier project. Click an image to open; Use adds it to this project.")))
+                    .when(self.library_loading, |p| p.child(label("Loading library…")))
+                    .when_some(self.library_error.as_ref(), |p, error| p.child(label(error.clone()).text_color(rgb(WINE))))
+                    .when(self.library_error.is_some(), |p| p.child(Button::new("library-retry").small().label("Retry library").on_click(cx.listener(|this, _, _, cx| { this.refresh_library(); cx.notify(); }))))
                     .child(cards)
-                    .child(label(format!("{} references", self.doc.references.len()))),
+                    .child(label(format!("{} images", items.len()))),
             )
             .child(self.generate_panel(cx))
     }
@@ -1326,7 +1432,7 @@ impl DrawingApp {
                 .w_full(),
         )
     }
-    fn generate_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn generate_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut content =
             column()
                 .id("generate-panel")
@@ -1393,7 +1499,7 @@ impl DrawingApp {
                                 .atelier_selected(self.editing_image, cx)
                                 .disabled(
                                     !self.settings.provider.supports_edit()
-                                        || self.doc.reference.is_none()
+                                        || self.edit_source().is_none()
                                         || self.edit_model.read(cx).value().trim().is_empty(),
                                 )
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -1403,16 +1509,18 @@ impl DrawingApp {
                         ),
                 )
                 .child(label(if self.editing_image {
-                    self.doc
-                        .reference
-                        .and_then(|i| self.doc.references.get(i))
+                    self.edit_source()
                         .map(|r| format!("Editing: {} · original is kept", r.name))
                         .unwrap_or_else(|| "Select an image to edit".into())
                 } else {
                     "Describe an image to create".into()
                 }))
                 .when(self.editing_image, |p| {
+                    let profile = clipforge_inference::images::HostedDeployment::new(self.settings.provider.hosted().unwrap_or(clipforge_inference::images::HostedProvider::Fal), self.edit_model.read(cx).value().trim());
+                    let capabilities = profile.map(|p| format!("Up to {} input image(s) · {}",p.max_reference_images(), if p.supports_mask() { "mask supported" } else { "whole-image editing" })).unwrap_or_else(|_| "Check the editing model in Settings".into());
                     p.child(label("Describe what to change and what to keep."))
+                        .child(label(capabilities))
+                        .when(self.use_mask, |p| p.child(label("Masked edits keep the source dimensions and preserve pixels outside the mask.")))
                 })
                 .when(
                     self.editing_image
@@ -1437,6 +1545,7 @@ impl DrawingApp {
                                 .small()
                                 .label(label)
                                 .atelier_selected(self.generation_size == i, cx)
+                                .disabled(self.editing_image && self.use_mask)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.generation_size = i;
                                     cx.notify();
@@ -1459,7 +1568,7 @@ impl DrawingApp {
                         })
                         .disabled(
                             self.generation.is_some()
-                                || (self.editing_image && self.doc.reference.is_none()),
+                                || (self.editing_image && self.edit_source().is_none()),
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.generate(cx);
@@ -1491,6 +1600,50 @@ impl DrawingApp {
                     )
                 })
                 .child(separator());
+        if !self.input_references.is_empty() {
+            content = content.child(label("Additional references · source is Image 1"));
+            for (i, reference) in self.input_references.iter().enumerate() {
+                content = content.child(
+                    row()
+                        .child(label(format!("Image {}: {}", i + 2, reference.name)))
+                        .child(
+                            Button::new(format!("remove-input-{i}"))
+                                .ghost()
+                                .small()
+                                .label("Remove")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.input_references.remove(i);
+                                    cx.notify();
+                                })),
+                        ),
+                );
+            }
+            if !self.editing_image {
+                content = content.child(label("Select Edit selected to use reference inputs."));
+            }
+        }
+        if self.page == Page::Image {
+            if let Some(reference) = self.edit_source() {
+                content = content
+                    .child(label("Library image details"))
+                    .child(field("Name", &self.ref_name))
+                    .child(field("Tags", &self.ref_tags))
+                    .child(
+                        Button::new("library-image-details")
+                            .small()
+                            .label("Save library details")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.edit_reference(cx);
+                                cx.notify();
+                            })),
+                    )
+                    .child(label(reference.provenance.clone()));
+                if !reference.prompt.is_empty() {
+                    content = content.child(label(format!("Version prompt: {}", reference.prompt)));
+                }
+            }
+            return content;
+        }
         if let Some(i) = self.doc.reference.filter(|i| *i < self.references.len()) {
             content = content
                 .child(
@@ -1509,7 +1662,7 @@ impl DrawingApp {
                         )
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.editing_image = true;
-                            this.prompt.update(cx, |s, cx| s.set_value("", window, cx));
+                            this.prompt.update(cx, |s, cx| s.focus(window, cx));
                             cx.notify();
                         })),
                 )
@@ -1866,6 +2019,13 @@ impl DrawingApp {
                     ),
             )
             .child(
+                Button::new("canvas-export-studio")
+                    .label("Export canvas for Studio…")
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.pick(Picker::Artwork, window, cx)),
+                    ),
+            )
+            .child(
                 Button::new("save-as")
                     .ghost()
                     .small()
@@ -1891,7 +2051,7 @@ impl DrawingApp {
                 .child(label("Model presets"))
                 .child(column().children(provider.presets().into_iter().map(
                     |(name, model, edit)| {
-                        Button::new(format!("preset-{model}"))
+                        Button::new(format!("preset-{model}-{edit}"))
                             .ghost()
                             .small()
                             .label(name)
@@ -2019,7 +2179,7 @@ impl DrawingApp {
                 [
                     "B Pencil · E Eraser · H Pan",
                     "[ / ] Brush size · R Rotate view · F Mirror",
-                    "0 Fit view · Tab Hide panels",
+                    "0 Fit view · Tab Move keyboard focus",
                     "⌘Z Undo · ⇧⌘Z Redo · ⌘S Save",
                     "⌘O Open · ⇧⌘S Save as",
                     "Scroll Pan · ⌘Scroll / pinch Zoom",
