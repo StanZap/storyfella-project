@@ -125,8 +125,8 @@ generation never unloads them. There is a single generation profile —
 `qwen-image-2.1` — so there is no profile switching.
 
 Residency is a **launch-time** choice (`sd::Residency`), set per `sdcpp`
-provider in `storyfella.toml` under `residency`, or in Settings → Image
-generation → Residency. There is no unload endpoint, so changing it restarts
+provider in `storyfella.toml` under `residency`, or in Settings → Services →
+Residency. There is no unload endpoint, so changing it restarts
 the server; the Settings control persists the choice and restarts a running
 server into the new mode.
 
@@ -165,7 +165,7 @@ provisions each artifact of the image deployment's `model_root()` whose
 cargo run -p svs-cli --bin model_setup
 ```
 
-The app drives the same call from Settings → Image generation → **Model files**
+The app drives the same call from Settings → Services → **Model files**
 (`storyfella_studio_core::runtime::provision_image_model`, over the same `ModelStore`), listing
 each artifact with its size, presence, and a byte-counted progress bar — so a
 first run does not need a terminal.
@@ -192,7 +192,7 @@ LoRA directory; absolute paths and parent traversal are rejected (see
 
 ## Health status checks
 
-The Settings **Status** section probes every service the application depends on
+The Settings **Models** and **Services** pages probe every service the application depends on
 (`crates/studio-core/src/runtime/health.rs`, triggered by `Settings` in `apps/studio/src/ui/settings.rs`). The
 checks are read-only: they never start or stop a process and never download
 anything. Each probe runs with a short timeout and reports one of four states:
@@ -206,21 +206,30 @@ anything. Each probe runs with a short timeout and reports one of four states:
 
 | Service | Probe | Reported as |
 | --- | --- | --- |
-| LLM endpoint | `GET /v1/models` | `Online` when reachable **and** the configured model is loaded; `Degraded` when reachable but the model is not; `Offline` when unreachable |
+| LLM endpoint (text or vision) | `GET /v1/models` | `Online` when reachable **and** the configured model is loaded; `Degraded` when reachable but the model is not; `Idle` when the provider is a managed `llamacpp` server that is not running (it starts on demand); `Offline` when an external endpoint is unreachable |
 | Image generation (Qwen-Image-2.1) | `sd-server` binary, profile artifacts on disk, process state, `GET /sdcpp/v1/capabilities` | `Offline` when the binary is missing or the resident server is unreachable; `Degraded` when the model artifacts are missing (`run model_setup`); `Online` when the resident backend reports the profile's model; `Idle` when the process is on-demand and not started |
 
-The checks run in parallel (`tokio::join!`); the Status section shows the
-last-checked time and can be re-run with **Check now** or the **Test
-connection** button in Intelligence.
+The checks run in parallel (`tokio::join!`); the **Models** and **Services** pages
+each show the last-checked time and a single **Check now** that re-probes every
+service. The image-engine card on **Services** also carries the
+start/stop/restart/take-over actions.
 
 ### On-demand start and stop
 
-The Status section controls the local runtime (`apps/studio/src/ui/settings.rs`,
-`operate_service`):
+The **Services** page controls the local processes (`apps/studio/src/ui/settings.rs`,
+`operate_service` for the image engine, `on_chat_operate` for chat):
 
 - **Image generation** — `Start` runs `ensure_profile_ready` (starts `sd-server`
-  and waits for the model to be resident); `Stop` kills the native server.
-- **LLM endpoint** has no controls: it is external.
+  and waits for the model to be resident); `Stop` kills the native server; the
+  card also offers `Restart` and `Take over`.
+- **Chat servers** — each managed `llamacpp` provider gets `Start`/`Stop`/`Restart`
+  (`CreativeBackend::start_chat_server` / `stop_chat_server` /
+  `restart_chat_server`), so its `llama-server` can be booted from the app and its
+  `/v1/models` list fetched. An `openai` provider has no controls: it is
+  external. The same servers are also started on demand — the planner via
+  `ensure_planner_ready` before an LLM call, vision via a `VisionSession` for an
+  eval — and `stop_chat_servers` stops every managed chat server before a
+  generation, so no chat model shares the card with the image engine.
 
 While an operation runs, its row shows a spinner and the other buttons are
 disabled. When it finishes — successfully or not — a fresh health check runs

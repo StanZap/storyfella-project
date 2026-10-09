@@ -16,7 +16,7 @@ Empty as of 2026-10-01. Every item landed:
    provider, chosen in Settings, with the measured tradeoff in
    `docs/runtime-lifecycle.md`.
 3. Hermetic runs — `--plan` runs read/write scratch config under `.svs-e2e/`.
-4. Surface provisioning — Settings → Image generation → Model files downloads
+4. Surface provisioning — Settings → Services → Model files downloads
    with progress; the pinned manifest was verified against the live HF repo.
 5. Prewarm toggle — start the server when a project opens.
 6. Graceful shutdown — bounded stop at exit, including the check-mode exit.

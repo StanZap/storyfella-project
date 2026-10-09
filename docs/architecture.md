@@ -263,7 +263,7 @@ look becomes its own artifact.
 
 Rust does not start `sd-server` at app launch; the shell reports it as idle
 until a generation request triggers `ensure_profile_ready` — or until it is
-started manually from the Settings Status section (see
+started manually from the Settings **Services** page (see
 [`runtime-lifecycle.md`](runtime-lifecycle.md)).
 
 Only one model can be resident: Qwen-Image-2.1 peaks at ≈23.4 GiB on a 24 GiB

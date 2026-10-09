@@ -1,7 +1,11 @@
 //! The live [`GenerationBackend`]: `CreativeRuntime` for generation,
 //! `LlmClient` for the soft LLM steps.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use clipforge_inference::sd::GenerateRequest;
+use clipforge_inference::{llama, ManagedChatServer};
 use futures_util::future::BoxFuture;
 
 use crate::{
@@ -55,16 +59,41 @@ fn generate_context(
     context
 }
 
+/// The managed `llama-server` each chat provider launches, by provider id, and
+/// the `text` provider id (the planner's server is started on demand).
+fn chat_supervision(config: &AppConfig) -> (HashMap<String, ManagedChatServer>, Option<String>) {
+    let servers = config
+        .chat_providers
+        .iter()
+        .filter_map(|provider| {
+            provider
+                .deployment
+                .server
+                .clone()
+                .map(|server| (provider.id.clone(), server))
+        })
+        .collect();
+    (servers, config.text_provider_id.clone())
+}
+
 /// The real backend the CLI (and the canvas) executes pipelines against.
 #[derive(Clone)]
 pub struct CreativeBackend {
     runtime: CreativeRuntime,
     llm: Option<LlmClient>,
+    /// The `text` provider id, so a planner call can start its managed server.
+    text_provider_id: Option<String>,
+    /// What each `llamacpp` chat provider launches, by provider id. An external
+    /// endpoint has no entry.
+    managed_servers: HashMap<String, ManagedChatServer>,
+    /// The managed chat servers this app started, by provider id. An
+    /// `Arc<Mutex<…>>` so a `spawn`ed task and the UI share the same handles.
+    running_servers: Arc<Mutex<HashMap<String, Arc<llama::Runtime>>>>,
 }
 
 impl PartialEq for CreativeBackend {
-    /// The runtime is the identity — the LLM client is a soft dependency
-    /// that does not affect reactivity.
+    /// The runtime is the identity — the LLM client and the managed chat
+    /// servers are soft dependencies that do not affect reactivity.
     fn eq(&self, other: &Self) -> bool {
         self.runtime == other.runtime
     }
@@ -72,11 +101,15 @@ impl PartialEq for CreativeBackend {
 
 impl CreativeBackend {
     pub fn new(config: &AppConfig) -> Self {
+        let (managed_servers, text_provider_id) = chat_supervision(config);
         Self {
             runtime: CreativeRuntime::new(config),
             llm: config
                 .planner_config()
                 .and_then(|config| LlmClient::new(config).ok()),
+            text_provider_id,
+            managed_servers,
+            running_servers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -112,18 +145,127 @@ impl CreativeBackend {
         self.llm.is_some()
     }
 
-    /// The model identifier the planner currently requests (the Settings
-    /// picker shows this; `None` when no LLM client was built).
+    /// The model identifier the planner currently requests; `None` when no LLM
+    /// client was built (no provider serves `text`).
     pub fn llm_model(&self) -> Option<String> {
         self.llm.as_ref().map(LlmClient::model).map(str::to_owned)
     }
 
-    /// Swaps the planner model at runtime. The backend lives in app state
-    /// (a signal), so the canvas's next proposal/plan/draft uses the new
-    /// model immediately; `config/storyfella.toml` persists the choice across runs.
-    pub fn set_llm_model(&mut self, model: String) {
-        if let Some(client) = &mut self.llm {
-            client.set_model(model);
+    /// Points the chat side at `config` — the Settings provider switches and
+    /// endpoint edits. It rebuilds the planner client and the managed-server
+    /// map, and stops a running server whose provider is gone or is no longer
+    /// managed, so the app never holds a process the config does not name.
+    pub fn set_chat(&mut self, config: &AppConfig) {
+        self.llm = config
+            .planner_config()
+            .and_then(|config| LlmClient::new(config).ok());
+        let (managed_servers, text_provider_id) = chat_supervision(config);
+        self.text_provider_id = text_provider_id;
+        let stale: Vec<Arc<llama::Runtime>> = {
+            let mut running = self.running_servers.lock().unwrap();
+            let stale_ids: Vec<String> = running
+                .keys()
+                .filter(|id| !managed_servers.contains_key(*id))
+                .cloned()
+                .collect();
+            stale_ids
+                .iter()
+                .filter_map(|id| running.remove(id))
+                .collect()
+        };
+        for runtime in stale {
+            tokio::spawn(async move {
+                let _ = runtime.stop().await;
+            });
+        }
+        self.managed_servers = managed_servers;
+    }
+
+    /// Whether the managed server for `provider_id` is running.
+    pub fn chat_server_running(&self, provider_id: &str) -> bool {
+        self.running_servers
+            .lock()
+            .unwrap()
+            .get(provider_id)
+            .is_some_and(|runtime| runtime.is_running())
+    }
+
+    /// The managed chat servers currently running, by provider id.
+    pub fn running_chat_servers(&self) -> Vec<String> {
+        self.running_servers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, runtime)| runtime.is_running())
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// Starts the managed `llama-server` for `provider_id` when that provider is
+    /// a `llamacpp` one — the same server kind the planner and `svs eval` use. A
+    /// no-op for an external endpoint or unknown id.
+    pub async fn start_chat_server(&self, provider_id: &str) -> Result<(), CreativeRuntimeError> {
+        let Some(server) = self.managed_servers.get(provider_id) else {
+            return Ok(());
+        };
+        if self.chat_server_running(provider_id) {
+            return Ok(());
+        }
+        let runtime = Arc::new(server.runtime());
+        runtime
+            .ensure_ready(&server.host, server.port)
+            .await
+            .map_err(|error| CreativeRuntimeError::ChatServer(error.to_string()))?;
+        self.running_servers
+            .lock()
+            .unwrap()
+            .insert(provider_id.to_owned(), runtime);
+        Ok(())
+    }
+
+    /// Stops the managed chat server for `provider_id`, when the app started it.
+    pub async fn stop_chat_server(&self, provider_id: &str) -> Result<(), CreativeRuntimeError> {
+        let runtime = self.running_servers.lock().unwrap().remove(provider_id);
+        if let Some(runtime) = runtime {
+            runtime
+                .stop()
+                .await
+                .map_err(|error| CreativeRuntimeError::ChatServer(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Restarts the managed chat server for `provider_id`.
+    pub async fn restart_chat_server(&self, provider_id: &str) -> Result<(), CreativeRuntimeError> {
+        self.stop_chat_server(provider_id).await?;
+        self.start_chat_server(provider_id).await
+    }
+
+    /// Stops every managed chat server the app started — called before a
+    /// generation, so no chat model shares the card with the image engine.
+    pub async fn stop_chat_servers(&self) -> Result<(), CreativeRuntimeError> {
+        let runtimes: Vec<Arc<llama::Runtime>> = self
+            .running_servers
+            .lock()
+            .unwrap()
+            .drain()
+            .map(|(_, runtime)| runtime)
+            .collect();
+        for runtime in runtimes {
+            runtime
+                .stop()
+                .await
+                .map_err(|error| CreativeRuntimeError::ChatServer(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Starts the planner's managed server, when its `text` provider is a
+    /// `llamacpp` one. A no-op for an external endpoint or no provider.
+    pub async fn ensure_planner_ready(&self) -> Result<(), CreativeRuntimeError> {
+        match &self.text_provider_id {
+            Some(id) => self.start_chat_server(id).await,
+            None => Ok(()),
         }
     }
 
@@ -379,6 +521,9 @@ impl CreativeBackend {
                     .to_owned(),
             );
         };
+        self.ensure_planner_ready()
+            .await
+            .map_err(|error| error.to_string())?;
         // Preferred: the model discovers artifacts/adapters by calling
         // tools (any number of rounds), then emits the stack.
         match Self::propose_with_tools(client, registry, defaults, viewing, message).await {
@@ -503,6 +648,11 @@ impl GenerationBackend for CreativeBackend {
         let this = self.clone();
         let request = request.clone();
         Box::pin(async move {
+            // The generator and a chat model cannot share the card: stop every
+            // managed chat server before the resident image server starts.
+            this.stop_chat_servers().await.map_err(|error| {
+                PipelineError::backend_with_context(error, generate_context(&request, None))
+            })?;
             this.runtime.ensure_ready().await.map_err(|error| {
                 PipelineError::backend_with_context(error, generate_context(&request, None))
             })?;
@@ -551,6 +701,10 @@ impl GenerationBackend for CreativeBackend {
             let Some(client) = &this.llm else {
                 return Ok(None);
             };
+            if let Err(error) = this.ensure_planner_ready().await {
+                tracing::warn!(%error, "the planner server did not start; the draft is skipped");
+                return Ok(None);
+            }
             let messages = [
                 ChatMessage::text("system", Self::draft_system_prompt()),
                 ChatMessage::text("user", request),
@@ -590,6 +744,10 @@ impl GenerationBackend for CreativeBackend {
             let Some(client) = &this.llm else {
                 return Ok(None);
             };
+            if let Err(error) = this.ensure_planner_ready().await {
+                tracing::warn!(%error, "the planner server did not start; grounding is skipped");
+                return Ok(None);
+            }
             let messages = [
                 ChatMessage::text("system", Self::ground_system_prompt()),
                 ChatMessage::text("user", request),
@@ -810,6 +968,39 @@ mod tests {
             sample_method: clipforge_inference::sd::DEFAULT_SAMPLE_METHOD.to_owned(),
             loras: Default::default(),
         }
+    }
+
+    #[test]
+    fn set_chat_rebuilds_the_client_and_the_managed_server_map() {
+        let mut config = crate::config::AppConfig::load_from(crate::paths::config_path())
+            .expect("checked-in config loads");
+        assert!(
+            config.text_provider_id.is_some(),
+            "the config serves `text`"
+        );
+
+        // A provider switch supplies a whole deployment, not just a model id.
+        config.text = Some(clipforge_inference::ChatDeployment {
+            base_url: "http://localhost:1234/v1".to_owned(),
+            model: "local-model".to_owned(),
+            api_key: None,
+            timeout: std::time::Duration::from_secs(5),
+            server: None,
+        });
+        config.text_provider_id = Some("probe".to_owned());
+
+        let mut backend = CreativeBackend::new(&config);
+        assert!(backend.has_llm());
+        assert_eq!(backend.llm_model().as_deref(), Some("local-model"));
+        assert!(
+            !backend.chat_server_running("probe"),
+            "an external endpoint owns no server"
+        );
+
+        config.text = None;
+        config.text_provider_id = None;
+        backend.set_chat(&config);
+        assert!(!backend.has_llm(), "no deployment drops the planner");
     }
 
     #[test]

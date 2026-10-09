@@ -79,6 +79,7 @@ pub fn SettingRow(
     let label_id = format!("{row_id}-label");
     let description_id = format!("{row_id}-description");
     let mount_id = row_id.clone();
+    let has_description = !description.trim().is_empty();
     let border = if last {
         ""
     } else {
@@ -87,11 +88,13 @@ pub fn SettingRow(
     rsx! {
         div { id: row_id, role: "group", aria_label: title.clone(), class: "grid min-h-20 grid-cols-[minmax(180px,1fr)_minmax(260px,1.2fr)] items-center gap-8 py-4 {border}",
             onmounted: move |_| { document::eval(&format!(
-                "document.getElementById('{mount_id}').querySelectorAll('input,textarea,select,button[role=switch]').forEach(control => {{ if (!control.hasAttribute('aria-label')) control.setAttribute('aria-labelledby', '{mount_id}-label'); control.setAttribute('aria-describedby', '{mount_id}-description'); }});"
+                "const row = document.getElementById('{mount_id}'); if (!row) return; const described = document.getElementById('{mount_id}-description'); row.querySelectorAll('input,textarea,select,button[role=switch]').forEach(control => {{ if (!control.hasAttribute('aria-label')) control.setAttribute('aria-labelledby', '{mount_id}-label'); if (described) control.setAttribute('aria-describedby', '{mount_id}-description'); }});"
             )); },
             div {
                 p { id: label_id, class: "text-[13px] font-medium text-zinc-200", "{title}" }
-                p { id: description_id, class: "mt-1 text-xs leading-5 text-zinc-600", "{description}" }
+                if has_description {
+                    p { id: description_id, class: "mt-1 text-xs leading-5 text-zinc-600", "{description}" }
+                }
             }
             {children}
         }
@@ -272,11 +275,22 @@ pub fn matches_query(query: &str, candidates: &[&str]) -> bool {
         .any(|candidate| candidate.to_ascii_lowercase().contains(&query))
 }
 
-/// The entries of `options` matching `query`, in their original order.
-pub fn matching(options: &[String], query: &str) -> Vec<String> {
+/// One entry in a [`SearchSelect`]: the value a selection yields, and the text
+/// the list shows. They differ when the stored value is not what a reader
+/// should see — a provider's config id against the endpoint it names.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SelectOption {
+    pub value: String,
+    pub label: String,
+}
+
+/// The entries of `options` matching `query`, in their original order. The
+/// value is searched as well as the label, so a list with descriptive labels
+/// stays filterable by the id behind them.
+pub fn matching(options: &[SelectOption], query: &str) -> Vec<SelectOption> {
     options
         .iter()
-        .filter(|option| matches_query(query, &[option.as_str()]))
+        .filter(|option| matches_query(query, &[option.label.as_str(), option.value.as_str()]))
         .cloned()
         .collect()
 }
@@ -296,12 +310,13 @@ pub fn matching(options: &[String], query: &str) -> Vec<String> {
 #[component]
 pub fn SearchSelect(
     #[props(default = "Choose a value".to_owned())] label: String,
-    options: Vec<String>,
+    options: Vec<SelectOption>,
     value: String,
-    /// Shown in the list when nothing matches — or when there are no options
-    /// at all, which is how a caller says "nothing discovered yet".
+    /// Shown in the collapsed control when `value` matches no option — how a
+    /// caller whose stored value may not be one the option list serves keeps
+    /// the control from naming something unavailable.
     #[props(default)]
-    empty_message: Option<String>,
+    placeholder: Option<String>,
     on_select: EventHandler<String>,
 ) -> Element {
     let mut open = use_signal(|| false);
@@ -331,7 +346,16 @@ pub fn SearchSelect(
     // The highlight can outlive the list it pointed into (a keystroke narrows
     // the matches), so it is clamped on every render rather than trusted.
     let index = (*highlight.read()).min(count.saturating_sub(1));
-    let empty_message = empty_message.unwrap_or_else(|| "Nothing matches.".to_owned());
+    // The collapsed control shows the selected option's label — for a labelled
+    // option (a provider) the value is an opaque id. A `value` no option serves
+    // (a stored model id the endpoint does not list) shows the placeholder
+    // instead of the raw id, so the control never names something unavailable.
+    let display = options
+        .iter()
+        .find(|option| option.value == value)
+        .map(|option| option.label.clone())
+        .or_else(|| placeholder.clone())
+        .unwrap_or_default();
 
     let mut dismiss = move || {
         open.set(false);
@@ -343,7 +367,7 @@ pub fn SearchSelect(
         div { class: "relative min-w-0",
             button {
                 class: "setting-control flex items-center justify-between gap-2 text-left",
-                title: "{value}",
+                title: "{display}",
                 aria_label: label.clone(),
                 aria_haspopup: "dialog",
                 aria_expanded: open(),
@@ -354,7 +378,7 @@ pub fn SearchSelect(
                         open.set(true);
                     }
                 },
-                span { class: "truncate font-mono text-[11px]", "{value}" }
+                span { class: "truncate font-mono text-[11px]", "{display}" }
                 // The one chevron the icon set has, turned to point down.
                 Icon { name: IconName::Arrow, class: "size-3 shrink-0 rotate-90 text-zinc-600" }
             }
@@ -397,7 +421,7 @@ pub fn SearchSelect(
                                 Key::Enter => {
                                     event.prevent_default();
                                     if let Some(choice) = matched.get(index) {
-                                        on_select.call(choice.clone());
+                                        on_select.call(choice.value.clone());
                                         dismiss();
                                     }
                                 }
@@ -407,7 +431,7 @@ pub fn SearchSelect(
                     }
                     div { id: list_id, role: "listbox", aria_label: label.clone(), class: "max-h-64 overflow-y-auto p-1.5",
                         if count == 0 {
-                            p { class: "px-3 py-4 text-center text-[11px] text-zinc-600", "{empty_message}" }
+                            p { class: "px-3 py-4 text-center text-[11px] text-zinc-600", "Nothing matches." }
                         }
                         for (slot , option) in matched.iter().enumerate() {
                             button {
@@ -415,17 +439,17 @@ pub fn SearchSelect(
                                 role: "option",
                                 aria_selected: slot == index,
                                 tabindex: "-1",
-                                key: "{option}",
+                                key: "{option.value}",
                                 class: if slot == index { "flex w-full items-center gap-2 rounded-lg bg-violet-400/15 px-3 py-1.5 text-left" } else { "flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left hover:bg-white/[0.04]" },
                                 onclick: {
-                                    let option = option.clone();
+                                    let selected = option.value.clone();
                                     move |_| {
-                                        on_select.call(option.clone());
+                                        on_select.call(selected.clone());
                                         dismiss();
                                     }
                                 },
-                                span { class: "min-w-0 flex-1 truncate font-mono text-[11.5px] text-zinc-100", "{option}" }
-                                if option == &value {
+                                span { class: "min-w-0 flex-1 truncate font-mono text-[11.5px] text-zinc-100", "{option.label}" }
+                                if option.value == value {
                                     Icon { name: IconName::Check, class: "size-3 shrink-0 text-violet-300" }
                                 }
                             }
@@ -470,24 +494,35 @@ pub fn open_path(path: &std::path::Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn models() -> Vec<String> {
-        vec![
-            "prism-ml/bonsai-27b".to_owned(),
-            "google/gemma-4-e4b".to_owned(),
-            "qwen3-vl-4b".to_owned(),
-        ]
+    fn plain(value: &str) -> SelectOption {
+        SelectOption {
+            value: value.to_owned(),
+            label: value.to_owned(),
+        }
+    }
+
+    fn models() -> Vec<SelectOption> {
+        ["prism-ml/bonsai-27b", "google/gemma-4-e4b", "qwen3-vl-4b"]
+            .map(plain)
+            .into()
     }
 
     #[test]
     fn matching_is_case_insensitive_and_keeps_the_source_order() {
-        assert_eq!(matching(&models(), "GEMMA"), vec!["google/gemma-4-e4b"]);
+        assert_eq!(
+            matching(&models(), "GEMMA"),
+            vec![plain("google/gemma-4-e4b")]
+        );
     }
 
     #[test]
     fn matching_is_a_substring_not_a_prefix() {
         // Model ids lead with an organisation, so the useful part is often in
         // the middle — a prefix match would find almost nothing.
-        assert_eq!(matching(&models(), "27b"), vec!["prism-ml/bonsai-27b"]);
+        assert_eq!(
+            matching(&models(), "27b"),
+            vec![plain("prism-ml/bonsai-27b")]
+        );
     }
 
     #[test]
@@ -498,12 +533,27 @@ mod tests {
 
     #[test]
     fn a_query_is_trimmed_before_matching() {
-        assert_eq!(matching(&models(), "  gemma  "), vec!["google/gemma-4-e4b"]);
+        assert_eq!(
+            matching(&models(), "  gemma  "),
+            vec![plain("google/gemma-4-e4b")]
+        );
     }
 
     #[test]
     fn a_query_matching_nothing_returns_nothing() {
         assert!(matching(&models(), "zzznope").is_empty());
+    }
+
+    #[test]
+    fn a_query_matches_an_option_by_its_label_or_its_value() {
+        // A provider option carries a descriptive label over an opaque id; both
+        // are searchable so either the endpoint or the id finds it.
+        let options = vec![SelectOption {
+            value: "local".to_owned(),
+            label: "local · openai · http://localhost:8080/v1".to_owned(),
+        }];
+        assert_eq!(matching(&options, "localhost"), options);
+        assert_eq!(matching(&options, "local"), options);
     }
 
     #[test]

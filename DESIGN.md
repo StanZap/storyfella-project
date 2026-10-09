@@ -654,3 +654,61 @@ saved-location notice, disabled preparation until restart, Finder reveal, and
 the selected destination with preparation re-enabled after restart. These checks
 used isolated settings under `.svs-e2e/`; Windows/Linux folder controls and a
 full multi-gigabyte download remain outside this manual check.
+
+### Models and Services: what to use, and how it runs · 2026-10-08
+
+Settings is General / **Models** / **Services** / Storage — the separate Status
+and Image-generation sections are gone. The old single "Models & services" page
+is split so a user setting up an endpoint never meets a model path or a service
+action:
+
+- **Models** is the "what to use" page: **Text (LLM)** and **Vision (LLM)** are
+  the same card — a **Provider**, an editable **Base URL**, a **Model** (a
+  dropdown of the ids the endpoint serves — only served ids are offered — with
+  a refetch action) and an **API key**. A managed (`llamacpp`) server is not a
+  different shape: the app may
+  start its `llama-server` internally, but the card shows the same endpoint
+  fields, and editing the base URL moves the server it launches. A managed
+  provider that is not running reads `Idle · starts on demand` and offers no
+  model until it is up, because the app starts it on demand.
+  **Services** gives each managed provider **Start/Stop/Restart**, so it can be
+  booted and its `/v1/models` list fetched.
+  Both pickers share one list — every chat provider, whatever it declares —
+  because selecting a provider for a capability records it
+  (`persist_provider_capabilities`), so any provider can serve text, vision, or
+  both; the user decides. Provider options are labelled `id · kind · endpoint`
+  (the picker's `SelectOption` separates the id it stores from the text it
+  shows), so they read as endpoints rather than bare config ids. The capability
+  labels are Text/Vision, not the internal "planner" name. The image model's
+  profile, generation quality (steps, per-kind sizes) and LoRA bindings live on
+  the same page, because they describe the model rather than the process. A
+  **Providers** section lists every configured chat provider and can **add** one
+  — validated against the merged configuration before it is written — or
+  **remove** one the overlay defines (`AppConfig::user_providers` marks the
+  removable ones; a checked-in provider is not the UI's to delete).
+- **Services** is the "how it runs" page: the image engine's status and
+  **Start/Stop/Restart/Take over** (or **Set up image engine**, which scrolls to
+  the weights), its executable and runtime endpoint, residency, prewarm, the
+  model-files provisioning list, and each managed `llama-server` provider with
+  its model file and **Start/Stop/Restart**.
+
+An edit persists before it applies, writing `base_url`/`model`/`api_key` (or
+`[defaults] text`/`vision` and the provider's `capabilities` for a provider
+switch) to the user overlay, then rebuilds the planner client, re-runs the health
+check and re-discovers the endpoint's models. Adding or removing a provider
+reloads the effective configuration from disk, so the registry is validated as a
+whole. A failed save keeps the previous value, and clearing the key removes the
+line so a provider's `api_key_env` applies again. **Storage** names every
+resolved path and the application configuration file.
+
+Verification: workspace tests cover the per-capability provider list, a
+persisted `[defaults]` switch taking effect on reload, line-preserving endpoint
+writes (including clearing an API key), adding a provider and rejecting a broken
+one before it is written, removing a user provider together with its `[defaults]`
+entry, the in-memory re-point of a provider and its active deployment, editing
+  a managed provider's base URL moving its launch address, the
+  service-action table, the managed/external split and the planner-client rebuild;
+`cargo check --workspace --all-targets`, `cargo test --workspace`, `cargo clippy
+-p storyfella-studio -p storyfella-studio-core --all-targets -- -D warnings` and
+`cargo fmt --all -- --check` pass. Live field and action interaction remains a
+manual check.

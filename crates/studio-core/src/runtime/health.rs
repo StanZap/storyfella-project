@@ -103,6 +103,7 @@ async fn check_llm(config: &AppConfig) -> ServiceHealth {
                 ServiceId::Llm,
                 LlmConfig::from(deployment),
                 &deployment.model,
+                deployment.server.is_some(),
             )
             .await
         }
@@ -117,6 +118,7 @@ async fn check_vision(config: &AppConfig) -> ServiceHealth {
                 ServiceId::Vision,
                 LlmConfig::from(deployment),
                 &deployment.model,
+                deployment.server.is_some(),
             )
             .await
         }
@@ -135,8 +137,15 @@ fn unconfigured(id: ServiceId, capability: &str) -> ServiceHealth {
 }
 
 /// Probes one OpenAI-compatible chat endpoint, reporting whether its
-/// configured model is among the ones it serves.
-async fn check_chat(id: ServiceId, mut lm_config: LlmConfig, configured: &str) -> ServiceHealth {
+/// configured model is among the ones it serves. `managed` marks a provider
+/// whose `llama-server` the app starts on demand: an unstarted one is `Idle`,
+/// not a failure, so it reads the same as the image engine before a generation.
+async fn check_chat(
+    id: ServiceId,
+    mut lm_config: LlmConfig,
+    configured: &str,
+    managed: bool,
+) -> ServiceHealth {
     lm_config.timeout = Duration::from_secs(CHECK_TIMEOUT_SECONDS);
     let client = match LlmClient::new(lm_config) {
         Ok(client) => client,
@@ -163,6 +172,11 @@ async fn check_chat(id: ServiceId, mut lm_config: LlmConfig, configured: &str) -
                 )
             }
         }
+        Err(_) if managed => ServiceHealth::new(
+            id,
+            HealthStatus::Idle,
+            "not started · starts on demand".to_owned(),
+        ),
         Err(error) => ServiceHealth::new(
             id,
             HealthStatus::Offline,
@@ -185,8 +199,10 @@ async fn check_generation(config: &AppConfig, runtime: &CreativeRuntime) -> Serv
         return ServiceHealth::new(
             ServiceId::ImageGeneration,
             HealthStatus::Degraded,
-            "Model files are missing. Open Settings → Image generation → Model files to prepare them.".to_owned(),
-        ).with_recovery(ServiceRecovery::ConfigureImageFiles);
+            "Model files are missing. Open Settings → Services → Model files to prepare them."
+                .to_owned(),
+        )
+        .with_recovery(ServiceRecovery::ConfigureImageFiles);
     }
     let process_running = runtime.is_running();
     match with_timeout(runtime.client().capabilities(), CHECK_TIMEOUT_SECONDS).await {

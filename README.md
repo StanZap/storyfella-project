@@ -88,13 +88,20 @@ findings from the app-wide usability audit.
 - **Variants** are first-class artifacts (`c:mia-outfit`), created with the
   `/variant` command or the detail-pane action; axes (outfit, weather, …)
   are tags for organization.
-- **Settings** separates service status, general behavior, LLM endpoint
-  configuration, image generation, and storage. A Status section probes the
-  LLM endpoint and the native generation backend on demand, reports readiness
-  and model residency, and can start or stop the resident runtime. The
-  Intelligence section discovers the endpoint's model list into a searchable
-  planner picker (`SearchSelect` — filter, arrows, Enter; selection applies
-  immediately and `config/storyfella.toml` holds the default).
+- **Settings** is four pages: **General** (appearance, autosave), **Models**
+  (what the app uses), **Services** (how it runs) and **Storage** (where files
+  live). **Models** gives the **Text (LLM)** and **Vision (LLM)** capabilities
+  each a provider picker, a status dot and a **Model** dropdown fetched from the
+  endpoint (with a refetch action); **Base URL**, **Model** and **API key** are
+  editable for every provider — Text and Vision are the same card, so a managed
+  server is not a different shape. The image model's profile,
+  generation quality (steps, per-kind sizes) and LoRA bindings live here too. A
+  **Providers** section lists every configured chat provider and can add one
+  (validated before it is written) or remove one you added. **Services** has the
+  image engine's status and start/stop/restart/take-over actions, its runtime
+  endpoint, residency, prewarm, the model-files provisioning list, and each
+  managed chat server with **Start/Stop/Restart**. Edits save to the user overlay
+  and apply immediately.
 
 The shell deliberately uses a small reusable component vocabulary, low-contrast boundaries, and progressive disclosure instead of a dense card dashboard. Styling is primarily Tailwind CSS 4 utility classes in RSX, with a small shared CSS layer for global browser behavior and form controls.
 
@@ -109,7 +116,7 @@ The shell deliberately uses a small reusable component vocabulary, low-contrast 
 
 Because `modify` re-states the artifact's description as the list of things to hold constant, **descriptions are worth writing carefully** — they are the edit's contract. An edit that contradicts the description ("long dark hair" + "dye it auburn") is reconciled by the configured LLM planner; without one, a deterministic fallback keeps the description verbatim and the contradiction can show up in the image.
 
-The configured defaults favor Qwen's single quality profile — 25 steps, CFG 6.0, `euler`, and a 1024×1536 character canvas in this checkout. Qwen-Image-2.1 has no few-step turbo path, so iteration is slower than the retired Krea Turbo loop; the settings are editable per kind in Settings → Image generation.
+The configured defaults favor Qwen's single quality profile — 25 steps, CFG 6.0, `euler`, and a 1024×1536 character canvas in this checkout. Qwen-Image-2.1 has no few-step turbo path, so iteration is slower than the retired Krea Turbo loop; the settings are editable per kind in Settings → Models.
 
 ## Project layout
 
@@ -155,7 +162,7 @@ docs/ cache/ .svs-e2e/
 
 `crates/studio-core` never depends on the GUI; `apps/studio` and `apps/cli` both depend on `storyfella-studio-core`, and the desktop crate names `storyfella_studio_core::…` explicitly rather than re-exporting it.
 
-Configuration uses `config/storyfella.toml`, with one user-level `storyfella.toml` overlay for application settings, inference and secrets (`paths::user_config_path()`, overridden by `SVS_USER_CONFIG`). Explicit relative paths resolve against `$SVS_HOME` or the discovered checkout/configuration root. Model storage defaults to the OS-local Storyfella data folder in development and release builds: `~/Library/Application Support/Storyfella/models` on macOS, `%LOCALAPPDATA%\Storyfella\models` on Windows, and `$XDG_DATA_HOME/storyfella/models` (normally `~/.local/share/storyfella/models`) on Linux. Settings → Image generation offers Change location and Open folder. Location changes require restart; selecting an existing model tree reuses its files. Old user app/provider settings migrate once without deleting originals.
+Configuration uses `config/storyfella.toml`, with one user-level `storyfella.toml` overlay for application settings, inference and secrets (`paths::user_config_path()`, overridden by `SVS_USER_CONFIG`). Explicit relative paths resolve against `$SVS_HOME` or the discovered checkout/configuration root. Model storage defaults to the OS-local Storyfella data folder in development and release builds: `~/Library/Application Support/Storyfella/models` on macOS, `%LOCALAPPDATA%\Storyfella\models` on Windows, and `$XDG_DATA_HOME/storyfella/models` (normally `~/.local/share/storyfella/models`) on Linux. Settings → Services offers Change location and Open folder. Location changes require restart; selecting an existing model tree reuses its files. Old user app/provider settings migrate once without deleting originals.
 
 ## Documentation
 

@@ -451,7 +451,7 @@ The same file declares `text`/`vision` LLM endpoints under its
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `generation.steps` | `25` | Default steps per generation (Settings → Image generation; Qwen-Image-2.1 has no few-step turbo path) |
+| `generation.steps` | `25` | Default steps per generation (Settings → Models; Qwen-Image-2.1 has no few-step turbo path) |
 | `generation.cfg_scale` | `6.0` | Text-guidance scale (`sample_params.guidance.txt_cfg`) |
 | `generation.sample_method` | `euler` | Sampler (`sample_params.sample_method`) |
 | `generation.sizes.character` | `512x768` | Default canvas for character images (`WxH`, multiples of 32) |
@@ -554,7 +554,7 @@ application folder, with the same policy in development and release builds:
 | Windows | `%LOCALAPPDATA%\Storyfella\models` |
 | Linux | `$XDG_DATA_HOME/storyfella/models`, normally `~/.local/share/storyfella/models` |
 
-Settings → Image generation → Model files offers **Change location…** and
+Settings → Services → Model files offers **Change location…** and
 **Open folder**. A selected folder is saved before the success message appears;
 restart applies it consistently to downloads and the runtime. Downloads are
 paused until that restart. Existing model files are not moved or deleted: choose
@@ -567,10 +567,10 @@ The same registry routes the LLM capabilities. `text` (the planner) and
 
 ```toml
 [defaults]
-text = "planner"
+text = "local"
 vision = "vision"
 
-[providers.planner]
+[providers.local]
 kind = "openai"                  # external endpoint the app calls but never starts
 capabilities = ["text"]
 base_url = "http://localhost:8080/v1"
@@ -586,10 +586,14 @@ model = "google/gemma-4-e4b"
 Two provider kinds serve chat: `openai` is an external OpenAI-compatible service
 the app never starts (the default); `llamacpp` is a managed native `llama-server`
 the app starts on demand from `executable` + `model_path` (plus `mmproj` for a
-vision model). Because text and vision are separate capabilities, the planner can
-point at a remote, text-only model — for example DeepSeek — while vision keeps a
-local multimodal endpoint. `api_key` is an inline secret; prefer `api_key_env`,
-which reads it from the named environment variable at load time.
+vision model). The kind is an internal detail — Studio presents text and vision
+as the same card (provider, base URL, model, API key), and editing a managed
+provider's base URL moves the server it launches. A managed server's
+**Start/Stop/Restart** live on Settings → Services. Because text and vision are
+separate capabilities, the planner can point at a remote, text-only model — for
+example DeepSeek — while vision keeps a local multimodal endpoint. `api_key` is
+an inline secret; prefer `api_key_env`, which reads it from the named environment
+variable at load time.
 
 A single **user settings overlay** holds application and inference overrides:
 `paths::user_config_path()` (on Linux
@@ -608,9 +612,12 @@ base_url = "https://api.deepseek.com/v1"
 model = "deepseek-chat"
 api_key_env = "DEEPSEEK_API_KEY"
 ```
-This keeps the key out of the checked-in file. Settings → Intelligence shows both
-resolved endpoints and persists the planner-model pick under
-`[providers.<id>]` in this overlay.
+This keeps the key out of the checked-in file. The Settings **Models** page shows
+the resolved endpoints and lets each chat capability's provider, base URL, model
+and API key be edited in place, persisting to `[providers.<id>]` (or `[defaults]
+text`/`vision` for a provider switch) in this overlay. Its **Providers** section
+can also add a provider (validated against the merged settings before it is
+written) or remove one the overlay defines.
 
 ## Common issues
 

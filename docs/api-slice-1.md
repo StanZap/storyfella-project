@@ -215,7 +215,7 @@ the general user settings overlay (`~/.config/smartvisualsequencer/storyfella.to
 ## After slice 1: generation quality controls + LoRA registry
 
 - **Configurable defaults** (`config/storyfella.toml`, editable in Settings →
-  Image generation, persisted line-preserving): `[generation] steps`,
+  Models, persisted line-preserving): `[generation] steps`,
   `[generation] cfg_scale`/`sample_method`, `[generation.sizes]` per kind
   (`WxH` strings), and `[lora]` bindings (`character`, `environment`,
   `object` file names within the provider's `lora_dir` plus a shared

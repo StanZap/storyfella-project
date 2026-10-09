@@ -596,11 +596,11 @@ plan to ship, with its status; update it when work lands.
    regenerates at it) — never invented. The planner discovers the registry
    and adapters via tool calling (`list_artifacts`/`list_loras`) with a
    strict schema on the final stack. `--name` on `variant` (explicit
-   naming for variants). A Settings → Image generation toggle (`[runtime]
+   naming for variants). A Settings → Services toggle (`[runtime]
    prewarm`) starts the resident server when a project opens, so the first
    generation is not a multi-minute weight load. **Residency** is a launch
    profile per `sdcpp` provider (`resident` / `lowvram` = `--offload-to-cpu`),
-   selectable in Settings → Image generation and validated at config load; the
+   selectable in Settings → Services and validated at config load; the
    measured tradeoff (lowvram ≈9/16 GiB peak for +7%/+0.5% sampling; `--max-vram`
    rejected as too costly for edits) is in `docs/runtime-lifecycle.md`. A server
    holding the port that the app did not start is reported as `Degraded` (the
@@ -694,7 +694,7 @@ plan to ship, with its status; update it when work lands.
    is resolving `sd-server` relative to the bundle root instead of the
    config-relative path. Model weights stay out of
    any bundle (multi-GiB, licensed) and keep provisioning through
-   `model_setup` — or, in the app, Settings → Image generation → "Model
+   `model_setup` — or, in the app, Settings → Services → "Model
    files", which drives the same `ModelStore` download with byte-level
    progress. The pinned manifest was verified against the live Hugging Face
    repo (2026-10-01): the three `Comfy-Org/Qwen-Image-2.1` remote paths,
@@ -742,7 +742,12 @@ is gone, replaced by `text` and `vision` capabilities resolved from
 git) — so a remote, text-only planner no longer blinds `svs eval`. The
 `clipforge-inference` runtime is generalized to a shared native-server
 supervisor, and a `llamacpp` provider can start a managed `llama-server` on
-demand; weights are never bundled.
+demand; weights are never bundled. Settings → **Models** gives each chat
+capability an editable provider, base URL, model and API key (switching
+`[defaults] text`/`vision` in the user overlay, and rebuilding the planner client
+in place), so pointing the app at a remote or local server is a click and a field
+edit rather than a file edit; the same page adds and removes providers. Settings
+→ **Services** carries the image engine and the managed `llama-server` files.
 
 ### Entry points (existing code)
 

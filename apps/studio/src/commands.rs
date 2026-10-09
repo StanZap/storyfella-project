@@ -195,8 +195,8 @@ fn run_stack(
                 seed: Some(random_seed()),
             },
             generation: GenerationOverrides {
-                // The configured default step count (Settings → Image
-                // generation) shapes every canvas op.
+                // The configured default step count (Settings → Models)
+                // shapes every canvas op.
                 steps: Some(defaults.steps),
                 ..Default::default()
             },

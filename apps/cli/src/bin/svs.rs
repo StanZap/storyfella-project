@@ -775,8 +775,8 @@ impl CliRunOptions {
                 seed: self.seed,
             },
             generation: GenerationOverrides {
-                // The configured default step count (Settings → Image
-                // generation) shapes every CLI visual op too, mirroring the
+                // The configured default step count (Settings → Models)
+                // shapes every CLI visual op too, mirroring the
                 // canvas path; an explicit per-op `--steps` wins last.
                 steps: Some(defaults.steps),
                 loras,

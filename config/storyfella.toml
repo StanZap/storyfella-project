@@ -27,7 +27,7 @@ asset_dir = "assets"
 [defaults]
 t2i = "qwen-image"
 edit = "qwen-image"
-text = "planner"
+text = "local"
 vision = "vision"
 
 [providers.qwen-image]
@@ -39,7 +39,7 @@ base_url = "http://127.0.0.1:7861"
 # Omitted model_dir uses the OS-native Storyfella models folder.
 # residency = "lowvram"
 
-[providers.planner]
+[providers.local]
 kind = "openai"
 capabilities = ["text"]
 base_url = "http://localhost:8080/v1"

@@ -61,6 +61,8 @@ pub enum CreativeRuntimeError {
     },
     #[error("could not stop the generation server holding :{port}: {message}")]
     TakeOver { port: u16, message: String },
+    #[error("could not start or stop the chat server: {0}")]
+    ChatServer(String),
     #[error("could not create generated asset directory {path}: {source}")]
     CreateAssetDirectory {
         path: PathBuf,
@@ -82,6 +84,7 @@ impl CodedError for CreativeRuntimeError {
             Self::Job(_) => ErrorCode::RuntimeJobFailed,
             Self::ProfileMismatch { .. } => ErrorCode::RuntimeProfileMismatch,
             Self::TakeOver { .. } => ErrorCode::RuntimeGenerationStop,
+            Self::ChatServer(_) => ErrorCode::LlmServer,
             Self::CreateAssetDirectory { .. } => ErrorCode::RuntimeCreateAssetDirectory,
             Self::ImportAsset { .. } => ErrorCode::RuntimeImportAsset,
         }

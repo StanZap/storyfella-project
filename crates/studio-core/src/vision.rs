@@ -55,7 +55,7 @@ impl CodedError for VisionError {
         match self {
             Self::Image { .. } => ErrorCode::LlmVisionImage,
             Self::NotConfigured => ErrorCode::AppLlmUnavailable,
-            Self::Server(_) => ErrorCode::LlmVisionServer,
+            Self::Server(_) => ErrorCode::LlmServer,
             Self::Chat(_) => ErrorCode::LlmRequest,
         }
     }

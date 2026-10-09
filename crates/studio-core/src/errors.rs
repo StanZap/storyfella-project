@@ -95,7 +95,7 @@ pub enum ErrorCode {
     LlmStatus,
     LlmPlanner,
     LlmVisionImage,
-    LlmVisionServer,
+    LlmServer,
 
     // ---- GEN · native generation client (src/generation/mod.rs) ----
     GenRequest,
@@ -516,11 +516,11 @@ impl ErrorCode {
                 "The image handed to the vision model could not be read or \
                  decoded. Check that the artifact's asset file still exists.",
             ),
-            Self::LlmVisionServer => (
+            Self::LlmServer => (
                 "SVS-LLM-106",
-                "Vision server did not start",
-                "The managed vision model server could not be started. Check that \
-                 its executable and weights exist (storyfella.toml).",
+                "LLM server did not start",
+                "The managed llama.cpp server could not be started. Check that its \
+                 executable and model files exist (storyfella.toml).",
             ),
             Self::GenRequest => (
                 "SVS-GEN-101",
@@ -556,12 +556,12 @@ impl ErrorCode {
                 "SVS-RTE-111",
                 "sd-server executable not found",
                 "The stable-diffusion.cpp server binary could not be found at \
-                 the configured path. Check Settings → Storage.",
+                 the configured path. Check Settings → Services.",
             ),
             Self::RuntimeGenerationMissingArtifact => (
                 "SVS-RTE-112",
                 "Model artifact not found",
-                "A Qwen-Image-2.1 model file is missing. Use Settings → Image generation → Model files to \
+                "A Qwen-Image-2.1 model file is missing. Use Settings → Services → Model files to \
                  provision the models.",
             ),
             Self::RuntimeGenerationCreateLoraDirectory => (
