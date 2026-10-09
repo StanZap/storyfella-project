@@ -29,7 +29,7 @@ use crate::{
 };
 
 use super::{
-    cmdbar::CommandBar,
+    cmdbar::{self, CommandBar},
     components::EmptyVisual,
     gallery::Gallery,
     generated_asset_url,
@@ -148,7 +148,7 @@ pub fn Canvas(
                     app_state.write().select_artifact(*id);
                 }
             }
-            "n" if !viewing => composer.set("/create character ".to_owned()),
+            "n" if !viewing => cmdbar::prefill(composer, "/create character "),
             // In detail, `[` and `]` walk the variant filmstrip — the same
             // set the strip shows, so the keys and the row agree.
             key @ ("[" | "]") if viewing => {
@@ -212,18 +212,11 @@ pub fn Canvas(
                         "r" => "regenerate",
                         _ => "modify",
                     };
-                    composer.set(format!("/{op} {reference} "));
-                    document::eval(
-                        "const el = document.getElementById(\"svs-cmdbar\");
-                         if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }",
-                    );
+                    cmdbar::prefill(composer, format!("/{op} {reference} "));
                 }
             }
             "/" => {
-                document::eval(
-                    "const el = document.getElementById(\"svs-cmdbar\");
-                     if (el) { el.focus(); }",
-                );
+                cmdbar::focus_field();
             }
             key if !viewing => {
                 let at = *grid_cursor.peek();
@@ -360,7 +353,7 @@ pub fn Canvas(
                 requests,
                 on_restore: move |index: usize| {
                     if let Some((request, target)) = requests.read().get(index) {
-                        composer.set(request.clone());
+                        cmdbar::prefill(composer, request.clone());
                         if let Some(target) = target { app_state.write().select_artifact(*target); }
                     }
                 },
@@ -830,20 +823,20 @@ fn ArtifactDetail(
                             icon: IconName::Add,
                             title: shortcuts::tooltip("New variant", "new-variant"),
                             disabled,
-                            onclick: move |_| composer.set(variant_prefix.clone()),
+                            onclick: move |_| cmdbar::prefill(composer, variant_prefix.clone()),
                         }
                         IconAction {
                             icon: IconName::Refresh,
                             title: shortcuts::tooltip("Regenerate", "regenerate"),
                             disabled,
-                            onclick: move |_| composer.set(regenerate_prefix.clone()),
+                            onclick: move |_| cmdbar::prefill(composer, regenerate_prefix.clone()),
                         }
                         if image.is_some() {
                             IconAction {
                                 icon: IconName::Generate,
                                 title: shortcuts::tooltip("Modify", "modify"),
                                 disabled,
-                                onclick: move |_| composer.set(modify_prefix.clone()),
+                                onclick: move |_| cmdbar::prefill(composer, modify_prefix.clone()),
                             }
                         }
                         span { class: "mx-1 h-4 w-px bg-white/[0.08]" }
@@ -923,7 +916,7 @@ fn ArtifactDetail(
                         class: "shrink-0",
                         disabled,
                         title: shortcuts::tooltip("New variant", "new-variant"),
-                        onclick: move |_| composer.set(variant_prefix_strip.clone()),
+                        onclick: move |_| cmdbar::prefill(composer, variant_prefix_strip.clone()),
                         div { class: "grid h-16 w-12 place-items-center rounded-lg border border-dashed border-white/[0.12] text-lg font-light text-zinc-700 transition hover:text-zinc-300",
                             "+"
                         }

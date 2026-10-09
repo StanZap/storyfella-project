@@ -227,7 +227,7 @@ pub fn Gallery(
                     button {
                         class: "mt-4 rounded-lg bg-violet-400/15 px-3 py-1.5 text-[11px] font-semibold text-violet-200 transition hover:bg-violet-400/25 disabled:opacity-40",
                         disabled,
-                        onclick: move |_| composer.set("/create character ".to_owned()),
+                        onclick: move |_| super::cmdbar::prefill(composer, "/create character "),
                         "New character"
                     }
                 }

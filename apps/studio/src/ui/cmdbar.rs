@@ -36,6 +36,36 @@ use storyfella_studio_core::registry::{
 /// The id the caret bridge binds to. One command bar at a time.
 const BAR_ID: &str = "svs-cmdbar";
 
+/// Prefills the command field and puts the caret in it.
+///
+/// Every affordance that hands the user a command — a keyboard shortcut, a
+/// canvas button, a mention in the Writer, the palette — goes through here: a
+/// prefill is only useful when the next keystroke lands in the field, and the
+/// field may sit on a screen (the canvas) still hidden when the caller runs, so
+/// focus is retried across frames until the bar is visible.
+pub fn prefill(mut composer: Signal<String>, command: impl Into<String>) {
+    composer.set(command.into());
+    document::eval(&focus_bar(true));
+}
+
+/// Focuses the command field without changing it (the `/` shortcut).
+pub fn focus_field() {
+    document::eval(&focus_bar(false));
+}
+
+/// The script that focuses the command bar once it is visible; `caret_to_end`
+/// moves the caret after the text a prefill just wrote.
+fn focus_bar(caret_to_end: bool) -> String {
+    let caret = if caret_to_end {
+        "const end = el.value.length; el.setSelectionRange(end, end);"
+    } else {
+        ""
+    };
+    format!(
+        "(() => {{ let tries = 0; const tick = () => {{ const el = document.getElementById(\"{BAR_ID}\"); if (el && el.offsetParent !== null) {{ el.focus(); {caret} return; }} if (tries++ < 10) requestAnimationFrame(tick); }}; requestAnimationFrame(tick); }})();"
+    )
+}
+
 /// Streams `[value, caret_in_utf8_bytes]` on every edit, click, or selection
 /// change, and keeps the field's height matched to its content.
 ///

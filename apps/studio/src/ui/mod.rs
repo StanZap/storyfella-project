@@ -242,7 +242,7 @@ pub fn Workspace(
 
     // The canvas composer text: owned here so the driver can type into it
     // (the visible fidelity of a `compose` step), consumed by the canvas.
-    let mut composer = use_signal(String::new);
+    let composer = use_signal(String::new);
     use_context_provider(|| composer);
 
     // Whether the command palette is showing. Owned here because the
@@ -534,13 +534,9 @@ pub fn Workspace(
             palette::Palette { app_state, open: palette_open, onpick: move |action| {
                 screen.set(AppScreen::Canvas);
                 match action {
-                    palette::Action::Compose(command) => composer.set(command),
+                    palette::Action::Compose(command) => cmdbar::prefill(composer, command),
                     palette::Action::Open(id) => app_state.write().select_artifact(id),
                 }
-                spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    document::eval("document.getElementById('svs-cmdbar')?.focus()");
-                });
             } }
         }
         {guide_overlay(session)}

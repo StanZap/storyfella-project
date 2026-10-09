@@ -705,10 +705,22 @@ Verification: workspace tests cover the per-capability provider list, a
 persisted `[defaults]` switch taking effect on reload, line-preserving endpoint
 writes (including clearing an API key), adding a provider and rejecting a broken
 one before it is written, removing a user provider together with its `[defaults]`
-entry, the in-memory re-point of a provider and its active deployment, editing
-  a managed provider's base URL moving its launch address, the
-  service-action table, the managed/external split and the planner-client rebuild;
+entry, the in-memory re-point of a provider and its active deployment, editing a
+managed provider's base URL moving its launch address, the service-action table,
+the managed/external split and the planner-client rebuild;
 `cargo check --workspace --all-targets`, `cargo test --workspace`, `cargo clippy
 -p storyfella-studio -p storyfella-studio-core --all-targets -- -D warnings` and
 `cargo fmt --all -- --check` pass. Live field and action interaction remains a
 manual check.
+
+### Command bar: every prefill focuses the field · 2026-10-08
+
+A prefill that does not focus the command field is a trap: the description is
+typed into nothing, and the skeleton command is then submitted unchanged —
+`SVS-APP-103` with the detail "create needs a description". Only the `v`/`r`/`m`
+and `/` shortcuts focused the bar; the `n` key, the canvas/layout buttons, the
+inspector's adapter button, the Writer's mention "Render…" and the palette did
+not. `cmdbar::prefill` is now the one way a prefilled command reaches the bar: it
+sets the text, retries focus across frames until the bar is visible (a Writer or
+palette handoff switches to the canvas first) and puts the caret after the text;
+`cmdbar::focus_field` is the `/` shortcut's focus-only variant.

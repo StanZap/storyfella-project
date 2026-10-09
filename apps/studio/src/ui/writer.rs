@@ -644,7 +644,7 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
 
 #[component]
 fn MentionGroup(title: String, mentions: Vec<Mention>, app_state: Signal<AppState>) -> Element {
-    let mut composer = use_context::<Signal<String>>();
+    let composer = use_context::<Signal<String>>();
     let mut screen = use_context::<Signal<super::AppScreen>>();
     rsx! {
         section {
@@ -709,7 +709,7 @@ fn MentionGroup(title: String, mentions: Vec<Mention>, app_state: Signal<AppStat
                                 onclick: {
                                     let name = mention.name.clone();
                                     let kind = mention.kind.unwrap_or(ArtifactKind::Character).as_str();
-                                    move |_| { composer.set(format!("/create {kind} --name {name} ")); screen.set(super::AppScreen::Canvas); }
+                                    move |_| { super::cmdbar::prefill(composer, format!("/create {kind} --name {name} ")); screen.set(super::AppScreen::Canvas); }
                                 },
                                 "Render…"
                             }

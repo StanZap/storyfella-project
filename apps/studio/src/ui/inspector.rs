@@ -157,7 +157,7 @@ pub fn Inspector(
     // `/attach-lora` needs an adapter name, so this hands the caret to the
     // bar rather than running anything.
     let attach_prefix = format!("/attach-lora {reference} ");
-    let mut composer = use_context::<Signal<String>>();
+    let composer = use_context::<Signal<String>>();
 
     rsx! {
         aside { class: "flex w-[300px] shrink-0 flex-col border-l border-white/[0.055] bg-zinc-950/35",
@@ -368,7 +368,7 @@ pub fn Inspector(
                             class: "mt-2 w-full rounded-md bg-white/[0.05] py-1.5 text-[10px] font-semibold text-zinc-400 transition hover:bg-white/[0.09] hover:text-zinc-200 disabled:opacity-30",
                             disabled,
                             title: "Prefill the command bar — the adapter name comes next",
-                            onclick: move |_| composer.set(attach_prefix.clone()),
+                            onclick: move |_| super::cmdbar::prefill(composer, attach_prefix.clone()),
                             "Attach an adapter"
                         }
                     }
