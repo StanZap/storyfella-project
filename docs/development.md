@@ -53,6 +53,12 @@ gamepad/input-device support arrives, not before.
 Bundling (below) adds no system package: the AppImage is assembled by
 `linuxdeploy`, which the Dioxus CLI downloads on demand.
 
+Atelier's GPUI X11/Wayland and font backends also require
+`libfontconfig1-dev`, `libfreetype6-dev`, `libxcb1-dev`, `libxkbcommon-dev`,
+`libxkbcommon-x11-dev` and `libwayland-dev`. The CI desktop dependency step
+includes these packages now that Atelier is a workspace member. The moved app
+has been validated on macOS; Linux runtime verification remains separate.
+
 ## Workspace layout
 
 The repository is a Cargo workspace. `crates/studio-core` (package `storyfella-studio-core`) holds
@@ -67,6 +73,15 @@ the core tests never compile the toolkit or the WebKit stack. `apps/studio`
 `apps/player` (package `storyfella-player`) uses shared Dioxus presentation from
 `crates/playback-ui`, the GUI-free host/resource adapter in Studio core and the
 independent `crates/runtime` execution engine. It does not consume Studio state.
+
+`apps/atelier` (package `storyfella-atelier`, binary `atelier`) is the independent
+GPUI drawing and image-generation app. It has no Dioxus or Studio-core dependency.
+Run it from the workspace root with `cargo run -p storyfella-atelier`; use
+`-- --data-dir .svs-e2e/atelier-dev` for isolated sessions. On macOS,
+`sh apps/atelier/package-macos.sh` builds and signs the development bundle at
+`dist/atelier/Atelier.app`. This app uses Cargo rather than the Dioxus asset pipeline.
+Its Metal surface renderer uses the pinned patch in `vendor/gpui-pre-apple`;
+keep that source and its licenses with the workspace. See [Atelier](atelier.md).
 
 The native-inference runtime is **not** owned by this workspace: it is the
 sibling `clipforge` project's crate, package **`clipforge-inference`**, pulled in
@@ -106,7 +121,9 @@ any directory:
 
 ```bash
 cargo xtask build                 # dx build --platform desktop (debug)
-cargo xtask run [-r]              # build, then launch the app
+cargo xtask run [-r]              # build, then launch Dioxus Studio
+cargo xtask atelier [-r]          # build, then launch the separate GPUI app
+cargo xtask atelier -- --data-dir .svs-e2e/atelier-dev
 cargo xtask run -l                # …teeing its output to .svs-e2e/logs/
 cargo xtask plan config/plans/smoke.yaml --mode check
 cargo xtask serve                 # dx serve (hot reload)
@@ -136,6 +153,11 @@ workflow. `bundle` writes to `dist/` (git-ignored) and lists each artifact.
 `cargo xtask <command> --help` documents the flags. The sections below remain
 the reference for the underlying commands, for when you need a flag the task
 runner does not expose.
+
+`atelier` uses `cargo run --package storyfella-atelier --bin atelier`, forwards
+arguments after `--` and supports `-l`/`--log` with
+`.svs-e2e/logs/atelier-<unix>.log`. It does not invoke Studio's Dioxus build or
+the `svs` CLI.
 
 ## Build artifact directory
 

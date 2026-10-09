@@ -14,12 +14,13 @@ use crate::workspace::Profile;
 #[command(
     name = "xtask",
     version,
-    about = "Development tasks for Storyfella Studio",
+    about = "Development tasks for the Storyfella workspace",
     long_about = "Wraps the project's build, run, bundle, check and test workflows \
                   so the exact tool invocations live in one place. Run it as \
                   `cargo xtask <command>` (the alias is in .cargo/config.toml).",
     after_help = "Examples:\n  \
-        cargo xtask run                          build (debug) and launch the app\n  \
+        cargo xtask run                          build (debug) and launch Studio\n  \
+        cargo xtask atelier                      build and launch GPUI Atelier\n  \
         cargo xtask run -r                       build and launch a release binary\n  \
         cargo xtask run -l                       …logging the app to .svs-e2e/logs/\n  \
         cargo xtask plan config/plans/smoke.yaml\n  \
@@ -34,10 +35,12 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Build the desktop app with `dx` (no launch).
+    /// Build Dioxus Studio with `dx` (no launch).
     Build(BuildArgs),
-    /// Build the desktop app, then launch it.
+    /// Build Dioxus Studio, then launch it.
     Run(RunArgs),
+    /// Build and launch the separate GPUI Atelier app with Cargo.
+    Atelier(RunArgs),
     /// Build, then play a YAML plan through the app (`--plan <file> --mode …`).
     Plan(PlanArgs),
     /// Serve the desktop app with hot reload (`dx serve`).
@@ -101,7 +104,7 @@ pub struct BuildArgs {
 pub struct RunArgs {
     #[command(flatten)]
     pub profile: ProfileArgs,
-    /// Tee the app's stdout/stderr to `.svs-e2e/logs/app-<unix>.log`.
+    /// Tee output to `.svs-e2e/logs/` (named for the launched app).
     #[arg(short = 'l', long)]
     pub log: bool,
     /// Arguments forwarded to the app binary, after `--`.

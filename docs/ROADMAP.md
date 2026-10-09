@@ -542,6 +542,12 @@ tracks the remaining integration and execution work.
 **This section is the status tracker for planned work** — every feature we
 plan to ship, with its status; update it when work lands.
 
+**Atelier relocation: implemented.** `apps/atelier` (`storyfella-atelier`, binary
+`atelier`) is the separate GPUI art app, moved from FineWineTTS with its current
+sources, project/data identity and macOS renderer patch. Studio remains Dioxus.
+Shared Clipforge hosted-provider integration and the large-image editing
+workspace are **planned**, not implemented by this move; see [Atelier](atelier.md).
+
 1. **The API:** artifact domain model (artifact kinds, variants, scenes,
    beats — the registry), typed operation set + pipeline builder (closed
    vocabulary — `LoadImage`/`Checkpoint`/`Generate`/`Llm`; typed intermediates,

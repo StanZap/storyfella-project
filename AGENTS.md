@@ -4,7 +4,7 @@ Current shape: the artifact registry + typed operation layer (`crates/studio-cor
 
 # Layout
 
-A Cargo workspace: ten packages.
+A Cargo workspace: eleven packages.
 
 | Path | Package | Owns |
 | :--- | :--- | :--- |
@@ -14,6 +14,7 @@ A Cargo workspace: ten packages.
 | `crates/lsp` | `storyfella-lsp` | stdio LSP transport over the shared language analysis |
 | `crates/runtime` | `storyfella-runtime` | deterministic story execution, events and verified save/restore; no GUI/inference |
 | `apps/studio` | `storyfella-studio` | the Dioxus app — `ui/`, `state/`, `commands.rs`, `driver/`, `app/`, plus `Dioxus.toml`, `tailwind.css`, `assets/`, `package.json` |
+| `apps/atelier` | `storyfella-atelier` | independent GPUI drawing/image app, binary `atelier`; `.atelier` projects and Atelier data/Keychain identities; hosted API adapters currently app-local |
 | `apps/cli` | `svs-cli` | `svs`, `model_setup`, `vlm_probe`, the VLM fixture example and its fixtures |
 | `apps/player` | `storyfella-player` | standalone Dioxus visual Player; same runtime/resources/controls as Studio preview |
 | `crates/playback-ui` | `storyfella-playback-ui` | shared Dioxus presentation and playback controls; independent of Studio state |
@@ -38,6 +39,15 @@ See `docs/language.md`, `docs/compiler.md` and `docs/language-plan.md` for imple
 and the remaining compiler, persistence and story-execution milestones.
 Keep `svs` CLI binaries, command behavior, `SVS_*` environment variables, error
 codes, databases, and platform data/config identities stable during this move.
+
+Atelier is a separate GPUI executable, not a Dioxus module. Use
+`cargo xtask atelier` (separate from Studio's `cargo xtask run` and the `svs`
+CLI) and `sh apps/atelier/package-macos.sh` (macOS
+bundle at `dist/atelier/Atelier.app`). Preserve its Atelier data directory,
+Keychain service and `com.storyfella.atelier` bundle identity. The vendored
+`gpui-pre-apple` patch enables its shared BGRA Metal surfaces. The existing
+FineWineTTS review app still uses GPUI, so that repository retains its patch.
+Atelier's hosted APIs have not moved to Clipforge yet; see `docs/atelier.md`.
 
 ### The shared inference runtime (`clipforge-inference`)
 

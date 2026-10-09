@@ -23,6 +23,7 @@ pub fn dispatch(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::Build(args) => build(&ws, args),
         Command::Run(args) => run(&ws, args),
+        Command::Atelier(args) => atelier(&ws, args),
         Command::Plan(args) => plan(&ws, args),
         Command::Serve(args) => serve(&ws, args),
         Command::Bundle(args) => bundle(&ws, args),
@@ -46,6 +47,17 @@ fn build(ws: &Workspace, args: BuildArgs) -> Result<ExitCode> {
 
 fn run(ws: &Workspace, args: RunArgs) -> Result<ExitCode> {
     launch_app(ws, args.profile.resolve(false), args.app_args, args.log)
+}
+
+fn atelier(ws: &Workspace, args: RunArgs) -> Result<ExitCode> {
+    let mut cmd = Process::new("cargo");
+    cmd.current_dir(ws.root())
+        .args(["run", "--package", "storyfella-atelier", "--bin", "atelier"]);
+    if args.profile.resolve(false).is_release() {
+        cmd.arg("--release");
+    }
+    cmd.arg("--").args(args.app_args);
+    launch_with_log(ws, &mut cmd, args.log, "atelier")
 }
 
 fn plan(ws: &Workspace, args: PlanArgs) -> Result<ExitCode> {
@@ -251,15 +263,21 @@ fn launch_app(
 ) -> Result<ExitCode> {
     dx_build(ws, profile, &[])?;
     let binary = ws.app_binary(profile)?;
-    let log_path = log.then(|| ws.e2e_logs().join(format!("app-{}.log", unix_seconds())));
-
     let mut cmd = Process::new(&binary);
     cmd.args(&app_args).current_dir(ws.root());
     proc::done(format!("launching ({})", profile.label()));
+    launch_with_log(ws, &mut cmd, log, "app")
+}
+
+fn launch_with_log(ws: &Workspace, cmd: &mut Process, log: bool, prefix: &str) -> Result<ExitCode> {
+    let log_path = log.then(|| {
+        ws.e2e_logs()
+            .join(format!("{prefix}-{}.log", unix_seconds()))
+    });
     if let Some(path) = &log_path {
         proc::done(format!("logging to {}", path.display()));
     }
-    let status = proc::launch(&mut cmd, log_path.as_deref())?;
+    let status = proc::launch(cmd, log_path.as_deref())?;
     Ok(exit_code(status))
 }
 

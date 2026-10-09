@@ -9,12 +9,13 @@
 #                   feature.
 #   apps/cli      — `svs`, `model_setup`, `vlm_probe`.
 #   apps/player   — visual desktop Player with shared runtime and playback UI.
+#   apps/atelier  — independent GPUI drawing and image-iteration application.
 #   xtask         — `cargo xtask`: the developer task runner (build/run/bundle/
 #                   check/test). Not part of any shipped artifact.
 #
 # The `.cargo/config.toml` target-dir redirect must stay at this level.
 [workspace]
-members = ["crates/studio-core", "crates/language", "crates/compiler", "crates/lsp", "crates/runtime", "crates/playback-ui", "apps/studio", "apps/cli", "apps/player", "xtask"]
+members = ["crates/studio-core", "crates/language", "crates/compiler", "crates/lsp", "crates/runtime", "crates/playback-ui", "apps/studio", "apps/cli", "apps/player", "apps/atelier", "xtask"]
 resolver = "2"
 
 [workspace.package]
@@ -39,7 +40,17 @@ clipforge-inference = { path = "../clipforge/crates/inference" }
 directories = "6.0.0"
 dioxus = { version = "0.7.10", features = [] }
 futures-util = "0.3.33"
+gpui-kit = "=0.7.0"
+gpui-pre-apple = "=0.3.7"
 image = "0.25.10"
+tiny-skia = "0.11"
+security-framework = "3.7"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSEvent", "NSWindow", "NSView", "block2"] }
+block2 = "0.6"
+metal = "0.33"
+core-video = "0.5.2"
+core-foundation = "0.10"
 parking_lot = "0.12.5"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "stream"] }
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
@@ -54,3 +65,7 @@ toml = "1.1.4"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 uuid = { version = "1.24.0", features = ["v4", "serde"] }
+
+# Atelier presents its Metal canvas through GPUI's shared BGRA surface pipeline.
+[patch.crates-io]
+gpui-pre-apple = { path = "vendor/gpui-pre-apple" }

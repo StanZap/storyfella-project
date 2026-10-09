@@ -13,6 +13,7 @@ storyfella/
 ├── apps/studio/       # storyfella-studio (Dioxus)
 ├── apps/cli/          # svs-cli: svs, model_setup, vlm_probe
 ├── apps/player/       # storyfella-player (visual Dioxus desktop host)
+├── apps/atelier/      # storyfella-atelier (independent GPUI art workspace)
 ├── crates/studio-core/ # storyfella-studio-core (no GUI)
 ├── crates/language/    # shared lexer, parser, AST and analysis
 ├── crates/compiler/    # versioned story plans, linking and flow validation
@@ -25,6 +26,13 @@ storyfella/
 Clipforge and FineWineTTS remain separate sibling repositories. Storyfella
 consumes `../clipforge/crates/inference`; the directory rename leaves that
 relative dependency unchanged.
+
+Atelier is the separate GPUI drawing and image-generation app, moved from
+FineWineTTS with its existing project storage and macOS Keychain identity intact.
+Run `cargo xtask atelier`; on macOS,
+`sh apps/atelier/package-macos.sh` builds `dist/atelier/Atelier.app`.
+Its hosted providers currently remain app-local. See [Atelier](apps/atelier/README.md)
+and [the shared AI integration plan](docs/atelier.md).
 
 Check or compile `.sf` stories without loading models or opening a project DB:
 
