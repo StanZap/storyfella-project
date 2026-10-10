@@ -4,8 +4,8 @@ Rust supervises one child process and one external service:
 
 | Process | Rust owner | Port | Started when |
 | --- | --- | --- | --- |
-| `sd-server` (stable-diffusion.cpp) | `sd::Runtime` in the shared `clipforge-inference` crate (`../clipforge/crates/inference/src/sd/runtime.rs`) | the image provider's `base_url` (`127.0.0.1:7861` in the checked-in `storyfella.toml`) | First generation request, or manually from Settings |
-| LLM endpoint | external, user-run | user-configured (`config/storyfella.toml`) | external |
+| `sd-server` (stable-diffusion.cpp) | `sd::Runtime` in the shared `clipforge-inference` crate (`../clipforge/crates/inference/src/sd/runtime.rs`) | the image provider's `base_url` (`127.0.0.1:7861` by default in the shared `clipforge.toml`) | First generation request, or manually from Settings |
+| LLM endpoint | external, user-run | user-configured (shared `clipforge.toml`) | external |
 
 The desktop app does **not** start `sd-server` at launch. The shell reports it as
 idle until a generation request triggers `CreativeRuntime::ensure_ready`. This
@@ -38,7 +38,7 @@ ensure_profile_ready()
     │     mismatched server owned by another session → ProfileMismatch)
     │
     ├─ sd::Runtime::ensure_ready(<host>, <port>)
-    │    (the image provider's `base_url` in storyfella.toml)
+    │    (the image provider's `base_url` in the shared clipforge.toml)
     │
     └─ Poll /sdcpp/v1/capabilities every 500 ms until the model matches,
        or a 600 s deadline → ReadinessTimeout
@@ -106,7 +106,8 @@ sd-server \
 ```
 
 `<model_dir>`, `<lora_dir>`, and the listen address are the image provider's
-`model_dir`, `lora_dir`, and `base_url` from [`storyfella.toml`](../config/storyfella.toml).
+`model_dir`, `lora_dir`, and `base_url` from the shared
+[`clipforge.toml`](../config/clipforge.example.toml).
 A provider that declares a `weights.diffusion` override has the server load that local file as
 `--diffusion-model` instead of the profile's own tree.
 
@@ -125,7 +126,7 @@ generation never unloads them. There is a single generation profile —
 `qwen-image-2.1` — so there is no profile switching.
 
 Residency is a **launch-time** choice (`sd::Residency`), set per `sdcpp`
-provider in `storyfella.toml` under `residency`, or in Settings → Services →
+provider in `clipforge.toml` under `residency`, or in Settings → Services →
 Residency. There is no unload endpoint, so changing it restarts
 the server; the Settings control persists the choice and restarts a running
 server into the new mode.

@@ -60,27 +60,28 @@ and **Krea 2 Turbo** generation through native `stable-diffusion.cpp`. Both are
 available in Atelier's Image provider picker without an API key. Native edits
 accept one source image; masks and extra references are rejected before startup.
 
-Copy [the providers example](../config/atelier-native.example.toml) to your user
-app data directory, for example `/home/you/.local/share/Atelier/providers.toml`,
-and replace `/home/you` with your actual paths. An existing Clipforge providers
-file also works: configure exactly one matching architecture for each requested
-capability. Relative model, weight and executable paths resolve against that
-file's directory.
+Copy [the shared config example](../config/clipforge.example.toml) to the
+platform config directory — Linux `~/.config/clipforge/clipforge.toml` — and
+replace `/home/you` with your actual paths. Atelier never asks for a file path:
+it reads the machine's shared `clipforge.toml`, so configure exactly one matching
+architecture for each requested capability. Relative model, weight and
+executable paths resolve against that file's directory.
 
 From the Clipforge repository, provision the CUDA server and both model profiles:
 
 ```sh
-cargo xtask sd-server --model-dir /home/you/.local/share/Atelier/models
-cargo run -p clipforge -- --config /home/you/.local/share/Atelier/providers.toml models --provider qwen ensure
-cargo run -p clipforge -- --config /home/you/.local/share/Atelier/providers.toml models --provider krea ensure
+cargo xtask sd-server --model-dir /home/you/.local/share/clipforge/models
+cargo run -p clipforge -- models --provider qwen ensure
+cargo run -p clipforge -- models --provider krea ensure
 ```
 
-In Atelier select a local provider, open Provider settings, enter the absolute
-**Local providers file** path and Save settings. Generate starts the managed
-server on demand. Qwen generation and subsequent edits reuse the resident model;
-switching deployments releases the previously owned server before loading the
-next model. The app does not download weights or compile the server on submission.
-Missing setup reports an error while keeping the source and prompt draft.
+In Atelier select a local provider. Generate starts the machine's shared server
+on demand — started detached and owned through its marker, so another front end
+(Studio, the Clipforge apps) reuses the same process instead of starting a second
+one. Qwen generation and subsequent edits reuse the resident model; switching
+deployments releases the previously owned server before loading the next model.
+The app does not download weights or compile the server on submission. Missing
+setup reports an error while keeping the source and prompt draft.
 
 Configuration and shared loopback tests pass on this Mac; actual Linux CUDA
 inference and Linux native interaction still require verification on that machine.

@@ -190,7 +190,6 @@ pub struct DrawingApp {
     pub search: Entity<InputState>,
     pub key: Entity<InputState>,
     pub endpoint: Entity<InputState>,
-    pub native_config: Entity<InputState>,
     pub model: Entity<InputState>,
     pub edit_model: Entity<InputState>,
     pub positive_node: Entity<InputState>,
@@ -262,7 +261,6 @@ impl DrawingApp {
                 .masked(true)
         });
         let endpoint = input(settings.endpoint.clone(), window, cx);
-        let native_config = input(settings.native_config.clone(), window, cx);
         let model = input(settings.model.clone(), window, cx);
         let edit_model = input(settings.edit_model.clone(), window, cx);
         let positive_node = input(settings.positive_node.clone(), window, cx);
@@ -428,7 +426,6 @@ impl DrawingApp {
             search,
             key,
             endpoint,
-            native_config,
             model,
             edit_model,
             positive_node,
@@ -1105,7 +1102,6 @@ impl DrawingApp {
         cx.notify();
     }
     pub fn settings_from_inputs(&mut self, cx: &mut Context<Self>) {
-        self.settings.native_config = self.native_config.read(cx).value().trim().to_owned();
         self.settings.endpoint = self.endpoint.read(cx).value().trim().to_owned();
         self.settings.model = self.model.read(cx).value().trim().to_owned();
         self.settings.edit_model = self.edit_model.read(cx).value().trim().to_owned();

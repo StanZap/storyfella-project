@@ -88,9 +88,7 @@ fn source_bound_prompt_drafts_survive_project_and_recovery_writes() {
 #[test]
 fn native_profiles_resolve_paths_capabilities_and_reject_wrong_routes() {
     let directory = temporary("native-providers");
-    let config = directory.join("providers.toml");
-    std::fs::write(
-        &config,
+    let providers = clipforge_inference::Providers::from_toml(
         r#"
 [providers.qwen]
 kind = "sdcpp"
@@ -108,6 +106,7 @@ base_url = "http://127.0.0.1:7862"
 model_dir = "weights"
 executable = "runtime/sd-server"
 "#,
+        &directory,
     )
     .unwrap();
     let mut settings = Settings {
@@ -115,7 +114,7 @@ executable = "runtime/sd-server"
         ..Default::default()
     };
     for editing in [false, true] {
-        let deployment = crate::native_images::deployment(&settings, &config, editing).unwrap();
+        let deployment = crate::native_images::deployment(&settings, &providers, editing).unwrap();
         assert_eq!(deployment.architecture, "qwen-image-2.1");
         assert_eq!(deployment.model_dir, directory.join("weights"));
         assert_eq!(deployment.executable, directory.join("runtime/sd-server"));
@@ -128,14 +127,12 @@ executable = "runtime/sd-server"
     assert!(!settings.provider.supports_edit());
     assert!(settings.provider.key_env().is_empty());
     assert_eq!(
-        crate::native_images::deployment(&settings, &config, false)
+        crate::native_images::deployment(&settings, &providers, false)
             .unwrap()
             .architecture,
         "krea2-turbo"
     );
-    assert!(crate::native_images::deployment(&settings, &config, true).is_err());
-    std::fs::write(&config, "invalid providers").unwrap();
-    assert!(crate::native_images::deployment(&settings, &config, false).is_err());
+    assert!(crate::native_images::deployment(&settings, &providers, true).is_err());
     std::fs::remove_dir_all(directory).unwrap();
 }
 fn stroke(tool: Tool, y: f32) -> Stroke {

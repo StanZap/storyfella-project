@@ -447,44 +447,43 @@ impl ErrorCode {
             Self::ConfigRead => (
                 "SVS-CFG-102",
                 "Could not read config file",
-                "config/storyfella.toml could not be read. Check the file exists and \
-                 is readable.",
+                "A configuration file (config/studio.toml or clipforge.toml) could not \
+                 be read. Check the file exists and is readable.",
             ),
             Self::ConfigParse => (
                 "SVS-CFG-103",
                 "Could not parse config file",
-                "config/storyfella.toml is not valid TOML or has unknown keys. Fix the \
+                "A configuration file is not valid TOML or has unknown keys. Fix the \
                  file, or restore the default config.",
             ),
             Self::ConfigWrite => (
                 "SVS-CFG-104",
                 "Could not write config file",
-                "config/storyfella.toml could not be written. Check file permissions.",
+                "A configuration file could not be written. Check file permissions.",
             ),
             Self::ConfigInvalidSize => (
                 "SVS-CFG-106",
                 "Invalid size in config",
-                "A generation size in config/storyfella.toml is not a multiple of 32 \
+                "A generation size in config/studio.toml is not a multiple of 32 \
                  within 256..=2048. Fix the entry and retry.",
             ),
             Self::ConfigMalformedSize => (
                 "SVS-CFG-107",
                 "Malformed size in config",
-                "A generation size in config/storyfella.toml is not in WxH form (e.g. \
+                "A generation size in config/studio.toml is not in WxH form (e.g. \
                  512x768). Fix the entry and retry.",
             ),
             Self::ConfigProviders => (
                 "SVS-CFG-108",
                 "Could not resolve the image provider",
-                "The inference sections in storyfella.toml declare no usable \
-                 image provider. Check the provider kind, architecture and \
-                 defaults in the application configuration shown in Settings.",
+                "The shared clipforge.toml declares no usable image provider. Check \
+                 its provider kind, architecture and defaults in Settings.",
             ),
             Self::ConfigSerialize => (
                 "SVS-CFG-109",
                 "Could not assemble the providers registry",
-                "Combining the checked-in storyfella.toml with the user overlay \
-                 failed. Check both files for conflicting values.",
+                "The shared clipforge.toml could not be assembled into a registry. \
+                 Check it for conflicting or malformed values.",
             ),
             Self::LlmBuild => (
                 "SVS-LLM-101",
@@ -520,7 +519,7 @@ impl ErrorCode {
                 "SVS-LLM-106",
                 "LLM server did not start",
                 "The managed llama.cpp server could not be started. Check that its \
-                 executable and model files exist (storyfella.toml).",
+                 executable and model files exist (clipforge.toml).",
             ),
             Self::GenRequest => (
                 "SVS-GEN-101",

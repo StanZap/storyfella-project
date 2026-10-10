@@ -17,7 +17,7 @@ This proof of concept uses `stable-diffusion.cpp` as a small native inference ru
 
 Both profiles use `wan_2.1_vae.safetensors`. The manifests in Rust and Python pin each source repository revision, exact size, and SHA-256 hash. "Q4" currently resolves to the available IQ4_XS diffusion artifact, not Q4_K. The encoder is the Q4_K_M file recommended by the official `stable-diffusion.cpp` Krea 2 guide.
 
-The file totals fit comfortably below the 24 GiB target. That is not itself a peak-memory guarantee: activations, the compute graph, image dimensions, and backend behavior also consume memory. The checked-in configuration enables diffusion flash attention and deliberately avoids both CPU offloading and default VAE tiling, so the warm path favors latency and residency. VAE tiling remains an opt-in fallback when a larger workload demonstrates real memory pressure.
+The file totals fit comfortably below the 24 GiB target. That is not itself a peak-memory guarantee: activations, the compute graph, image dimensions, and backend behavior also consume memory. The runtime's launch configuration enables diffusion flash attention and deliberately avoids both CPU offloading and default VAE tiling, so the warm path favors latency and residency. VAE tiling remains an opt-in fallback when a larger workload demonstrates real memory pressure.
 
 ## Runtime lifecycle
 
@@ -50,7 +50,7 @@ cmake --build stable-diffusion.cpp/build --target sd-server --config Release -j
 
 On Linux/CUDA, replace `-DSD_METAL=ON` with `-DSD_CUDA=ON`.
 
-Place the resulting binary at `<model_dir>/runtime/stable-diffusion.cpp/bin/sd-server`, using the Models folder shown in Settings, or set `providers.qwen-image.executable` in your user `storyfella.toml`.
+Place the resulting binary at `<model_dir>/runtime/stable-diffusion.cpp/bin/sd-server`, using the Models folder shown in Settings, or set `providers.qwen-image.executable` in your shared `clipforge.toml`.
 
 Probe a running profile twice to separate first-request and warm latency:
 

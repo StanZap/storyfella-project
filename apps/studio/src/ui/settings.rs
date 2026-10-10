@@ -1545,13 +1545,13 @@ fn persist_defaults(mut defaults: Signal<GenerationDefaults>) {
     let mut baseline = consume_context::<PersistedDefaults>().0;
     let mut error_report = consume_context::<Signal<Option<ReportedError>>>();
     let snapshot = defaults.read().clone();
-    let path = match storyfella_studio_core::paths::user_config_path() {
+    let path = match storyfella_studio_core::paths::config_path() {
         Some(path) => path,
         None => {
             defaults.set(baseline());
             error_report.set(Some(ReportedError::plain(
                 storyfella_studio_core::errors::ErrorCode::ConfigWrite,
-                "Could not resolve the user config path. Settings were not changed.",
+                "Could not resolve the app config path. Settings were not changed.",
             )));
             return;
         }
@@ -1678,9 +1678,12 @@ fn ModelFiles(config: AppConfig) -> Element {
         }
     };
     let model_directory = config.image.model_dir.clone();
-    let configuration_path = storyfella_studio_core::paths::user_config_path()
-        .filter(|path| path.exists())
-        .unwrap_or_else(storyfella_studio_core::paths::config_path);
+    let configuration_path = config
+        .ai_config_path
+        .clone()
+        .or_else(storyfella_studio_core::paths::clipforge_config_path)
+        .or_else(storyfella_studio_core::paths::config_path)
+        .unwrap_or_default();
     let artifacts = image_artifacts(&config);
     let mut state = use_signal(|| ModelPrepState::Idle);
     let current = state();
@@ -1823,10 +1826,10 @@ fn ModelFiles(config: AppConfig) -> Element {
             p { role: "status", class: "mt-3 text-xs text-violet-200", "Saved location: {directory.display()}. Restart Studio to use it. Existing files stay in place; choosing their folder reuses downloads. Preparation is paused until restart." }
         }
         if blocked_overrides > 0 {
-            p { role: "alert", class: "mt-3 text-xs text-amber-300", "{blocked_overrides} configured local weight files are missing. Repair their paths in storyfella.toml; downloading cannot replace a local override." }
+            p { role: "alert", class: "mt-3 text-xs text-amber-300", "{blocked_overrides} configured local weight files are missing. Repair their paths in clipforge.toml; downloading cannot replace a local override." }
         }
         if !executable_ready {
-            p { role: "alert", class: "mt-3 text-xs text-amber-300", "The generation executable is missing: {config.image.executable.display()}. Configure an installed sd-server executable in storyfella.toml." }
+            p { role: "alert", class: "mt-3 text-xs text-amber-300", "The generation executable is missing: {config.image.executable.display()}. Configure an installed sd-server executable in clipforge.toml." }
         }
         if blocked_overrides > 0 || !executable_ready {
             button { class: "mt-3 rounded bg-white/10 px-3 py-2", onclick: move |_| repair_error.set(super::components::open_path(&configuration_path).err()), "Open configuration" }
@@ -1861,7 +1864,7 @@ fn LoRASettings(
                     || bindings.kinds.environment.is_some()
                     || bindings.kinds.object.is_some();
                 let summary = if files.is_empty() {
-                    "No .safetensors adapters found in the LoRA directory. Drop adapter files there (or configure lora_dir in config/storyfella.toml) and they will appear here."
+                    "No .safetensors adapters found in the LoRA directory. Drop adapter files there (or configure lora_dir in clipforge.toml) and they will appear here."
                         .to_owned()
                 } else {
                     format!(
@@ -2000,10 +2003,18 @@ fn LoraBindingRow(
 
 #[component]
 fn StorageSettings(config: AppConfig) -> Element {
-    let configuration = config
-        .user_config_path
+    let application = config
+        .app_config_path
         .clone()
-        .unwrap_or_else(storyfella_studio_core::paths::config_path);
+        .or_else(storyfella_studio_core::paths::config_path)
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "not configured".to_owned());
+    let inference = config
+        .ai_config_path
+        .clone()
+        .or_else(storyfella_studio_core::paths::clipforge_config_path)
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "not configured".to_owned());
     rsx! {
         SectionHeading {
             eyebrow: "Files",
@@ -2015,7 +2026,8 @@ fn StorageSettings(config: AppConfig) -> Element {
             PathRow { title: "Generated assets", description: "Imported generations.", path: config.asset_dir.display().to_string() }
             PathRow { title: "Projects", description: "Where new project databases are created.", path: config.project_dir.display().to_string() }
             PathRow { title: "Cache", description: "Disposable data; safe to clear.", path: config.cache_dir.display().to_string() }
-            PathRow { title: "Application configuration", description: "Your settings and API keys.", path: configuration.display().to_string(), last: true }
+            PathRow { title: "Application configuration", description: "This app's settings.", path: application }
+            PathRow { title: "Inference configuration", description: "Providers shared by Studio, Atelier and Clipforge.", path: inference, last: true }
         }
     }
 }

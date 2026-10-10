@@ -40,16 +40,16 @@ pub fn App() -> Element {
         match &*config_result.read() {
             Ok(config) => rsx! { Workspace { config: config.clone(), app_state, plan_launch } },
             Err(error) => {
-                let repair_path = match error {
+                let repair_path: Option<std::path::PathBuf> = match error {
                     ConfigError::Read { path, .. } | ConfigError::Parse { path, .. }
                     | ConfigError::Write { path, .. } | ConfigError::InvalidSize { path, .. }
-                    | ConfigError::MalformedSize { path, .. } => path.clone(),
+                    | ConfigError::MalformedSize { path, .. } => Some(path.clone()),
                     ConfigError::Providers(_) | ConfigError::Serialize { .. } => {
-                        storyfella_studio_core::paths::user_config_path()
+                        storyfella_studio_core::paths::clipforge_config_path()
                             .filter(|path| path.exists())
-                            .unwrap_or_else(storyfella_studio_core::paths::config_path)
+                            .or_else(storyfella_studio_core::paths::config_path)
                     }
-                    ConfigError::PlatformDirectories => storyfella_studio_core::paths::config_path(),
+                    ConfigError::PlatformDirectories => None,
                 };
                 rsx! {
                 main { class: "min-h-screen bg-slate-950 p-12 font-sans text-red-200",
@@ -57,7 +57,9 @@ pub fn App() -> Element {
                     p { role: "alert", class: "max-w-2xl text-sm leading-6 text-red-200/80", "{error}" }
                     div { class: "mt-5 flex gap-4",
                         crate::ui::components::ErrorDetailsButton { error: error.report() }
-                        button { onclick: move |_| open_error.set(crate::ui::components::open_path(&repair_path).err()), "Open configuration" }
+                        if let Some(repair_path) = repair_path {
+                            button { onclick: move |_| open_error.set(crate::ui::components::open_path(&repair_path).err()), "Open configuration" }
+                        }
                         button { onclick: move |_| {
                             let result = AppConfig::load().map(|mut config| { retry_launch.configure_paths(&mut config); config });
                             config_result.set(result);

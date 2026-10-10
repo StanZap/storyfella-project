@@ -112,7 +112,6 @@ pub struct Settings {
     pub latent_node: String,
     pub seed_node: String,
     pub reduced_motion: bool,
-    pub native_config: String,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -128,7 +127,6 @@ impl Default for Settings {
             latent_node: "5".into(),
             seed_node: "3".into(),
             reduced_motion: false,
-            native_config: String::new(),
         }
     }
 }

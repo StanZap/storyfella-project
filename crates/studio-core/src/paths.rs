@@ -1,29 +1,30 @@
 //! Where the app finds its files.
 //!
-//! Explicit relative paths — the config file, the plan
-//! directory, and the `paths.*` directories the config points at — are anchored
-//! to one **project root** rather than the process working directory. That is
-//! what lets the GUI, the `svs` CLI, the plan driver and (later) the packaged
-//! bundle agree on where things are, whichever directory they are launched
-//! from.
+//! There are two configuration files, split by concern and both platform-local:
+//!
+//! * the **app config** ([`config_path`]) — `studio.toml` in the platform
+//!   application config directory — owns paths, generation defaults, LoRA
+//!   bindings and runtime prefs;
+//! * the **shared AI config** ([`clipforge_config_path`]) — the machine's
+//!   `clipforge.toml` — owns the provider registry, and is the same file Atelier
+//!   and Clipforge read.
+//!
+//! Explicit relative app paths — the plan directory and the `paths.*`
+//! directories the config points at — are anchored to one **project root**
+//! rather than the process working directory, so the GUI, the `svs` CLI, the
+//! plan driver and the packaged bundle agree on where they are.
 //!
 //! The root is, in order of preference:
 //!
 //! 1. `$SVS_HOME`, when set and non-empty;
-//! 2. the nearest ancestor of the working directory that holds
-//!    `config/storyfella.toml` — the checkout, for every dev invocation;
-//! 3. the nearest ancestor of the *executable* that holds `config/storyfella.toml`,
-//!    which is how a packaged bundle resolves the resources shipped beside it;
-//! 4. the working directory, which leaves a config-less run on the platform
-//!    application directories, exactly as it behaved before anchoring.
+//! 2. the nearest ancestor of the working directory that holds `config/plans` —
+//!    the checkout, for every dev invocation;
+//! 3. the nearest ancestor of the *executable* that holds `config/plans`, which
+//!    is how a packaged bundle resolves the resources shipped beside it;
+//! 4. the working directory.
 //!
 //! Model storage defaults to OS-local Storyfella application data in all builds;
 //! it is independent of the checkout unless explicitly overridden.
-//!
-//! Layered over that root config is one **user config** file in the platform
-//! application *config* directory (see [`user_config_path`]). It is only read —
-//! never searched for — so it cannot move the root; it exists so a machine can
-//! keep an API key or a different endpoint out of the repository.
 
 use std::path::{Path, PathBuf};
 
@@ -37,13 +38,20 @@ pub const APP_QUALIFIER: &str = "dev";
 pub const APP_ORGANIZATION: &str = "Smart Visual Sequencer";
 pub const APP_APPLICATION: &str = "Smart Visual Sequencer";
 
-/// The config file, relative to the project root.
-pub const CONFIG_FILE: &str = "config/storyfella.toml";
+/// The app config file's name, inside the platform application config directory.
+pub const CONFIG_FILE: &str = "studio.toml";
 
-/// The user config's file name, inside [`user_config_path`]'s directory.
-pub const USER_CONFIG_FILE: &str = "storyfella.toml";
+/// The environment variable overriding the app config file's location, so tests
+/// and scratch runs can point it a temporary file.
+pub const APP_CONFIG_ENV: &str = "SVS_USER_CONFIG";
 
-/// Where plans live, relative to the project root.
+/// The environment variable overriding the shared AI config file's location, so
+/// tests and scratch runs can point it away from the machine's real
+/// `clipforge.toml`.
+pub const AI_CONFIG_ENV: &str = "SVS_AI_CONFIG";
+
+/// Where plans live, relative to the project root — and the directory that
+/// identifies the root: its nearest ancestor holding it.
 pub const PLANS_DIR: &str = "config/plans";
 
 /// The project root — see the module comment for the search order.
@@ -67,9 +75,20 @@ pub fn root() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// The resolved config file.
-pub fn config_path() -> PathBuf {
-    root().join(CONFIG_FILE)
+/// The app config file — `studio.toml` in the platform application *config*
+/// directory (on Linux `~/.config/smartvisualsequencer/studio.toml`).
+///
+/// `$SVS_USER_CONFIG` overrides the location when set and non-empty, which lets
+/// tests and scratch runs point it at a temporary file. `None` when it is unset
+/// and the platform has no config directory.
+pub fn config_path() -> Option<PathBuf> {
+    if let Some(value) = std::env::var_os(APP_CONFIG_ENV) {
+        let path = PathBuf::from(value);
+        if !path.as_os_str().is_empty() {
+            return Some(path);
+        }
+    }
+    project_dirs().map(|dirs| dirs.config_dir().join(CONFIG_FILE))
 }
 
 /// The resolved plans directory.
@@ -83,22 +102,23 @@ pub fn project_dirs() -> Option<ProjectDirs> {
     ProjectDirs::from(APP_QUALIFIER, APP_ORGANIZATION, APP_APPLICATION)
 }
 
-/// The user-level config file layered over [`config_path`] — the platform
-/// application *config* directory (on Linux,
-/// `~/.config/smartvisualsequencer/storyfella.toml`).
+/// The machine's shared AI configuration file — `clipforge.toml` at the
+/// platform location every front end resolves
+/// (`clipforge_inference::config::default_config_path()`; on Linux
+/// `~/.config/clipforge/clipforge.toml`). It is created with Storyfella's
+/// defaults on first load when absent (see `config::load`).
 ///
-/// `$SVS_USER_CONFIG` overrides the location when set and non-empty, which
-/// lets tests and scratch runs point it at a temporary file. `None` when it is
-/// unset and the platform has no config directory, meaning there is no user
-/// layer.
-pub fn user_config_path() -> Option<PathBuf> {
-    if let Some(value) = std::env::var_os("SVS_USER_CONFIG") {
+/// `$SVS_AI_CONFIG` overrides the location when set and non-empty, so tests and
+/// scratch runs can point it at a temporary file. `None` when it is unset and
+/// the platform has no config directory.
+pub fn clipforge_config_path() -> Option<PathBuf> {
+    if let Some(value) = std::env::var_os(AI_CONFIG_ENV) {
         let path = PathBuf::from(value);
         if !path.as_os_str().is_empty() {
             return Some(path);
         }
     }
-    project_dirs().map(|dirs| dirs.config_dir().join(USER_CONFIG_FILE))
+    clipforge_inference::config::default_config_path()
 }
 
 /// Large model files belong in local application data, never roaming config,
@@ -125,12 +145,12 @@ pub fn resolve(path: impl AsRef<Path>) -> PathBuf {
     }
 }
 
-/// The nearest ancestor of `start` (inclusive) holding [`CONFIG_FILE`].
+/// The nearest ancestor of `start` (inclusive) holding [`PLANS_DIR`].
 fn find_root(start: &Path) -> Option<PathBuf> {
     let start = std::path::absolute(start).ok()?;
     start
         .ancestors()
-        .find(|dir| dir.join(CONFIG_FILE).is_file())
+        .find(|dir| dir.join(PLANS_DIR).is_dir())
         .map(Path::to_path_buf)
 }
 
@@ -138,20 +158,19 @@ fn find_root(start: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    /// A temp tree with `config/storyfella.toml` at `root/` and a nested directory
-    /// below it, so the upward search has something to find and something to
-    /// search from.
+    /// A temp tree with `config/plans/` at `root/` and a nested directory below
+    /// it, so the upward search has something to find and something to search
+    /// from.
     fn nested_tree() -> (PathBuf, PathBuf) {
         let root = std::env::temp_dir().join(format!("svs-paths-{}", uuid::Uuid::new_v4()));
         let nested = root.join("apps").join("cli");
         std::fs::create_dir_all(nested.join("..")).expect("nested dir should create");
-        std::fs::create_dir_all(root.join("config")).expect("config dir should create");
-        std::fs::write(root.join(CONFIG_FILE), "").expect("config fixture should write");
+        std::fs::create_dir_all(root.join(PLANS_DIR)).expect("plans dir should create");
         (root, nested)
     }
 
     #[test]
-    fn find_root_walks_up_to_the_directory_holding_the_config() {
+    fn find_root_walks_up_to_the_directory_holding_the_plans() {
         let (root, nested) = nested_tree();
         let expected = std::path::absolute(&root).expect("temp dir should absolute-ize");
         assert_eq!(find_root(&nested).as_deref(), Some(expected.as_path()));
@@ -173,27 +192,26 @@ mod tests {
     }
 
     #[test]
-    fn the_module_constants_stay_relative_to_the_root() {
-        // The constants are what `root()` searches for; a path-separator typo
-        // here would make every search fail silently.
-        assert_eq!(config_path(), root().join(CONFIG_FILE));
-        assert_eq!(plans_dir(), root().join("config/plans"));
-        assert!(Path::new(CONFIG_FILE).is_relative());
+    fn the_plans_directory_stays_relative_to_the_root() {
+        // The constant is what `root()` searches for; a path-separator typo here
+        // would make every search fail silently.
+        assert_eq!(plans_dir(), root().join(PLANS_DIR));
         assert!(Path::new(PLANS_DIR).is_relative());
-        assert!(Path::new(USER_CONFIG_FILE).is_relative());
+        // The config file's name is a bare file name, not a root-relative path.
+        assert_eq!(Path::new(CONFIG_FILE).components().count(), 1);
     }
 
     #[test]
-    fn the_user_config_lives_in_the_platform_config_dir() {
-        if std::env::var_os("SVS_USER_CONFIG").is_some() {
+    fn the_app_config_lives_in_the_platform_config_dir() {
+        if std::env::var_os(APP_CONFIG_ENV).is_some() {
             return; // an explicit override is the user's choice; nothing to assert
         }
         let dirs = project_dirs().expect("the platform exposes application directories");
-        let path = user_config_path().expect("the platform exposes a config directory");
-        assert_eq!(path, dirs.config_dir().join(USER_CONFIG_FILE));
+        let path = config_path().expect("the platform exposes a config directory");
+        assert_eq!(path, dirs.config_dir().join(CONFIG_FILE));
         #[cfg(target_os = "linux")]
         assert!(
-            path.ends_with("smartvisualsequencer/storyfella.toml"),
+            path.ends_with("smartvisualsequencer/studio.toml"),
             "{path:?}"
         );
     }
@@ -205,5 +223,19 @@ mod tests {
         assert!(path.starts_with(dirs.data_local_dir()));
         assert!(path.ends_with("models"));
         assert!(!path.starts_with(root()));
+    }
+
+    #[test]
+    fn the_shared_ai_config_defaults_to_the_clipforge_config_directory() {
+        if std::env::var_os(AI_CONFIG_ENV).is_some() {
+            return; // an explicit override is the user's choice; nothing to assert
+        }
+        let path = clipforge_config_path().expect("the platform exposes a config directory");
+        assert_eq!(
+            path,
+            clipforge_inference::config::default_config_path().unwrap()
+        );
+        #[cfg(target_os = "linux")]
+        assert!(path.ends_with("clipforge/clipforge.toml"), "{path:?}");
     }
 }

@@ -615,7 +615,7 @@ See [iteration acceptance](atelier-iteration-acceptance.md).
    are implemented. Artboard pan/zoom remains deferred (§6).
 5. **Generation quality controls:** configurable per-kind default sizes
    (`[generation.sizes]`), default step count (`[generation] steps`), and
-   the Settings screen to edit them live (persisted to `config/storyfella.toml`,
+   the Settings screen to edit them live (persisted to the platform `studio.toml`,
    applied to the next generation — canvas and CLI). The LLM expresses
    size/steps/adapters only when the user asks (the visual ops carry
    `size`/`steps`/`loras`; the `resize` op sets the default size and
@@ -746,9 +746,10 @@ See [iteration acceptance](atelier-iteration-acceptance.md).
     command input, truthful settings/runtime feedback, accessible controls,
     readable styling, useful recents/filters and safe preview replacement.
     Model storage now defaults to OS-local Storyfella data in all builds, with
-    Change location/Open folder controls and explicit restart feedback. One
-    `storyfella.toml` contains application and inference settings; old user
-    settings migrate once while preserving originals and existing model files.
+    Change location/Open folder controls and explicit restart feedback. App
+    settings live in `studio.toml` and the shared provider registry in
+    `clipforge.toml`; old user settings migrate once while preserving originals
+    and existing model files.
     The 2026-10-10 workspace pass adds stable icon navigation, visual art-action
     forms using shared typed operations, contextual palette actions, a separate
     command dock and quieter inspector/project surfaces. It fixes command
@@ -779,14 +780,14 @@ deferred by user reprioritization in favor of generation quality, the LoRA
 registry, and UX fixes.
 
 Text and vision are now capability-routed providers: the single `[llm]` section
-is gone, replaced by `text` and `vision` capabilities resolved from
-`storyfella.toml` (layered with one user settings overlay, so a key stays out of
-git) — so a remote, text-only planner no longer blinds `svs eval`. The
+is gone, replaced by `text` and `vision` capabilities resolved from the shared
+`clipforge.toml` (so a key stays out of git) — so a remote, text-only planner no
+longer blinds `svs eval`. The
 `clipforge-inference` runtime is generalized to a shared native-server
 supervisor, and a `llamacpp` provider can start a managed `llama-server` on
 demand; weights are never bundled. Settings → **Models** gives each chat
 capability an editable provider, base URL, model and API key (switching
-`[defaults] text`/`vision` in the user overlay, and rebuilding the planner client
+`[defaults] text`/`vision` in `clipforge.toml`, and rebuilding the planner client
 in place), so pointing the app at a remote or local server is a click and a field
 edit rather than a file edit; the same page adds and removes providers. Settings
 → **Services** carries the image engine and the managed `llama-server` files.

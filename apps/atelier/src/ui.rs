@@ -2028,14 +2028,11 @@ impl DrawingApp {
         let provider = self.settings.provider;
         let mut content = column().child(self.provider_choices(true));
         if provider.native_architecture().is_some() {
-            content = content
-                .child(field("Local providers file", &self.native_config))
-                .child(label("Choose a Clipforge providers TOML file with your model paths and CUDA sd-server executable."))
-                .child(label(if provider.supports_edit() {
-                    "Generation and editing · one source image"
-                } else {
-                    "Generation only"
-                }));
+            content = content.child(label(if provider.supports_edit() {
+                "Generation and editing · one source image"
+            } else {
+                "Generation only"
+            }));
         } else if provider != Provider::Comfy {
             content = content
                 .child(label("Model presets"))

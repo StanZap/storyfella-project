@@ -328,7 +328,7 @@ returns to the unchanged draft. Existing project-switch saving should remain.
 failures in [settings.rs](apps/studio/src/ui/settings.rs) only log after updating
 live values. Residency restart failure also only logs. Show applied/saved/error
 state with retry or rollback; refresh health after deployment changes.
-**Acceptance:** an unwritable overlay or failed restart gives visible feedback
+**Acceptance:** an unwritable config file or failed restart gives visible feedback
 and the UI accurately distinguishes the live value from the saved value.
 
 ### SF-UX-06 · P1 · Failed commands erase the editable request
@@ -663,8 +663,9 @@ results alone.
 
 ### Model storage and general configuration · 2026-10-08
 
-Application and inference settings share `storyfella.toml`; labels and repair
-actions use Application configuration / Open configuration. Model downloads
+Application settings live in `studio.toml` and inference settings in the shared
+`clipforge.toml`; labels and repair actions use Application configuration and
+Inference configuration. Model downloads
 default to OS-local application data in all builds, never the checkout or bundle.
 Model files provides Change location and Open folder. Save the selected folder
 before reporting success; clearly state that restart applies it and pause new
@@ -673,7 +674,7 @@ to reuse downloads. Keep explicit executable/adapter/weight paths independent.
 Old user settings migrate once without deleting sources or overwriting the new
 configuration. Atomic writes prevent a failed settings update truncating it.
 
-Verification: workspace tests cover the OS-local default, a combined overlay,
+Verification: workspace tests cover the OS-local default, the platform app config,
 preserved API-key settings/comments, existing model-file reuse, malformed
 provider sections, and one-time migration without overwriting or deleting its
 sources. Strict workspace linting and the runnable desktop build pass. Native
@@ -711,9 +712,9 @@ action:
   profile, generation quality (steps, per-kind sizes) and LoRA bindings live on
   the same page, because they describe the model rather than the process. A
   **Providers** section lists every configured chat provider and can **add** one
-  — validated against the merged configuration before it is written — or
-  **remove** one the overlay defines (`AppConfig::user_providers` marks the
-  removable ones; a checked-in provider is not the UI's to delete).
+  — validated against the shared registry before it is written — or
+  **remove** one it defines (`AppConfig::user_providers` marks the removable
+  ones).
 - **Services** is the "how it runs" page: the image engine's status and
   **Start/Stop/Restart/Take over** (or **Set up image engine**, which scrolls to
   the weights), its executable and runtime endpoint, residency, prewarm, the
@@ -722,12 +723,13 @@ action:
 
 An edit persists before it applies, writing `base_url`/`model`/`api_key` (or
 `[defaults] text`/`vision` and the provider's `capabilities` for a provider
-switch) to the user overlay, then rebuilds the planner client, re-runs the health
+switch) to the shared `clipforge.toml`, then rebuilds the planner client, re-runs the health
 check and re-discovers the endpoint's models. Adding or removing a provider
 reloads the effective configuration from disk, so the registry is validated as a
 whole. A failed save keeps the previous value, and clearing the key removes the
 line so a provider's `api_key_env` applies again. **Storage** names every
-resolved path and the application configuration file.
+resolved path and both configuration files (Application configuration and
+Inference configuration).
 
 Verification: workspace tests cover the per-capability provider list, a
 persisted `[defaults]` switch taking effect on reload, line-preserving endpoint

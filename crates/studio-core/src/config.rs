@@ -157,13 +157,14 @@ pub struct NewChatProvider {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppConfig {
-    /// The `text` deployment resolved from `storyfella.toml` — the planner's
-    /// OpenAI-compatible endpoint, model, key and timeout. `None` when no
-    /// provider serves `text`: the planner is a soft dependency, so the app
+    /// The `text` deployment resolved from the shared `clipforge.toml` — the
+    /// planner's OpenAI-compatible endpoint, model, key and timeout. `None` when
+    /// no provider serves `text`: the planner is a soft dependency, so the app
     /// still runs and its LLM steps degrade to manual input.
     pub text: Option<ChatDeployment>,
-    /// The `vision` deployment resolved from `storyfella.toml` — what `svs eval`
-    /// and future vision steps call. `None` when no provider serves `vision`.
+    /// The `vision` deployment resolved from the shared `clipforge.toml` — what
+    /// `svs eval` and future vision steps call. `None` when no provider serves
+    /// `vision`.
     pub vision: Option<ChatDeployment>,
     /// The provider id serving `text`, kept so Settings can persist a model
     /// choice under the right `[providers.<id>]` section. `None` when the
@@ -174,8 +175,9 @@ pub struct AppConfig {
     /// The provider id serving `t2i`, kept so Settings can persist the
     /// residency choice under the right `[providers.<id>]` section.
     pub image_provider_id: Option<String>,
-    /// The image-generation deployment resolved from `storyfella.toml`: the
-    /// `sd-server` executable, model tree, LoRA root, endpoint, and weights.
+    /// The image-generation deployment resolved from the shared
+    /// `clipforge.toml`: the `sd-server` executable, model tree, LoRA root,
+    /// endpoint, and weights.
     pub image: ImageDeployment,
     /// Every configured provider serving `text`, in id order. The Settings
     /// provider picker switches `[defaults] text` among these, so moving
@@ -185,19 +187,23 @@ pub struct AppConfig {
     /// can be assigned to either capability, and the assignment records the
     /// capability (see [`AppConfig::with_text_provider`]).
     pub chat_providers: Vec<ChatProvider>,
-    /// The provider ids the user overlay defines (see [`paths::user_config_path`]).
-    /// Settings may remove only these: a provider from the checked-in
-    /// `config/storyfella.toml` is not the UI's to delete.
+    /// The provider ids the shared `clipforge.toml` defines. Settings may remove
+    /// a chat provider among these; the seeded image provider is required and is
+    /// not offered for removal.
     pub user_providers: Vec<String>,
     pub cache_dir: PathBuf,
     pub asset_dir: PathBuf,
     /// Where the GUI keeps `.svs-project.db` files (the Projects screen).
     pub project_dir: PathBuf,
-    /// The user-level config layered over `config/storyfella.toml` (see
-    /// [`paths::user_config_path`]). `None` when the platform has no config
-    /// directory, or the config was read from an explicit path. The Settings
-    /// screen shows it so machine-local secrets have a known home.
-    pub user_config_path: Option<PathBuf>,
+    /// The app config file (see [`paths::config_path`]) — where the app's own
+    /// settings (generation defaults, prewarm) persist. `None` when the platform
+    /// has no config directory. The Settings screen shows it.
+    pub app_config_path: Option<PathBuf>,
+    /// The machine's shared AI configuration (see
+    /// [`paths::clipforge_config_path`]). Provider edits persist here, so every
+    /// front end on the machine shares one registry. `None` when the platform
+    /// has no config directory.
+    pub ai_config_path: Option<PathBuf>,
     /// The configurable sizes, step count, and LoRA bindings that shape
     /// every generation (editable in Settings, persisted to this file).
     pub generation_defaults: GenerationDefaults,
@@ -346,17 +352,25 @@ struct PathOverrides {
 }
 
 impl AppConfig {
-    /// Loads the effective config: `config/storyfella.toml` beneath the project root
-    /// (see [`crate::paths`]), with the user config layered over it.
+    /// Loads the effective config: this app's settings from the platform
+    /// `studio.toml` (created with defaults when absent; see [`paths::config_path`])
+    /// and the inference settings from the machine's shared `clipforge.toml`
+    /// (created with Storyfella's defaults when absent).
     pub fn load() -> Result<Self, ConfigError> {
-        let user = paths::user_config_path();
-        if let Some(path) = &user {
-            migrate_user_config(path)?;
+        let app = paths::config_path();
+        let ai = paths::clipforge_config_path();
+        migrate_legacy_settings(app.as_deref(), ai.as_deref())?;
+        if let Some(path) = app.as_deref() {
+            seed_app_config(path)?;
         }
-        Self::load_layered(paths::config_path(), user)
+        if let Some(path) = ai.as_deref() {
+            seed_shared_config(path)?;
+        }
+        Self::load_split(app, ai)
     }
 
-    /// Loads one complete settings file without the machine's user overlay.
+    /// Loads one complete settings file (both app and inference sections)
+    /// without the machine's user overlay. The one-file path used by tests.
     pub fn load_from(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
         Self::load_layered(path.as_ref().to_path_buf(), None)
     }
@@ -368,10 +382,46 @@ impl AppConfig {
         self.text.as_ref().map(LlmConfig::from)
     }
 
+    /// The shared AI config file provider edits are written to.
+    fn ai_path(&self) -> Result<&Path, ConfigError> {
+        self.ai_config_path
+            .as_deref()
+            .ok_or(ConfigError::PlatformDirectories)
+    }
+
+    /// The production loader: this app's settings from the platform `app` config
+    /// file, and the provider registry from the shared inference file `ai`.
+    fn load_split(app: Option<PathBuf>, ai: Option<PathBuf>) -> Result<Self, ConfigError> {
+        let value = match app.as_deref() {
+            Some(path) => read_config_value(path)?,
+            None => toml::Value::Table(toml::Table::new()),
+        };
+        let parse_path = app
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(paths::CONFIG_FILE));
+        let file: FileConfig = value.try_into().map_err(|source| ConfigError::Parse {
+            path: parse_path.clone(),
+            source,
+        })?;
+        // The inference half is its own shared file (created above when absent),
+        // so a provider edit is visible to every front end on the machine.
+        let (providers, user_providers) = match ai.as_deref() {
+            Some(ai_path) => {
+                let value = read_config_value(ai_path)?;
+                let ids = provider_ids(&value);
+                (providers_from_value(&value, provider_base(ai_path))?, ids)
+            }
+            None => (Providers::built_in(), Vec::new()),
+        };
+        Self::assemble(providers, user_providers, file, &parse_path, app, ai)
+    }
+
     /// Reads `base`, merges `user` over it (deeply; see [`merge_toml`]), and
-    /// resolves the result. A missing file contributes nothing rather than
-    /// failing, so the default config needs neither file to exist. The
-    /// same merged value supplies both application and inference settings.
+    /// resolves the result as one file that carries both app and inference
+    /// settings. A missing file contributes nothing rather than failing, so the
+    /// default config needs neither file to exist. Test-only: production reads
+    /// the app and inference halves from separate files (see
+    /// [`AppConfig::load_split`]).
     fn load_layered(base: PathBuf, user: Option<PathBuf>) -> Result<Self, ConfigError> {
         let path = base.as_path();
         let mut value = read_config_value(path)?;
@@ -379,12 +429,7 @@ impl AppConfig {
         if let Some(overlay) = user.as_deref() {
             if overlay != path {
                 let overlay_value = read_config_value(overlay)?;
-                if let Some(providers) = overlay_value
-                    .get("providers")
-                    .and_then(toml::Value::as_table)
-                {
-                    user_providers = providers.keys().cloned().collect();
-                }
+                user_providers = provider_ids(&overlay_value);
                 merge_toml(&mut value, overlay_value);
             }
         }
@@ -398,11 +443,22 @@ impl AppConfig {
                 path: parse_path,
                 source,
             })?;
+        let providers = providers_from_value(&value, &paths::root())?;
+        Self::assemble(providers, user_providers, file, path, user, None)
+    }
 
-        // The deployments — the `sd-server` image backend and the chat
-        // (`text`/`vision`) endpoints — come from the providers registry at
-        // same general settings file and user overlay.
-        let providers = providers_from_value(&value)?;
+    /// Resolves a parsed app file and a validated provider registry into the
+    /// effective config. `base` names the app file for size errors; `app_config`
+    /// and `ai_config` are the paths Settings persists to.
+    fn assemble(
+        providers: Providers,
+        user_providers: Vec<String>,
+        file: FileConfig,
+        base: &Path,
+        app_config: Option<PathBuf>,
+        ai_config: Option<PathBuf>,
+    ) -> Result<Self, ConfigError> {
+        let path = base;
         let image = providers.image_deployment(Capability::T2i)?;
         // The chat capabilities are optional: an unconfigured planner or vision
         // endpoint leaves the app fully usable, with those features degraded.
@@ -473,7 +529,8 @@ impl AppConfig {
                 .project_dir
                 .map(paths::resolve)
                 .unwrap_or_else(|| data_dir.join("projects")),
-            user_config_path: user,
+            app_config_path: app_config,
+            ai_config_path: ai_config,
             generation_defaults: GenerationDefaults {
                 sizes,
                 steps: file.generation.steps,
@@ -485,17 +542,14 @@ impl AppConfig {
         })
     }
 
-    /// Persists a chat provider's `capabilities` array to the user overlay —
+    /// Persists a chat provider's `capabilities` array to the shared AI config —
     /// used when a provider is assigned to a capability it did not declare.
     pub fn persist_provider_capabilities(
         &self,
         provider_id: &str,
         capabilities: &[String],
     ) -> Result<(), ConfigError> {
-        let path = self
-            .user_config_path
-            .as_ref()
-            .ok_or(ConfigError::PlatformDirectories)?;
+        let path = self.ai_path()?;
         Self::persist_provider_capabilities_to(path, provider_id, capabilities)
     }
 
@@ -522,9 +576,9 @@ impl AppConfig {
     }
 
     /// Persists which configured provider serves the planner (`text`) by
-    /// writing `[defaults] text = "<provider_id>"` to the user config (see
-    /// [`paths::user_config_path`]); line-preserving like the other settings,
-    /// so the choice survives restarts without a file edit.
+    /// writing `[defaults] text = "<provider_id>"` to the shared AI config (see
+    /// [`paths::clipforge_config_path`]); line-preserving like the other
+    /// settings, so the choice survives restarts without a file edit.
     pub fn persist_text_provider(&self, provider_id: &str) -> Result<(), ConfigError> {
         self.persist_default_provider(Capability::Text, provider_id)
     }
@@ -649,16 +703,14 @@ impl AppConfig {
         self.persist_default_provider(Capability::Vision, provider_id)
     }
 
-    /// Writes `[defaults] <capability> = "<provider_id>"` to the user config.
+    /// Writes `[defaults] <capability> = "<provider_id>"` to the shared AI
+    /// config.
     fn persist_default_provider(
         &self,
         capability: Capability,
         provider_id: &str,
     ) -> Result<(), ConfigError> {
-        let path = self
-            .user_config_path
-            .as_ref()
-            .ok_or(ConfigError::PlatformDirectories)?;
+        let path = self.ai_path()?;
         Self::persist_default_provider_to(path, capability, provider_id)
     }
 
@@ -681,20 +733,17 @@ impl AppConfig {
         write_config_file(path, lines.join("\n"))
     }
 
-    /// Persists one endpoint field of the named chat provider to the user
-    /// settings file (see [`paths::user_config_path`]) — the Settings endpoint
-    /// editor writes here so an edit survives restarts without touching the
-    /// checked-in `storyfella.toml`. Line-preserving.
+    /// Persists one endpoint field of the named chat provider to the shared AI
+    /// config (see [`paths::clipforge_config_path`]) — the Settings endpoint
+    /// editor writes here so an edit survives restarts and reaches every front
+    /// end. Line-preserving.
     pub fn persist_chat_endpoint(
         &self,
         provider_id: &str,
         field: ChatEndpointField,
         value: &str,
     ) -> Result<(), ConfigError> {
-        let path = self
-            .user_config_path
-            .as_ref()
-            .ok_or(ConfigError::PlatformDirectories)?;
+        let path = self.ai_path()?;
         Self::persist_chat_endpoint_to(path, provider_id, field, value)
     }
 
@@ -720,13 +769,12 @@ impl AppConfig {
     }
 
     /// Persists the generation defaults (steps, per-kind sizes, LoRA bindings)
-    /// to the user config (see [`paths::user_config_path`]) — the Settings
-    /// screen writes here so the choices survive restarts without touching the
-    /// checked-in `config/storyfella.toml`. Line-preserving: only the touched keys
-    /// change.
+    /// to the app config (see [`paths::config_path`]) — the Settings screen
+    /// writes here so the choices survive restarts. Line-preserving: only the
+    /// touched keys change.
     pub fn persist_generation_defaults(&self) -> Result<(), ConfigError> {
         let path = self
-            .user_config_path
+            .app_config_path
             .as_ref()
             .ok_or(ConfigError::PlatformDirectories)?;
         Self::persist_generation_defaults_to(path, &self.generation_defaults)
@@ -823,15 +871,11 @@ impl AppConfig {
         write_config_file(path, lines.join("\n"))
     }
 
-    /// Persists the image provider's residency to the user settings file (see
-    /// [`paths::user_config_path`]) — the Settings control writes here so
-    /// the choice survives restarts without touching the checked-in
-    /// `storyfella.toml`.
+    /// Persists the image provider's residency to the shared AI config (see
+    /// [`paths::clipforge_config_path`]) — the Settings control writes here so
+    /// the choice survives restarts.
     pub fn persist_image_residency(&self, residency: &str) -> Result<(), ConfigError> {
-        let path = self
-            .user_config_path
-            .as_ref()
-            .ok_or(ConfigError::PlatformDirectories)?;
+        let path = self.ai_path()?;
         let provider_id = self
             .image_provider_id
             .as_deref()
@@ -862,11 +906,11 @@ impl AppConfig {
         write_config_file(path, lines.join("\n"))
     }
 
-    /// Persists the prewarm choice to the user config (see
-    /// [`paths::user_config_path`]), line-preserving like the other settings.
+    /// Persists the prewarm choice to the app config (see
+    /// [`paths::config_path`]), line-preserving like the other settings.
     pub fn persist_prewarm(&self, enabled: bool) -> Result<(), ConfigError> {
         let path = self
-            .user_config_path
+            .app_config_path
             .as_ref()
             .ok_or(ConfigError::PlatformDirectories)?;
         Self::persist_prewarm_to(path, enabled)
@@ -882,13 +926,10 @@ impl AppConfig {
         write_config_file(path, lines.join("\n"))
     }
 
-    /// Save an absolute model-tree override in the same general settings file.
-    /// Files stay in place: selecting an existing tree reuses its downloads.
+    /// Save an absolute model-tree override in the shared AI config. Files stay
+    /// in place: selecting an existing tree reuses its downloads.
     pub fn persist_model_dir(&self, directory: &Path) -> Result<(), ConfigError> {
-        let path = self
-            .user_config_path
-            .as_ref()
-            .ok_or(ConfigError::PlatformDirectories)?;
+        let path = self.ai_path()?;
         let provider = self
             .image_provider_id
             .as_deref()
@@ -919,23 +960,18 @@ impl AppConfig {
         write_config_file(path, lines.join("\n"))
     }
 
-    /// Adds a chat provider to the user overlay (see
-    /// [`paths::user_config_path`]) — the Settings "Add provider" action. The
-    /// candidate is validated against the merged configuration before it is
+    /// Adds a chat provider to the shared AI config (see
+    /// [`paths::clipforge_config_path`]) — the Settings "Add provider" action.
+    /// The candidate is validated as part of the whole registry before it is
     /// written, so a registry the app cannot load is never persisted.
     pub fn persist_provider_added(&self, provider: &NewChatProvider) -> Result<(), ConfigError> {
-        let path = self
-            .user_config_path
-            .as_ref()
-            .ok_or(ConfigError::PlatformDirectories)?;
-        Self::persist_provider_added_to(path, &paths::config_path(), provider)
+        let path = self.ai_path()?;
+        Self::persist_provider_added_to(path, provider)
     }
 
-    /// Testable variant of [`AppConfig::persist_provider_added`]; `base` is the
-    /// checked-in configuration the overlay layers over.
+    /// Testable variant of [`AppConfig::persist_provider_added`].
     pub fn persist_provider_added_to(
         path: &Path,
-        base: &Path,
         provider: &NewChatProvider,
     ) -> Result<(), ConfigError> {
         let contents = read_config_contents(path)?;
@@ -948,33 +984,25 @@ impl AppConfig {
         }
         lines.extend(provider_section_lines(provider));
         let updated = lines.join("\n");
-        validate_providers_overlay(base, path, &updated)?;
+        validate_providers(&updated, path)?;
         write_config_file(path, updated)
     }
 
-    /// Removes a chat provider the user overlay defines, and any `[defaults]`
-    /// entry naming it (so the base file's default applies again). A provider
-    /// from the checked-in file cannot be removed this way.
+    /// Removes a chat provider the shared AI config defines, and any `[defaults]`
+    /// entry naming it.
     pub fn persist_provider_removed(&self, id: &str) -> Result<(), ConfigError> {
-        let path = self
-            .user_config_path
-            .as_ref()
-            .ok_or(ConfigError::PlatformDirectories)?;
-        Self::persist_provider_removed_to(path, &paths::config_path(), id)
+        let path = self.ai_path()?;
+        Self::persist_provider_removed_to(path, id)
     }
 
     /// Testable variant of [`AppConfig::persist_provider_removed`].
-    pub fn persist_provider_removed_to(
-        path: &Path,
-        base: &Path,
-        id: &str,
-    ) -> Result<(), ConfigError> {
+    pub fn persist_provider_removed_to(path: &Path, id: &str) -> Result<(), ConfigError> {
         let contents = read_config_contents(path)?;
         let mut lines: Vec<String> = contents.lines().map(str::to_owned).collect();
         remove_provider_section(&mut lines, id);
         remove_default_provider(&mut lines, id);
         let updated = lines.join("\n");
-        validate_providers_overlay(base, path, &updated)?;
+        validate_providers(&updated, path)?;
         write_config_file(path, updated)
     }
 }
@@ -1054,25 +1082,18 @@ fn remove_default_provider(lines: &mut Vec<String>, id: &str) {
     }
 }
 
-/// Parses a candidate overlay, merges it over the base configuration and
-/// resolves the provider registry, so a broken provider is rejected before it
-/// is written.
-fn validate_providers_overlay(
-    base: &Path,
-    overlay_path: &Path,
-    overlay: &str,
-) -> Result<(), ConfigError> {
-    let overlay = if overlay.trim().is_empty() {
+/// Parses a candidate shared AI config and resolves its provider registry, so a
+/// broken provider is rejected before it is written.
+fn validate_providers(contents: &str, path: &Path) -> Result<(), ConfigError> {
+    let value = if contents.trim().is_empty() {
         toml::Value::Table(toml::Table::new())
     } else {
-        toml::from_str(overlay).map_err(|source| ConfigError::Parse {
-            path: overlay_path.to_path_buf(),
+        toml::from_str(contents).map_err(|source| ConfigError::Parse {
+            path: path.to_path_buf(),
             source,
         })?
     };
-    let mut value = read_config_value(base)?;
-    merge_toml(&mut value, overlay);
-    providers_from_value(&value).map(|_| ())
+    providers_from_value(&value, provider_base(path)).map(|_| ())
 }
 
 /// Missing settings contribute nothing; other read failures remain actionable.
@@ -1119,7 +1140,8 @@ fn merge_toml(base: &mut toml::Value, overlay: toml::Value) {
 
 /// Extract inference sections from general settings; the shared registry owns
 /// validation. Inject the host's storage default before resolving deployments.
-fn providers_from_value(value: &toml::Value) -> Result<Providers, ConfigError> {
+/// Relative paths in the file resolve against `base` — the file's own directory.
+fn providers_from_value(value: &toml::Value, base: &Path) -> Result<Providers, ConfigError> {
     let mut registry = toml::Table::new();
     for key in ["defaults", "providers"] {
         if let Some(section) = value.get(key) {
@@ -1151,7 +1173,9 @@ fn providers_from_value(value: &toml::Value) -> Result<Providers, ConfigError> {
             .expect("built-in settings table")
             .clone();
     }
-    let models = paths::model_dir().ok_or(ConfigError::PlatformDirectories)?;
+    // A provider that names no model directory gets OS-local Storyfella storage;
+    // the shared file normally carries an absolute one (see `seed_shared_config`).
+    let mut default_model_dir: Option<String> = None;
     if let Some(providers) = registry
         .get_mut("providers")
         .and_then(toml::Value::as_table_mut)
@@ -1163,16 +1187,26 @@ fn providers_from_value(value: &toml::Value) -> Result<Providers, ConfigError> {
             if matches!(
                 provider.get("kind").and_then(toml::Value::as_str),
                 Some("sdcpp" | "llamacpp")
-            ) {
-                provider
-                    .entry("model_dir")
-                    .or_insert_with(|| toml::Value::String(models.to_string_lossy().into_owned()));
+            ) && !provider.contains_key("model_dir")
+            {
+                let models = match &default_model_dir {
+                    Some(models) => models.clone(),
+                    None => {
+                        let models = paths::model_dir()
+                            .ok_or(ConfigError::PlatformDirectories)?
+                            .to_string_lossy()
+                            .into_owned();
+                        default_model_dir = Some(models.clone());
+                        models
+                    }
+                };
+                provider.insert("model_dir".into(), toml::Value::String(models));
             }
         }
     }
     let contents =
         toml::to_string(&registry).map_err(|source| ConfigError::Serialize { source })?;
-    Providers::from_toml(&contents, &paths::root()).map_err(ConfigError::Providers)
+    Providers::from_toml(&contents, base).map_err(ConfigError::Providers)
 }
 
 /// The deployment the selected provider id resolves to, for re-syncing an
@@ -1213,28 +1247,196 @@ fn chat_providers(providers: &Providers) -> Vec<ChatProvider> {
         .collect()
 }
 
-/// One-time settings migration, not a second runtime config format. The new
-/// file is authoritative once present; originals remain available for recovery.
-fn migrate_user_config(destination: &Path) -> Result<(), ConfigError> {
-    if destination.exists() {
+/// The provider ids a shared AI config value defines.
+fn provider_ids(value: &toml::Value) -> Vec<String> {
+    value
+        .get("providers")
+        .and_then(toml::Value::as_table)
+        .map(|providers| providers.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// The directory a shared AI config's relative paths resolve against.
+fn provider_base(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+}
+
+/// The app config's top-level sections — what [`migrate_legacy_settings`] keeps
+/// when it splits a legacy unified file into the app half.
+const APP_SECTIONS: [&str; 4] = ["paths", "generation", "lora", "runtime"];
+
+/// The inference config's top-level sections.
+const AI_SECTIONS: [&str; 2] = ["defaults", "providers"];
+
+/// One-time migration, not a second runtime config format. A machine's pre-split
+/// settings — the unified user `storyfella.toml`, or the older `app.toml` and
+/// `providers.toml` — are split into the app file (`studio.toml`) and the shared
+/// AI config (`clipforge.toml`). Originals remain for recovery, the new files are
+/// authoritative once present, and an existing `clipforge.toml` is never
+/// overwritten (its contents win).
+fn migrate_legacy_settings(app: Option<&Path>, ai: Option<&Path>) -> Result<(), ConfigError> {
+    let Some(app) = app else {
+        return Ok(());
+    };
+    if app.exists() {
         return Ok(());
     }
-    let Some(directory) = destination.parent() else {
+    let Some(directory) = app.parent() else {
         return Ok(());
     };
     let old_app = directory.join("app.toml");
+    let old_unified = directory.join("storyfella.toml");
     let old_providers = directory.join("providers.toml");
-    if destination == old_app
-        || destination == old_providers
-        || (!old_app.exists() && !old_providers.exists())
-    {
+    if !old_app.exists() && !old_unified.exists() && !old_providers.exists() {
         return Ok(());
     }
-    let mut settings = read_config_value(&old_app)?;
-    merge_toml(&mut settings, read_config_value(&old_providers)?);
+
+    // The unified file is the newest, so it wins over the older split files
+    // (`app.toml`, then `providers.toml`). Each legacy file may carry either kind
+    // of section, so both halves are selected from all of them.
+    let unified = read_config_value(&old_unified)?;
+    let legacy_app = read_config_value(&old_app)?;
+    let legacy_providers = read_config_value(&old_providers)?;
+
+    let mut app_half = app_defaults();
+    merge_toml(&mut app_half, select_sections(&legacy_app, &APP_SECTIONS));
+    merge_toml(
+        &mut app_half,
+        select_sections(&legacy_providers, &APP_SECTIONS),
+    );
+    merge_toml(&mut app_half, select_sections(&unified, &APP_SECTIONS));
+
+    let mut inference = select_sections(&legacy_app, &AI_SECTIONS);
+    merge_toml(
+        &mut inference,
+        select_sections(&legacy_providers, &AI_SECTIONS),
+    );
+    merge_toml(&mut inference, select_sections(&unified, &AI_SECTIONS));
+
+    write_migrated(app, &app_half)?;
+    if let Some(ai) = ai {
+        if !ai.exists() && !inference.as_table().is_some_and(toml::Table::is_empty) {
+            write_migrated(ai, &inference)?;
+        }
+    }
+    Ok(())
+}
+
+/// The top-level `keys` of `value`, as a new table.
+fn select_sections(value: &toml::Value, keys: &[&str]) -> toml::Value {
+    let mut selected = toml::Table::new();
+    for key in keys {
+        if let Some(section) = value.get(*key) {
+            selected.insert((*key).into(), section.clone());
+        }
+    }
+    toml::Value::Table(selected)
+}
+
+/// The app settings a machine starts from: the created platform `studio.toml`
+/// carries them, and a migrated one keeps them beneath its legacy values. A key
+/// not listed here falls back to the built-in code default.
+const APP_DEFAULTS: &str = "[generation.sizes]\ncharacter = \"1024x1536\"\n";
+
+/// Parses [`APP_DEFAULTS`].
+fn app_defaults() -> toml::Value {
+    toml::from_str(APP_DEFAULTS).expect("built-in app defaults are valid TOML")
+}
+
+/// Writes `contents` to `path` if no file is there yet, creating its directory
+/// first. A file another process wrote is left alone.
+fn write_new_config(path: &Path, contents: &str) -> Result<(), ConfigError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| ConfigError::Write {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    atomic_write_config(path, contents, true)
+}
+
+/// Publishes a migrated file without replacing one another process wrote.
+fn write_migrated(path: &Path, value: &toml::Value) -> Result<(), ConfigError> {
     let contents =
-        toml::to_string_pretty(&settings).map_err(|source| ConfigError::Serialize { source })?;
-    atomic_write_config(destination, &contents, true)
+        toml::to_string_pretty(value).map_err(|source| ConfigError::Serialize { source })?;
+    write_new_config(path, &contents)
+}
+
+/// Writes the app config with Storyfella's defaults the first time it is needed,
+/// so a fresh machine keeps the portrait character canvas. An existing file is
+/// never touched.
+fn seed_app_config(path: &Path) -> Result<(), ConfigError> {
+    if path.exists() {
+        return Ok(());
+    }
+    let header = "\
+# Storyfella Studio's app settings. The machine's shared inference configuration\n\
+# — the provider registry — lives separately in clipforge.toml at the platform\n\
+# config directory, created on first run and shared with Atelier and Clipforge.\n\
+#\n\
+# Qwen-Image-2.1 has no few-step turbo path: it is sampled with CFG at ~25\n\
+# steps, and portrait characters use the full portrait canvas.\n";
+    let defaults = app_defaults();
+    let body =
+        toml::to_string_pretty(&defaults).map_err(|source| ConfigError::Serialize { source })?;
+    write_new_config(path, &format!("{header}{body}"))
+}
+
+/// Writes the shared AI configuration with Storyfella's defaults the first time
+/// it is needed, so a machine with no `clipforge.toml` still gets the image
+/// engine, planner and vision endpoints. An existing file is never touched, and
+/// an explicit `model_dir` in it always wins.
+fn seed_shared_config(path: &Path) -> Result<(), ConfigError> {
+    if path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| ConfigError::Write {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    let model_dir = paths::model_dir()
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let model_dir_line = if model_dir.is_empty() {
+        String::new()
+    } else {
+        format!("model_dir = {}\n", toml::Value::String(model_dir))
+    };
+    let seed = format!(
+        "\
+# The machine's shared AI configuration — read by Storyfella Studio, Atelier\n\
+# and Clipforge. Created with Storyfella's defaults; every field is editable,\n\
+# and a relative path resolves against this file's directory.\n\
+[defaults]\n\
+t2i = \"qwen-image\"\n\
+edit = \"qwen-image\"\n\
+text = \"local\"\n\
+vision = \"vision\"\n\
+\n\
+[providers.qwen-image]\n\
+kind = \"sdcpp\"\n\
+architecture = \"qwen-image-2.1\"\n\
+capabilities = [\"t2i\", \"edit\"]\n\
+base_url = \"http://127.0.0.1:7861\"\n\
+{model_dir_line}\
+\
+[providers.local]\n\
+kind = \"openai\"\n\
+capabilities = [\"text\"]\n\
+base_url = \"http://localhost:8080/v1\"\n\
+model = \"prism-ml/bonsai-27b\"\n\
+\n\
+[providers.vision]\n\
+kind = \"openai\"\n\
+capabilities = [\"vision\"]\n\
+base_url = \"http://localhost:8080/v1\"\n\
+model = \"google/gemma-4-e4b\"\n",
+    );
+    atomic_write_config(path, &seed, true)
 }
 
 /// Writes a config file, creating its directory first — the user config lives
@@ -1563,7 +1765,11 @@ mod tests {
 
     #[test]
     fn text_and_vision_deployments_come_from_the_providers_registry() {
-        let config = AppConfig::load_from(paths::config_path()).expect("unified config loads");
+        let dir = std::env::temp_dir().join(format!("svs-seed-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir should create");
+        let ai = dir.join("clipforge.toml");
+        seed_shared_config(&ai).expect("the shared AI config seeds");
+        let config = AppConfig::load_from(&ai).expect("seeded config loads");
 
         assert_eq!(config.text_provider_id.as_deref(), Some("local"));
         let text = config.text.as_ref().expect("text deployment");
@@ -1575,11 +1781,14 @@ mod tests {
         assert_eq!(vision.model, "google/gemma-4-e4b");
         // The image deployment resolves from the same registry.
         assert_eq!(config.image.architecture, "qwen-image-2.1");
+        // The seeded model directory is absolute, never relative to the config.
+        assert!(config.image.model_dir.is_absolute());
         // The derived planner `LlmConfig` carries the same endpoint.
         assert_eq!(
             config.planner_config().expect("planner config").model,
             text.model
         );
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -1598,7 +1807,7 @@ mod tests {
         for settings in ["providers = 'invalid'", "defaults = 'invalid'"] {
             let value = toml::from_str(settings).unwrap();
             assert!(matches!(
-                providers_from_value(&value),
+                providers_from_value(&value, Path::new(".")),
                 Err(ConfigError::Providers(_))
             ));
         }
@@ -1610,11 +1819,7 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let base = directory.join("base.toml");
         let user = directory.join("storyfella.toml");
-        std::fs::write(
-            &base,
-            std::fs::read_to_string(paths::config_path()).unwrap(),
-        )
-        .unwrap();
+        seed_shared_config(&base).unwrap();
         std::fs::write(
             &user,
             "# retain this comment\n[providers.local]\napi_key_env = 'TEST_LOCAL_KEY'\n",
@@ -1655,40 +1860,150 @@ mod tests {
     }
 
     #[test]
-    fn migration_combines_old_settings_once_without_overwriting_or_deleting_sources() {
+    fn migration_splits_old_settings_once_without_overwriting_or_deleting_sources() {
         let directory =
             std::env::temp_dir().join(format!("svs-migration-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&directory).unwrap();
         let old_app = directory.join("app.toml");
         let old_providers = directory.join("providers.toml");
-        let destination = directory.join("storyfella.toml");
+        let app = directory.join("studio.toml");
+        let ai = directory.join("clipforge.toml");
         let original_app = "[generation]\nsteps = 9\n";
         let original_providers =
             "[providers.local]\nmodel = 'chosen'\napi_key = 'test-only-secret'\n";
         std::fs::write(&old_app, original_app).unwrap();
         std::fs::write(&old_providers, "invalid = [").unwrap();
-        assert!(migrate_user_config(&destination).is_err());
-        assert!(!destination.exists());
+        assert!(migrate_legacy_settings(Some(&app), Some(&ai)).is_err());
+        assert!(!app.exists());
         std::fs::write(&old_providers, original_providers).unwrap();
-        migrate_user_config(&destination).unwrap();
-        let value = read_config_value(&destination).unwrap();
-        assert_eq!(value["generation"]["steps"].as_integer(), Some(9));
+        migrate_legacy_settings(Some(&app), Some(&ai)).unwrap();
+        // The app half keeps the app sections plus the built-in defaults; the
+        // inference half keeps providers.
+        let app_value = read_config_value(&app).unwrap();
+        assert_eq!(app_value["generation"]["steps"].as_integer(), Some(9));
         assert_eq!(
-            value["providers"]["local"]["api_key"].as_str(),
+            app_value["generation"]["sizes"]["character"].as_str(),
+            Some("1024x1536"),
+            "the portrait canvas default survives migration: {app_value}"
+        );
+        assert!(app_value.get("providers").is_none(), "{app_value}");
+        let ai_value = read_config_value(&ai).unwrap();
+        assert_eq!(
+            ai_value["providers"]["local"]["api_key"].as_str(),
             Some("test-only-secret")
         );
-        assert_eq!(std::fs::read_to_string(old_app).unwrap(), original_app);
+        assert!(ai_value.get("generation").is_none(), "{ai_value}");
+        // Originals remain available for recovery.
+        assert_eq!(std::fs::read_to_string(&old_app).unwrap(), original_app);
         assert_eq!(
             std::fs::read_to_string(&old_providers).unwrap(),
             original_providers
         );
-        std::fs::write(&destination, "[generation]\nsteps = 12\n").unwrap();
-        migrate_user_config(&destination).unwrap();
+        // The new app file is authoritative once present: a second run leaves it.
+        std::fs::write(&app, "[generation]\nsteps = 12\n").unwrap();
+        migrate_legacy_settings(Some(&app), Some(&ai)).unwrap();
         assert_eq!(
-            read_config_value(&destination).unwrap()["generation"]["steps"].as_integer(),
+            read_config_value(&app).unwrap()["generation"]["steps"].as_integer(),
             Some(12)
         );
-        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 3);
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 4);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn migration_splits_a_unified_user_file_into_app_and_inference_halves() {
+        let directory = std::env::temp_dir().join(format!("svs-split-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let unified = directory.join("storyfella.toml");
+        let app = directory.join("studio.toml");
+        let ai = directory.join("clipforge.toml");
+        std::fs::write(
+            &unified,
+            "[generation]\nsteps = 9\n\n[defaults]\ntext = \"local\"\n\n\
+             [providers.local]\nkind = \"openai\"\ncapabilities = [\"text\"]\n\
+             base_url = \"http://localhost:8080/v1\"\nmodel = \"chosen\"\n",
+        )
+        .unwrap();
+
+        migrate_legacy_settings(Some(&app), Some(&ai)).unwrap();
+        let app_value = read_config_value(&app).unwrap();
+        assert_eq!(app_value["generation"]["steps"].as_integer(), Some(9));
+        assert!(app_value.get("providers").is_none(), "{app_value}");
+        let ai_value = read_config_value(&ai).unwrap();
+        assert_eq!(ai_value["defaults"]["text"].as_str(), Some("local"));
+        assert_eq!(
+            ai_value["providers"]["local"]["model"].as_str(),
+            Some("chosen")
+        );
+        // The unified original is never deleted or rewritten.
+        assert!(unified.exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn migration_leaves_an_existing_shared_config_alone() {
+        let directory = std::env::temp_dir().join(format!("svs-keep-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let unified = directory.join("storyfella.toml");
+        let app = directory.join("studio.toml");
+        let ai = directory.join("clipforge.toml");
+        std::fs::write(&unified, "[generation]\nsteps = 9\n").unwrap();
+        std::fs::write(&ai, "# already here\n[defaults]\ntext = 'kept'\n").unwrap();
+
+        migrate_legacy_settings(Some(&app), Some(&ai)).unwrap();
+        // The pre-existing shared config (perhaps created by another front end)
+        // wins; migration only fills the app half.
+        assert_eq!(
+            std::fs::read_to_string(&ai).unwrap(),
+            "# already here\n[defaults]\ntext = 'kept'\n"
+        );
+        assert!(app.exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn the_shared_seed_is_absolute_and_never_overwrites_an_existing_file() {
+        let directory = std::env::temp_dir().join(format!("svs-seed-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let ai = directory.join("clipforge.toml");
+
+        seed_shared_config(&ai).expect("seed writes");
+        let config = AppConfig::load_split(Some(directory.join("studio.toml")), Some(ai.clone()))
+            .expect("seed loads");
+        assert_eq!(config.image_provider_id.as_deref(), Some("qwen-image"));
+        assert!(config.image.model_dir.is_absolute());
+        assert_eq!(config.text_provider_id.as_deref(), Some("local"));
+        assert_eq!(config.vision_provider_id.as_deref(), Some("vision"));
+        assert!(
+            config.user_providers.contains(&"qwen-image".to_owned())
+                && config.user_providers.contains(&"local".to_owned())
+                && config.user_providers.contains(&"vision".to_owned()),
+            "{:?}",
+            config.user_providers
+        );
+
+        // A hand-edited file is never replaced.
+        std::fs::write(&ai, "# mine\n").unwrap();
+        seed_shared_config(&ai).expect("seed is a no-op when the file exists");
+        assert_eq!(std::fs::read_to_string(&ai).unwrap(), "# mine\n");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn the_split_loader_reads_app_settings_and_providers_from_their_own_files() {
+        let directory = std::env::temp_dir().join(format!("svs-split-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let app = directory.join("studio.toml");
+        let ai = directory.join("clipforge.toml");
+        std::fs::write(&app, "[generation]\nsteps = 4\n").unwrap();
+        std::fs::write(&ai, TWO_TEXT_PROVIDERS).unwrap();
+
+        let config = AppConfig::load_split(Some(app), Some(ai.clone())).expect("split loads");
+        assert_eq!(config.generation_defaults.steps, 4);
+        assert_eq!(config.text_provider_id.as_deref(), Some("local"));
+        assert_eq!(config.ai_config_path.as_deref(), Some(ai.as_path()));
+        // Every provider in the shared file is user-owned, so Settings can edit it.
+        assert!(config.user_providers.contains(&"deepseek".to_owned()));
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -1708,7 +2023,7 @@ mod tests {
         )
         .expect("fixture should write");
 
-        let providers = providers_from_value(&read_config_value(&base).unwrap())
+        let providers = providers_from_value(&read_config_value(&base).unwrap(), &dir)
             .expect("image-only registry loads");
         assert!(providers.image_deployment(Capability::T2i).is_ok());
         assert!(
@@ -1741,7 +2056,7 @@ mod tests {
 
         let mut value = read_config_value(&base).unwrap();
         merge_toml(&mut value, read_config_value(&user).unwrap());
-        let providers = providers_from_value(&value).expect("providers should merge");
+        let providers = providers_from_value(&value, &dir).expect("providers should merge");
         let text = providers
             .chat_deployment(Capability::Text)
             .expect("text resolves");
@@ -2175,8 +2490,7 @@ mod tests {
             executable: None,
             model_path: None,
         };
-        AppConfig::persist_provider_added_to(&user, &base, &provider)
-            .expect("persist should write");
+        AppConfig::persist_provider_added_to(&user, &provider).expect("persist should write");
 
         let contents = std::fs::read_to_string(&user).expect("file should read");
         assert!(contents.contains("[providers.lmstudio]"), "{contents}");
@@ -2217,7 +2531,7 @@ mod tests {
             model_path: None,
         };
         assert!(
-            AppConfig::persist_provider_added_to(&user, &base, &provider).is_err(),
+            AppConfig::persist_provider_added_to(&user, &provider).is_err(),
             "a managed provider without a model file must be rejected"
         );
         assert_eq!(
@@ -2247,7 +2561,7 @@ mod tests {
             AppConfig::load_layered(base.clone(), Some(user.clone())).expect("config should load");
         assert_eq!(before.text_provider_id.as_deref(), Some("mine"));
 
-        AppConfig::persist_provider_removed_to(&user, &base, "mine").expect("persist should write");
+        AppConfig::persist_provider_removed_to(&user, "mine").expect("persist should write");
         let contents = std::fs::read_to_string(&user).expect("file should read");
         assert!(!contents.contains("[providers.mine]"), "{contents}");
         assert!(!contents.contains("text = \"mine\""), "{contents}");
@@ -2285,7 +2599,28 @@ mod tests {
             Some((1024, 576))
         );
         assert_eq!(config.generation_defaults.sizes.character, Some((384, 576)));
-        assert_eq!(config.user_config_path.as_deref(), Some(user.as_path()));
+        assert_eq!(config.app_config_path.as_deref(), Some(user.as_path()));
+    }
+
+    #[test]
+    fn the_app_config_seed_sets_the_portrait_canvas_and_never_overwrites() {
+        let directory = std::env::temp_dir().join(format!("svs-appseed-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let app = directory.join("studio.toml");
+
+        seed_app_config(&app).expect("seed writes");
+        let config = AppConfig::load_from(&app).expect("seed loads");
+        assert_eq!(
+            config.generation_defaults.sizes.character,
+            Some((1024, 1536))
+        );
+        assert_eq!(config.generation_defaults.steps, sd::DEFAULT_STEPS);
+
+        // A hand-edited app config is never replaced.
+        std::fs::write(&app, "# mine\n").unwrap();
+        seed_app_config(&app).expect("seed is a no-op when the file exists");
+        assert_eq!(std::fs::read_to_string(&app).unwrap(), "# mine\n");
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

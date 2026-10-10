@@ -194,9 +194,9 @@ fn doctor(ws: &Workspace) -> Result<ExitCode> {
             "target-dir redirect",
         ),
         (
-            ws.root().join("config/storyfella.toml"),
+            ws.root().join("config/plans"),
             true,
-            "app configuration",
+            "plan fixtures + project-root marker",
         ),
         (
             ws.studio().join("node_modules"),
@@ -254,7 +254,7 @@ fn dx_build(ws: &Workspace, profile: Profile, extra: &[String]) -> Result<()> {
 }
 
 /// Build, then run the app from the workspace root so its project-root path
-/// resolution finds `config/storyfella.toml`, propagating the app's exit code.
+/// resolution finds `config/plans`, propagating the app's exit code.
 fn launch_app(
     ws: &Workspace,
     profile: Profile,

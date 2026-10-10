@@ -11,7 +11,7 @@ struct Arguments {}
 async fn main() -> Result<()> {
     Arguments::parse();
     let deployment = AppConfig::load()
-        .context("failed to load storyfella.toml")?
+        .context("failed to load the configuration")?
         .image;
 
     // The provider names the model tree; artifacts it overrides with a local

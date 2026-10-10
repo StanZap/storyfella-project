@@ -972,8 +972,19 @@ mod tests {
 
     #[test]
     fn set_chat_rebuilds_the_client_and_the_managed_server_map() {
-        let mut config = crate::config::AppConfig::load_from(crate::paths::config_path())
-            .expect("checked-in config loads");
+        let dir = std::env::temp_dir().join(format!("svs-backend-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("clipforge.toml");
+        std::fs::write(
+            &path,
+            "[defaults]\nt2i = \"img\"\ntext = \"local\"\n\
+             [providers.img]\nkind = \"sdcpp\"\narchitecture = \"qwen-image-2.1\"\n\
+             capabilities = [\"t2i\"]\nbase_url = \"http://127.0.0.1:7861\"\n\
+             [providers.local]\nkind = \"openai\"\ncapabilities = [\"text\"]\n\
+             base_url = \"http://localhost:8080/v1\"\nmodel = \"prism-ml/bonsai-27b\"\n",
+        )
+        .expect("fixture writes");
+        let mut config = crate::config::AppConfig::load_from(&path).expect("config loads");
         assert!(
             config.text_provider_id.is_some(),
             "the config serves `text`"
@@ -1001,6 +1012,7 @@ mod tests {
         config.text_provider_id = None;
         backend.set_chat(&config);
         assert!(!backend.has_llm(), "no deployment drops the planner");
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

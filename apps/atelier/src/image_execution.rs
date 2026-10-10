@@ -60,9 +60,7 @@ pub fn generate(request: Request) -> Result<Reference> {
                 .await
         })?
     } else {
-        request
-            .native
-            .generate(&request.settings, &request.keys_path, image_request)?
+        request.native.generate(&request.settings, image_request)?
     };
     let job = output
         .job_id

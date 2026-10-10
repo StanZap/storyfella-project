@@ -547,20 +547,27 @@ impl PlanLaunch {
         Self { path, mode }
     }
 
-    /// Points a `--plan` run at a scratch user-level config file under
-    /// `.svs-e2e/hermetic/`, so the driver never reads or writes the
-    /// developer's real machine-local settings.
+    /// Points a `--plan` run at scratch config files under `.svs-e2e/hermetic/`,
+    /// so the driver never reads or writes the developer's real machine-local
+    /// settings — neither this app's nor the shared inference configuration.
     ///
-    /// The file need not exist: a missing overlay contributes nothing, so the
-    /// run sees exactly the checked-in `config/storyfella.toml`.
-    /// An explicit `$SVS_USER_CONFIG` already in the
-    /// environment wins, so a run can still be aimed at a specific config.
+    /// The files need not exist: a missing app overlay contributes nothing, and a
+    /// missing `clipforge.toml` is seeded with defaults, so the run is
+    /// self-contained. An explicit `$SVS_USER_CONFIG`/`$SVS_AI_CONFIG` already in
+    /// the environment wins, so a run can still be aimed at a specific config.
     pub fn make_hermetic(&self) {
         if self.path.is_none() {
             return;
         }
         let dir = storyfella_studio_core::paths::root().join(".svs-e2e/hermetic");
-        set_env_unless_set("SVS_USER_CONFIG", dir.join("storyfella.toml"));
+        set_env_unless_set(
+            storyfella_studio_core::paths::APP_CONFIG_ENV,
+            dir.join("studio.toml"),
+        );
+        set_env_unless_set(
+            storyfella_studio_core::paths::AI_CONFIG_ENV,
+            dir.join("clipforge.toml"),
+        );
     }
 
     /// Plan-created projects, generated fixtures and cache are scratch artifacts,
@@ -1208,7 +1215,7 @@ async fn execute_step(
         } => {
             let Some(deployment) = ctx.config.vision.clone() else {
                 return StepStatus::Failed {
-                    reason: "no `vision` provider is configured in storyfella.toml".to_owned(),
+                    reason: "no `vision` provider is configured in clipforge.toml".to_owned(),
                 };
             };
             if vision.is_none() {
