@@ -28,7 +28,7 @@ consumes `../clipforge/crates/inference`; the directory rename leaves that
 relative dependency unchanged.
 
 Atelier is the separate GPUI drawing and image-generation app, moved from
-FineWineTTS with its existing project storage and macOS Keychain identity intact.
+FineWineTTS with its existing project storage intact.
 Run `cargo xtask atelier`; on macOS,
 `sh apps/atelier/package-macos.sh` builds `dist/atelier/Atelier.app`.
 Its hosted image providers use the shared Clipforge API. See [Atelier](apps/atelier/README.md)

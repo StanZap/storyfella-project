@@ -556,6 +556,18 @@ canvases import into Studio's completed revisions through portable `.sfart`
 packages. Studio's hosted-provider selection and a text/vision art assistant
 remain **planned**; see [Atelier](atelier.md) for limits and verification.
 
+**Compact Atelier workspace and portable key storage: implemented.** Named icon
+actions and optional image details follow DESIGN.md. Provider keys persist in
+Atelier user app data across platforms; Keychain integration is deferred.
+**Iteration gaps: implemented and checked on macOS.** The real-provider bookshop
+walkthrough demonstrates chained edits and sibling branches. Source-specific
+prompt drafts recover after restart, saved version names retain identity, prompt
+reuse is available, and the repeated native Open check passes. First-time-user
+and cross-platform acceptance remain outstanding. Local Qwen Image 2.1
+generation/editing and Krea 2 Turbo generation are connected through Clipforge;
+actual Linux CUDA inference requires a run on that machine.
+See [iteration acceptance](atelier-iteration-acceptance.md).
+
 1. **The API:** artifact domain model (artifact kinds, variants, scenes,
    beats — the registry), typed operation set + pipeline builder (closed
    vocabulary — `LoadImage`/`Checkpoint`/`Generate`/`Llm`; typed intermediates,

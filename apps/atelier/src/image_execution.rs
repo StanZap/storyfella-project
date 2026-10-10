@@ -1,4 +1,4 @@
-//! Atelier's storage/credential boundary over Clipforge's shared image client.
+//! Atelier's storage and configuration boundary over Clipforge's image client.
 use crate::{
     document::{self, Reference},
     providers::{self, Provider, Request},
@@ -9,30 +9,23 @@ use clipforge_inference::images::{ApiKey, Client, HostedDeployment, Request as I
 
 pub fn generate(request: Request) -> Result<Reference> {
     let provider = request.settings.provider;
-    let hosted = provider
-        .hosted()
-        .context("Choose a hosted image provider")?;
     let editing = request.source.is_some();
     let model = if editing {
         &request.settings.edit_model
     } else {
         &request.settings.model
     };
-    ensure!(
-        !model.trim().is_empty(),
-        "Choose a {} model in Settings",
-        if editing { "editing" } else { "generation" }
-    );
-    let endpoint = if provider == Provider::Alibaba {
-        &request.settings.endpoint
+    let deployment = if let Some(hosted) = provider.hosted() {
+        ensure!(!model.trim().is_empty(), "Choose a model in Settings");
+        let endpoint = if provider == Provider::Alibaba {
+            &request.settings.endpoint
+        } else {
+            hosted.default_endpoint()
+        };
+        Some(HostedDeployment::at(hosted, model.trim(), endpoint)?)
     } else {
-        hosted.default_endpoint()
+        None
     };
-    let deployment = HostedDeployment::at(hosted, model.trim(), endpoint)?;
-    if let Some(progress) = &request.progress {
-        progress("Accessing your provider credential…".into());
-    }
-    let key = ApiKey::new(providers::api_key(provider)?)?;
     let source_note = request
         .source
         .as_ref()
@@ -56,14 +49,21 @@ pub fn generate(request: Request) -> Result<Reference> {
     image_request.cancel = request.cancel;
     image_request.progress = request.progress;
     // The GPUI worker owns its runtime; Clipforge remains async and UI-independent.
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let output = runtime.block_on(async {
-        Client::hosted(deployment, key)?
-            .generate(image_request)
-            .await
-    })?;
+    let output = if let Some(deployment) = deployment {
+        let key = ApiKey::new(providers::api_key(&request.keys_path, provider)?)?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            Client::hosted(deployment, key)?
+                .generate(image_request)
+                .await
+        })?
+    } else {
+        request
+            .native
+            .generate(&request.settings, &request.keys_path, image_request)?
+    };
     let job = output
         .job_id
         .map(|id| format!("\nJob: {id}"))

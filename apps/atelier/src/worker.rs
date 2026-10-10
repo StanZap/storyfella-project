@@ -74,6 +74,7 @@ pub enum Storage {
     Barrier(Sender<()>),
 }
 pub struct Workers {
+    pub native: Arc<crate::native_images::NativeImages>,
     pub mask: Sender<(u64, crate::edit::MaskDraft)>,
     pub storage: Sender<Storage>,
     pub render: Sender<(u64, Document, Viewport, bool)>,
@@ -329,7 +330,9 @@ pub fn start() -> Workers {
                         .and_then(|bytes| document::atomic_write(&path, &bytes)),
                 ),
                 Storage::ApplySettings(settings, path, key) => Event::SettingsApplied(
-                    apply_settings(&settings, &path, key.as_deref(), providers::store_key),
+                    apply_settings(&settings, &path, key.as_deref(), |provider, key| {
+                        providers::store_key(&path.with_file_name("api-keys.json"), provider, key)
+                    }),
                 ),
                 Storage::Barrier(ack) => {
                     let _ = ack.send(());
@@ -365,6 +368,7 @@ pub fn start() -> Workers {
         }
     });
     Workers {
+        native: Arc::new(Default::default()),
         mask,
         storage,
         render,
@@ -415,6 +419,13 @@ pub fn generate(mut request: Request, id: u64, sender: Sender<Event>, directory:
             }
             reference.parent = parent;
             reference.prompt = prompt;
+            if let Some(source) = &source {
+                let number = std::fs::read_dir(directory.join("library"))?
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+                    .count();
+                reference.name = format!("Edit {number} · {}", source.name);
+            }
             crate::library::store(&directory.join("library"), &reference)?;
             let directory = directory.join("generated");
             let decoded = document::decode_reference(&reference)?;

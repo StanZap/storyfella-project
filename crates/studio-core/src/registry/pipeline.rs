@@ -293,6 +293,7 @@ impl Pipeline {
                         steps: self.params.steps,
                         cfg_scale: self.params.cfg_scale,
                         sample_method: self.params.sample_method.clone(),
+                        scheduler: Default::default(),
                         seed,
                         loras: self.params.loras.clone(),
                     };

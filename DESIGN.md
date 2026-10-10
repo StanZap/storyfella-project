@@ -1,5 +1,28 @@
 # Storyfella Studio design standard and UX audit
 
+Atelier acceptance · 2026-10-10: the image workspace uses named icon actions for
+export, canvas placement, edit mode, comparison and masking. Details and provenance
+are disclosed on demand; the prompt has more space and the version strip is compact.
+Isolated macOS checks exercised those controls and resizing to about 1058 × 732
+logical pixels. A live Replicate forest-bookshop generation and evening edit were
+saved as a portable project, original PNGs and approved artwork.
+Provider keys now save in user app data on all desktop platforms. File tests cover
+provider isolation, replacement, environment precedence, malformed storage and
+Unix owner-only permissions. Keychain access and certificate setup are deferred.
+Linux/Windows native interaction and assistive-technology checks remain unverified.
+
+The follow-up [iteration acceptance](docs/atelier-iteration-acceptance.md)
+completed two further real Replicate edits, including a branch from the original,
+comparison, naming, full-resolution export and a four-reference saved project.
+The follow-up fixes bind unsent prompts to each source and New image, save them
+in project/recovery files, and restore the active source after restart. Saved
+version names replace positional numbers, parent tooltips explain lineage, and
+a named icon reuses the inspected prompt. Live macOS navigation and restart
+checks pass; native Open was repeated successfully. The actual-size control
+says 100%. First-time-user and cross-platform acceptance remain outstanding.
+Local Qwen Image 2.1 generation/editing and Krea 2 Turbo generation now use
+Clipforge's managed image client; Linux CUDA inference remains unverified here.
+
 This is the central UI and UX reference for Studio, including the shared playback
 surface used by Preview. Read it before changing a user-facing flow or component.
 It defines required behavior, the visual vocabulary, and the findings from

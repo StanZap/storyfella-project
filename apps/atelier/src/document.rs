@@ -96,6 +96,10 @@ pub struct Document {
     pub references: Vec<std::sync::Arc<Reference>>,
     pub reference: Option<usize>,
     pub note: String,
+    #[serde(default)]
+    pub prompt_drafts: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub active_prompt_target: Option<String>,
 }
 impl Default for Document {
     fn default() -> Self {
@@ -115,6 +119,8 @@ impl Default for Document {
             references: vec![],
             reference: None,
             note: String::new(),
+            prompt_drafts: Default::default(),
+            active_prompt_target: None,
         }
     }
 }
@@ -328,7 +334,8 @@ impl History {
         self.redo.clear();
     }
     pub fn undo(&mut self, doc: &mut Document) -> bool {
-        if let Some(previous) = self.undo.pop() {
+        if let Some(mut previous) = self.undo.pop() {
+            Self::retain_prompt_drafts(doc, &mut previous);
             self.redo.push(std::mem::replace(doc, previous));
             true
         } else {
@@ -336,7 +343,8 @@ impl History {
         }
     }
     pub fn redo(&mut self, doc: &mut Document) -> bool {
-        if let Some(next) = self.redo.pop() {
+        if let Some(mut next) = self.redo.pop() {
+            Self::retain_prompt_drafts(doc, &mut next);
             self.undo.push(std::mem::replace(doc, next));
             true
         } else {
@@ -348,6 +356,14 @@ impl History {
     }
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
+    }
+    fn retain_prompt_drafts(current: &mut Document, replacement: &mut Document) {
+        // Canvas undo must not roll back text owned by the prompt editor.
+        std::mem::swap(&mut current.prompt_drafts, &mut replacement.prompt_drafts);
+        std::mem::swap(
+            &mut current.active_prompt_target,
+            &mut replacement.active_prompt_target,
+        );
     }
 }
 pub fn load(path: &Path) -> Result<Document> {
@@ -389,7 +405,14 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         std::process::id()
     ));
     let result = (|| {
-        let mut file = fs::File::create(&temporary)?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary)?;
         file.write_all(bytes)?;
         file.sync_all()?;
         fs::rename(&temporary, path)?;

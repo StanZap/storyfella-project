@@ -14,10 +14,15 @@ sh apps/atelier/package-macos.sh
 
 Atelier is explicitly separate from Studio's `cargo xtask run` and the `svs`
 CLI. The macOS bundle is `dist/atelier/Atelier.app`; its identifier remains
-`com.storyfella.atelier`, its Keychain service remains `Atelier`, and data stays
+`com.storyfella.atelier`, and data stays
 in `~/Library/Application Support/Atelier` (macOS) or `~/.local/share/Atelier`.
 The root Cargo patch and vendored GPUI Metal renderer remain in this workspace.
 FineWineTTS retains its separate GPUI renderer patch for its review application.
+The macOS development bundle uses ad hoc signing without certificate setup.
+Provider keys use `api-keys.json` in Atelier's user app data directory on every
+platform. Environment keys take precedence; blank input preserves saved keys.
+Keys stay out of projects and exports. Existing Keychain entries are not read
+or migrated; enter the key once in Settings.
 
 ## Image workflow
 
@@ -39,6 +44,46 @@ Editing an earlier version creates a branch; the source is kept. Parent identity
 prompt and provider/model/job provenance are stored alongside library originals.
 Browsing another image while a job runs does not redirect that job or force the
 completed version over the image being inspected.
+
+Unsent prompts belong to their source image; New image has a separate draft.
+Navigation restores the relevant draft. Project and recovery saves retain the
+active source and drafts, including on quit. Canvas undo does not undo prompt
+typing. The prompt-reuse icon loads the inspected version's original prompt.
+Version chips use saved names; their tooltips identify the parent branch.
+Save/Open/Save as shortcuts work while typing a prompt as well as on the canvas;
+native text fields keep their own editing and undo behavior.
+
+## Local Qwen and Krea on Linux with CUDA
+
+Clipforge's shared image client serves **Qwen Image 2.1** generation and editing,
+and **Krea 2 Turbo** generation through native `stable-diffusion.cpp`. Both are
+available in Atelier's Image provider picker without an API key. Native edits
+accept one source image; masks and extra references are rejected before startup.
+
+Copy [the providers example](../config/atelier-native.example.toml) to your user
+app data directory, for example `/home/you/.local/share/Atelier/providers.toml`,
+and replace `/home/you` with your actual paths. An existing Clipforge providers
+file also works: configure exactly one matching architecture for each requested
+capability. Relative model, weight and executable paths resolve against that
+file's directory.
+
+From the Clipforge repository, provision the CUDA server and both model profiles:
+
+```sh
+cargo xtask sd-server --model-dir /home/you/.local/share/Atelier/models
+cargo run -p clipforge -- --config /home/you/.local/share/Atelier/providers.toml models --provider qwen ensure
+cargo run -p clipforge -- --config /home/you/.local/share/Atelier/providers.toml models --provider krea ensure
+```
+
+In Atelier select a local provider, open Provider settings, enter the absolute
+**Local providers file** path and Save settings. Generate starts the managed
+server on demand. Qwen generation and subsequent edits reuse the resident model;
+switching deployments releases the previously owned server before loading the
+next model. The app does not download weights or compile the server on submission.
+Missing setup reports an error while keeping the source and prompt draft.
+
+Configuration and shared loopback tests pass on this Mac; actual Linux CUDA
+inference and Linux native interaction still require verification on that machine.
 
 **Add to canvas** creates an image-backed layer. Draw and erase on that layer,
 change opacity/visibility/order, move it by dragging with **Move layer**, or scale
@@ -94,7 +139,7 @@ Atelier text/vision assistant are separate future work.
 `clipforge_inference::images::Client::generate(Request)` owns managed/native and
 hosted image execution, route capabilities, masks/reference wire formats, polling,
 cancellation and bounded downloads. The GPUI worker owns its Tokio runtime;
-Atelier owns Keychain/session caching, files, document history and ComfyUI.
+Atelier owns app-data API-key storage, files, document history and ComfyUI.
 Hosted services never start/stop native servers. No paid request is automatically
 resubmitted; errors preserve a known job ID. API keys never go to image CDNs.
 
@@ -104,6 +149,9 @@ current library is loaded on a worker with a 512 MB encoded in-memory budget;
 it is a local collection, without cloud synchronization or pagination.
 
 ## Verification
+
+See [iteration acceptance](atelier-iteration-acceptance.md) for the real-provider
+bookshop walkthrough, saved proof project, passing tasks and remaining UX gaps.
 
 Deterministic fixtures can be prepared without paid APIs:
 `cargo test -p storyfella-atelier prepare_workflow_fixture -- --ignored`.

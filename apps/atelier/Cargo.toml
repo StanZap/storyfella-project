@@ -23,8 +23,6 @@ sha2.workspace = true
 reqwest = { workspace = true, features = ["blocking", "query"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-security-framework.workspace = true
-
 objc2.workspace = true
 objc2-app-kit.workspace = true
 block2.workspace = true

@@ -185,9 +185,12 @@ pub struct DrawingApp {
     pub width: Entity<InputState>,
     pub height: Entity<InputState>,
     pub prompt: Entity<TextareaState>,
+    prompt_target: String,
+    pub(crate) restore_draft_source: bool,
     pub search: Entity<InputState>,
     pub key: Entity<InputState>,
     pub endpoint: Entity<InputState>,
+    pub native_config: Entity<InputState>,
     pub model: Entity<InputState>,
     pub edit_model: Entity<InputState>,
     pub positive_node: Entity<InputState>,
@@ -198,6 +201,7 @@ pub struct DrawingApp {
     pub ref_tags: Entity<InputState>,
     pub generation_size: usize,
     pub editing_image: bool,
+    pub image_details_open: bool,
     pub focus: FocusHandle,
     pub(crate) workers: Workers,
     subscriptions: Vec<Subscription>,
@@ -236,8 +240,20 @@ impl DrawingApp {
         let layer_name = input(doc.layers[doc.active_layer].name.clone(), window, cx);
         let width = input(doc.width.to_string(), window, cx);
         let height = input(doc.height.to_string(), window, cx);
+        let prompt_target = doc
+            .active_prompt_target
+            .clone()
+            .unwrap_or_else(|| "new".into());
+        let restoring_edit = prompt_target != "new";
         let prompt = cx.new(|cx| {
-            TextareaState::new(window, cx).placeholder("Describe your image or changes…")
+            TextareaState::new(window, cx)
+                .placeholder("Describe your image or changes…")
+                .default_value(
+                    doc.prompt_drafts
+                        .get(&prompt_target)
+                        .cloned()
+                        .unwrap_or_default(),
+                )
         });
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search references"));
         let key = cx.new(|cx| {
@@ -246,6 +262,7 @@ impl DrawingApp {
                 .masked(true)
         });
         let endpoint = input(settings.endpoint.clone(), window, cx);
+        let native_config = input(settings.native_config.clone(), window, cx);
         let model = input(settings.model.clone(), window, cx);
         let edit_model = input(settings.edit_model.clone(), window, cx);
         let positive_node = input(settings.positive_node.clone(), window, cx);
@@ -406,9 +423,12 @@ impl DrawingApp {
             width,
             height,
             prompt,
+            prompt_target,
+            restore_draft_source: restoring_edit,
             search,
             key,
             endpoint,
+            native_config,
             model,
             edit_model,
             positive_node,
@@ -418,13 +438,18 @@ impl DrawingApp {
             ref_name,
             ref_tags,
             generation_size: 0,
-            editing_image: false,
+            editing_image: restoring_edit,
+            image_details_open: false,
             focus: cx.focus_handle(),
             workers: worker::start(),
             subscriptions: vec![],
         };
         app.sync_ref_inputs(window, cx);
         app.refresh_library();
+        app.subscriptions
+            .push(cx.observe(&app.prompt, |this, _, cx| {
+                this.capture_prompt(cx);
+            }));
         for select in [
             &app.generation_provider_select,
             &app.settings_provider_select,
@@ -449,6 +474,7 @@ impl DrawingApp {
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |_, cx| {
             weak.update(cx, |this, cx| {
+                this.capture_prompt(cx);
                 if !this.closing {
                     this.closing = true;
                     this.finish_stroke();
@@ -464,6 +490,7 @@ impl DrawingApp {
             .unwrap_or(true)
         });
         app.subscriptions.push(cx.on_app_quit(|this, cx| {
+            this.capture_prompt(cx);
             this.finish_stroke();
             this.finish_mask();
             let path = this.data_dir.join("recovery.atelier");
@@ -495,6 +522,7 @@ impl DrawingApp {
         app
     }
     pub fn request_close(&mut self, cx: &mut Context<Self>) {
+        self.capture_prompt(cx);
         if !self.closing {
             self.closing = true;
             self.finish_stroke();
@@ -509,6 +537,50 @@ impl DrawingApp {
     pub fn message(&mut self, message: impl Into<String>, error: bool) {
         self.status = message.into();
         self.error = error;
+    }
+    fn capture_prompt(&mut self, cx: &mut Context<Self>) {
+        let value = self.prompt.read(cx).value().to_string();
+        if self.doc.active_prompt_target.as_deref() != Some(&self.prompt_target)
+            || self
+                .doc
+                .prompt_drafts
+                .get(&self.prompt_target)
+                .map(String::as_str)
+                .unwrap_or("")
+                != value
+        {
+            self.doc
+                .prompt_drafts
+                .insert(self.prompt_target.clone(), value);
+            self.doc.active_prompt_target = Some(self.prompt_target.clone());
+            self.revision += 1;
+            self.dirty = true;
+            self.last_edit = Instant::now();
+            cx.notify();
+        }
+    }
+    pub fn restore_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let target = if self.editing_image {
+            self.edit_source()
+                .map(|r| crate::library::id(&r))
+                .unwrap_or_else(|| "new".into())
+        } else {
+            "new".into()
+        };
+        if target == self.prompt_target {
+            return;
+        }
+        self.capture_prompt(cx);
+        self.prompt_target = target;
+        let value = self
+            .doc
+            .prompt_drafts
+            .get(&self.prompt_target)
+            .cloned()
+            .unwrap_or_default();
+        self.prompt
+            .update(cx, |s, cx| s.set_value(value, window, cx));
+        self.generation_error = None;
     }
     pub fn changed(&mut self) {
         self.revision += 1;
@@ -558,6 +630,20 @@ impl DrawingApp {
         }
     }
     fn sync_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.prompt_target = self
+            .doc
+            .active_prompt_target
+            .clone()
+            .unwrap_or_else(|| "new".into());
+        self.editing_image = self.prompt_target != "new";
+        let draft = self
+            .doc
+            .prompt_drafts
+            .get(&self.prompt_target)
+            .cloned()
+            .unwrap_or_default();
+        self.prompt
+            .update(cx, |s, cx| s.set_value(draft, window, cx));
         for (input, value) in [
             (&self.title, self.doc.title.clone()),
             (
@@ -594,11 +680,13 @@ impl DrawingApp {
             .update(cx, |s, cx| s.set_value(tags, window, cx));
     }
     pub fn select_reference(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.capture_prompt(cx);
         self.ref_zoom = 1.;
         self.ref_pan = DocPoint { x: 0., y: 0. };
         self.doc.reference = Some(index);
         self.changed();
         self.sync_ref_inputs(window, cx);
+        self.restore_prompt(window, cx);
     }
     pub fn edit_reference(&mut self, cx: &mut Context<Self>) {
         if self.page == Page::Image {
@@ -713,7 +801,8 @@ impl DrawingApp {
             Err(e) => self.message(format!("Canvas: {e}"), true),
         }
     }
-    pub fn new_document(&mut self, _: &mut Window, _: &mut Context<Self>) {
+    pub fn new_document(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        self.capture_prompt(cx);
         if !self.prepare_project_switch() {
             return;
         }
@@ -751,7 +840,8 @@ impl DrawingApp {
             worker::studies(self.data_dir.join("sessions"), self.workers.sender.clone());
         }
     }
-    pub fn open_study(&mut self, path: PathBuf) {
+    pub fn open_study(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.capture_prompt(cx);
         if !self.prepare_project_switch() {
             return;
         }
@@ -1015,6 +1105,7 @@ impl DrawingApp {
         cx.notify();
     }
     pub fn settings_from_inputs(&mut self, cx: &mut Context<Self>) {
+        self.settings.native_config = self.native_config.read(cx).value().trim().to_owned();
         self.settings.endpoint = self.endpoint.read(cx).value().trim().to_owned();
         self.settings.model = self.model.read(cx).value().trim().to_owned();
         self.settings.edit_model = self.edit_model.read(cx).value().trim().to_owned();
@@ -1113,7 +1204,8 @@ impl DrawingApp {
             self.settings_save = Some((self.settings.clone(), key));
         }
     }
-    pub fn generate(&mut self, cx: &mut Context<Self>) {
+    pub fn generate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.restore_prompt(window, cx);
         if self.generation.is_some() {
             return;
         }
@@ -1214,6 +1306,8 @@ impl DrawingApp {
             .map(|(r, _, _, _)| crate::library::id(r));
         worker::generate(
             providers::Request {
+                native: self.workers.native.clone(),
+                keys_path: self.data_dir.join("api-keys.json"),
                 settings: self.settings.clone(),
                 prompt,
                 size: mask
@@ -1247,6 +1341,7 @@ impl DrawingApp {
         }
     }
     pub fn save(&mut self, save_as: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.capture_prompt(cx);
         self.finish_stroke();
         if self.manual_pending {
             return;
@@ -1405,7 +1500,7 @@ impl DrawingApp {
                             match result {
                                 Ok(Ok(Some(paths))) if !paths.is_empty() => match picker {
                                     Picker::Open => {
-                                        this.open_study(paths[0].clone());
+                                        this.open_study(paths[0].clone(), cx);
                                     }
                                     Picker::Import => {
                                         if import_into_project
@@ -1459,6 +1554,9 @@ impl DrawingApp {
         }
     }
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.restore_draft_source && self.opening_image.is_none() {
+            self.restore_prompt(window, cx);
+        }
         if self.page == Page::Image && self.image_auto_fit && self.opened_image.is_some() {
             let bounds = self.image_bounds.get();
             if f32::from(bounds.size.width) > 48. && f32::from(bounds.size.height) > 48. {
@@ -1657,6 +1755,7 @@ impl DrawingApp {
                                 .collect();
                             self.page = Page::Draw;
                             self.sync_inputs(window, cx);
+                            self.restore_saved_source(cx);
                             self.message("Study ready · previous study archived", false);
                         }
                         Err(e) => self.message(format!("Could not switch studies: {e}"), true),
@@ -1671,7 +1770,10 @@ impl DrawingApp {
                                 .map(|(reference, image)| {
                                     (Arc::new(reference), worker::render_image(image))
                                 })
-                                .collect()
+                                .collect();
+                            if self.restore_draft_source {
+                                self.restore_saved_source(cx);
+                            }
                         }
                         Err(error) => {
                             self.library_error = Some(format!("Could not load library: {error:#}"))
@@ -1702,6 +1804,7 @@ impl DrawingApp {
                                 }
                                 self.opened_image =
                                     Some((reference, worker::render_image(image), width, height));
+                                self.restore_prompt(window, cx);
                                 if let Some((reference, _, _, _)) = &self.opened_image {
                                     self.ref_name.update(cx, |s, cx| {
                                         s.set_value(reference.name.clone(), window, cx)
@@ -2003,8 +2106,6 @@ impl DrawingApp {
                         self.undo(window, cx)
                     }
                 }
-                "s" => self.save(modifiers.shift, window, cx),
-                "o" => self.pick(Picker::Open, window, cx),
                 _ => return,
             }
         } else {

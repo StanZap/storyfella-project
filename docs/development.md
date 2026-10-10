@@ -75,11 +75,13 @@ the core tests never compile the toolkit or the WebKit stack. `apps/studio`
 independent `crates/runtime` execution engine. It does not consume Studio state.
 
 `apps/atelier` (package `storyfella-atelier`, binary `atelier`) is the independent
-GPUI drawing and image-generation app. It has no Dioxus or Studio-core dependency.
-Run it from the workspace root with `cargo run -p storyfella-atelier`; use
+GPUI drawing and image-generation app. It uses Studio core only for portable
+artwork exchange and has no Dioxus dependency.
+Run it from the workspace root with `cargo xtask atelier`; use
 `-- --data-dir .svs-e2e/atelier-dev` for isolated sessions. On macOS,
 `sh apps/atelier/package-macos.sh` builds and signs the development bundle at
-`dist/atelier/Atelier.app`. This app uses Cargo rather than the Dioxus asset pipeline.
+`dist/atelier/Atelier.app`. The bundle uses ad hoc signing without a local
+certificate requirement. This app uses Cargo rather than the Dioxus asset pipeline.
 Its Metal surface renderer uses the pinned patch in `vendor/gpui-pre-apple`;
 keep that source and its licenses with the workspace. See [Atelier](atelier.md).
 

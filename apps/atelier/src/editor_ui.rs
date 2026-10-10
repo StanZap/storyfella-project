@@ -19,14 +19,12 @@ impl DrawingApp {
             .border_b_1()
             .border_color(rgb(BORDER))
             .child(
-                Button::new("image-back")
-                    .ghost()
-                    .small()
-                    .label("Library")
-                    .on_click(cx.listener(|this, _, _, cx| {
+                tool_button("image-back", "back", "Back to library").on_click(cx.listener(
+                    |this, _, _, cx| {
                         this.page = Page::Library;
                         cx.notify();
-                    })),
+                    },
+                )),
             )
             .child(
                 tool_button("image-fit", "fit", "Fit image")
@@ -41,6 +39,8 @@ impl DrawingApp {
                     .ghost()
                     .small()
                     .label("100%")
+                    .accessibility_label("View at actual size")
+                    .tooltip("View at actual size")
                     .disabled(self.comparing)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.image_auto_fit = false;
@@ -48,51 +48,32 @@ impl DrawingApp {
                         this.image_pan = crate::document::Point { x: 0., y: 0. };
                         cx.notify();
                     })),
-            )
-            .child(label(if self.comparing {
-                "Before / after · fitted".into()
-            } else {
-                format!("{:.0}%", self.image_zoom * 100.)
-            }));
+            );
         if let Some((reference, _, width, height)) = &self.opened_image {
             toolbar = toolbar
-                .child(label(format!(
-                    "{} · {} × {} px",
-                    reference.name, width, height
-                )))
-                .child(div().flex_1())
                 .child(
-                    Button::new("image-export-original")
-                        .small()
-                        .label("Export original")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.pick(Picker::Original, window, cx)
-                        })),
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(reference.name.clone()),
                 )
                 .child(
-                    Button::new("image-add-layer")
-                        .small()
-                        .label("Add to canvas")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.add_opened_image_layer(window, cx)
-                        })),
+                    tool_button("image-export-original", "download", "Export original").on_click(
+                        cx.listener(|this, _, window, cx| this.pick(Picker::Original, window, cx)),
+                    ),
                 )
-                .child(Button::new("image-approve").small().label("Export for Studio")
-                    .tooltip("Export an approved artwork package, then use Import Atelier artwork in Studio")
-                    .on_click(cx.listener(|this, _, window, cx| this.pick(Picker::Artwork, window, cx))))
                 .child(
-                    Button::new("image-edit")
-                        .primary()
-                        .small()
-                        .label("Edit image")
-                        .disabled(
-                            !self.settings.provider.supports_edit() || self.generation.is_some(),
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.edit_opened_image(window, cx);
-                            cx.notify();
-                        })),
-                );
+                    tool_button("image-add-layer", "layers", "Add to canvas").on_click(
+                        cx.listener(|this, _, window, cx| this.add_opened_image_layer(window, cx)),
+                    ),
+                )
+                .child(
+                    tool_button("image-approve", "package", "Export for Studio").on_click(
+                        cx.listener(|this, _, window, cx| this.pick(Picker::Artwork, window, cx)),
+                    ),
+                )
+                .child(label(format!("{width} × {height}")));
         }
         workspace = workspace.child(toolbar);
         if let Some(error) = &self.mask_save_error {
@@ -114,26 +95,114 @@ impl DrawingApp {
             );
         }
         if self.opened_image.is_some() {
-            workspace = workspace.child(row().px_4().py_2().flex_wrap().bg(rgb(0xffffff))
-                .child(Button::new("mask-pan").ghost().small().label("Pan").atelier_selected(self.mask_tool == Tool::Hand, cx)
-                    .on_click(cx.listener(|this, _, _, cx| { this.finish_mask(); this.mask_tool = Tool::Hand; cx.notify(); })))
-                .child(Button::new("mask-paint").ghost().small().label("Paint mask").atelier_selected(self.mask_tool == Tool::Pencil, cx).disabled(self.comparing || self.generation.is_some() || self.opening_image.is_some())
-                    .on_click(cx.listener(|this, _, _, cx| { this.finish_mask(); this.mask_tool = Tool::Pencil; cx.notify(); })))
-                .child(Button::new("mask-erase").ghost().small().label("Erase mask").atelier_selected(self.mask_tool == Tool::Eraser, cx).disabled(self.comparing || self.generation.is_some() || self.opening_image.is_some())
-                    .on_click(cx.listener(|this, _, _, cx| { this.finish_mask(); this.mask_tool = Tool::Eraser; cx.notify(); })))
-                .child(tool_button("mask-undo", "undo", "Undo mask stroke").disabled(self.mask.as_ref().is_none_or(|m| m.strokes.is_empty())).on_click(cx.listener(|this, _, _, cx| { this.undo_mask(false); cx.notify(); })))
-                .child(tool_button("mask-redo", "redo", "Redo mask stroke").disabled(self.mask_redo.is_empty()).on_click(cx.listener(|this, _, _, cx| { this.undo_mask(true); cx.notify(); })))
-                .children([16.,64.,160.].into_iter().enumerate().map(|(i,size)| Button::new(format!("mask-size-{i}")).ghost().small().label(format!("{size:.0} px")).atelier_selected(self.mask_size == size,cx)
-                    .on_click(cx.listener(move |this, _, _, cx| { this.mask_size = size; cx.notify(); }))))
-                .child(Button::new("mask-use").ghost().small().label("Use mask").atelier_selected(self.use_mask,cx)
-                    .on_click(cx.listener(|this, _, _, cx| { this.use_mask = !this.use_mask; cx.notify(); })))
-                .when(self.opened_image.as_ref().is_some_and(|(r,_,_,_)| r.parent.is_some()), |p| p.child(Button::new("image-compare").ghost().small().label(if self.comparison_requested.is_some() { "Opening comparison…" } else { "Before / after" }).atelier_selected(self.comparing,cx)
-                    .disabled(self.comparison_requested.is_some()).on_click(cx.listener(|this, _, _, cx| { this.toggle_comparison(); cx.notify(); })))))
-                .child(label(if !self.use_mask && self.mask.as_ref().is_some_and(|mask| !mask.strokes.is_empty()) {
-                    "Saved mask draft is visible. Enable Use mask to apply it with FLUX Fill."
-                } else {
-                    "Paint the area to change. Masks are saved with the image. FLUX Fill supports masked edits."
-                }));
+            workspace = workspace.child(
+                row()
+                    .px_4()
+                    .py_1()
+                    .flex_wrap()
+                    .bg(rgb(0xffffff))
+                    .child(
+                        tool_button("mask-pan", "hand", "Pan image")
+                            .atelier_selected(self.mask_tool == Tool::Hand, cx)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.finish_mask();
+                                this.mask_tool = Tool::Hand;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        tool_button("mask-paint", "brush", "Paint mask")
+                            .atelier_selected(self.mask_tool == Tool::Pencil, cx)
+                            .disabled(
+                                self.comparing
+                                    || self.generation.is_some()
+                                    || self.opening_image.is_some(),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.finish_mask();
+                                this.mask_tool = Tool::Pencil;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        tool_button("mask-erase", "eraser", "Erase mask")
+                            .atelier_selected(self.mask_tool == Tool::Eraser, cx)
+                            .disabled(
+                                self.comparing
+                                    || self.generation.is_some()
+                                    || self.opening_image.is_some(),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.finish_mask();
+                                this.mask_tool = Tool::Eraser;
+                                cx.notify();
+                            })),
+                    )
+                    .when(
+                        self.mask_tool != Tool::Hand
+                            || self.mask.as_ref().is_some_and(|m| !m.strokes.is_empty())
+                            || self.use_mask,
+                        |tools| {
+                            tools
+                                .child(
+                                    tool_button("mask-undo", "undo", "Undo mask stroke")
+                                        .disabled(
+                                            self.mask.as_ref().is_none_or(|m| m.strokes.is_empty()),
+                                        )
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.undo_mask(false);
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    tool_button("mask-redo", "redo", "Redo mask stroke")
+                                        .disabled(self.mask_redo.is_empty())
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.undo_mask(true);
+                                            cx.notify();
+                                        })),
+                                )
+                                .children([16., 64., 160.].into_iter().enumerate().map(
+                                    |(i, size)| {
+                                        Button::new(format!("mask-size-{i}"))
+                                            .ghost()
+                                            .small()
+                                            .label(format!("{size:.0} px"))
+                                            .atelier_selected(self.mask_size == size, cx)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.mask_size = size;
+                                                cx.notify();
+                                            }))
+                                    },
+                                ))
+                                .child(
+                                    tool_button("mask-use", "mask", "Use mask for next edit")
+                                        .atelier_selected(self.use_mask, cx)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.use_mask = !this.use_mask;
+                                            cx.notify();
+                                        })),
+                                )
+                        },
+                    )
+                    .child(div().flex_1())
+                    .when(
+                        self.opened_image
+                            .as_ref()
+                            .is_some_and(|(r, _, _, _)| r.parent.is_some()),
+                        |p| {
+                            p.child(
+                                tool_button("image-compare", "compare", "Before / after")
+                                    .atelier_selected(self.comparing, cx)
+                                    .disabled(self.comparison_requested.is_some())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.toggle_comparison();
+                                        cx.notify();
+                                    })),
+                            )
+                        },
+                    ),
+            );
         }
         let mut stage = div()
             .id("image-workspace")
@@ -315,8 +384,8 @@ impl DrawingApp {
                 row()
                     .px_4()
                     .py_2()
-                    .child(div().flex_1().child("Before · source version"))
-                    .child(div().flex_1().child("After · selected version")),
+                    .child(div().flex_1().child("Before"))
+                    .child(div().flex_1().child("After")),
             );
         }
         workspace = workspace.child(stage);
@@ -332,11 +401,10 @@ impl DrawingApp {
             );
             let mut versions = row()
                 .id("image-versions")
-                .h(px(86.))
+                .h(px(44.))
                 .px_4()
                 .overflow_x_scroll()
-                .bg(rgb(0xffffff))
-                .child(label("Versions · click to inspect or branch"));
+                .bg(rgb(0xffffff));
             let mut relatives: Vec<_> = self
                 .library
                 .iter()
@@ -346,21 +414,28 @@ impl DrawingApp {
             relatives.sort_by_key(|(_, (candidate, _))| {
                 (candidate.parent.is_some(), crate::library::id(candidate))
             });
-            for (version, (i, (candidate, _))) in relatives.into_iter().enumerate() {
+            for (i, (candidate, _)) in relatives {
                 let candidate = candidate.clone();
+                let parent_name = candidate.parent.as_ref().and_then(|parent| {
+                    self.library
+                        .iter()
+                        .find(|(r, _)| crate::library::id(r) == *parent)
+                        .map(|(r, _)| r.name.clone())
+                });
+                let description = parent_name
+                    .map(|parent| format!("{} · From {parent}", candidate.name))
+                    .unwrap_or_else(|| candidate.name.clone());
                 versions = versions.child(
                     Button::new(format!("version-{i}"))
                         .ghost()
+                        .small()
                         .label(if candidate.parent.is_none() {
-                            format!("Original · {}", candidate.name)
+                            "Original".into()
                         } else {
-                            format!("Version {} · {}", version, candidate.name)
+                            candidate.name.clone()
                         })
-                        .tooltip(if candidate.prompt.is_empty() {
-                            "Original image".into()
-                        } else {
-                            candidate.prompt.clone()
-                        })
+                        .accessibility_label(description.clone())
+                        .tooltip(description)
                         .atelier_selected(crate::library::id(&candidate) == id, cx)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.open_image(candidate.clone(), cx)

@@ -41,6 +41,103 @@ fn doc() -> Document {
         ..Document::default()
     }
 }
+#[test]
+fn source_bound_prompt_drafts_survive_project_and_recovery_writes() {
+    let directory = temporary("prompt-drafts");
+    let mut project = doc();
+    project
+        .prompt_drafts
+        .insert("new".into(), "New image draft".into());
+    let source = colored_reference("Source", [30, 90, 50, 255], 32, 32);
+    let id = crate::library::id(&source);
+    project
+        .prompt_drafts
+        .insert(id.clone(), "Unsent edit draft".into());
+    project.active_prompt_target = Some(id.clone());
+    project.references.push(Arc::new(source));
+    let mut history = History::new();
+    history.checkpoint(&project);
+    project.width = 192;
+    project
+        .prompt_drafts
+        .insert(id.clone(), "Latest edit draft".into());
+    assert!(history.undo(&mut project));
+    assert_eq!(project.width, 128);
+    assert_eq!(project.prompt_drafts[&id], "Latest edit draft");
+    assert!(history.redo(&mut project));
+    assert_eq!(project.width, 192);
+    assert_eq!(project.prompt_drafts[&id], "Latest edit draft");
+    project
+        .prompt_drafts
+        .insert(id.clone(), "Unsent edit draft".into());
+    for name in ["project.atelier", "recovery.atelier"] {
+        let path = directory.join(name);
+        document::save(&path, &project).unwrap();
+        let restored = document::load(&path).unwrap();
+        assert_eq!(restored.prompt_drafts["new"], "New image draft");
+        assert_eq!(restored.prompt_drafts[&id], "Unsent edit draft");
+        assert_eq!(restored.active_prompt_target.as_deref(), Some(id.as_str()));
+    }
+    let invalid_path = directory.join("cannot-save.atelier");
+    std::fs::create_dir(&invalid_path).unwrap();
+    assert!(document::save(&invalid_path, &project).is_err());
+    assert_eq!(project.prompt_drafts[&id], "Unsent edit draft");
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn native_profiles_resolve_paths_capabilities_and_reject_wrong_routes() {
+    let directory = temporary("native-providers");
+    let config = directory.join("providers.toml");
+    std::fs::write(
+        &config,
+        r#"
+[providers.qwen]
+kind = "sdcpp"
+architecture = "qwen-image-2.1"
+capabilities = ["t2i", "edit"]
+base_url = "http://127.0.0.1:7861"
+model_dir = "weights"
+executable = "runtime/sd-server"
+residency = "lowvram"
+[providers.krea]
+kind = "sdcpp"
+architecture = "krea2-turbo"
+capabilities = ["t2i"]
+base_url = "http://127.0.0.1:7862"
+model_dir = "weights"
+executable = "runtime/sd-server"
+"#,
+    )
+    .unwrap();
+    let mut settings = Settings {
+        provider: Provider::QwenNative,
+        ..Default::default()
+    };
+    for editing in [false, true] {
+        let deployment = crate::native_images::deployment(&settings, &config, editing).unwrap();
+        assert_eq!(deployment.architecture, "qwen-image-2.1");
+        assert_eq!(deployment.model_dir, directory.join("weights"));
+        assert_eq!(deployment.executable, directory.join("runtime/sd-server"));
+        assert_eq!(
+            deployment.residency,
+            clipforge_inference::sd::Residency::LowVram
+        );
+    }
+    settings.provider = Provider::KreaNative;
+    assert!(!settings.provider.supports_edit());
+    assert!(settings.provider.key_env().is_empty());
+    assert_eq!(
+        crate::native_images::deployment(&settings, &config, false)
+            .unwrap()
+            .architecture,
+        "krea2-turbo"
+    );
+    assert!(crate::native_images::deployment(&settings, &config, true).is_err());
+    std::fs::write(&config, "invalid providers").unwrap();
+    assert!(crate::native_images::deployment(&settings, &config, false).is_err());
+    std::fs::remove_dir_all(directory).unwrap();
+}
 fn stroke(tool: Tool, y: f32) -> Stroke {
     Stroke {
         brush: Brush::Ink,
@@ -592,10 +689,10 @@ fn settings_save_reports_failures_without_claiming_success() {
     let path = directory.join("settings.json");
     std::fs::write(&path, "previous settings").unwrap();
     let error = worker::apply_settings(&Settings::default(), &path, Some("test-key"), |_, _| {
-        anyhow::bail!("Keychain unavailable")
+        anyhow::bail!("Key storage unavailable")
     })
     .unwrap_err();
-    assert!(format!("{error:#}").contains("Keychain unavailable"));
+    assert!(format!("{error:#}").contains("Key storage unavailable"));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "previous settings");
     let error =
         worker::apply_settings(&Settings::default(), &directory, None, |_, _| Ok(())).unwrap_err();
@@ -603,72 +700,53 @@ fn settings_save_reports_failures_without_claiming_success() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 #[test]
-fn saved_and_unlocked_keys_do_not_reprompt_during_the_session() {
-    let cache = providers::CredentialCache::default();
-    cache.remember(Provider::Fal, "saved-fal-key".into());
+fn saved_keys_survive_reopening_and_remain_provider_scoped() {
+    let directory = temporary("saved-keys");
+    let path = directory.join("api-keys.json");
+    providers::store_key(&path, Provider::Fal, " fal-key ").unwrap();
+    providers::store_key(&path, Provider::Replicate, "replicate-key").unwrap();
     assert_eq!(
-        cache
-            .resolve(Provider::Fal, None, || panic!(
-                "Saved key must avoid Keychain"
-            ))
-            .unwrap(),
-        "saved-fal-key"
+        providers::resolve_key(&path, Provider::Fal, None).unwrap(),
+        "fal-key"
     );
-    let mut reads = 0;
-    for _ in 0..3 {
+    assert_eq!(
+        providers::resolve_key(&path, Provider::Replicate, None).unwrap(),
+        "replicate-key"
+    );
+    providers::store_key(&path, Provider::Fal, "replacement").unwrap();
+    assert_eq!(
+        providers::resolve_key(&path, Provider::Fal, None).unwrap(),
+        "replacement"
+    );
+    assert_eq!(
+        providers::resolve_key(&path, Provider::Replicate, None).unwrap(),
+        "replicate-key"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
         assert_eq!(
-            cache
-                .resolve(Provider::Replicate, None, || {
-                    reads += 1;
-                    Ok(Some("unlocked-replicate-key".into()))
-                })
-                .unwrap(),
-            "unlocked-replicate-key"
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
         );
     }
-    assert_eq!(reads, 1);
+    std::fs::write(&path, b"invalid json").unwrap();
     assert_eq!(
-        cache
-            .resolve(Provider::Fal, Some(" env-fal-key ".into()), || {
-                panic!("Environment key must avoid Keychain")
-            })
-            .unwrap(),
-        "env-fal-key"
+        providers::resolve_key(&path, Provider::Fal, Some(" env-key ".into())).unwrap(),
+        "env-key"
     );
-    cache.remember(Provider::Fal, "replacement-fal-key".into());
-    assert_eq!(
-        cache.resolve(Provider::Fal, None, || Ok(None)).unwrap(),
-        "replacement-fal-key"
+    assert!(providers::resolve_key(&path, Provider::Fal, None)
+        .unwrap_err()
+        .to_string()
+        .contains("Could not read saved API keys"));
+    std::fs::remove_file(&path).unwrap();
+    assert!(
+        providers::resolve_key(&path, Provider::Fal, Some(" ".into()))
+            .unwrap_err()
+            .to_string()
+            .contains("Add your fal.ai key")
     );
-}
-#[test]
-fn credential_read_errors_are_preserved_and_can_be_retried() {
-    let cache = providers::CredentialCache::default();
-    let error = cache
-        .resolve(Provider::Fal, None, || {
-            anyhow::bail!("Keychain access denied")
-        })
-        .unwrap_err();
-    assert!(error.to_string().contains("Keychain access denied"));
-    assert!(!error.to_string().contains("Add your"));
-    let missing = cache
-        .resolve(Provider::Replicate, None, || Ok(None))
-        .unwrap_err();
-    assert!(missing.to_string().contains("Add your Replicate key"));
-    assert_eq!(
-        cache
-            .resolve(Provider::Fal, None, || Ok(Some("retry-key".into())))
-            .unwrap(),
-        "retry-key"
-    );
-    let cache = providers::CredentialCache::default();
-    let key = cache
-        .resolve(Provider::Fal, None, || {
-            cache.remember(Provider::Fal, "newly-saved-key".into());
-            Ok(Some("older-keychain-key".into()))
-        })
-        .unwrap();
-    assert_eq!(key, "newly-saved-key");
+    std::fs::remove_dir_all(directory).unwrap();
 }
 fn workflow() -> serde_json::Value {
     serde_json::json!({"6":{"class_type":"CLIPTextEncode","inputs":{"text":"old"}},"5":{"class_type":"EmptyLatentImage","inputs":{"width":512,"height":512,"batch_size":4}},"3":{"class_type":"KSampler","inputs":{"seed":1}},"9":{"class_type":"SaveImage","inputs":{}}})
@@ -735,6 +813,8 @@ fn comfy_generation_roundtrip_with_local_mock_server() {
         }
     });
     let reference = providers::generate(providers::Request {
+        native: Arc::new(Default::default()),
+        keys_path: Default::default(),
         settings: Settings {
             provider: Provider::Comfy,
             endpoint: format!("http://{address}"),
@@ -757,6 +837,8 @@ fn comfy_generation_roundtrip_with_local_mock_server() {
 #[test]
 fn generation_cancellation_prevents_network_submission() {
     let result = providers::generate(providers::Request {
+        native: Arc::new(Default::default()),
+        keys_path: Default::default(),
         settings: Settings::default(),
         prompt: "Study".into(),
         source: None,

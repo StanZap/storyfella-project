@@ -50,6 +50,14 @@ fn icon(name: &str) -> Icon {
         "timer"=>"<circle cx='12' cy='14' r='8'/><path d='M9 2h6M12 6V2m6 5 2-2M12 10v5'/>",
         "save"=>"<path d='M5 3h12l4 4v14H3V3zM7 3v6h10V3M7 21v-7h10v7'/>",
         "export"=>"<path d='M12 16V3m-4 4 4-4 4 4M5 13H3v8h18v-8h-2'/>",
+        "download"=>"<path d='M12 3v13m-4-4 4 4 4-4M3 16v5h18v-5'/>",
+        "back"=>"<path d='m10 5-7 7 7 7M3 12h18'/>",
+        "layers"=>"<path d='m12 3 10 5-10 5L2 8zM2 12l10 5 10-5M2 16l10 5 10-5'/>",
+        "package"=>"<path d='m12 2 9 5v10l-9 5-9-5V7zM3 7l9 5 9-5M12 12v10M7 4l10 5'/>",
+        "compare"=>"<rect x='3' y='3' width='18' height='18' rx='2'/><path d='M12 3v18M6 12h3M15 12h3'/>",
+        "mask"=>"<rect x='3' y='3' width='18' height='18' rx='2' stroke-dasharray='3 3'/><path d='m7 16 9-9M7 11l4-4M12 17l5-5'/>",
+        "reference"=>"<rect x='3' y='3' width='13' height='13' rx='2'/><path d='M8 21h13V8M3 12l4-4 4 4 2-2 3 3'/>",
+        "info"=>"<circle cx='12' cy='12' r='9'/><path d='M12 11v6M12 7h.01'/>",
         "open"=>"<path d='M3 7V4h6l3 3h9v3M3 10h18l-3 11H3z'/>",
         "plus"=>"<path d='M12 5v14M5 12h14'/>","minus"=>"<path d='M5 12h14'/>",
         "undo"=>"<path d='m9 4-6 6 6 6M3 10h12a6 6 0 0 1 0 12'/>",
@@ -135,6 +143,18 @@ impl DrawingApp {
             .on_key_down(cx.listener(Self::key_down))
             .on_action(cx.listener(|this, _: &crate::Quit, _, cx| {
                 this.request_close(cx);
+                cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|this, _: &crate::SaveProject, window, cx| {
+                this.save(false, window, cx);
+                cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|this, _: &crate::SaveProjectAs, window, cx| {
+                this.save(true, window, cx);
+                cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|this, _: &crate::OpenProject, window, cx| {
+                this.pick(Picker::Open, window, cx);
                 cx.stop_propagation();
             }))
             .child(self.header(cx))
@@ -1161,7 +1181,7 @@ impl DrawingApp {
                                     .small()
                                     .label("Continue study")
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.open_study(path.clone());
+                                        this.open_study(path.clone(), cx);
                                         cx.notify();
                                     })),
                             ),
@@ -1247,87 +1267,87 @@ impl DrawingApp {
         }) {
             {
                 let open = reference.clone();
-                cards = cards.child(
-                    panel()
-                        .w(px(218.))
-                        .overflow_hidden()
-                        .when(!self.shared_library && self.doc.reference == Some(i), |p| {
-                            p.border_color(rgb(WINE))
-                        })
-                        .child(
-                            div()
-                                .id(format!("reference-image-{i}"))
-                                .h(px(190.))
-                                .w_full()
-                                .overflow_hidden()
-                                .cursor_pointer()
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    if !this.shared_library {
-                                        this.select_reference(i, window, cx);
-                                    }
-                                    this.open_image(open.clone(), cx);
-                                    cx.notify();
-                                }))
-                                .child(
-                                    img(image.clone())
-                                        .size_full()
-                                        .object_fit(ObjectFit::Contain),
-                                ),
-                        )
-                        .child(
-                            column()
-                                .gap_1()
-                                .child(
-                                    row()
-                                        .px_2()
-                                        .py_2()
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .overflow_hidden()
-                                                .child(reference.name.clone()),
-                                        )
-                                        .child(
-                                            tool_button(
-                                                format!("favorite-{i}"),
-                                                "heart",
-                                                "Favorite image",
+                cards =
+                    cards.child(
+                        panel()
+                            .w(px(218.))
+                            .overflow_hidden()
+                            .when(!self.shared_library && self.doc.reference == Some(i), |p| {
+                                p.border_color(rgb(WINE))
+                            })
+                            .child(
+                                div()
+                                    .id(format!("reference-image-{i}"))
+                                    .h(px(190.))
+                                    .w_full()
+                                    .overflow_hidden()
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        if !this.shared_library {
+                                            this.select_reference(i, window, cx);
+                                        }
+                                        this.open_image(open.clone(), cx);
+                                        cx.notify();
+                                    }))
+                                    .child(
+                                        img(image.clone())
+                                            .size_full()
+                                            .object_fit(ObjectFit::Contain),
+                                    ),
+                            )
+                            .child(
+                                column()
+                                    .gap_1()
+                                    .child(
+                                        row()
+                                            .px_2()
+                                            .py_2()
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .overflow_hidden()
+                                                    .child(reference.name.clone()),
                                             )
-                                            .atelier_selected(reference.favorite, cx)
-                                            .on_click(
-                                                cx.listener(move |this, _, _, cx| {
+                                            .child(
+                                                tool_button(
+                                                    format!("favorite-{i}"),
+                                                    "heart",
+                                                    "Favorite image",
+                                                )
+                                                .atelier_selected(reference.favorite, cx)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
                                                     if this.shared_library {
                                                         this.toggle_library_favorite(i);
                                                     } else {
                                                         this.toggle_favorite(i);
                                                     }
                                                     cx.notify();
-                                                }),
+                                                })),
                                             ),
-                                        ),
-                                )
-                                .child(
-                                    row()
-                                        .px_2()
-                                        .pb_2()
-                                        .child(
-                                            Button::new(format!("open-image-{i}"))
-                                                .ghost()
-                                                .small()
-                                                .label("Open")
+                                    )
+                                    .child(
+                                        row()
+                                            .px_2()
+                                            .pb_2()
+                                            .child(
+                                                tool_button(
+                                                    format!("open-image-{i}"),
+                                                    "open",
+                                                    "Open image",
+                                                )
                                                 .on_click(cx.listener({
                                                     let reference = reference.clone();
                                                     move |this, _, _, cx| {
                                                         this.open_image(reference.clone(), cx)
                                                     }
                                                 })),
-                                        )
-                                        .child(
-                                            Button::new(format!("input-reference-{i}"))
-                                                .ghost()
-                                                .small()
-                                                .label("Reference")
-                                                .tooltip("Add as an additional AI reference")
+                                            )
+                                            .child(
+                                                tool_button(
+                                                    format!("input-reference-{i}"),
+                                                    "reference",
+                                                    "Add as an AI reference",
+                                                )
                                                 .on_click(cx.listener({
                                                     let reference = reference.clone();
                                                     move |this, _, _, cx| {
@@ -1335,24 +1355,25 @@ impl DrawingApp {
                                                         cx.notify();
                                                     }
                                                 })),
-                                        )
-                                        .when(self.shared_library, |row| {
-                                            row.child(
-                                                Button::new(format!("use-library-{i}"))
-                                                    .small()
-                                                    .label("Use")
-                                                    .tooltip("Use as a reference in this project")
+                                            )
+                                            .when(self.shared_library, |row| {
+                                                row.child(
+                                                    tool_button(
+                                                        format!("use-library-{i}"),
+                                                        "plus",
+                                                        "Use in this project",
+                                                    )
                                                     .on_click(cx.listener(
                                                         move |this, _, window, cx| {
                                                             this.use_library_image(i, window, cx);
                                                             cx.notify();
                                                         },
                                                     )),
-                                            )
-                                        }),
-                                ),
-                        ),
-                );
+                                                )
+                                            }),
+                                    ),
+                            ),
+                    );
             }
         }
         if items.is_empty() && !self.library_loading {
@@ -1398,22 +1419,29 @@ impl DrawingApp {
                                         cx.notify();
                                     })),
                             )
-                            .child(
-                                Button::new("import")
-                                    .small()
-                                    .icon(icon("plus"))
-                                    .label("Import")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.pick(Picker::Import, window, cx)
-                                    })),
-                            ),
+                            .child(tool_button("import", "plus", "Import images").on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    this.pick(Picker::Import, window, cx)
+                                }),
+                            )),
                     )
                     .child(self.library_navigation(cx))
                     .child(Input::new(&self.search))
-                    .when(self.shared_library, |p| p.child(label("Originals available across every Atelier project. Click an image to open; Use adds it to this project.")))
                     .when(self.library_loading, |p| p.child(label("Loading library…")))
-                    .when_some(self.library_error.as_ref(), |p, error| p.child(label(error.clone()).text_color(rgb(WINE))))
-                    .when(self.library_error.is_some(), |p| p.child(Button::new("library-retry").small().label("Retry library").on_click(cx.listener(|this, _, _, cx| { this.refresh_library(); cx.notify(); }))))
+                    .when_some(self.library_error.as_ref(), |p, error| {
+                        p.child(label(error.clone()).text_color(rgb(WINE)))
+                    })
+                    .when(self.library_error.is_some(), |p| {
+                        p.child(
+                            Button::new("library-retry")
+                                .small()
+                                .label("Retry library")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.refresh_library();
+                                    cx.notify();
+                                })),
+                        )
+                    })
                     .child(cards)
                     .child(label(format!("{} images", items.len()))),
             )
@@ -1425,289 +1453,242 @@ impl DrawingApp {
         } else {
             &self.generation_provider_select
         };
-        column().gap_2().child(label("Image provider")).child(
-            Select::new(state)
-                .accessibility_label("Image provider")
-                .cleanable(false)
-                .w_full(),
-        )
+        column()
+            .gap_2()
+            .when(settings, |p| p.child(label("Image provider")))
+            .child(
+                Select::new(state)
+                    .accessibility_label("Image provider")
+                    .cleanable(false)
+                    .w_full(),
+            )
     }
     pub(crate) fn generate_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut content =
-            column()
-                .id("generate-panel")
-                .w(px(320.))
-                .flex_shrink_0()
-                .h_full()
-                .overflow_y_scroll()
-                .p_4()
-                .bg(rgb(0xffffff))
-                .border_l_1()
-                .border_color(rgb(BORDER))
-                .child(
-                    row()
-                        .child(div().text_lg().flex_1().child("Create & edit"))
-                        .child(
-                            tool_button("generation-settings", "settings", "Provider settings")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.panel = Panel::Settings;
-                                    cx.notify();
-                                })),
-                        ),
-                )
-                .child(self.provider_choices(false))
-                .child(label({
-                    let active = if self.editing_image {
-                        self.edit_model.read(cx).value()
-                    } else {
-                        self.model.read(cx).value()
-                    };
-                    let name = self
-                        .settings
-                        .provider
-                        .presets()
-                        .into_iter()
-                        .find(|(_, create, edit)| {
-                            active == if self.editing_image { *edit } else { *create }
-                        })
-                        .map(|(name, _, _)| name.to_owned())
-                        .unwrap_or_else(|| active.to_string());
-                    if self.settings.provider == Provider::Comfy {
-                        "Local API workflow".into()
-                    } else {
-                        format!("Model: {name}")
-                    }
-                }))
-                .child(
-                    row()
-                        .child(
-                            Button::new("create-image")
-                                .ghost()
-                                .small()
-                                .label("New image")
-                                .atelier_selected(!self.editing_image, cx)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.editing_image = false;
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new("edit-selected-image")
-                                .ghost()
-                                .small()
-                                .label("Edit selected")
-                                .atelier_selected(self.editing_image, cx)
-                                .disabled(
-                                    !self.settings.provider.supports_edit()
-                                        || self.edit_source().is_none()
-                                        || self.edit_model.read(cx).value().trim().is_empty(),
-                                )
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.editing_image = true;
-                                    cx.notify();
-                                })),
-                        ),
-                )
-                .child(label(if self.editing_image {
-                    self.edit_source()
-                        .map(|r| format!("Editing: {} · original is kept", r.name))
-                        .unwrap_or_else(|| "Select an image to edit".into())
-                } else {
-                    "Describe an image to create".into()
-                }))
-                .when(self.editing_image, |p| {
-                    let profile = clipforge_inference::images::HostedDeployment::new(self.settings.provider.hosted().unwrap_or(clipforge_inference::images::HostedProvider::Fal), self.edit_model.read(cx).value().trim());
-                    let capabilities = profile.map(|p| format!("Up to {} input image(s) · {}",p.max_reference_images(), if p.supports_mask() { "mask supported" } else { "whole-image editing" })).unwrap_or_else(|_| "Check the editing model in Settings".into());
-                    p.child(label("Describe what to change and what to keep."))
-                        .child(label(capabilities))
-                        .when(self.use_mask, |p| p.child(label("Masked edits keep the source dimensions and preserve pixels outside the mask.")))
-                })
-                .when(
-                    self.editing_image
-                        && self.settings.provider == Provider::Fal
-                        && self
-                            .edit_model
-                            .read(cx)
-                            .value()
-                            .starts_with("alibaba/qwen-image-3/"),
-                    |p| {
-                        p.child(label(
-                            "Qwen Image 3 receives transparent areas on a white background.",
-                        ))
-                    },
-                )
-                .child(Textarea::new(&self.prompt).h(px(120.)))
-                .child(
-                    row().children(["1:1", "3:2", "2:3"].into_iter().enumerate().map(
-                        |(i, label)| {
-                            Button::new(format!("aspect-{i}"))
-                                .ghost()
-                                .small()
-                                .label(label)
-                                .atelier_selected(self.generation_size == i, cx)
-                                .disabled(self.editing_image && self.use_mask)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.generation_size = i;
-                                    cx.notify();
-                                }))
-                        },
-                    )),
-                )
-                .child(
-                    Button::new("generate")
-                        .primary()
-                        .icon(icon("sparkle"))
-                        .label(if self.generation.is_some() {
-                            "Generating…"
-                        } else {
-                            if self.editing_image {
-                                "Create edited version"
-                            } else {
-                                "Create image"
-                            }
-                        })
-                        .disabled(
-                            self.generation.is_some()
-                                || (self.editing_image && self.edit_source().is_none()),
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.generate(cx);
-                            cx.notify();
-                        })),
-                )
-                .when_some(self.generation_error.as_ref(), |p, error| {
-                    p.child(label(error.clone()).text_color(rgb(WINE)))
-                })
-                .when(self.settings.provider != Provider::Comfy, |p| {
-                    p.child(label(format!(
-                        "Uses your {} account · API charges apply",
-                        self.settings.provider.name()
-                    )))
-                })
-                .when(self.generation.is_some(), |p| {
-                    p.child(label(self.status.clone()))
-                })
-                .when(self.generation.is_some(), |p| {
-                    p.child(
-                        Button::new("cancel-generation")
-                            .ghost()
-                            .small()
-                            .label("Cancel")
+        let can_edit = self.settings.provider.supports_edit()
+            && self.edit_source().is_some()
+            && (self.settings.provider.native_architecture().is_some()
+                || !self.edit_model.read(cx).value().trim().is_empty());
+        let mut content = column()
+            .id("generate-panel")
+            .w(px(280.))
+            .flex_shrink_0()
+            .h_full()
+            .overflow_y_scroll()
+            .p_3()
+            .bg(rgb(0xffffff))
+            .border_l_1()
+            .border_color(rgb(BORDER))
+            .child(
+                row()
+                    .child(self.provider_choices(false).flex_1().min_w_0())
+                    .child(
+                        tool_button("generation-settings", "settings", "Provider settings")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.cancel_generation();
+                                this.panel = Panel::Settings;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                row()
+                    .child(label("Prompt").flex_1())
+                    .when_some(
+                        self.edit_source().filter(|_| self.editing_image),
+                        |row, reference| {
+                            row.child(
+                                tool_button("reuse-prompt", "undo", "Reuse this version's prompt")
+                                    .disabled(reference.prompt.is_empty())
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.prompt.update(cx, |s, cx| {
+                                            s.set_value(reference.prompt.clone(), window, cx)
+                                        });
+                                        this.prompt.update(cx, |s, cx| s.focus(window, cx));
+                                        cx.notify();
+                                    })),
+                            )
+                        },
+                    )
+                    .child(
+                        tool_button("create-image", "image", "New image")
+                            .atelier_selected(!self.editing_image, cx)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.editing_image = false;
+                                this.restore_prompt(window, cx);
+                                this.prompt.update(cx, |s, cx| s.focus(window, cx));
                                 cx.notify();
                             })),
                     )
-                })
-                .child(separator());
+                    .child(
+                        tool_button("edit-selected-image", "pencil", "Edit selected image")
+                            .atelier_selected(self.editing_image, cx)
+                            .disabled(!can_edit)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if this.page == Page::Image {
+                                    this.edit_opened_image(window, cx);
+                                } else {
+                                    this.editing_image = true;
+                                    this.restore_prompt(window, cx);
+                                    this.prompt.update(cx, |s, cx| s.focus(window, cx));
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(Textarea::new(&self.prompt).h(px(180.)))
+            .child(
+                row()
+                    .children(
+                        ["1:1", "3:2", "2:3"]
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, aspect)| {
+                                Button::new(format!("aspect-{i}"))
+                                    .ghost()
+                                    .small()
+                                    .label(aspect)
+                                    .atelier_selected(self.generation_size == i, cx)
+                                    .disabled(self.editing_image && self.use_mask)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.generation_size = i;
+                                        cx.notify();
+                                    }))
+                            }),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        tool_button(
+                            "generate",
+                            "sparkle",
+                            if self.settings.provider.hosted().is_none() {
+                                if self.editing_image {
+                                    "Generate edited version"
+                                } else {
+                                    "Generate image"
+                                }
+                            } else if self.editing_image {
+                                "Generate edited version · API charges apply"
+                            } else {
+                                "Generate image · API charges apply"
+                            },
+                        )
+                        .primary()
+                        .disabled(self.generation.is_some() || (self.editing_image && !can_edit))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.generate(window, cx);
+                            cx.notify();
+                        })),
+                    )
+                    .when(self.generation.is_some(), |p| {
+                        p.child(
+                            tool_button("cancel-generation", "close", "Cancel generation")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.cancel_generation();
+                                    cx.notify();
+                                })),
+                        )
+                    }),
+            )
+            .when_some(self.generation_error.as_ref(), |p, error| {
+                p.child(label(error.clone()).text_color(rgb(WINE)))
+            })
+            .when(self.generation.is_some(), |p| {
+                p.child(label(self.status.clone()))
+            });
         if !self.input_references.is_empty() {
-            content = content.child(label("Additional references · source is Image 1"));
+            content = content.child(separator());
             for (i, reference) in self.input_references.iter().enumerate() {
                 content = content.child(
                     row()
-                        .child(label(format!("Image {}: {}", i + 2, reference.name)))
+                        .child(label(format!("{} · {}", i + 2, reference.name)).flex_1())
                         .child(
-                            Button::new(format!("remove-input-{i}"))
-                                .ghost()
-                                .small()
-                                .label("Remove")
-                                .on_click(cx.listener(move |this, _, _, cx| {
+                            tool_button(
+                                format!("remove-input-{i}"),
+                                "close",
+                                "Remove AI reference",
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
                                     this.input_references.remove(i);
                                     cx.notify();
-                                })),
+                                },
+                            )),
                         ),
                 );
             }
-            if !self.editing_image {
-                content = content.child(label("Select Edit selected to use reference inputs."));
-            }
         }
-        if self.page == Page::Image {
-            if let Some(reference) = self.edit_source() {
-                content = content
-                    .child(label("Library image details"))
-                    .child(field("Name", &self.ref_name))
-                    .child(field("Tags", &self.ref_tags))
-                    .child(
-                        Button::new("library-image-details")
-                            .small()
-                            .label("Save library details")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.edit_reference(cx);
-                                cx.notify();
-                            })),
-                    )
-                    .child(label(reference.provenance.clone()));
-                if !reference.prompt.is_empty() {
-                    content = content.child(label(format!("Version prompt: {}", reference.prompt)));
-                }
-            }
-            return content;
-        }
-        if let Some(i) = self.doc.reference.filter(|i| *i < self.references.len()) {
+        if let Some(reference) = self.edit_source() {
             content = content
-                .child(
-                    img(self.references[i].clone())
-                        .w_full()
-                        .h(px(180.))
-                        .object_fit(ObjectFit::Contain),
-                )
-                .child(
-                    Button::new("edit-this-reference")
-                        .small()
-                        .label("Edit this image")
-                        .disabled(
-                            !self.settings.provider.supports_edit()
-                                || self.edit_model.read(cx).value().trim().is_empty(),
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.editing_image = true;
-                            this.prompt.update(cx, |s, cx| s.focus(window, cx));
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Button::new("use-reference")
-                        .icon(icon("image"))
-                        .label("Draw this reference")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.page = Page::Draw;
-                            this.dock = true;
-                            window.focus(&this.focus, cx);
-                            cx.notify();
-                        })),
-                )
-                .child(field("Name", &self.ref_name))
-                .child(field("Tags", &self.ref_tags))
+                .child(separator())
                 .child(
                     row()
                         .child(
-                            Button::new("reference-details")
-                                .small()
-                                .label("Save details")
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(reference.name.clone()),
+                        )
+                        .when(self.page != Page::Image, |p| {
+                            p.child(
+                                tool_button("open-selected-image", "open", "Open selected image")
+                                    .on_click(cx.listener({
+                                        let reference = reference.clone();
+                                        move |this, _, _, cx| this.open_image(reference.clone(), cx)
+                                    })),
+                            )
+                            .child(
+                                tool_button("use-reference", "brush", "Draw this reference")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.page = Page::Draw;
+                                        this.dock = true;
+                                        window.focus(&this.focus, cx);
+                                        cx.notify();
+                                    })),
+                            )
+                        })
+                        .child(
+                            tool_button("image-details", "info", "Image details")
+                                .atelier_selected(self.image_details_open, cx)
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.edit_reference(cx);
+                                    this.image_details_open = !this.image_details_open;
                                     cx.notify();
                                 })),
-                        )
-                        .child(
+                        ),
+                )
+                .when(self.image_details_open, |p| {
+                    p.child(self.reference_details(cx))
+                });
+        }
+        content
+    }
+    fn reference_details(&self, cx: &mut Context<Self>) -> Div {
+        let mut details = column()
+            .child(field("Name", &self.ref_name))
+            .child(field("Tags", &self.ref_tags))
+            .child(
+                row()
+                    .child(
+                        tool_button("reference-details", "save", "Save image details").on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.edit_reference(cx);
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .when(self.page != Page::Image, |p| {
+                        p.child(
                             tool_button("remove-reference", "trash", "Remove reference · undoable")
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.remove_reference(window, cx);
                                     cx.notify();
                                 })),
-                        ),
-                )
-                .child(label(
-                    self.doc.references[i]
-                        .provenance
-                        .lines()
-                        .next()
-                        .unwrap_or("Imported")
-                        .to_owned(),
-                ));
+                        )
+                    }),
+            );
+        if let Some(reference) = self.edit_source() {
+            details = details.child(label(reference.provenance.clone()));
         }
-        content
+        details
     }
     fn overlay(&self, title: &'static str, content: Div, cx: &mut Context<Self>) -> AnyElement {
         let settings = title == "Settings";
@@ -2046,7 +2027,16 @@ impl DrawingApp {
     fn provider_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let provider = self.settings.provider;
         let mut content = column().child(self.provider_choices(true));
-        if provider != Provider::Comfy {
+        if provider.native_architecture().is_some() {
+            content = content
+                .child(field("Local providers file", &self.native_config))
+                .child(label("Choose a Clipforge providers TOML file with your model paths and CUDA sd-server executable."))
+                .child(label(if provider.supports_edit() {
+                    "Generation and editing · one source image"
+                } else {
+                    "Generation only"
+                }));
+        } else if provider != Provider::Comfy {
             content = content
                 .child(label("Model presets"))
                 .child(column().children(provider.presets().into_iter().map(
@@ -2075,12 +2065,7 @@ impl DrawingApp {
                     .child(label("Use your workspace's regional URL ending in /compatible-mode/v1. The key and models must belong to that region."));
             }
             content = content.child(label(format!("Credential: {}", provider.key_env())));
-            #[cfg(target_os = "macos")]
-            {
-                content = content
-                    .child(field("API key", &self.key))
-                    .child(label("Save settings stores your API key in Keychain."));
-            }
+            content = content.child(field("API key", &self.key));
             content = content.child(label(
                 "Environment credentials take precedence over saved keys.",
             ));

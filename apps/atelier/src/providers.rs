@@ -7,7 +7,7 @@ use std::{
     io::Read,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex, OnceLock,
+        Arc,
     },
     time::{Duration, Instant},
 };
@@ -19,9 +19,13 @@ pub enum Provider {
     Fal,
     Replicate,
     Alibaba,
+    QwenNative,
+    KreaNative,
 }
 impl Provider {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
+        Self::QwenNative,
+        Self::KreaNative,
         Self::Fal,
         Self::Replicate,
         Self::Alibaba,
@@ -29,7 +33,11 @@ impl Provider {
         Self::Comfy,
     ];
     pub fn name(self) -> &'static str {
-        self.hosted().map(|p| p.name()).unwrap_or("ComfyUI")
+        match self {
+            Self::QwenNative => "Qwen Image 2.1 · local",
+            Self::KreaNative => "Krea 2 Turbo · local",
+            _ => self.hosted().map(|p| p.name()).unwrap_or("ComfyUI"),
+        }
     }
     pub fn account(self) -> &'static str {
         match self {
@@ -38,13 +46,15 @@ impl Provider {
             Self::Fal => "fal",
             Self::Replicate => "replicate",
             Self::Alibaba => "alibaba",
+            Self::QwenNative => "qwen-native",
+            Self::KreaNative => "krea-native",
         }
     }
     pub fn key_env(self) -> &'static str {
         self.hosted().map(|p| p.key_env()).unwrap_or("")
     }
     pub fn supports_edit(self) -> bool {
-        self != Self::Comfy
+        !matches!(self, Self::Comfy | Self::KreaNative)
     }
     pub fn hosted(self) -> Option<clipforge_inference::images::HostedProvider> {
         use clipforge_inference::images::HostedProvider;
@@ -53,7 +63,7 @@ impl Provider {
             Self::Replicate => Some(HostedProvider::Replicate),
             Self::Alibaba => Some(HostedProvider::Alibaba),
             Self::GptImage => Some(HostedProvider::GptImage),
-            Self::Comfy => None,
+            Self::Comfy | Self::QwenNative | Self::KreaNative => None,
         }
     }
     pub fn defaults(self) -> ProviderProfile {
@@ -68,6 +78,13 @@ impl Provider {
             model: model.into(),
             edit_model: edit_model.into(),
             endpoint: endpoint.into(),
+        }
+    }
+    pub fn native_architecture(self) -> Option<&'static str> {
+        match self {
+            Self::QwenNative => Some("qwen-image-2.1"),
+            Self::KreaNative => Some("krea2-turbo"),
+            _ => None,
         }
     }
     pub fn presets(self) -> Vec<(&'static str, &'static str, &'static str)> {
@@ -95,6 +112,7 @@ pub struct Settings {
     pub latent_node: String,
     pub seed_node: String,
     pub reduced_motion: bool,
+    pub native_config: String,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -110,6 +128,7 @@ impl Default for Settings {
             latent_node: "5".into(),
             seed_node: "3".into(),
             reduced_motion: false,
+            native_config: String::new(),
         }
     }
 }
@@ -138,6 +157,8 @@ impl Settings {
     }
 }
 pub struct Request {
+    pub native: Arc<crate::native_images::NativeImages>,
+    pub keys_path: std::path::PathBuf,
     pub settings: Settings,
     pub prompt: String,
     pub size: (u32, u32),
@@ -180,88 +201,41 @@ pub(crate) fn response_json(response: Response) -> Result<Value> {
     }
     Ok(value)
 }
-#[cfg(target_os = "macos")]
-pub fn store_key(provider: Provider, key: &str) -> Result<()> {
-    ensure!(!key.trim().is_empty(), "Enter an API key");
-    security_framework::passwords::set_generic_password(
-        "Atelier",
-        provider.account(),
-        key.trim().as_bytes(),
-    )
-    .context("Could not save key in Keychain")?;
-    credential_cache().remember(provider, key.trim().to_owned());
-    Ok(())
+fn saved_keys(path: &std::path::Path) -> Result<std::collections::BTreeMap<String, String>> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).context("Could not read saved API keys"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+        Err(error) => Err(error).context("Could not read saved API keys"),
+    }
 }
-#[cfg(not(target_os = "macos"))]
-pub fn store_key(provider: Provider, _: &str) -> Result<()> {
+pub fn store_key(path: &std::path::Path, provider: Provider, key: &str) -> Result<()> {
+    ensure!(!key.trim().is_empty(), "Enter an API key");
+    let mut keys = saved_keys(path)?;
+    keys.insert(provider.account().into(), key.trim().into());
+    document::atomic_write(path, &serde_json::to_vec(&keys)?).context("Could not save API key")
+}
+pub(crate) fn resolve_key(
+    path: &std::path::Path,
+    provider: Provider,
+    environment: Option<String>,
+) -> Result<String> {
+    if let Some(key) = environment.filter(|key| !key.trim().is_empty()) {
+        return Ok(key.trim().to_owned());
+    }
+    if let Some(key) = saved_keys(path)?
+        .remove(provider.account())
+        .filter(|key| !key.trim().is_empty())
+    {
+        return Ok(key.trim().to_owned());
+    }
     bail!(
-        "Set {} in the environment on this platform",
+        "Add your {} key in Settings or set {}",
+        provider.name(),
         provider.key_env()
     )
 }
-// Retain successfully saved/unlocked credentials only for this process. Environment
-// keys still take precedence. Never cache failures or serialize this cache.
-#[derive(Default)]
-pub(crate) struct CredentialCache {
-    keys: Mutex<std::collections::BTreeMap<&'static str, String>>,
-}
-impl CredentialCache {
-    #[cfg(any(test, target_os = "macos"))]
-    pub(crate) fn remember(&self, provider: Provider, key: String) {
-        self.keys.lock().unwrap().insert(provider.account(), key);
-    }
-    pub(crate) fn resolve(
-        &self,
-        provider: Provider,
-        environment: Option<String>,
-        load: impl FnOnce() -> Result<Option<String>>,
-    ) -> Result<String> {
-        if let Some(key) = environment.filter(|key| !key.trim().is_empty()) {
-            return Ok(key.trim().to_owned());
-        }
-        if let Some(key) = self.keys.lock().unwrap().get(provider.account()).cloned() {
-            return Ok(key);
-        }
-        if let Some(key) = load()?.filter(|key| !key.trim().is_empty()) {
-            // A key saved while Keychain was unlocking wins over the older read.
-            return Ok(self
-                .keys
-                .lock()
-                .unwrap()
-                .entry(provider.account())
-                .or_insert_with(|| key.trim().to_owned())
-                .clone());
-        }
-        bail!(
-            "Add your {} key in Settings or set {}",
-            provider.name(),
-            provider.key_env()
-        )
-    }
-}
-fn credential_cache() -> &'static CredentialCache {
-    static CACHE: OnceLock<CredentialCache> = OnceLock::new();
-    CACHE.get_or_init(CredentialCache::default)
-}
-pub(crate) fn api_key(provider: Provider) -> Result<String> {
-    credential_cache().resolve(provider, std::env::var(provider.key_env()).ok(), || {
-        #[cfg(target_os = "macos")]
-        {
-            match security_framework::passwords::get_generic_password("Atelier", provider.account()) {
-                Ok(bytes) => String::from_utf8(bytes).map(Some).context("Invalid stored API key"),
-                Err(error) if error.code() == -25300 => Ok(None), // errSecItemNotFound
-                Err(error) => {
-                    let status = error.code();
-                    Err(error).with_context(|| format!(
-                        "macOS Keychain could not release your {} API key (status {status}). Re-enter the API key in Settings and click Save settings, then retry",
-                        provider.name()
-                    ))
-                }
-            }
-        }
-        #[cfg(not(target_os = "macos"))]
-        Ok(None)
-    })
+pub(crate) fn api_key(path: &std::path::Path, provider: Provider) -> Result<String> {
+    resolve_key(path, provider, std::env::var(provider.key_env()).ok())
 }
 pub fn generate(request: Request) -> Result<Reference> {
     ensure!(
@@ -270,7 +244,7 @@ pub fn generate(request: Request) -> Result<Reference> {
     );
     cancelled(&request.cancel)?;
     if request.settings.provider != Provider::Comfy {
-        return crate::hosted_images::generate(request);
+        return crate::image_execution::generate(request);
     }
     ensure!(
         request.references.is_empty() && request.mask.is_none(),

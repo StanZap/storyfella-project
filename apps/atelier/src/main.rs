@@ -8,8 +8,9 @@ mod editor_ui;
 mod gpu_canvas;
 #[cfg(target_os = "macos")]
 mod gpu_surface;
-mod hosted_images;
+mod image_execution;
 mod library;
+mod native_images;
 mod providers;
 mod stroke_curve;
 mod tablet;
@@ -21,7 +22,7 @@ mod worker;
 use app::DrawingApp;
 use gpui_kit::*;
 use std::path::PathBuf;
-gpui_kit::actions!(atelier, [Quit]);
+gpui_kit::actions!(atelier, [Quit, SaveProject, SaveProjectAs, OpenProject]);
 fn main() {
     let mut args = std::env::args().skip(1);
     let data_dir = match args.next().as_deref() {
@@ -50,8 +51,23 @@ fn main() {
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
-            cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
-            cx.set_menus([Menu::new("Atelier").items([MenuItem::action("Quit Atelier", Quit)])]);
+            cx.bind_keys([
+                KeyBinding::new("cmd-q", Quit, None),
+                KeyBinding::new("cmd-s", SaveProject, None),
+                KeyBinding::new("cmd-shift-s", SaveProjectAs, None),
+                KeyBinding::new("cmd-o", OpenProject, None),
+                KeyBinding::new("ctrl-s", SaveProject, None),
+                KeyBinding::new("ctrl-shift-s", SaveProjectAs, None),
+                KeyBinding::new("ctrl-o", OpenProject, None),
+            ]);
+            cx.set_menus([
+                Menu::new("Atelier").items([MenuItem::action("Quit Atelier", Quit)]),
+                Menu::new("File").items([
+                    MenuItem::action("Open project…", OpenProject),
+                    MenuItem::action("Save project", SaveProject),
+                    MenuItem::action("Save project as…", SaveProjectAs),
+                ]),
+            ]);
             gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Light, None, cx);
             gpui_kit::component::Theme::update(cx, |theme| {
                 theme.colors.primary = rgb(0x790e26).into();

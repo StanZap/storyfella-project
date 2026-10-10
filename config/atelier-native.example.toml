@@ -1,0 +1,22 @@
+# Copy outside the repository and replace /home/you with your installed paths.
+[defaults]
+t2i = "qwen"
+edit = "qwen"
+
+[providers.qwen]
+kind = "sdcpp"
+architecture = "qwen-image-2.1"
+capabilities = ["t2i", "edit"]
+base_url = "http://127.0.0.1:7861"
+model_dir = "/home/you/.local/share/Atelier/models"
+executable = "/home/you/.local/share/Atelier/models/runtime/stable-diffusion.cpp/bin/sd-server"
+residency = "lowvram"
+
+[providers.krea]
+kind = "sdcpp"
+architecture = "krea2-turbo"
+capabilities = ["t2i"]
+base_url = "http://127.0.0.1:7862"
+model_dir = "/home/you/.local/share/Atelier/models"
+executable = "/home/you/.local/share/Atelier/models/runtime/stable-diffusion.cpp/bin/sd-server"
+residency = "lowvram"

@@ -19,13 +19,15 @@ open dist/atelier/Atelier.app
 ```
 
 The bundle is written to `dist/atelier/Atelier.app`. It is a local development build,
-not a signed or notarized distribution. App data defaults to
+not an Apple-signed or notarized distribution. App data defaults to
 `~/Library/Application Support/Atelier` on macOS, or `~/.local/share/Atelier`
 on other desktop platforms. For isolated development sessions:
 
 ```sh
 cargo xtask atelier -- --data-dir .svs-e2e/atelier-dev
 ```
+
+The macOS development bundle uses ad hoc signing and needs no certificate setup.
 
 ## Available
 
@@ -58,15 +60,13 @@ Canvas limits are 64–8192 px per edge and 32 megapixels.
 
 Choose a provider in the Library's **Create & edit** panel, then open its Settings.
 Each provider remembers independent generation/editing models and its address.
-Choose a model preset or enter its model IDs. On macOS, enter that provider's API
-key and click **Save settings** to store it in Keychain and save the other fields.
-The panel closes after a successful save; errors leave your entries available to retry.
-Environment credentials take precedence and are the
-credential method on Linux/Windows. Keys are never written into projects or settings JSON.
-Saved or successfully unlocked keys are reused in memory for the current session.
-A local development build may need Keychain authorization again after a rebuild.
-Set `ATELIER_CODESIGN_IDENTITY` to an installed Apple development signing identity
-when packaging to keep the application's identity stable across builds.
+Choose a model preset or enter its model IDs. Enter the provider's API key and
+click **Save settings** on any supported desktop platform. Keys are saved as
+plaintext in `api-keys.json` inside Atelier's user app data directory, separate
+from settings and projects. Files created by Atelier have owner-only permissions
+on Unix. Environment credentials take precedence. A blank key preserves the
+saved value. The panel closes after a successful save; errors retain your input.
+Previously saved Keychain keys must be entered once into the new storage.
 
 | Provider | Credential | Default generation / editing models |
 | --- | --- | --- |
@@ -154,8 +154,10 @@ Control is also accepted for canvas save/undo/open shortcuts.
 
 `document.rs` owns projects, shared stroke snapshots, bounded history, validation, atomic writes and CPU raster utilities. `viewport.rs` provides inverse transforms. `worker.rs` separates storage,
 raster work, session previews and generation from UI interaction. `providers.rs`
-implements ComfyUI, provider profiles and macOS Keychain access; `hosted_images.rs`
-implements hosted generation/editing. `ui.rs` holds shared visual
+implements ComfyUI, provider profiles and app-data API-key storage; `image_execution.rs`
+adapts shared image generation/editing, and `native_images.rs` retains the managed
+Qwen/Krea client across iterations. See [Linux CUDA setup](../../docs/atelier.md#local-qwen-and-krea-on-linux-with-cuda).
+`ui.rs` holds shared visual
 primitives and the drawing/library/settings views; `app.rs` coordinates state.
 
 Run `cargo test -p storyfella-atelier`. Tests cover transform round trips, layer

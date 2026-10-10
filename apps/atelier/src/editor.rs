@@ -7,6 +7,28 @@ use crate::{
 use gpui_kit::*;
 use std::sync::Arc;
 impl DrawingApp {
+    pub fn restore_saved_source(&mut self, cx: &mut Context<Self>) {
+        self.restore_draft_source = false;
+        if !self.editing_image {
+            return;
+        }
+        let target = self.doc.active_prompt_target.as_deref().unwrap_or("new");
+        let source = self
+            .library
+            .iter()
+            .map(|(r, _)| r)
+            .chain(self.doc.references.iter())
+            .find(|r| crate::library::id(r) == target)
+            .cloned();
+        if let Some(source) = source {
+            self.open_image(source, cx);
+        } else {
+            self.message(
+                "The saved edit draft's source is missing from the library",
+                true,
+            );
+        }
+    }
     pub fn edit_source(&self) -> Option<Arc<document::Reference>> {
         if self.page == Page::Image {
             if self.opening_image.is_some() {
@@ -285,6 +307,7 @@ impl DrawingApp {
     pub fn edit_opened_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.edit_source().is_some() {
             self.editing_image = true;
+            self.restore_prompt(window, cx);
             self.prompt.update(cx, |s, cx| s.focus(window, cx));
         }
     }
