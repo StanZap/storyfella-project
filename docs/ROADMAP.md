@@ -741,6 +741,10 @@ remain **planned**; see [Atelier](atelier.md) for limits and verification.
     forms using shared typed operations, contextual palette actions, a separate
     command dock and quieter inspector/project surfaces. It fixes command
     clearing and repeated artwork pickers found during live macOS acceptance.
+    The dock is now a compact searchable action entry: contextual forms and
+    artwork opening via arrows/Enter, explicit assistant requests, and opt-in
+    slash argument completion. Native selects match textboxes; field focus
+    uses an inset treatment. Rapid Enter dispatch reads current input.
     §9 records changes, regression evidence and remaining cross-platform,
     assistive-technology and failure-injection coverage. — **✅ remediation implemented; broader manual acceptance tracked in DESIGN.md**
 

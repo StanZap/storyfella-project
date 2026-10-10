@@ -41,6 +41,10 @@ pub enum StudioAction {
 
 #[derive(Clone, Copy)]
 pub struct ActionRequest(pub Signal<Option<StudioAction>>);
+
+/// Shared dispatch for the palette and inline action entry.
+#[derive(Clone, Copy)]
+pub struct ActionDispatcher(pub EventHandler<super::palette::Action>);
 impl ActionRequest {
     pub fn send(mut self, action: StudioAction) {
         self.0.set(Some(action));

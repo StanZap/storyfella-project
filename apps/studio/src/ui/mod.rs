@@ -494,6 +494,30 @@ pub fn Workspace(
         }
     };
 
+    let dispatch = actions::ActionDispatcher(EventHandler::new(move |action| match action {
+        palette::Action::Navigate(destination) => screen.set(destination),
+        palette::Action::Task(action) => {
+            screen.set(AppScreen::Canvas);
+            action_request.send(action);
+        }
+        palette::Action::Save => save_current_project(app_state, error_report),
+        palette::Action::Undo => {
+            app_state.write().undo();
+        }
+        palette::Action::Redo => {
+            app_state.write().redo();
+        }
+        palette::Action::Compose(command) => {
+            screen.set(AppScreen::Canvas);
+            cmdbar::prefill(composer, command);
+        }
+        palette::Action::Open(id) => {
+            screen.set(AppScreen::Canvas);
+            app_state.write().select_artifact(id);
+        }
+    }));
+    use_context_provider(|| dispatch);
+
     rsx! {
         main { class: "studio-shell grid h-screen grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden bg-[#0b0b0e] font-sans text-zinc-100 selection:bg-violet-500/30",
             header { class: "studio-header",
@@ -551,17 +575,7 @@ pub fn Workspace(
         ErrorDetailsHost {}
         close::CloseGuard { config: config.clone(), app_state, composer }
         if palette_open() {
-            palette::Palette { app_state, open: palette_open, onpick: move |action| {
-                match action {
-                    palette::Action::Navigate(destination) => screen.set(destination),
-                    palette::Action::Task(action) => { screen.set(AppScreen::Canvas); action_request.send(action); }
-                    palette::Action::Save => save_current_project(app_state, error_report),
-                    palette::Action::Undo => { app_state.write().undo(); }
-                    palette::Action::Redo => { app_state.write().redo(); }
-                    palette::Action::Compose(command) => { screen.set(AppScreen::Canvas); cmdbar::prefill(composer, command); }
-                    palette::Action::Open(id) => { screen.set(AppScreen::Canvas); app_state.write().select_artifact(id); }
-                }
-            } }
+            palette::Palette { app_state, open: palette_open, onpick: dispatch.0 }
         }
         {guide_overlay(session)}
     }

@@ -58,6 +58,10 @@ const fn primary(mac: &'static str, other: &'static str) -> &'static str {
     }
 }
 
+pub const fn request_keys() -> &'static str {
+    primary("⌘↵", "Ctrl+Enter")
+}
+
 pub const SHORTCUTS: &[Shortcut] = &[
     // ------------------------------------------------------------- global
     Shortcut {

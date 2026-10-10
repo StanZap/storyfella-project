@@ -352,6 +352,7 @@ pub fn Canvas(
             }
             Composer {
                 value: composer,
+                app_state,
                 activity,
                 disabled,
                 target_hint,
@@ -1197,6 +1198,7 @@ fn ActionButton(
 #[component]
 fn Composer(
     value: Signal<String>,
+    app_state: Signal<AppState>,
     activity: Signal<OpActivity>,
     disabled: bool,
     target_hint: Option<String>,
@@ -1208,61 +1210,32 @@ fn Composer(
     on_restore: EventHandler<usize>,
     error: Option<ReportedError>,
 ) -> Element {
-    let empty = value.read().trim().is_empty();
-    let busy = activity.read().is_busy();
     let summary = match &*activity.read() {
         OpActivity::Running { summary } => Some(summary.clone()),
         _ => None,
     };
     rsx! {
         footer { class: "studio-composer",
-            div { class: "mx-auto w-full max-w-3xl",
-                div { class: "mb-2 flex items-center gap-2",
-                    label { r#for: cmdbar::BAR_ID, class: "text-xs font-medium text-zinc-300", "Command or request" }
-                if !requests.read().is_empty() {
-                    select { aria_label: "Restore a submitted request", disabled, class: "ml-auto max-w-[50%] rounded bg-zinc-900 px-2 py-1 text-xs text-zinc-300",
-                        value: "", oninput: move |event| { if let Ok(index) = event.value().parse::<usize>() { on_restore.call(index); } },
-                        option { value: "", "Recent requests" }
-                        for (index, (request, _)) in requests.read().iter().enumerate() { option { value: "{index}", "{request}" } }
-                    }
-                }
-                }
-                // One opaque box: the target chip rides inside it at the top,
-                // above the field rather than beside it, so the field still
-                // owns its full width when the text wraps.
-                div { class: "flex flex-col gap-1 rounded-lg bg-zinc-900 p-2 shadow-[0_18px_60px_rgba(0,0,0,.55)] ring-1 ring-inset ring-white/[0.09] focus-within:ring-violet-400/35",
-                    if target_hint.is_some() || summary.is_some() {
-                        div { class: "flex items-center gap-2 pl-1.5",
-                            if let Some(target) = target_hint {
-                                span { class: "rounded bg-violet-400/10 px-1.5 py-0.5 font-mono text-[9px] text-violet-300 ring-1 ring-inset ring-violet-400/20",
-                                    title: "Free-form changes apply to this artifact unless you name another",
-                                    "→ {target}"
-                                }
-                            }
-                            if let Some(summary) = summary {
-                                span { class: "flex items-center gap-1.5 text-[10px] text-zinc-400",
-                                    span { class: "size-2.5 animate-spin rounded-full border border-zinc-700 border-t-violet-300" }
-                                    span { class: "max-w-56 truncate font-mono", "{summary}" }
-                                }
-                            }
+            div { class: "mx-auto w-full max-w-4xl",
+                div { class: "studio-command-surface",
+                    Icon { name: IconName::Search, class: "size-4 shrink-0 text-zinc-400" }
+                    CommandBar { value, app_state, refs: ref_candidates, disabled, onsubmit }
+                    if !requests.read().is_empty() {
+                        select { aria_label: "Restore a submitted request", title: "Recent requests", disabled, class: "max-w-[120px] shrink-0",
+                            value: "", onchange: move |event| { if let Ok(index) = event.value().parse::<usize>() { on_restore.call(index); } },
+                            option { value: "", "Recent" }
+                            for (index, (request, _)) in requests.read().iter().enumerate() { option { value: "{index}", "{request}" } }
                         }
                     }
-                    div { class: "flex items-end gap-2 pl-1.5",
-                        CommandBar {
-                            value,
-                            refs: ref_candidates,
-                            disabled,
-                            onsubmit: move |_| onsubmit.call(()),
-                        }
-                        button {
-                            class: "flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-zinc-100 px-3 text-[11px] font-semibold text-zinc-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-35",
-                            disabled: disabled || busy || empty,
-                            onclick: move |_| onsubmit.call(()),
-                            Icon { name: IconName::Arrow, class: "size-3" }
-                            if is_slash_command(&value()) { "Run command" } else { "Review request" }
-                        }
+                    if let Some(target) = target_hint {
+                        span { class: "max-w-[140px] truncate border-l border-white/10 pl-2 text-xs text-zinc-400",
+                            title: "Change requests target {target}", {target.trim_start_matches("c:")} }
                     }
                 }
+                if let Some(summary) = summary { p { role: "status", class: "mt-2 flex items-center gap-2 text-xs text-zinc-400",
+                    span { class: "size-2.5 animate-spin rounded-full border border-zinc-700 border-t-violet-300" }
+                    "{summary}"
+                } }
                 if let Some(report) = error {
                     div { role: "alert", class: "studio-inline-error mt-2 flex items-center gap-2",
                         span { class: "min-w-0 flex-1", "{report.code.message()}" }

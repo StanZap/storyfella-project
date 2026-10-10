@@ -73,6 +73,25 @@ button { min-width: 24px; min-height: 24px; }
 }
 .studio-dialog::backdrop { background: rgb(0 0 0 / .65); }
 .studio-dialog :focus-visible { outline: 2px solid #c4b5fd; outline-offset: 2px; }
+/* Fields indicate focus within their surface, without an outer outline. */
+:is(.studio-shell, .studio-dialog) :is(input, textarea, select):focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 1px rgb(167 139 250 / .45);
+}
+:is(.studio-shell, .studio-dialog) select {
+    appearance: none; height: 36px; border: 0; border-radius: 10px;
+    padding: 0 32px 0 12px; font-size: .8125rem; color: #d4d4d8;
+    background-color: rgb(255 255 255 / .04);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23a1a1aa' stroke-width='1.5'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center;
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / .055);
+}
+:is(.studio-shell, .studio-dialog) .studio-search-field {
+    height: 36px; padding: 6px 0; background: transparent; border: 0;
+}
+:is(.studio-shell, .studio-dialog) .studio-search-field:focus-visible,
+.studio-shell .studio-command-input:focus-visible { box-shadow: none; }
+.studio-palette-search:focus-within { background: rgb(167 139 250 / .04); }
 .studio-header {
     min-height: 56px; display: flex; flex-shrink: 0; align-items: center; gap: 16px;
     padding: 8px 16px; border-bottom: 1px solid rgb(255 255 255 / .07);
@@ -106,11 +125,15 @@ button { min-width: 24px; min-height: 24px; }
 .studio-button:hover:not(:disabled), .studio-icon-button:hover:not(:disabled),
 .studio-nav-item:hover, .studio-project-switcher:hover { background: rgb(167 139 250 / .2); }
 .studio-button-primary:hover:not(:disabled) { background: #6d28d9; }
-.studio-task-form { display: flex; flex-direction: column; gap: 20px; width: min(540px, 100%); padding: 24px; }
+.studio-task-form { display: flex; flex-direction: column; gap: 20px; width: min(540px, calc(100vw - 32px)); padding: 24px; }
 .studio-field { display: flex; flex-direction: column; gap: 8px; font-size: .8125rem; color: #d4d4d8; }
 .studio-textarea { width: 100%; resize: vertical; border-radius: 10px; padding: 12px; font-size: .875rem; line-height: 1.6; background: rgb(255 255 255 / .04); }
 .studio-inline-error { padding: 10px 12px; border-radius: 8px; color: #fda4af; background: rgb(244 63 94 / .08); font-size: .8125rem; }
-.studio-composer { flex-shrink: 0; padding: 12px 20px 16px; border-top: 1px solid rgb(255 255 255 / .07); background: #0b0b0e; }
+.studio-composer { flex-shrink: 0; padding: 8px 16px; border-top: 1px solid rgb(255 255 255 / .07); background: #0b0b0e; }
+.studio-command-surface { display: flex; align-items: center; gap: 8px; padding: 4px 6px 4px 12px; border-radius: 10px; background: #18181b; box-shadow: inset 0 0 0 1px rgb(255 255 255 / .08); }
+.studio-command-surface:focus-within { box-shadow: inset 0 0 0 1px rgb(167 139 250 / .4); }
+.studio-command-input { min-height: 24px; padding: 2px 0; }
+.studio-command-input::placeholder { color: #a1a1aa; }
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }

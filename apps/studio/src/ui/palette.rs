@@ -7,9 +7,8 @@
 //! browsable list for the operations, which is the half of the discovery
 //! problem a placeholder never solved.
 //!
-//! Picking an operation does not run it. Operations need arguments, so the
-//! palette prefills the composer and hands the caret over; only navigation
-//! acts immediately.
+//! Common operations open focused forms; advanced operations prefill the
+//! composer. Navigation and history actions act immediately.
 
 use dioxus::prelude::*;
 use uuid::Uuid;
@@ -46,6 +45,23 @@ pub struct Entry {
     /// `true` for operations, `false` for artifacts — drives the badge.
     pub is_op: bool,
     pub enabled: bool,
+}
+impl Entry {
+    pub fn icon(&self) -> super::icons::IconName {
+        use super::icons::IconName;
+        match self.action {
+            Action::Navigate(destination) => destination.icon(),
+            Action::Task(StudioAction::ImportArtwork) => IconName::Upload,
+            Action::Task(StudioAction::Art(ArtAction::Modify(_))) => IconName::Edit,
+            Action::Task(StudioAction::Art(ArtAction::Regenerate(_))) => IconName::Refresh,
+            Action::Task(StudioAction::Art(ArtAction::AttachAdapter(_))) => IconName::Sliders,
+            Action::Task(_) => IconName::Add,
+            Action::Save => IconName::Save,
+            Action::Undo => IconName::Undo,
+            Action::Redo => IconName::Redo,
+            _ => IconName::Layers,
+        }
+    }
 }
 
 /// Builds the palette's entries for `query`.
@@ -151,21 +167,23 @@ pub fn entries(state: &AppState, query: &str) -> Vec<Entry> {
             hint: op.summary.to_owned(),
             // The trailing space puts the caret where the first argument
             // goes, so the bar's completion opens immediately.
-            action: Action::Compose(if op.params.first() == Some(&"c:<ref>") {
-                state
-                    .selected_artifact()
-                    .map(|a| {
-                        format!(
-                            "{} {} ",
-                            op.name,
-                            storyfella_studio_core::registry::slash::quote_argument(
-                                &state.registry.ref_of(a.id)
+            action: form_action(state, op.name).unwrap_or_else(|| {
+                Action::Compose(if op.params.first() == Some(&"c:<ref>") {
+                    state
+                        .selected_artifact()
+                        .map(|a| {
+                            format!(
+                                "{} {} ",
+                                op.name,
+                                storyfella_studio_core::registry::slash::quote_argument(
+                                    &state.registry.ref_of(a.id)
+                                )
                             )
-                        )
-                    })
-                    .unwrap_or_else(|| format!("{} ", op.name))
-            } else {
-                format!("{} ", op.name)
+                        })
+                        .unwrap_or_else(|| format!("{} ", op.name))
+                } else {
+                    format!("{} ", op.name)
+                })
             }),
             is_op: true,
             enabled: available,
@@ -189,6 +207,75 @@ pub fn entries(state: &AppState, query: &str) -> Vec<Entry> {
 
     entries.retain(|entry| matches_query(query, &[entry.label.as_str(), entry.hint.as_str()]));
     entries
+}
+
+fn form_action(state: &AppState, command: &str) -> Option<Action> {
+    let target = state.selected_artifact().filter(|a| a.kind.is_visual());
+    let action = match command {
+        "/create" => ArtAction::Create(storyfella_studio_core::registry::ArtifactKind::Character),
+        "/variant" => {
+            let a = target?;
+            ArtAction::Variant(a.variant_of.unwrap_or(a.id))
+        }
+        "/regenerate" => ArtAction::Regenerate(target?.id),
+        "/modify" => {
+            let a = target?;
+            state.display_image(a)?;
+            ArtAction::Modify(a.id)
+        }
+        "/attach-lora" => ArtAction::AttachAdapter(target?.id),
+        _ => return None,
+    };
+    Some(Action::Task(StudioAction::Art(action)))
+}
+
+/// Discoverable actions for the inline entry; raw syntax is opt-in.
+pub fn quick_entries(state: &AppState, query: &str) -> Vec<Entry> {
+    let query = query.trim().trim_start_matches('/');
+    let mut found = entries(state, "");
+    found.retain(|e| {
+        if !e.enabled || e.is_op || matches!(e.action, Action::Task(StudioAction::FocusCommand)) {
+            return false;
+        }
+        let alias = match e.action {
+            Action::Task(StudioAction::Art(ArtAction::Create(_))) => {
+                "new create character object environment story scene beat"
+            }
+            Action::Task(StudioAction::Art(ArtAction::Variant(_))) => "variant",
+            Action::Task(StudioAction::Art(ArtAction::Modify(_))) => "edit modify",
+            Action::Task(StudioAction::Art(ArtAction::Regenerate(_))) => "regenerate render",
+            Action::Task(StudioAction::Art(ArtAction::AttachAdapter(_))) => "attach-lora adapter",
+            _ => "",
+        };
+        query
+            .split_whitespace()
+            .all(|word| matches_query(word, &[&e.label, alias]))
+    });
+    if let Some(kind) = storyfella_studio_core::registry::ArtifactKind::ALL
+        .into_iter()
+        .find(|kind| {
+            query
+                .split_whitespace()
+                .any(|word| word.eq_ignore_ascii_case(kind.as_str()))
+        })
+    {
+        for entry in &mut found {
+            if matches!(
+                entry.action,
+                Action::Task(StudioAction::Art(ArtAction::Create(_)))
+            ) {
+                entry.label = format!("New {kind}");
+                entry.action = Action::Task(StudioAction::Art(ArtAction::Create(kind)));
+            }
+        }
+    }
+    found.sort_by_key(|e| match e.action {
+        Action::Task(_) => 0,
+        Action::Open(_) => 1,
+        Action::Save | Action::Undo | Action::Redo => 2,
+        _ => 3,
+    });
+    found
 }
 
 #[component]
@@ -229,7 +316,7 @@ pub fn Palette(
                 // Keep palette interactions inside the shared native dialog.
                 onclick: move |event| event.stop_propagation(),
 
-                div { class: "flex items-center gap-2.5 border-b border-white/[0.06] px-4 py-3",
+                div { class: "studio-palette-search flex items-center gap-2.5 border-b border-white/[0.06] px-4 py-2",
                     span { class: "font-mono text-[13px] text-violet-300", ">" }
                     input {
                         aria_label: "Search commands, screens and artifacts",
@@ -238,7 +325,7 @@ pub fn Palette(
                         aria_controls: "palette-results",
                         aria_autocomplete: "list",
                         aria_activedescendant: if count > 0 { active_id } else { String::new() },
-                        class: "flex-1 bg-transparent font-mono text-[13px] text-zinc-100 outline-none placeholder:text-zinc-700",
+                        class: "studio-search-field min-w-0 flex-1 text-sm text-zinc-100",
                         placeholder: "Search actions, screens, or artifacts…",
                         autofocus: true,
                         autocomplete: "off",
@@ -317,16 +404,7 @@ fn PaletteRow(id: String, entry: Entry, active: bool, onpick: EventHandler<Actio
             span {
                 class: if entry.is_op { "flex size-[18px] shrink-0 items-center justify-center rounded-[5px] bg-violet-400/15 text-[9px] font-bold text-violet-300" } else { "flex size-[18px] shrink-0 items-center justify-center rounded-[5px] bg-teal-400/15 text-[9px] font-bold text-teal-300" },
                 if entry.is_op { "/" } else {
-                    super::icons::Icon { name: match entry.action {
-                        Action::Navigate(destination) => destination.icon(),
-                        Action::Task(StudioAction::ImportArtwork) => super::icons::IconName::Upload,
-                        Action::Task(StudioAction::Art(ArtAction::Modify(_))) => super::icons::IconName::Edit,
-                        Action::Task(_) => super::icons::IconName::Add,
-                        Action::Save => super::icons::IconName::Save,
-                        Action::Undo => super::icons::IconName::Undo,
-                        Action::Redo => super::icons::IconName::Redo,
-                        _ => super::icons::IconName::Layers,
-                    }, class: "size-4" }
+                    super::icons::Icon { name: entry.icon(), class: "size-4" }
                 }
             }
             span { class: "font-mono text-[12px] text-zinc-100", "{entry.label}" }
@@ -368,6 +446,39 @@ mod tests {
             entries.iter().filter(|entry| entry.is_op).count(),
             OPS.len()
         );
+    }
+
+    #[test]
+    fn quick_actions_open_forms_and_resolve_targets_without_arguments() {
+        let mut state = state_with(&[("Captain Mara", ArtifactKind::Character)]);
+        state.project_path = Some("quick-actions.svs-project.db".into());
+        let id = state.registry.artifacts[0].id;
+        state.select_artifact(id);
+        assert_eq!(
+            quick_entries(&state, "new environment")[0].action,
+            Action::Task(StudioAction::Art(ArtAction::Create(
+                ArtifactKind::Environment
+            )))
+        );
+        assert_eq!(
+            quick_entries(&state, "/variant")[0].action,
+            Action::Task(StudioAction::Art(ArtAction::Variant(id)))
+        );
+        assert_eq!(
+            quick_entries(&state, "captain mara")[0].action,
+            Action::Open(id)
+        );
+        assert!(
+            quick_entries(&state, "edit").is_empty(),
+            "Editing needs a completed image"
+        );
+        assert_eq!(
+            entries(&state, "/create")[0].action,
+            Action::Task(StudioAction::Art(ArtAction::Create(
+                ArtifactKind::Character
+            )))
+        );
+        assert!(quick_entries(&state, "Give her a blue coat and retain her pose").is_empty());
     }
 
     #[test]

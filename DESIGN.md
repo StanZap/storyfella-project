@@ -795,10 +795,10 @@ occupy separate layout regions so they do not cover the image.
 New artifact, variant, edit, regenerate and attach-adapter actions open focused
 forms, validate locally and compile through the shared typed operation layer.
 The palette offers these actions, workspace navigation, save/undo/redo, artifacts
-and every slash operation. Argument-requiring commands prefill the composer;
-they never submit incomplete operations. Visual target actions use artifact
-identity, and contextual slash prefixes/completion safely quote spaced names
-and smart punctuation. `/` reaches the composer from other screens outside
+and every slash operation. Common operations open forms; advanced operations
+prefill the composer and never submit incomplete operations. Visual target
+actions use artifact identity, and contextual slash prefixes/completion safely
+quote spaced names and smart punctuation. `/` reaches the composer from other screens outside
 text entry. Failed commands retain input with local feedback and direct Details.
 
 Live testing found and fixed two event bugs: delayed caret events restored
@@ -827,3 +827,37 @@ isolated build reopened saved artwork and retained generation settings; ordinary
 typing of a quoted-name command updated the description, cleared its native
 field and disabled submission. Palette navigation and global command entry
 also passed on that build. Logs are under `.svs-e2e/logs/studio-ux-*`.
+
+### Compact action entry and fields · 2026-10-10
+
+The bottom entry now occupies one compact row with a search icon and a named
+arrow control. It searches the same action catalog as the palette. Typing
+`new story`, `edit`, `variant` or an artifact name offers actions; Up/Down selects
+and Enter opens the action or artifact. Common actions use focused forms with
+the selected artwork already bound. No arguments need to be remembered. Tab
+traverses normally in action mode; Escape dismisses suggestions and preserves
+the query. Plain-language requests have an explicit Ask assistant choice and
+Cmd+Enter (Ctrl+Enter off macOS). A slash operation followed by whitespace
+enters the existing argument editor, where Tab completes valid tokens. Recent
+requests still restore their text and original target.
+
+Field focus uses a thin inset treatment rather than an external rectangle;
+the palette indicates focus on its search surface. Native selects have the
+same 36px height, padding, surface and rounding as single-line textboxes, with
+a consistent chevron. Buttons retain visible keyboard focus. Task forms have
+a viewport-bounded 540px width instead of shrinking to intrinsic text width.
+
+Isolated macOS acceptance verified compact resting/active entry, arrow-key
+artifact selection, Enter to open, new Story creation without slash syntax,
+kind inference for Scene, contextual edit/variant forms, Tab to the arrow
+control, Escape/focus return, Cmd+K search without the outer outline, palette
+`/create` opening a form, quoted-name command execution/clearing, and request
+failure preserving text when the test LLM endpoint was unavailable. Live
+testing caught stale action dispatch when typing and pressing Enter rapidly;
+activation now reads current signals, and the rebuilt app passed that exact
+rapid-Enter check. A regression also protects artifact-name matching from
+contextual action hints. Fresh inference and Linux/Windows native styling
+remain outside this acceptance pass. Logs use `.svs-e2e/logs/studio-quick-*`.
+
+Verification passed: workspace all-target check and tests, strict Studio
+Clippy, formatting, stylesheet generation and the runnable Dioxus build.

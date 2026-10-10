@@ -1,15 +1,14 @@
-//! The tokenized command bar: the composer as an editing surface.
+//! Searchable actions and requests, with an explicit slash argument editor.
 //!
-//! A transparent `<input>` sits exactly on top of a highlight layer that
+//! A transparent `<textarea>` sits exactly on top of a highlight layer that
 //! paints the same text with per-token colour. The caret comes from the
 //! input, the colour from the layer, and the two stay aligned because they
 //! share font metrics and because **chips take their padding from
 //! `box-shadow` spread rather than `padding`** — padding would change the
 //! text's advance width and drift the caret away from the glyphs.
 //!
-//! Everything it knows about the language comes from
-//! [`storyfella_studio_core::registry::completion`]; this module only decides how it looks
-//! and which key does what.
+//! Actions come from the shared palette catalog; argument completion comes
+//! from [`storyfella_studio_core::registry::completion`].
 //!
 //! ## Why there is JavaScript here
 //!
@@ -26,6 +25,12 @@
 //! `selectionStart` straight through would put the caret in the wrong token
 //! the moment autocorrect fires.
 
+use super::{
+    actions::ActionDispatcher,
+    icons::{Icon, IconName},
+    palette,
+};
+use crate::state::AppState;
 use dioxus::prelude::*;
 
 use storyfella_studio_core::registry::{
@@ -240,6 +245,7 @@ pub fn CommandBar(
     /// The line being edited. Owned by the parent so submit can read and
     /// clear it.
     value: Signal<String>,
+    app_state: Signal<AppState>,
     /// Artifacts offered as `c:` targets, and the set that resolves.
     refs: Vec<RefCandidate>,
     disabled: bool,
@@ -253,6 +259,7 @@ pub fn CommandBar(
     // otherwise pop the whole vocabulary open over an untouched screen.
     // Suggestions belong to a focused bar only.
     let mut focused = use_signal(|| false);
+    let dispatch = use_context::<ActionDispatcher>();
 
     // The caret bridge (see the module docs). Runs once after mount; the
     // script itself guards against double-binding.
@@ -274,16 +281,68 @@ pub fn CommandBar(
 
     let segments = paint(&text, &known);
     let completions = completion::complete(&text, position, &refs);
-    let help = completion::signature(&text, position);
-    let showing = *focused.read()
-        && !text.is_empty()
-        && !completions.is_empty()
-        && !*dismissed.read()
-        && !disabled;
-    let index = (*selected.read()).min(completions.items.len().saturating_sub(1));
+    let action_mode = !raw_command(&text);
+    let quick = palette::quick_entries(&app_state.read(), &text);
+    let help = (!action_mode)
+        .then(|| completion::signature(&text, position))
+        .flatten();
+    let count = if action_mode {
+        quick.len() + usize::from(!text.trim().is_empty() && !slash::is_slash_command(&text))
+    } else {
+        completions.items.len()
+    };
+    let showing = focused() && count > 0 && !dismissed() && !disabled;
+    let index = (*selected.read()).min(count.saturating_sub(1));
+    let scroll_id = showing.then(|| format!("command-option-{index}"));
+    use_effect(use_reactive(&scroll_id, move |id| {
+        if let Some(id) = id {
+            document::eval(&format!(
+                "document.getElementById('{id}')?.scrollIntoView({{block:'nearest'}})"
+            ));
+        }
+    }));
+    let choose = EventHandler::new(move |action: palette::Action| {
+        dismissed.set(true);
+        clear(value);
+        dispatch.0.call(action);
+    });
+    let activate = EventHandler::new(move |_| {
+        if disabled {
+            return;
+        }
+        // Input and Enter can arrive before the next render. Resolve from
+        // current signals so fast typing cannot run a stale request/action.
+        let current = value.peek().clone();
+        let action = if !raw_command(&current)
+            && !*dismissed.peek()
+            && (!current.trim().is_empty() || *focused.peek())
+        {
+            let entries = palette::quick_entries(&app_state.peek(), &current);
+            entries.get(*selected.peek()).map(|e| e.action.clone())
+        } else {
+            None
+        };
+        if let Some(action) = action {
+            choose.call(action);
+        } else {
+            onsubmit.call(());
+        }
+    });
+    let fallback_label = if slash::is_slash_command(&text) {
+        "Run command"
+    } else {
+        "Review request"
+    };
+    let submit_label = if action_mode && !dismissed() {
+        quick
+            .get(index)
+            .map(|e| e.label.as_str())
+            .unwrap_or(fallback_label)
+    } else {
+        fallback_label
+    };
 
     let replace = completions.replace;
-    let count = completions.items.len();
     // Cloned per render so each handler can own the label it inserts;
     // `splice` itself is a free function because signals are `Copy` and
     // closures are not.
@@ -322,11 +381,30 @@ pub fn CommandBar(
 
             // completion popup, opening upward
             if showing {
-                div { class: "absolute bottom-full left-0 z-40 mb-1.5 w-[330px] overflow-hidden rounded-[10px] bg-[#17171d] shadow-[0_-18px_50px_rgba(0,0,0,.6)] ring-1 ring-white/[0.09]",
-                    div { class: "px-3 pb-1 pt-2 text-[9.5px] uppercase tracking-[0.07em] text-zinc-600",
-                        "{completions.head}"
-                    }
-                    div { id: "command-completions", role: "listbox", aria_label: "Command completions", class: "max-h-[260px] overflow-y-auto pb-1",
+                div { class: "absolute bottom-full left-0 z-40 mb-3 w-full min-w-[280px] overflow-hidden rounded-xl bg-[#17171d] shadow-[0_-12px_40px_rgba(0,0,0,.35)] ring-1 ring-white/[0.09]",
+                    div { id: "command-completions", role: "listbox", aria_label: if action_mode { "Actions" } else { "Command completions" }, class: "max-h-[min(300px,45vh)] overflow-y-auto p-1",
+                    if action_mode {
+                        for (slot, entry) in quick.iter().enumerate() {
+                            div { key: "{slot}", id: "command-option-{slot}", role: "option", aria_selected: slot == index,
+                                class: if slot == index { "flex cursor-pointer items-center gap-3 rounded-lg bg-violet-400/15 px-3 py-2" } else { "flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 hover:bg-white/[0.04]" },
+                                onmousedown: { let action = entry.action.clone(); move |event| { event.prevent_default(); choose.call(action.clone()); } },
+                                Icon { name: entry.icon(), class: "size-4 shrink-0 text-zinc-400" }
+                                span { class: "text-sm text-zinc-100", "{entry.label}" }
+                                if matches!(entry.action, palette::Action::Task(super::actions::StudioAction::Art(action)) if !matches!(action, super::actions::ArtAction::Create(_))) {
+                                    span { class: "ml-auto truncate text-xs text-zinc-400", "{entry.hint}" }
+                                }
+                            }
+                        }
+                        if !text.trim().is_empty() && !slash::is_slash_command(&text) {
+                            div { id: "command-option-{quick.len()}", role: "option", aria_selected: index == quick.len(),
+                                class: if index == quick.len() { "flex cursor-pointer items-center gap-3 rounded-lg bg-violet-400/15 px-3 py-2" } else { "flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 hover:bg-white/[0.04]" },
+                                onmousedown: move |event| { event.prevent_default(); onsubmit.call(()); },
+                                Icon { name: IconName::Sparkles, class: "size-4 text-zinc-400" }
+                                span { class: "text-sm", "Ask assistant" }
+                                span { class: "ml-auto text-xs text-zinc-400", "{super::shortcuts::request_keys()}" }
+                            }
+                        }
+                    } else {
                         for (slot , item) in completions.items.iter().enumerate() {
                             CompletionRow {
                                 key: "{item.label}",
@@ -340,14 +418,14 @@ pub fn CommandBar(
                             }
                         }
                     }
+                    }
                     div { class: "border-t border-white/[0.06] px-3 py-1.5 text-[10px] text-zinc-600",
-                        "⇥ complete · ⏎ run · ⇧⏎ newline"
+                        if action_mode { "↑↓ choose · ↵ open · Esc dismiss" } else { "⇥ complete · ↵ run · ⇧↵ newline" }
                     }
                 }
             }
 
             div { class: "flex items-start gap-2",
-                span { class: "shrink-0 pt-px font-mono text-[13px] leading-5 text-violet-300", ">" }
 
                 // The field is in flow and drives the height; the painted
                 // layer is absolutely positioned over it. Both wrap at the
@@ -356,20 +434,23 @@ pub fn CommandBar(
                 // would have to scroll, and the layer would have to chase its
                 // scrollLeft on every keystroke.
                 div { class: "relative min-w-0 flex-1",
-                    div { aria_hidden: "true", class: "pointer-events-none absolute inset-0 z-10 whitespace-pre-wrap break-words font-mono text-[12.5px] leading-5",
+                    div { aria_hidden: "true", class: "studio-command-input pointer-events-none absolute inset-0 z-10 whitespace-pre-wrap break-words text-sm leading-5",
                         for (slot , segment) in segments.iter().enumerate() {
                             span { key: "{slot}", class: segment.class, "{segment.text}" }
                         }
                     }
                     textarea {
                         id: BAR_ID,
-                        aria_label: "Command or change request",
+                        role: "combobox",
+                        aria_label: "Search actions or request a change",
+                        aria_expanded: showing,
+                        aria_haspopup: "listbox",
                         aria_autocomplete: "list",
                         aria_controls: if showing { "command-completions" } else { "" },
                         aria_activedescendant: if showing { format!("command-option-{index}") } else { String::new() },
-                        class: "relative z-20 block max-h-40 w-full resize-none overflow-y-auto bg-transparent font-mono text-[12.5px] leading-5 text-transparent caret-violet-400 outline-none placeholder:text-zinc-700 disabled:opacity-40",
+                        class: "studio-command-input relative z-20 block max-h-24 w-full resize-none overflow-y-auto bg-transparent text-sm leading-5 text-transparent caret-violet-300 disabled:opacity-40",
                         rows: "1",
-                        placeholder: "type / for the operations, or describe a change in plain language",
+                        placeholder: "Search actions or describe a change…",
                         onmounted: mount_text,
                         disabled,
                         // WebKit rewrites `--` to an em dash and straight to
@@ -394,18 +475,19 @@ pub fn CommandBar(
                         onfocusout: move |_| focused.set(false),
                         onkeydown: move |event| {
                             match event.key() {
-                                Key::Tab if showing && !event.modifiers().contains(Modifiers::SHIFT) && labels.get(index).is_some() => {
+                                Key::Tab if !action_mode && showing && !event.modifiers().contains(Modifiers::SHIFT) && labels.get(index).is_some() => {
                                     event.prevent_default();
                                     if let Some(label) = labels.get(index) {
                                         splice(value, caret, selected, label, replace);
                                     }
                                 }
-                                // Enter always runs. An exact-match popup must
-                                // never swallow the submit — the hint says
-                                // "⏎ run", so Tab is the only way to accept.
-                                Key::Enter if !event.modifiers().contains(Modifiers::SHIFT) => {
+                                Key::Enter if event.modifiers().intersects(Modifiers::META | Modifiers::CONTROL) => {
                                     event.prevent_default();
                                     onsubmit.call(());
+                                }
+                                Key::Enter if !event.modifiers().contains(Modifiers::SHIFT) => {
+                                    event.prevent_default();
+                                    activate.call(());
                                 }
                                 Key::ArrowDown if showing => {
                                     event.prevent_default();
@@ -424,9 +506,21 @@ pub fn CommandBar(
                         },
                     }
                 }
+                button { r#type: "button", class: "studio-icon-button", aria_label: submit_label, title: submit_label,
+                    disabled: disabled || (text.trim().is_empty() && !showing),
+                    onmousedown: move |event| event.prevent_default(),
+                    onclick: move |_| activate.call(()),
+                    Icon { name: IconName::Arrow, class: "size-4" }
+                }
             }
         }
     }
+}
+
+/// A space after a slash operation explicitly enters its argument editor.
+fn raw_command(text: &str) -> bool {
+    let text = text.trim_start();
+    text.starts_with('/') && text.chars().any(char::is_whitespace)
 }
 
 #[component]
@@ -463,6 +557,20 @@ fn CompletionRow(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arguments_require_explicit_raw_command_mode() {
+        for text in ["", "edit", "new environment", "/", "/modify"] {
+            assert!(!raw_command(text));
+        }
+        for text in [
+            "/modify ",
+            "/describe \"c:Captain Mara\" coat",
+            "  /set c:mara --steps 12",
+        ] {
+            assert!(raw_command(text));
+        }
+    }
 
     fn known() -> Vec<String> {
         vec!["mara".to_owned(), "tam".to_owned()]
