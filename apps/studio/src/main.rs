@@ -34,10 +34,6 @@ fn main() {
         )
         .with_context(plan_launch)
         .launch(storyfella_studio::app::App);
-
-    // The window closed and the event loop returned: stop the generation
-    // server the app started rather than leaving it to outlive the process.
-    storyfella_studio::shutdown::run();
 }
 
 fn desktop_menu() -> dioxus::desktop::muda::Menu {

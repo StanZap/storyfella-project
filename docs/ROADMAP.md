@@ -628,10 +628,15 @@ See [iteration acceptance](atelier-iteration-acceptance.md).
    profile per `sdcpp` provider (`resident` / `lowvram` = `--offload-to-cpu`),
    selectable in Settings → Services and validated at config load; the
    measured tradeoff (lowvram ≈9/16 GiB peak for +7%/+0.5% sampling; `--max-vram`
-   rejected as too costly for edits) is in `docs/runtime-lifecycle.md`. A server
-   holding the port that the app did not start is reported as `Degraded` (the
-   resident model is named) and cleared with **Take over** on the image service
-   — identified by the served executable and listen port, not a `pkill` pattern.
+   rejected as too costly for edits) is in `docs/runtime-lifecycle.md`. The native
+   server is owned by the machine's **shared lifecycle owner**
+   (`clipforge_inference::control` over one shared state directory), the same one
+   Atelier and the Clipforge apps drive, so Studio reuses a resident server rather
+   than starting a second one; **Start** ensures the configured model is resident
+   (replacing a server the owner started) and **Stop** stops the owner's server. A
+   server holding the port that the owner did not start is reported as `Degraded`
+   (the resident model is named) and stopped with `svs runtime stop --force` —
+   identified by the served executable and listen port, not a `pkill` pattern.
    A grounding regression harness (`.svs-e2e/scripts/grounding_suite.py`) runs a
    fixed edit suite against one or more planner models and judges each with
    `svs eval --expect`, so planner quality is comparable by command.

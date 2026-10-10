@@ -9,6 +9,5 @@
 pub mod app;
 pub mod commands;
 pub mod driver;
-pub mod shutdown;
 pub mod state;
 pub mod ui;

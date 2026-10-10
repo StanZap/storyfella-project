@@ -66,7 +66,6 @@ pub struct ServiceHealth {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceRecovery {
     ConfigureImageFiles,
-    ReplaceImageServer,
 }
 
 impl ServiceHealth {
@@ -204,19 +203,19 @@ async fn check_generation(config: &AppConfig, runtime: &CreativeRuntime) -> Serv
         )
         .with_recovery(ServiceRecovery::ConfigureImageFiles);
     }
-    let process_running = runtime.is_running();
+    // One capabilities probe answers both questions: whether a server is
+    // answering, and whether the profile's model is the one resident. Nothing
+    // answering is the on-demand state; a mismatched resident is a conflict.
     match with_timeout(runtime.client().capabilities(), CHECK_TIMEOUT_SECONDS).await {
-        // Reachable but serving another model: a server this app did not start
-        // holds the port. Flag it so the UI offers a take-over.
         Ok(capabilities) if !model_matches(&capabilities.model, &runtime.expected_model()) => {
             ServiceHealth::new(
                 ServiceId::ImageGeneration,
                 HealthStatus::Degraded,
                 format!(
-                    "{} is resident on the port — this app did not start it · Take over to replace it",
+                    "{} is resident on the port · Start replaces a server the shared owner started; stop a foreign one with `svs runtime stop --force`",
                     capabilities.model.name
                 ),
-            ).with_recovery(ServiceRecovery::ReplaceImageServer)
+            )
         }
         Ok(capabilities) => ServiceHealth::new(
             ServiceId::ImageGeneration,
@@ -226,11 +225,6 @@ async fn check_generation(config: &AppConfig, runtime: &CreativeRuntime) -> Serv
                 qwen_image_2_1().id,
                 capabilities.model.name
             ),
-        ),
-        Err(error) if process_running => ServiceHealth::new(
-            ServiceId::ImageGeneration,
-            HealthStatus::Offline,
-            format!("backend unreachable: {}", truncate(&error)),
         ),
         Err(_) => ServiceHealth::new(
             ServiceId::ImageGeneration,
@@ -289,7 +283,6 @@ mod tests {
             missing_models.recovery,
             Some(super::ServiceRecovery::ConfigureImageFiles)
         );
-        assert!(!runtime.is_running());
         std::fs::remove_dir_all(directory).unwrap();
     }
 

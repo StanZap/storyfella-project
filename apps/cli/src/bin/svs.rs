@@ -18,7 +18,9 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use clipforge_inference::chat::ChatImage;
+use clipforge_inference::control::{self, Managed, ServerState, StopOutcome};
 use clipforge_inference::sd::LoraSelection;
+use clipforge_inference::servers::kill_servers;
 use uuid::Uuid;
 
 use storyfella_studio_core::config::AppConfig;
@@ -35,7 +37,6 @@ use storyfella_studio_core::registry::pipeline::{
 use storyfella_studio_core::registry::{
     ArtifactKind, ArtifactRegistry, GenerationDefaults, Ref, VariantAxis,
 };
-use storyfella_studio_core::runtime::{kill_servers, marker_path, CreativeRuntime, ServerMarker};
 use storyfella_studio_core::vision;
 
 #[path = "../story.rs"]
@@ -526,29 +527,29 @@ async fn run(cli: Cli) -> Result<()> {
                     if force {
                         stop_generation_server(&config, true)?;
                     }
-                    let runtime = CreativeRuntime::detached(&config);
-                    runtime
-                        .ensure_ready()
-                        .await
-                        .map_err(|error| anyhow!(error.report().log()))?;
-                    println!(
-                        "generation runtime started with {model} (pid {}); `svs runtime stop` stops it",
-                        runtime.pid().unwrap_or_default()
-                    );
+                    let pid =
+                        control::start(&Managed::Image(config.image.clone()), &config.state_dir)
+                            .await
+                            .map_err(|error| anyhow!(error.report().log()))?;
+                    match pid {
+                        Some(pid) => println!(
+                            "generation runtime started with {model} (pid {pid}); `svs runtime stop` stops it"
+                        ),
+                        None => println!(
+                            "generation runtime already resident with {model}; `svs runtime stop` stops it"
+                        ),
+                    }
                     Ok(())
                 }
                 RuntimeCommand::Stop { force } => stop_generation_server(&config, force),
                 RuntimeCommand::Restart { model, force } => {
-                    stop_generation_server(&config, force)?;
-                    let runtime = CreativeRuntime::detached(&config);
-                    runtime
-                        .ensure_ready()
+                    if force {
+                        kill_foreign_generation_servers(&config)?;
+                    }
+                    control::restart(&Managed::Image(config.image.clone()), &config.state_dir)
                         .await
                         .map_err(|error| anyhow!(error.report().log()))?;
-                    println!(
-                        "generation runtime restarted with {model} (pid {})",
-                        runtime.pid().unwrap_or_default()
-                    );
+                    println!("generation runtime restarted with {model}");
                     Ok(())
                 }
                 RuntimeCommand::Status => generation_status(&config).await,
@@ -614,61 +615,45 @@ async fn run_eval(eval: EvalArgs) -> Result<()> {
     Ok(())
 }
 
-/// Stops the generation server on the provider's port. A server this app
-/// started is found by its recorded marker; `force` also stops one it did not
-/// start, identified precisely by the served executable and listen port.
+/// Stops the generation server on the provider's port. A server the shared
+/// owner started is found by its recorded marker; `force` also stops one it did
+/// not start, identified precisely by the served executable and listen port.
 fn stop_generation_server(config: &AppConfig, force: bool) -> Result<()> {
     let port = config.image.port;
-    let path = marker_path(&config.cache_dir, port);
-    match ServerMarker::read(&path) {
-        Some(marker) if marker.is_live() => {
-            marker
-                .kill()
-                .with_context(|| format!("could not stop the server recorded on :{port}"))?;
-            let _ = std::fs::remove_file(&path);
-            println!(
-                "stopped the generation server on :{port} (pid {})",
-                marker.pid
-            );
+    match control::stop(&config.state_dir, port).map_err(|error| anyhow!(error.report().log()))? {
+        StopOutcome::Stopped(pid) => {
+            println!("stopped the generation server on :{port} (pid {pid})");
             return Ok(());
         }
-        // A marker whose process is gone: clear it so nothing keeps pointing at
-        // a dead pid, and fall through to the force/kill path.
-        Some(marker) => {
-            let _ = std::fs::remove_file(&path);
-            println!(
-                "cleared a stale marker for :{port} (pid {} is gone)",
-                marker.pid
-            );
+        // A marker whose process is gone: cleared so nothing keeps pointing at a
+        // dead pid, and fall through to the force/kill path.
+        StopOutcome::ClearedStale(pid) => {
+            println!("cleared a stale marker for :{port} (pid {pid} is gone)");
         }
-        None => {}
+        StopOutcome::NotFound => {}
     }
     if force {
         kill_foreign_generation_servers(config)?;
     } else {
         println!(
-            "no generation server recorded on :{port} — a server this app did not start needs `--force`"
+            "no generation server recorded on :{port} — a server the shared owner did not start needs `--force`"
         );
     }
     Ok(())
 }
 
-/// Reports whether the generation server is up, and whether this app started it.
+/// Reports whether the generation server is up, and whether the shared owner
+/// manages it.
 async fn generation_status(config: &AppConfig) -> Result<()> {
     let port = config.image.port;
-    let marker =
-        ServerMarker::read(&marker_path(&config.cache_dir, port)).filter(ServerMarker::is_live);
-    let up = CreativeRuntime::new(config)
-        .client()
-        .capabilities()
-        .await
-        .is_ok();
-    match (up, marker) {
-        (true, Some(marker)) => println!(":{port} up · started by this app (pid {})", marker.pid),
-        (true, None) => println!(
-            ":{port} up · not started by this app — `svs runtime stop --force` (or Take over in Settings) stops it"
+    match control::status(&Managed::Image(config.image.clone()), &config.state_dir).await {
+        ServerState::Up { owned: Some(pid) } => {
+            println!(":{port} up · managed by the shared owner (pid {pid})")
+        }
+        ServerState::Up { owned: None } => println!(
+            ":{port} up · not managed by the shared owner — `svs runtime stop --force` stops it"
         ),
-        (false, _) => println!(":{port} down"),
+        ServerState::Down => println!(":{port} down"),
     }
     Ok(())
 }

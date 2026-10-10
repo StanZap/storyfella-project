@@ -493,6 +493,13 @@ to defaults. The keys below are app settings unless the note says otherwise.
 | `paths.asset_dir` | platform data dir + `assets` | Imported/generated assets |
 | `paths.project_dir` | platform data dir + `projects` | Where the Projects screen keeps `.svs-project.db` files |
 
+The **shared native-server state directory** (process markers and detached-server
+logs) is not a `paths.*` key: it always resolves to
+`clipforge_inference::config::default_state_dir()` (on Linux
+`~/.local/share/clipforge`), overridable with `$SVS_STATE_DIR` for tests and
+hermetic `--plan` runs. It is the same directory Atelier and the Clipforge apps
+use, so one resident server is shared.
+
 Configured relative paths (`paths.*` and the plan directory) resolve against the
 **project root**, not the working directory: `crates/studio-core/src/paths.rs` picks
 `$SVS_HOME` first, otherwise the nearest ancestor of the working directory (then
@@ -665,10 +672,10 @@ written) or remove one the shared file defines.
   and confirm the provider's `executable` in `clipforge.toml`.
 - **`generation server on 127.0.0.1:7861 has … loaded; … needs the server restarted`** —
   the resident `sd-server` has a different model loaded than the requested
-  profile. Ops restart their own server automatically; a stale server from
-  another session is cleared with **Take over** on the image service in
-  Settings (or `svs runtime serve --force`), which stops the process holding
-  the port and starts ours, then rerun.
+  profile. The shared owner restarts a server it started automatically (Settings
+  → Services → **Start**); a foreign server (a hand-run binary, no marker in the
+  shared state dir) is stopped with `svs runtime stop --force` (or
+  `svs runtime serve --force`), then rerun.
 - **LLM endpoint calls fail** — confirm the endpoint is running, the configured
   model is loaded, and the relevant provider's `base_url` in `clipforge.toml`
   matches its `/v1` endpoint (planning uses `text`, `svs eval` uses `vision`).

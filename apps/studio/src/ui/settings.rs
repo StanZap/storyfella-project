@@ -53,9 +53,6 @@ enum ServiceAction {
     Start,
     Stop,
     Restart,
-    /// Stop whatever holds the port — a server this app did not start included
-    /// — and start ours.
-    TakeOver,
 }
 
 /// The state of an in-app model download.
@@ -77,16 +74,17 @@ impl ServiceAction {
             Self::Start => "Start",
             Self::Stop => "Stop",
             Self::Restart => "Restart",
-            Self::TakeOver => "Take over",
         }
     }
 }
 
-/// The controls a service offers at a given status. The resident generation
-/// server can be started when it is down, and restarted or stopped while it is
-/// up; a foreign server needs explicit takeover, and missing files need setup.
-/// External (text/vision) endpoints
-/// are never started or stopped here.
+/// The controls a service offers at a given status. The image engine shares one
+/// server with the other front ends through the shared lifecycle owner, so it
+/// only needs **Start** (ensure the configured model is resident, replacing a
+/// server the shared owner started) and **Stop**; a foreign server is reported
+/// rather than replaced here. Missing files need setup first. External
+/// (text/vision) endpoints are never started or stopped here — a managed
+/// `llama-server` has its own Start/Stop/Restart.
 fn actions_for(
     service: ServiceId,
     status: HealthStatus,
@@ -95,12 +93,7 @@ fn actions_for(
     match (service, status, recovery) {
         (ServiceId::Llm | ServiceId::Vision, _, _) => Vec::new(),
         (ServiceId::ImageGeneration, _, Some(ServiceRecovery::ConfigureImageFiles)) => Vec::new(),
-        (ServiceId::ImageGeneration, _, Some(ServiceRecovery::ReplaceImageServer)) => {
-            vec![ServiceAction::TakeOver]
-        }
-        (ServiceId::ImageGeneration, HealthStatus::Online, None) => {
-            vec![ServiceAction::Restart, ServiceAction::Stop]
-        }
+        (ServiceId::ImageGeneration, HealthStatus::Online, None) => vec![ServiceAction::Stop],
         (ServiceId::ImageGeneration, _, None) => vec![ServiceAction::Start],
     }
 }
@@ -117,7 +110,7 @@ mod tests {
     }
 
     #[test]
-    fn the_resident_runtime_offers_start_stop_and_restart() {
+    fn the_image_engine_offers_start_stop_only() {
         for status in [
             HealthStatus::Idle,
             HealthStatus::Degraded,
@@ -130,7 +123,7 @@ mod tests {
         }
         assert_eq!(
             actions_for(ServiceId::ImageGeneration, HealthStatus::Online, None),
-            vec![ServiceAction::Restart, ServiceAction::Stop]
+            vec![ServiceAction::Stop]
         );
         assert!(actions_for(
             ServiceId::ImageGeneration,
@@ -138,14 +131,6 @@ mod tests {
             Some(ServiceRecovery::ConfigureImageFiles)
         )
         .is_empty());
-        assert_eq!(
-            actions_for(
-                ServiceId::ImageGeneration,
-                HealthStatus::Degraded,
-                Some(ServiceRecovery::ReplaceImageServer)
-            ),
-            vec![ServiceAction::TakeOver]
-        );
     }
 }
 
@@ -232,10 +217,6 @@ pub fn Settings(
     });
     let operate_runtime = runtime.clone();
     let on_operate = move |(service, action): (ServiceId, ServiceAction)| {
-        if action == ServiceAction::TakeOver && rfd::MessageDialog::new()
-            .set_title("Replace the running image server?")
-            .set_description("This stops the image server using this port, including work started outside Storyfella, then starts Storyfella’s configured server.")
-            .set_buttons(rfd::MessageButtons::YesNo).show() != rfd::MessageDialogResult::Yes { return; }
         operate_service(
             operate_runtime.clone(),
             config.read().clone(),
@@ -267,7 +248,6 @@ pub fn Settings(
                 ServiceAction::Start => engine.start_chat_server(&id).await,
                 ServiceAction::Stop => engine.stop_chat_server(&id).await,
                 ServiceAction::Restart => engine.restart_chat_server(&id).await,
-                ServiceAction::TakeOver => Ok(()),
             };
             chat_busy.set(None);
             if let Err(error) = result {
@@ -583,13 +563,7 @@ fn operate_service(
             (ServiceId::ImageGeneration, ServiceAction::Stop) => {
                 runtime.stop_generation_runtime().await
             }
-            (ServiceId::ImageGeneration, ServiceAction::Restart) => {
-                runtime.restart_generation_runtime().await
-            }
-            (ServiceId::ImageGeneration, ServiceAction::TakeOver) => {
-                runtime.take_over_generation_runtime().await
-            }
-            (ServiceId::Llm | ServiceId::Vision, _) => Ok(()),
+            _ => Ok(()),
         };
         signals.busy.set(None);
         match result {
@@ -873,8 +847,8 @@ fn ChatServers(
     }
 }
 
-/// A service action button (`Start`/`Stop`/`Restart`/`Take over`), shared by the
-/// image engine and the chat servers.
+/// A service action button (`Start`/`Stop`/`Restart`), shared by the image
+/// engine and the chat servers.
 #[component]
 fn ServiceActionButton(
     label: String,
@@ -1451,9 +1425,9 @@ fn ImageServiceCard(
         }
         prewarm.set(enabled);
     };
-    // Changing residency is a launch-flag change: persist it, and restart a
-    // running server so the new mode takes effect now. The runtime keeps a
-    // clone in the backend, so it survives navigation.
+    // Changing residency is a launch-flag change: persist it, and restart the
+    // shared server so the new mode takes effect now. The shared lifecycle
+    // owner performs the restart; the app does not own the process.
     let residency_config = config.clone();
     let mut residency_backend = backend;
     let on_residency = EventHandler::new(move |value: String| {
@@ -1462,11 +1436,11 @@ fn ImageServiceCard(
             return;
         }
         residency.set(value.clone());
-        let was_running = residency_backend.read().runtime().is_running();
         spawn(async move {
+            let before = residency_backend.read().runtime();
+            let was_running = before.is_running().await;
             if was_running {
-                let runtime = residency_backend.read().runtime();
-                if let Err(error) = runtime.stop_generation_runtime().await {
+                if let Err(error) = before.stop_generation_runtime().await {
                     error_report.set(Some(error.report().log()));
                     refresh.call(());
                     return;
@@ -1476,6 +1450,8 @@ fn ImageServiceCard(
                 tracing::error!("unknown image residency {value:?}");
             }
             if was_running {
+                // Re-read: the backend now serves the new residency, and the
+                // restart must start the server in the new mode.
                 let runtime = residency_backend.read().runtime();
                 if let Err(error) = runtime.ensure_ready().await {
                     error_report.set(Some(error.report().log()));
@@ -1490,7 +1466,7 @@ fn ImageServiceCard(
             span { class: "mt-1 grid size-8 shrink-0 place-items-center rounded-xl bg-white/[0.035]", StatusDot { status } }
             div { class: "min-w-0 flex-1",
                 h3 { class: "text-[15px] font-semibold text-zinc-100", "Image engine" }
-                p { class: "mt-0.5 text-[11px] leading-5 text-zinc-500", "The native stable-diffusion.cpp server the app starts and supervises." }
+                p { class: "mt-0.5 text-[11px] leading-5 text-zinc-500", "The native stable-diffusion.cpp server the shared owner starts, reused by Studio, Atelier and Clipforge." }
                 p { class: "mt-0.5 text-[10px] text-zinc-600", "{detail}" }
             }
             div { class: "flex shrink-0 items-center gap-2",
@@ -2026,6 +2002,7 @@ fn StorageSettings(config: AppConfig) -> Element {
             PathRow { title: "Generated assets", description: "Imported generations.", path: config.asset_dir.display().to_string() }
             PathRow { title: "Projects", description: "Where new project databases are created.", path: config.project_dir.display().to_string() }
             PathRow { title: "Cache", description: "Disposable data; safe to clear.", path: config.cache_dir.display().to_string() }
+            PathRow { title: "Inference state", description: "Server markers and logs, shared by Studio, Atelier and Clipforge.", path: config.state_dir.display().to_string() }
             PathRow { title: "Application configuration", description: "This app's settings.", path: application }
             PathRow { title: "Inference configuration", description: "Providers shared by Studio, Atelier and Clipforge.", path: inference, last: true }
         }

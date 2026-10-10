@@ -30,8 +30,8 @@ crates are added; [runtime.md](runtime.md) records the execution contract.
 The compiler emits a versioned, source-mapped story plan with sequential scene
 fallthrough and explicit terminal instructions; see [compiler.md](compiler.md).
 The runtime consumes that representation with bounded host-driven execution.
-Existing Studio core `runtime/` supervises creative generation through Clipforge;
-it is distinct from the story execution runtime. FineWineTTS and Clipforge
+Existing Studio core `runtime/` drives the shared native-server owner through
+Clipforge; it is distinct from the story execution runtime. FineWineTTS and Clipforge
 remain separate repositories. The inference path dependency stays
 `../clipforge/crates/inference` after the repository-directory rename.
 
@@ -88,10 +88,11 @@ HTTP.
 │    ui/            Workspace shell, Canvas (artifact workspace), Settings           │
 │    state/         AppState: registry, selection, undo/redo stacks                  │
 │                                                                                    │
-│  spawns and supervises:                                                            │
+│  drives the shared owner:                                                         │
 │   ┌──────────────────────────────────────────────────────────────────────────────┐ │
 │   │ sd-server (stable-diffusion.cpp)                                             │ │
 │   │ resident Qwen-Image-2.1 + Qwen3-VL encoder + VAE on 127.0.0.1:7861           │ │
+│   │ started detached by clipforge_inference::control over one shared state dir    │ │
 │   └──────────────────────────────────────────────────────────────────────────────┘ │
 └────────────────────────────────────────────────────────────────────────────────────┘
   │
@@ -102,10 +103,13 @@ HTTP.
 └───────────────────────────────┘
 ```
 
-The generation server is started with `--listen-ip 127.0.0.1 --listen-port 7861`
+The generation server is started by the shared lifecycle owner
+(`clipforge_inference::control`) with `--listen-ip 127.0.0.1 --listen-port 7861`
 and serves only on loopback; the image provider's `base_url` in the shared
 `clipforge.toml` names both the address the client calls and the port the
-runtime binds. See [`runtime-lifecycle.md`](runtime-lifecycle.md).
+runtime binds. It is started detached and recorded in the machine's shared
+state directory, so Studio, Atelier and the Clipforge apps reuse one server.
+See [`runtime-lifecycle.md`](runtime-lifecycle.md).
 
 ### The shared inference runtime
 
@@ -296,12 +300,16 @@ platform data dir, and cache under the platform cache dir.
 (`paths::clipforge_config_path()`, via
 `clipforge_inference::config::default_config_path()`), shared with Atelier and
 Clipforge and created with Storyfella's defaults on first load; relative paths in
-it resolve against its own directory. The image deployment — the `sd-server`
-executable, model tree, LoRA root, endpoint, and weights — is resolved from it;
-the deployment's `AppConfig::image` is what the runtime, the health probe,
-`model_setup`, and Settings read. Model storage defaults to the OS-local
-Storyfella data folder in both development and release builds; Settings can save
-an absolute override. See
+it resolve against its own directory. The **shared native-server state
+directory** (`paths::state_dir()`, via
+`clipforge_inference::config::default_state_dir()`, `$SVS_STATE_DIR` override)
+holds the process markers and detached-server logs every front end shares, so a
+server one app started is reused rather than duplicated. The image deployment —
+the `sd-server` executable, model tree, LoRA root, endpoint, and weights — is
+resolved from the AI config; the deployment's `AppConfig::image` is what the
+runtime, the health probe, `model_setup`, and Settings read. Model storage
+defaults to the OS-local Storyfella data folder in both development and release
+builds; Settings can save an absolute override. See
 [model storage](development.md#inference-settings).
 
 ## What is deliberately absent

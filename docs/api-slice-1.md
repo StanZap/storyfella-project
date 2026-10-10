@@ -143,9 +143,18 @@ degrade to deterministic/manual behaviour instead of failing the stack.
 
 ### Keeping the generation server resident
 
-An op starts its own `sd-server` when none is running, and that server dies
-when the CLI exits (cold start per command). For a longer generation
-session, keep the profile resident in one terminal:
+An op ensures the machine's shared `sd-server` through
+`clipforge_inference::control`: it starts one detached when none is running, and
+reuses a resident one otherwise. The server is owned by the shared owner, not by
+the command, so it stays resident after the CLI exits and is reused by the next
+op or by Studio/Atelier. Stop it explicitly:
+
+```sh
+svs runtime stop --force
+```
+
+For a foreground session whose server is owned by the command, keep the profile
+resident in one terminal:
 
 ```sh
 svs --project p.db runtime serve --force   # Ctrl-C to stop
@@ -156,9 +165,9 @@ svs --project p.db runtime serve --force   # Ctrl-C to stop
   executable and listen port (`servers::find_servers`), not a `pkill` pattern,
   so another model's server is left alone.
 - Only the `qwen-image-2.1` profile is served.
-- A mismatched server that another session owns errors with a
-  `ProfileMismatch` message naming the fix: **Take over** on the image service
-  in Settings, or `svs runtime serve --force`.
+- A mismatched server the shared owner started is replaced by **Start** in
+  Settings or `svs runtime start`; a foreign server needs
+  `svs runtime stop --force` (or `svs runtime serve --force`).
 
 ### LLM endpoints
 

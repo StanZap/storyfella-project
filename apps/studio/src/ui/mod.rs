@@ -48,10 +48,6 @@ use projects::Projects;
 use settings::Settings;
 use writer::Writer;
 
-/// How long the app waits for the generation server to stop on quit before
-/// leaving it.
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-
 /// How often the workspace writes the project to disk.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum AutosaveMode {
@@ -227,19 +223,6 @@ pub fn Workspace(
     // The backend lives in a signal so the Settings model picker can swap
     // the planner model and the canvas picks it up on the next op.
     let backend = use_signal(|| CreativeBackend::new(&backend_config));
-    // Bounded stop of the generation server this app started, run at exit —
-    // including the check-mode run, which leaves through `std::process::exit`
-    // (no destructors) and would otherwise orphan the server. The registered
-    // closure holds a runtime clone, so the child is not dropped before it runs.
-    let shutdown_backend = backend;
-    use_hook(move || {
-        let runtime = shutdown_backend.read().runtime();
-        crate::shutdown::register(move || {
-            if !runtime.stop_generation_runtime_blocking(SHUTDOWN_TIMEOUT) {
-                tracing::warn!("generation server did not stop within {SHUTDOWN_TIMEOUT:?}");
-            }
-        });
-    });
     let generated_asset_directory = config.asset_dir.join("generated");
     dioxus::desktop::use_asset_handler("generated", move |request, responder| {
         serve_generated_asset(&generated_asset_directory, request, responder);

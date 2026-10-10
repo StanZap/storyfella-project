@@ -50,6 +50,11 @@ pub const APP_CONFIG_ENV: &str = "SVS_USER_CONFIG";
 /// `clipforge.toml`.
 pub const AI_CONFIG_ENV: &str = "SVS_AI_CONFIG";
 
+/// The environment variable overriding the shared native-server state directory
+/// (process markers and detached-server logs), so tests and hermetic plan runs
+/// never touch the machine's real one.
+pub const STATE_DIR_ENV: &str = "SVS_STATE_DIR";
+
 /// Where plans live, relative to the project root — and the directory that
 /// identifies the root: its nearest ancestor holding it.
 pub const PLANS_DIR: &str = "config/plans";
@@ -119,6 +124,26 @@ pub fn clipforge_config_path() -> Option<PathBuf> {
         }
     }
     clipforge_inference::config::default_config_path()
+}
+
+/// The shared native-server state directory — process markers and detached-server
+/// logs at the platform location every front end resolves
+/// (`clipforge_inference::config::default_state_dir()`; on Linux
+/// `~/.local/share/clipforge`). One directory for the machine, so a server one
+/// front end started is found and reused by the others rather than a second one
+/// being launched.
+///
+/// `$SVS_STATE_DIR` overrides the location when set and non-empty, so tests and
+/// hermetic plan runs stay off the developer's real state. `None` when it is
+/// unset and the platform has no data directory.
+pub fn state_dir() -> Option<PathBuf> {
+    if let Some(value) = std::env::var_os(STATE_DIR_ENV) {
+        let path = PathBuf::from(value);
+        if !path.as_os_str().is_empty() {
+            return Some(path);
+        }
+    }
+    clipforge_inference::config::default_state_dir()
 }
 
 /// Large model files belong in local application data, never roaming config,
@@ -237,5 +262,18 @@ mod tests {
         );
         #[cfg(target_os = "linux")]
         assert!(path.ends_with("clipforge/clipforge.toml"), "{path:?}");
+    }
+
+    #[test]
+    fn the_shared_state_dir_defaults_to_the_clipforge_data_directory() {
+        if std::env::var_os(STATE_DIR_ENV).is_some() {
+            return; // an explicit override is the user's choice; nothing to assert
+        }
+        let path = state_dir().expect("the platform exposes a data directory");
+        assert_eq!(
+            path,
+            clipforge_inference::config::default_state_dir().unwrap()
+        );
+        assert!(path.is_absolute(), "{path:?}");
     }
 }

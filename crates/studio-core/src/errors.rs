@@ -596,8 +596,9 @@ impl ErrorCode {
                 "SVS-RTE-123",
                 "Generation server has a different model loaded",
                 "Another server holds the generation port with a different model \
-                 loaded. Use Take over on the image service in Settings (or \
-                 `svs runtime serve --force`) to stop it and start ours.",
+                 loaded. Start the image service in Settings (it replaces a server \
+                 the shared owner started), or stop a foreign one with \
+                 `svs runtime stop --force`, then retry.",
             ),
             Self::RuntimeCreateAssetDirectory => (
                 "SVS-RTE-124",
@@ -856,6 +857,29 @@ impl CodedError for clipforge_inference::sd::ClientError {
             Self::ReferenceImage { .. } => ErrorCode::GenReference,
             Self::ImagePayload(_) => ErrorCode::GenImage,
             Self::JobFailed(_) | Self::WaitTimeout(_) => ErrorCode::RuntimeJobFailed,
+        }
+    }
+}
+
+/// The shared lifecycle owner's errors (`clipforge_inference::control`): a
+/// managed image/chat server's start/stop failure, a marker write/kill, or a
+/// registry problem. Coded here so a start/stop surfaced through Studio carries
+/// the same code as one surfaced through the CLI.
+impl CodedError for clipforge_inference::control::ControlError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::Image(error) => error.code(),
+            Self::Chat(_) => ErrorCode::LlmServer,
+            Self::Marker(clipforge_inference::servers::MarkerError::Write { .. }) => {
+                ErrorCode::RuntimeGenerationStart
+            }
+            Self::Marker(clipforge_inference::servers::MarkerError::Kill { .. }) => {
+                ErrorCode::RuntimeGenerationStop
+            }
+            Self::Provider(_) => ErrorCode::ConfigProviders,
+            // Reaching either from the image lifecycle means the configured
+            // registry no longer serves a managed image server.
+            Self::NoProvider(_) | Self::External(_) => ErrorCode::ConfigProviders,
         }
     }
 }

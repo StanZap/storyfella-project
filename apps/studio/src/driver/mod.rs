@@ -547,14 +547,16 @@ impl PlanLaunch {
         Self { path, mode }
     }
 
-    /// Points a `--plan` run at scratch config files under `.svs-e2e/hermetic/`,
-    /// so the driver never reads or writes the developer's real machine-local
-    /// settings — neither this app's nor the shared inference configuration.
+    /// Points a `--plan` run at scratch config files and a scratch native-server
+    /// state directory under `.svs-e2e/hermetic/`, so the driver never reads or
+    /// writes the developer's real machine-local settings — neither this app's,
+    /// the shared inference configuration, nor the shared server markers/logs.
     ///
     /// The files need not exist: a missing app overlay contributes nothing, and a
     /// missing `clipforge.toml` is seeded with defaults, so the run is
-    /// self-contained. An explicit `$SVS_USER_CONFIG`/`$SVS_AI_CONFIG` already in
-    /// the environment wins, so a run can still be aimed at a specific config.
+    /// self-contained. An explicit `$SVS_USER_CONFIG`/`$SVS_AI_CONFIG`/
+    /// `$SVS_STATE_DIR` already in the environment wins, so a run can still be
+    /// aimed at a specific config.
     pub fn make_hermetic(&self) {
         if self.path.is_none() {
             return;
@@ -567,6 +569,10 @@ impl PlanLaunch {
         set_env_unless_set(
             storyfella_studio_core::paths::AI_CONFIG_ENV,
             dir.join("clipforge.toml"),
+        );
+        set_env_unless_set(
+            storyfella_studio_core::paths::STATE_DIR_ENV,
+            dir.join("inference-state"),
         );
     }
 
@@ -733,9 +739,6 @@ pub fn run_plan(
                 );
             }
             report.print();
-            // `std::process::exit` runs no destructors, so stop the server the
-            // app owns here or the check run would orphan it.
-            crate::shutdown::run();
             std::process::exit(exit_code);
         }
         session.with_mut(|slot| {

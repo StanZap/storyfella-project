@@ -206,8 +206,8 @@ Readonly configuration should look like information, with an explicit edit/open
 configuration route when users need to repair it.
 
 Use specific labels: Create entry, Render image, Save description, Download
-missing files, or Replace running server. Avoid ambiguous “Run,” “Create” and
-“Take over” when the result or interruption is unclear. Show one primary action
+missing files, or Stop image engine. Avoid ambiguous “Run,” “Create” and “Go”
+when the result or interruption is unclear. Show one primary action
 per task region, consistent secondary actions, and a distinct destructive style.
 Do not require hover to discover essential actions.
 
@@ -457,14 +457,14 @@ without a pointer; its resulting canon change is clear and undoable.
 ### SF-UX-18 · P2 · Runtime failures send users to developer setup
 
 **Live + source.** The missing-model error recommends `model_setup` while
-Settings already has Model files. Status offers Start/Take over even for
+Settings already has Model files. Status offered process actions even for
 missing artifacts; the footer always renders an Idle dot and “NORMAL.” See
 [settings.rs](apps/studio/src/ui/settings.rs),
 [ui/mod.rs](apps/studio/src/ui/mod.rs),
 [health.rs](crates/studio-core/src/runtime/health.rs) and
 [errors.rs](crates/studio-core/src/errors.rs). Route to relevant setup directly,
-show real health with text, and reserve Replace running server for an identified
-conflict with its consequences explained. **Acceptance:** missing models lead
+show real health with text, and keep the image engine's actions tied to actual
+health (Start only when it can succeed). **Acceptance:** missing models lead
 to their repair screen without terminal knowledge or redundant start failures.
 
 ### SF-UX-19 · P2 · Corner overlays compete for the same space
@@ -612,7 +612,7 @@ checkout. Keep the original acceptance criteria as regression checks.
 | SF-UX-15 | Successful opens are recorded in order, including external paths. Recent shows location; scan/read/write failures are visible with Refresh. | [Projects](apps/studio/src/ui/projects.rs); recent-order test and live external fixture first in Recent. |
 | SF-UX-16 | Filtered results have a count and distinct No matching artifacts / Clear filter recovery. Cursor clamps to available results. | [Gallery](apps/studio/src/ui/gallery.rs); live no-match query, Clear restores all seven fixture artifacts and clears the field. |
 | SF-UX-17 | Promote remains visible with a tooltip explaining the canonical description change. | [Canvas](apps/studio/src/ui/canvas.rs); source review. |
-| SF-UX-18 | Missing-model reports lead to Image generation setup. Start/replace actions depend on actual health; takeover confirms consequences. Footer reports working/saved/unsaved state. | [settings](apps/studio/src/ui/settings.rs), [health](crates/studio-core/src/runtime/health.rs); live missing-file state, action tests. |
+| SF-UX-18 | Missing-model reports lead to Image generation setup. Actions depend on actual health — Start/Stop only, hidden when files are missing. Footer reports working/saved/unsaved state. | [settings](apps/studio/src/ui/settings.rs), [health](crates/studio-core/src/runtime/health.rs); live missing-file state, action tests. |
 | SF-UX-19 | Notifications sit below the upper-right header; Guide remains lower-right. Report modal has higher native priority. | [components](apps/studio/src/ui/components.rs), [Guide](apps/studio/src/ui/guide.rs); live Guide plus command error. |
 | SF-UX-20 | Failed compilation retains the previous playback session/bookmark. Successful replacement explicitly restarts with the new snapshot. | [playback model](crates/playback-ui/src/lib.rs), [panel](crates/playback-ui/src/panel.rs); procedural playback recovery test. |
 | SF-UX-21 | Plans show shared mode once, disable Run with a reason during work, permit another run after completion and explain Stop after current operation. | [Plans](apps/studio/src/ui/plans.rs), [Guide](apps/studio/src/ui/guide.rs), [workspace](apps/studio/src/ui/mod.rs); isolated two-step guide completes. |
@@ -716,10 +716,14 @@ action:
   **remove** one it defines (`AppConfig::user_providers` marks the removable
   ones).
 - **Services** is the "how it runs" page: the image engine's status and
-  **Start/Stop/Restart/Take over** (or **Set up image engine**, which scrolls to
-  the weights), its executable and runtime endpoint, residency, prewarm, the
-  model-files provisioning list, and each managed `llama-server` provider with
-  its model file and **Start/Stop/Restart**.
+  **Start/Stop** (or **Set up image engine**, which scrolls to the weights), its
+executable and runtime endpoint, residency, prewarm, the model-files
+provisioning list, and each managed `llama-server` provider with its model file
+and **Start/Stop/Restart**. The image engine shares one native server with
+Atelier and the Clipforge apps through the machine's shared lifecycle owner
+(`clipforge_inference::control`), so it offers Start/Stop rather than a private
+restart: **Start** ensures the configured model is resident, replacing a server
+the shared owner started.
 
 An edit persists before it applies, writing `base_url`/`model`/`api_key` (or
 `[defaults] text`/`vision` and the provider's `capabilities` for a provider
@@ -938,3 +942,28 @@ Save and quit and reopening. Workspace all-target check/tests (97 Studio
 tests), strict Studio Clippy, formatting, stylesheet generation and runnable
 build passed. Logs use `.svs-e2e/logs/studio-writer-controls-*`. Cross-platform
 native styling and screen-reader acceptance remain outside this pass.
+
+### One shared native server owner · 2026-10-10
+
+The image engine's lifecycle now belongs to the machine, not the app. Studio
+drives the same `clipforge_inference::control` owner Atelier and the Clipforge
+apps use, over one shared state directory (`paths::state_dir()`, the platform
+data dir, `$SVS_STATE_DIR` override), so a server one front end started is
+reused instead of a second one launched on the same port. `CreativeRuntime`
+keeps the deployment and client but no longer owns a process: `ensure_ready` is
+`control::load` (start when down, replace a server the owner started that holds
+a different model), `Stop` is `control::stop`.
+
+The Services image-engine card is **status + Start/Stop**: a separate Restart
+and Take over are gone because the owner applies residency changes and replaces
+a server it started. A server the owner did not start is reported as `Degraded`
+with the resident model named and the CLI remedy (`svs runtime stop --force`),
+which is also SF-UX-18's fate for the old Replace action. Because the server is
+detached and shared, quitting the app no longer stops it — it stays resident for
+the next front end and is stopped from Settings or `svs runtime stop`.
+
+Verification: `cargo check --workspace --all-targets`, `cargo test --workspace`,
+`cargo clippy -p storyfella-studio-core -p svs-cli -p storyfella-studio
+--all-targets -- -D warnings` and `cargo fmt --all -- --check` pass. Live
+multi-front-end reuse and the Settings Start/Stop/residency interactions remain a
+manual check.

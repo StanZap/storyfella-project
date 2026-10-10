@@ -1,15 +1,15 @@
 # Runtime lifecycle
 
-Rust supervises one child process and one external service:
+Rust drives two things: one native process and one external service:
 
 | Process | Rust owner | Port | Started when |
 | --- | --- | --- | --- |
-| `sd-server` (stable-diffusion.cpp) | `sd::Runtime` in the shared `clipforge-inference` crate (`../clipforge/crates/inference/src/sd/runtime.rs`) | the image provider's `base_url` (`127.0.0.1:7861` by default in the shared `clipforge.toml`) | First generation request, or manually from Settings |
-| LLM endpoint | external, user-run | user-configured (shared `clipforge.toml`) | external |
+| `sd-server` (stable-diffusion.cpp) | the **shared lifecycle owner** — `clipforge_inference::control` over the machine's shared state directory — which drives `sd::Runtime` | the image provider's `base_url` (`127.0.0.1:7861` by default in the shared `clipforge.toml`) | First generation request, or **Start** in Settings |
+| LLM endpoint | external, user-run (or a managed `llama-server`) | user-configured (shared `clipforge.toml`) | external, or on demand |
 
 The desktop app does **not** start `sd-server` at launch. The shell reports it as
-idle until a generation request triggers `CreativeRuntime::ensure_ready`. This
-keeps a quiet app quiet and delays the multi-GiB model load until it is needed.
+idle until a generation request or **Start** triggers `CreativeRuntime::ensure_ready`.
+This keeps a quiet app quiet and delays the multi-GiB model load until it is needed.
 
 The process, client, model store, and profile are all owned by the sibling
 `clipforge` project's crate, package **`clipforge-inference`**, pulled in as a
@@ -19,47 +19,82 @@ that relative path for storyfella to build, and the crate is not a workspace
 member. `crates/studio-core/src/runtime/` holds only the adapter: `CreativeRuntime`
 (`creative_runtime.rs`), the health probes (`health.rs`), and `mod.rs`.
 
+## One shared owner
+
+The native server is owned by the machine, not by one app. `clipforge_inference::control`
+is the lifecycle owner every front end drives — Storyfella Studio, Atelier, and the
+Clipforge desktop/CLI:
+
+- `control::start` launches the server **detached** (it outlives the caller) and
+  records its pid in a **marker** under the shared state directory
+  (`clipforge_inference::config::default_state_dir()`, `$SVS_STATE_DIR` override;
+  on Linux `~/.local/share/clipforge/servers/<port>.marker`). A server another
+  front end already started is reused, not duplicated.
+- `control::stop` stops the server the marker records; a server started outside
+  the owner (a hand-run binary) has no marker and is left alone.
+- `control::load` ensures the *configured model* is the one resident: it is a
+  no-op when the right model is already loaded, and it stops and restarts a
+  server **the owner started** that currently holds a different one. A foreign
+  server is reported, never killed.
+
+Because the server is detached and shared, **the app does not stop it on exit**:
+it stays resident for the next front end, exactly like a CLI `svs runtime start`.
+It is stopped from Settings → Services → **Stop**, or with `svs runtime stop`
+(`--force` also stops a foreign server).
+
+`crates/studio-core/src/paths.rs` resolves the shared state directory
+(`paths::state_dir`) alongside the shared `clipforge.toml`
+(`paths::clipforge_config_path`); a hermetic `--plan` run points both — and the
+app config — at scratch files under `.svs-e2e/` so it never touches the
+developer's real state.
+
 ## `CreativeRuntime` facade
 
 `CreativeRuntime` (`crates/studio-core/src/runtime/creative_runtime.rs`) is the single entry point
-used by the UI. It owns:
+used by the UI. It is a **client of the shared owner**: it holds
 
 - an `sd::Client` for the native `sd-server` (from the shared `clipforge-inference` crate),
-- a shared `sd::Runtime` (the resident process supervisor),
+- the image deployment (executable, address, weights, residency),
+- the shared state directory, and
 - the generated-asset directory (`<asset_dir>/generated`).
 
-### Readiness — `ensure_profile_ready`
+Its lifecycle methods delegate to `control` with that state directory; it never
+owns a process itself.
+
+### Readiness — `ensure_ready`
 
 ```text
-ensure_profile_ready()
+ensure_ready()
     │
-    ├─ GET /sdcpp/v1/capabilities answers, and the resident model matches?  ──▶ Ok
-    │    (a mismatched server this process owns is stopped and restarted; a
-    │     mismatched server owned by another session → ProfileMismatch)
+    ├─ control::load(deployment, state_dir)
+    │    ├─ resident model matches?  ──▶ reuse it (no restart)
+    │    ├─ a server the owner started holds a different model?
+    │    │      ──▶ stop it, then start ours
+    │    ├─ nothing answering ──▶ start ours (detached)
+    │    └─ a foreign server holds the port ──▶ ProfileMismatch (reported)
     │
-    ├─ sd::Runtime::ensure_ready(<host>, <port>)
-    │    (the image provider's `base_url` in the shared clipforge.toml)
-    │
-    └─ Poll /sdcpp/v1/capabilities every 500 ms until the model matches,
-       or a 600 s deadline → ReadinessTimeout
+    └─ sd::Runtime::ensure_ready(<host>, <port>)
+         (the image provider's `base_url` in the shared clipforge.toml)
+         polls /sdcpp/v1/capabilities every 500 ms until the model matches,
+         or a 600 s deadline → ReadinessTimeout
 ```
 
 The model check is two-phase: capabilities answer "is the HTTP server up" and
 "is the right model actually resident". Loading ≈17.3 GiB of weights takes
 minutes, so the readiness cap stays generous (600 s). The Rust side never treats
 process creation as readiness. A `ProfileMismatch` names the loaded model
-(compared by file name or stem) and the fix: **Take over** on the image
-service in Settings, or `svs runtime serve --force`. Take-over stops whatever
-holds the port — a server this app did not start included — identified
-precisely by the served executable and listen port (`servers::find_servers`),
-never by a `pkill` pattern, then starts ours.
+(compared by file name or stem) and the fix: **Start** replaces a server the
+shared owner recorded, or `svs runtime serve --force` / `svs runtime stop
+--force` stops a foreign one.
 
-A server this app started is found by a small **marker** in the cache dir
-(`servers/<port>.marker`: pid, port, executable) written on start and cleared
-on stop; `ServerMarker::is_live` re-checks that the pid is alive *and* really
-that binary, so a recycled pid is never killed. The health check reports a
-reachable server whose resident model is not ours as `Degraded` with the
-foreign model named, which is what surfaces the take-over action.
+A server is found by its **marker** in the shared state dir
+(`servers/<port>.marker`: pid, port, executable); `ServerMarker::is_live`
+re-checks that the pid is alive *and* really that binary, so a recycled pid is
+never killed. `control::status` reports `Up { owned }` (answering; `owned` is the
+marker pid when the shared owner started it) or `Down`; the CLI and Settings'
+residency check read it. The health check probes `/sdcpp/v1/capabilities`
+directly and reports a reachable server whose resident model is not ours as
+`Degraded`, with the foreign model named.
 
 ### Job waiting — `wait_for_job`
 
@@ -80,8 +115,9 @@ is returned unchanged).
 ## `Runtime` (sd.cpp, shared crate)
 
 `sd::Runtime` (in the shared `clipforge-inference` crate —
-`../clipforge/crates/inference/src/sd/runtime.rs`) starts the process. It is
-defensive:
+`../clipforge/crates/inference/src/sd/runtime.rs`) starts the process; the
+lifecycle owner builds one from the deployment's `ImageDeployment::runtime()` and
+keeps it detached (`keep_alive`). It is defensive:
 
 1. Refuses to start twice (`AlreadyRunning`).
 2. Verifies the `sd-server` executable exists.
@@ -113,11 +149,10 @@ A provider that declares a `weights.diffusion` override has the server load that
 
 `--model-args qwen_image_2_1_prefix_cache_type=q8_0` pins an explicit quantized
 prefix cache (the `auto` default would pick f32); `--diffusion-fa` enables
-diffusion flash attention. Child `stdin` is nulled and `stdout`/`stderr` are
-inherited, so the server's logs appear in the app's terminal; `kill_on_drop(true)`
-plus an explicit `stop()` owns the child's lifetime. `is_running()` uses
-`try_wait()` and clears the slot if the child exited, so a crashed server is
-detected on the next readiness check and restarted.
+diffusion flash attention. The lifecycle owner starts the server detached
+(`keep_alive`), so its logs go to the shared state dir and it outlives the
+caller; `stdin` is nulled. `is_running()`/`try_wait()` detect a crashed server on
+the next readiness check so it is restarted.
 
 ### Residency and VRAM
 
@@ -127,9 +162,9 @@ generation never unloads them. There is a single generation profile —
 
 Residency is a **launch-time** choice (`sd::Residency`), set per `sdcpp`
 provider in `clipforge.toml` under `residency`, or in Settings → Services →
-Residency. There is no unload endpoint, so changing it restarts
-the server; the Settings control persists the choice and restarts a running
-server into the new mode.
+Residency. There is no unload endpoint, so changing it needs a restart — the
+Settings control persists the shared provider's choice, and restarts a running
+server through the shared owner so the new mode takes effect now.
 
 | mode | flags | peak (t2i 1024² / edit 1024×1536) | sampling cost |
 | --- | --- | ---: | --- |
@@ -208,21 +243,23 @@ anything. Each probe runs with a short timeout and reports one of four states:
 | Service | Probe | Reported as |
 | --- | --- | --- |
 | LLM endpoint (text or vision) | `GET /v1/models` | `Online` when reachable **and** the configured model is loaded; `Degraded` when reachable but the model is not; `Idle` when the provider is a managed `llamacpp` server that is not running (it starts on demand); `Offline` when an external endpoint is unreachable |
-| Image generation (Qwen-Image-2.1) | `sd-server` binary, profile artifacts on disk, process state, `GET /sdcpp/v1/capabilities` | `Offline` when the binary is missing or the resident server is unreachable; `Degraded` when the model artifacts are missing (`run model_setup`); `Online` when the resident backend reports the profile's model; `Idle` when the process is on-demand and not started |
+| Image generation (Qwen-Image-2.1) | `sd-server` binary, profile artifacts on disk, `control::status`, `GET /sdcpp/v1/capabilities` | `Offline` when the binary is missing or the resident server is unreachable; `Degraded` when the model artifacts are missing (prepare them in Settings) or the resident server holds a different model; `Online` when the resident backend reports the profile's model; `Idle` when nothing is answering |
 
 The checks run in parallel (`tokio::join!`); the **Models** and **Services** pages
 each show the last-checked time and a single **Check now** that re-probes every
-service. The image-engine card on **Services** also carries the
-start/stop/restart/take-over actions.
+service.
 
 ### On-demand start and stop
 
 The **Services** page controls the local processes (`apps/studio/src/ui/settings.rs`,
 `operate_service` for the image engine, `on_chat_operate` for chat):
 
-- **Image generation** — `Start` runs `ensure_profile_ready` (starts `sd-server`
-  and waits for the model to be resident); `Stop` kills the native server; the
-  card also offers `Restart` and `Take over`.
+- **Image generation** — **Start** runs `control::load` through `CreativeRuntime`
+  (ensures the configured model is resident, replacing a server the shared owner
+  started); **Stop** runs `control::stop`. The shared owner holds the process, so
+  the card does not offer a separate restart or take-over: changing **Residency**
+  restarts through the owner, and a foreign server is reported with the CLI
+  remedy.
 - **Chat servers** — each managed `llamacpp` provider gets `Start`/`Stop`/`Restart`
   (`CreativeBackend::start_chat_server` / `stop_chat_server` /
   `restart_chat_server`), so its `llama-server` can be booted from the app and its
@@ -240,6 +277,10 @@ automatic starts behave identically.
 
 ## Known gaps
 
-- Application shutdown stops the child with a bounded blocking kill, but only
-  from the app's own exit points; a `SIGKILL`ed app leaves the server running,
-  to be stopped by take-over (Settings) or `svs runtime stop --force`.
+- The shared server is intentionally left resident when the app exits, so the
+  next front end reuses it. It is stopped from Settings → Services → **Stop** or
+  with `svs runtime stop`; a hand-run server outside the shared owner needs
+  `svs runtime stop --force`.
+- The shared owner coordinates one machine; two `model_dir`s that resolve the
+  same `base_url` would still collide, but the shared `clipforge.toml` is what
+  every front end reads, so this needs an explicit per-provider override.

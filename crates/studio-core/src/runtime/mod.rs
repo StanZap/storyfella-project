@@ -13,7 +13,6 @@ mod creative_runtime;
 mod health;
 mod provision;
 
-pub use clipforge_inference::servers::{kill_servers, marker_path, server_log_path, ServerMarker};
 pub use creative_runtime::{CreativeRuntime, CreativeRuntimeError};
 pub use health::{check_all, HealthStatus, ServiceHealth, ServiceId, ServiceRecovery};
 pub use provision::{image_artifacts, provision_image_model, ModelArtifactStatus};

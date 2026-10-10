@@ -19,10 +19,13 @@ Empty as of 2026-10-01. Every item landed:
 4. Surface provisioning — Settings → Services → Model files downloads
    with progress; the pinned manifest was verified against the live HF repo.
 5. Prewarm toggle — start the server when a project opens.
-6. Graceful shutdown — bounded stop at exit, including the check-mode exit.
-7. Take over a foreign server — precise identification (executable + listen
-   port, not a `pkill` pattern) and an in-app Take over action.
-8. Grounding regression harness — `.svs-e2e/scripts/grounding_suite.py`, driven
+6. One shared server owner — the native server is owned by
+   `clipforge_inference::control` over a shared state dir (Studio, Atelier and
+   the Clipforge apps reuse one detached server). Studio leaves it resident on
+   exit; it is stopped from Settings or `svs runtime stop`. A server started
+   outside the owner is stopped with `svs runtime stop --force` (executable +
+   listen port, not a `pkill` pattern).
+7. Grounding regression harness — `.svs-e2e/scripts/grounding_suite.py`, driven
    by `svs eval --expect`.
 
 Add the next item here.

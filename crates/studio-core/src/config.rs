@@ -192,6 +192,10 @@ pub struct AppConfig {
     /// not offered for removal.
     pub user_providers: Vec<String>,
     pub cache_dir: PathBuf,
+    /// The shared native-server state directory (see [`paths::state_dir`]) —
+    /// process markers and detached-server logs, shared by every front end so a
+    /// resident server is reused rather than started twice.
+    pub state_dir: PathBuf,
     pub asset_dir: PathBuf,
     /// Where the GUI keeps `.svs-project.db` files (the Projects screen).
     pub project_dir: PathBuf,
@@ -519,6 +523,7 @@ impl AppConfig {
                 .cache_dir
                 .map(paths::resolve)
                 .unwrap_or_else(|| dirs.cache_dir().to_path_buf()),
+            state_dir: paths::state_dir().unwrap_or_else(|| data_dir.join("inference-state")),
             asset_dir: file
                 .paths
                 .asset_dir
