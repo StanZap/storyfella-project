@@ -19,6 +19,7 @@ use storyfella_studio_core::registry::{ArtifactKind, ArtifactRegistry};
 use crate::state::AppState;
 
 use super::{
+    components::IconButton,
     generated_asset_url,
     icons::{Icon, IconName},
 };
@@ -404,8 +405,8 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                     p { class: "text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-600",
                         "Writer"
                     }
-                    button {
-                        class: "rounded px-2 py-1 text-[10px] text-zinc-400 hover:bg-white/[0.05] hover:text-white",
+                    IconButton {
+                        label: "Save a copy of the story", icon: IconName::Copy,
                         onclick: move |_| {
                             let Some(mut path) = rfd::FileDialog::new()
                                 .set_title("Save a copy of the story")
@@ -417,14 +418,13 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                                 error_report.set(Some(error.report().log()));
                             }
                         },
-                        "Save copy…"
                     }
                     if let Some(path) = story_path.as_ref() {
                         p { class: "min-w-0 truncate font-mono text-[10px] text-zinc-500", title: "{path.display()}",
                             "{path.file_name().unwrap_or_default().to_string_lossy()}"
                         }
-                        button {
-                            class: "rounded px-2 py-1 text-[10px] text-zinc-400 hover:bg-white/[0.05] hover:text-white",
+                        IconButton {
+                            label: "Reload story from disk", icon: IconName::Refresh,
                             onclick: move |_| {
                                 let dirty = app_state.read().story.is_dirty();
                                 if dirty && rfd::MessageDialog::new()
@@ -438,7 +438,6 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                                     error_report.set(Some(error.log()));
                                 }
                             },
-                            "Reload .sf"
                         }
                     }
                     p { class: "ml-auto font-mono text-[10px] text-zinc-700",
@@ -536,19 +535,25 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                         }
                     }
                     div { class: "flex flex-wrap items-center gap-2 border-t border-white/[0.05] px-4 py-2 text-[11px] text-zinc-400",
-                        button { disabled: definition.is_none(), onclick: move |_| { if let Some(position) = definition { cursor.set(position); focus_position(position); } }, "Definition" }
-                        button { onclick: move |_| show_references.toggle(), "References" }
-                        button { onclick: move |_| {
+                        IconButton { label: "Go to definition", icon: IconName::Definition, disabled: definition.is_none(), onclick: move |_| { if let Some(position) = definition { cursor.set(position); focus_position(position); } } }
+                        IconButton { label: if show_references() { "Hide references" } else { "Show references" }, icon: IconName::References, active: show_references(), onclick: move |_| show_references.toggle() }
+                        IconButton { label: "Format story", icon: IconName::Format, onclick: move |_| {
                             let catalog = AssetCatalog::from_registry(&app_state.read().registry);
                             let analysis = analyze(app_state.read().story.source(), &catalog.assets);
                             let result = storyfella_language::format(&analysis).and_then(|edits| storyfella_language::apply_edits(analysis.document.source.text(), &edits));
                             match result { Ok(source) => { app_state.write().set_story_source(source); edit_error.set(None); }, Err(error) => edit_error.set(Some(error)) }
-                        }, "Format" }
-                        input { id: rename_id, onmounted: rename_mount, aria_label: "New symbol name", class: "w-28 rounded bg-white/[0.05] px-2 py-1 font-mono text-zinc-200", placeholder: "New symbol name", oninput: move |event| rename_name.set(event.value()) }
+                        } }
+                        details {
+                        summary { title: "Rename symbol at the caret", aria_label: "Rename symbol", class: "studio-icon-button cursor-pointer list-none", Icon { name: IconName::Edit, class: "size-4" } }
+                        div { class: "flex flex-wrap items-center gap-2 p-2",
+                        label { r#for: rename_id.clone(), "New name" }
+                        input { id: rename_id, onmounted: rename_mount, aria_label: "New symbol name", class: "w-32 rounded bg-white/[0.05] px-2 py-1 font-mono text-zinc-200", placeholder: "new_name", oninput: move |event| rename_name.set(event.value()) }
                         button { onclick: move |_| {
                             let offset = storyfella_language::Source::new(app_state.read().story.source()).offset(cursor()).unwrap_or(0);
                             edit_error.set(app_state.write().rename_story_symbol(offset, &rename_name()).err());
                         }, "Rename" }
+                        }
+                        }
                     }
                     if let Some(error) = edit_error() { p { class: "px-4 py-1 text-[11px] text-rose-300", "{error}" } }
                     if show_references() {

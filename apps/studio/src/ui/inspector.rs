@@ -2,7 +2,7 @@
 //! parameters its generations use.
 //!
 //! Every control here is also a command. Changing the canvas runs `/resize`,
-//! the steps slider and the seed lock run `/set`, editing the description
+//! the steps selector and the seed lock run `/set`, editing the description
 //! runs `/describe`. The rail and the command bar are two views of one
 //! vocabulary, not two features — which is why nothing in this file mutates
 //! the registry directly: it emits text into the composer's submit path.
@@ -14,6 +14,12 @@
 
 use dioxus::prelude::*;
 
+use super::{
+    actions::{ActionRequest, ArtAction, StudioAction},
+    components::IconButton,
+    icons::IconName,
+};
+use storyfella_studio_core::registry::slash::quote_argument;
 use storyfella_studio_core::registry::{Artifact, LoraEntry};
 
 /// The canvas sizes offered as presets. Not a closed set — the parser takes
@@ -29,7 +35,7 @@ const SIZE_PRESETS: [(u32, u32); 7] = [
     (1024, 1024),
 ];
 
-/// Steps the slider snaps to, cheapest first.
+/// Common sampling presets, alongside the inherited project value.
 const STEP_STOPS: [u32; 7] = [4, 6, 8, 12, 16, 24, 25];
 
 /// How much one press moves an adapter's weight. Small enough that the
@@ -63,7 +69,7 @@ fn adapter_rows(artifact_id: uuid::Uuid, bound: &[LoraEntry]) -> Vec<AdapterRow>
                 // The same bounds the operation validates against, so a
                 // control can never emit a command the compiler rejects.
                 let next = (lora.multiplier + delta).clamp(-2.0, 2.0);
-                format!("/lora-scale {} {next:.2}", lora.name)
+                format!("/lora-scale {} {next:.2}", quote_argument(&lora.name))
             };
             AdapterRow {
                 id: lora.id,
@@ -76,7 +82,7 @@ fn adapter_rows(artifact_id: uuid::Uuid, bound: &[LoraEntry]) -> Vec<AdapterRow>
                 inherited: lora.artifact_id != Some(artifact_id),
                 weaker: step(-ADAPTER_WEIGHT_STEP),
                 stronger: step(ADAPTER_WEIGHT_STEP),
-                remove: format!("/lora-remove {}", lora.name),
+                remove: format!("/lora-remove {}", quote_argument(&lora.name)),
             }
         })
         .collect()
@@ -93,6 +99,9 @@ pub fn Inspector(
     onrun: EventHandler<String>,
 ) -> Element {
     let mut app_state = use_context::<Signal<crate::state::AppState>>();
+    let actions = use_context::<ActionRequest>();
+    let display_reference = reference;
+    let reference = format!("c:{}", artifact.id);
     let draft = app_state
         .read()
         .description_draft(artifact.id)
@@ -110,36 +119,14 @@ pub fn Inspector(
     let seed = artifact.default_seed;
     let dirty = draft != artifact.description;
     let effective_steps = steps.unwrap_or(defaults.read().steps);
-    let mut custom_size = use_signal(String::new);
+    let project_steps = defaults.read().steps;
+    let mut custom_size = use_signal(|| size.map(|(w, h)| format!("{w}x{h}")).unwrap_or_default());
     let (size_id, size_mount) = super::text_input::use_text_value(custom_size(), None);
     let mut custom_error = use_signal(|| None::<String>);
     let custom_ref = reference.clone();
     let visual = artifact.kind.is_visual();
 
-    // The commands are built here, one owned string per control, because a
-    // closure inside an rsx `for` cannot move the shared `reference` twice.
-    let sizes: Vec<(u32, u32, bool, String)> = SIZE_PRESETS
-        .iter()
-        .map(|&(width, height)| {
-            (
-                width,
-                height,
-                size == Some((width, height)),
-                format!("/resize {reference} {width}x{height}"),
-            )
-        })
-        .collect();
-    let step_stops: Vec<(u32, bool, String)> = STEP_STOPS
-        .iter()
-        .map(|&stop| {
-            (
-                stop,
-                steps == Some(stop),
-                format!("/set {reference} --steps {stop}"),
-            )
-        })
-        .collect();
-    let steps_auto = format!("/set {reference} --steps auto");
+    let steps_ref = reference.clone();
     let size_auto = format!("/set {reference} --size auto");
     let seed_toggle = if seed.is_some() {
         format!("/set {reference} --seed random")
@@ -154,10 +141,6 @@ pub fn Inspector(
     let adapters = adapter_rows(artifact.id, &bound_loras);
 
     let describe_ref = reference.clone();
-    // `/attach-lora` needs an adapter name, so this hands the caret to the
-    // bar rather than running anything.
-    let attach_prefix = format!("/attach-lora {reference} ");
-    let composer = use_context::<Signal<String>>();
 
     rsx! {
         aside { class: "flex w-[300px] shrink-0 flex-col border-l border-white/[0.055] bg-zinc-950/35",
@@ -165,7 +148,7 @@ pub fn Inspector(
                 p { class: "text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-600",
                     "{artifact.kind}"
                 }
-                span { class: "ml-auto font-mono text-[10px] text-zinc-600", "{reference}" }
+                span { class: "ml-auto max-w-[65%] truncate font-mono text-xs text-zinc-400", title: display_reference.clone(), "{display_reference}" }
             }
 
             div { class: "min-h-0 flex-1 space-y-6 overflow-y-auto p-4",
@@ -176,7 +159,7 @@ pub fn Inspector(
                         p { class: "text-[10px] font-semibold uppercase tracking-[0.07em] text-zinc-600",
                             "Description"
                         }
-                        span { class: "rounded bg-violet-400/15 px-1.5 py-0.5 text-[9px] font-bold text-violet-300",
+                        span { title: "Future renders use this description", class: "rounded bg-violet-400/15 px-1.5 py-0.5 text-[9px] font-bold text-violet-300",
                             "canon"
                         }
                     }
@@ -190,9 +173,6 @@ pub fn Inspector(
                         oninput: move |event| app_state.write().set_description_draft(artifact_id, event.value()),
                     }
                     div { class: "mt-1.5 flex items-center gap-2",
-                        p { class: "flex-1 text-[10px] leading-4 text-zinc-600",
-                            "Every generation is grounded against this."
-                        }
                         button {
                             class: "rounded-md bg-violet-400/15 px-2.5 py-1 text-[11px] font-semibold text-violet-200 transition hover:bg-violet-400/25 disabled:opacity-30",
                             disabled: disabled || !dirty || draft.trim().is_empty(),
@@ -208,37 +188,34 @@ pub fn Inspector(
                 }
 
                 if visual {
+                    details { class: "studio-inspector-settings",
+                    summary { class: "flex cursor-pointer items-center gap-2 text-sm text-zinc-300",
+                        super::icons::Icon { name: IconName::Sliders, class: "size-4" }
+                        "Generation"
+                        span { class: "ml-auto text-xs text-zinc-500", "{effective_steps} steps" }
+                    }
+                    div { class: "mt-4 space-y-5",
                     // ----------------------------------------------- canvas
                     section {
                         p { class: "mb-2 text-[10px] font-semibold uppercase tracking-[0.07em] text-zinc-600",
                             "Canvas"
                         }
-                        div { class: "grid grid-cols-2 gap-1 rounded-[9px] bg-white/[0.03] p-1",
-                            for (width , height , active , command) in sizes {
-                                SizeButton {
-                                    key: "{width}x{height}",
-                                    width,
-                                    height,
-                                    active,
-                                    disabled,
-                                    onpick: move |_| onrun.call(command.clone()),
-                                }
-                            }
+                        select { class: "setting-control", aria_label: "Canvas size preset", disabled, value: custom_size(), onchange: move |event| custom_size.set(event.value()),
+                            if !SIZE_PRESETS.iter().any(|(w, h)| custom_size() == format!("{w}x{h}")) { option { value: custom_size(), "Custom" } }
+                            for (w, h) in SIZE_PRESETS { option { value: "{w}x{h}", selected: custom_size() == format!("{w}x{h}"), "{w} × {h}" } }
                         }
-                        p { class: "mt-1.5 text-[10px] leading-4 text-zinc-600",
-                            {size.map(|(width, height)| format!("Effective size: {width}×{height}{}", if artifact.default_size.is_none() { " (inherited)" } else { "" })).unwrap_or_default()}
-                            " · Resize generates a new image."
-                        }
-                        button { disabled: disabled || artifact.default_size.is_none(), onclick: move |_| onrun.call(size_auto.clone()), "Use project size on next generation" }
-                        input { id: size_id, onmounted: size_mount, class: "setting-control mt-2", aria_label: "Custom canvas size", placeholder: "Custom width x height", disabled,
+                        input { id: size_id, onmounted: size_mount, class: "setting-control mt-2", aria_label: "Custom canvas size", placeholder: "Width × height", disabled,
                             oninput: move |event| custom_size.set(event.value()) }
-                        button { disabled, onclick: move |_| {
+                        div { class: "mt-2 flex items-center gap-2",
+                        button { class: "studio-button", title: "Resize and generate a new revision", disabled, onclick: move |_| {
                             let size = custom_size().replace('×', "x");
                             let dimensions = size.split_once('x').and_then(|(w, h)| Some((w.trim().parse::<u32>().ok()?, h.trim().parse::<u32>().ok()?)))
                                 .filter(|&(w, h)| storyfella_studio_core::registry::pipeline::is_valid_size(w, h));
                             if let Some((width, height)) = dimensions { custom_error.set(None); onrun.call(format!("/resize {custom_ref} {width}x{height}")); }
                             else { custom_error.set(Some("Use width x height, multiples of 32 within supported bounds.".into())); }
-                        }, "Generate at custom size" }
+                        }, "Resize and render" }
+                        IconButton { label: "Use project size on next generation", icon: IconName::Refresh, disabled: disabled || artifact.default_size.is_none(), onclick: move |_| onrun.call(size_auto.clone()) }
+                        }
                         if let Some(error) = custom_error() { p { role: "alert", "{error}" } }
                     }
 
@@ -255,25 +232,12 @@ pub fn Inspector(
                                 }
                             }
                         }
-                        div { class: "flex flex-wrap gap-1",
-                            for (stop , active , command) in step_stops {
-                                StepButton {
-                                    key: "{stop}",
-                                    steps: stop,
-                                    active,
-                                    disabled,
-                                    onpick: move |_| onrun.call(command.clone()),
-                                }
-                            }
-                            button {
-                                class: if steps.is_none() { "rounded-md bg-violet-400/15 px-2 py-1 font-mono text-[10px] text-violet-300" } else { "rounded-md px-2 py-1 font-mono text-[10px] text-zinc-600 transition hover:text-zinc-300" },
-                                disabled,
-                                onclick: move |_| onrun.call(steps_auto.clone()),
-                                "auto"
-                            }
-                        }
-                        p { class: "mt-1.5 text-[10px] leading-4 text-zinc-600",
-                            "Fewer steps is faster and rougher. Applies to the next render."
+                        select { class: "setting-control", aria_label: "Sampling steps", title: "Applies to the next render", disabled,
+                            value: steps.map(|n| n.to_string()).unwrap_or_else(|| "auto".into()),
+                            onchange: move |event| onrun.call(format!("/set {steps_ref} --steps {}", event.value())),
+                            option { value: "auto", selected: steps.is_none(), "Project default ({project_steps})" }
+                            if let Some(current) = steps.filter(|n| !STEP_STOPS.contains(n)) { option { value: "{current}", selected: true, "{current}" } }
+                            for stop in STEP_STOPS { option { value: "{stop}", selected: steps == Some(stop), "{stop}" } }
                         }
                     }
 
@@ -283,9 +247,6 @@ pub fn Inspector(
                             p { class: "text-[10px] font-semibold uppercase tracking-[0.07em] text-zinc-600",
                                 "Seed"
                             }
-                            span { class: "ml-auto text-[10px] text-zinc-600",
-                                if seed.is_some() { "reproducible" } else { "rerolls each run" }
-                            }
                         }
                         div { class: "flex items-center gap-2",
                             span { class: "flex-1 truncate rounded-[7px] bg-white/[0.03] px-2.5 py-1.5 font-mono text-[12px] text-zinc-300 ring-1 ring-inset ring-white/[0.06]",
@@ -294,15 +255,7 @@ pub fn Inspector(
                                     None => "—".to_owned(),
                                 }
                             }
-                            button {
-                                class: if seed.is_some() { "rounded-[7px] bg-amber-400/15 px-2.5 py-1.5 text-[11px] font-semibold text-amber-300 transition hover:bg-amber-400/25 disabled:opacity-30" } else { "rounded-[7px] bg-white/[0.05] px-2.5 py-1.5 text-[11px] font-semibold text-zinc-400 transition hover:bg-white/[0.09] disabled:opacity-30" },
-                                disabled,
-                                onclick: move |_| onrun.call(seed_toggle.clone()),
-                                if seed.is_some() { "Unpin" } else { "Pin" }
-                            }
-                        }
-                        p { class: "mt-1.5 text-[10px] leading-4 text-zinc-600",
-                            "Pinned, an edit shows only what the edit changed."
+                            IconButton { label: if seed.is_some() { "Unpin seed" } else { "Pin a repeatable seed" }, icon: IconName::Lock, active: seed.is_some(), disabled, onclick: move |_| onrun.call(seed_toggle.clone()) }
                         }
                     }
 
@@ -365,46 +318,17 @@ pub fn Inspector(
                             }
                         }
                         button {
-                            class: "mt-2 w-full rounded-md bg-white/[0.05] py-1.5 text-[10px] font-semibold text-zinc-400 transition hover:bg-white/[0.09] hover:text-zinc-200 disabled:opacity-30",
+                            class: "studio-button mt-2",
                             disabled,
-                            title: "Prefill the command bar — the adapter name comes next",
-                            onclick: move |_| super::cmdbar::prefill(composer, attach_prefix.clone()),
+                            onclick: move |_| actions.send(StudioAction::Art(ArtAction::AttachAdapter(artifact_id))),
                             "Attach an adapter"
                         }
+                    }
+                    }
                     }
                 }
 
             }
-        }
-    }
-}
-
-#[component]
-fn SizeButton(
-    width: u32,
-    height: u32,
-    active: bool,
-    disabled: bool,
-    onpick: EventHandler<()>,
-) -> Element {
-    rsx! {
-        button {
-            class: if active { "rounded-md bg-violet-400/20 py-1.5 font-mono text-[10.5px] font-semibold text-violet-200" } else { "rounded-md py-1.5 font-mono text-[10.5px] text-zinc-500 transition hover:text-zinc-200 disabled:opacity-40" },
-            disabled,
-            onclick: move |_| onpick.call(()),
-            "{width}x{height}"
-        }
-    }
-}
-
-#[component]
-fn StepButton(steps: u32, active: bool, disabled: bool, onpick: EventHandler<()>) -> Element {
-    rsx! {
-        button {
-            class: if active { "rounded-md bg-violet-400/15 px-2 py-1 font-mono text-[10px] text-violet-300" } else { "rounded-md px-2 py-1 font-mono text-[10px] text-zinc-600 transition hover:text-zinc-300 disabled:opacity-40" },
-            disabled,
-            onclick: move |_| onpick.call(()),
-            "{steps}"
         }
     }
 }
@@ -421,7 +345,11 @@ fn fresh_seed() -> u64 {
 
 /// The `/describe` command the Save button emits, exposed for tests.
 pub fn describe_command(reference: &str, description: &str) -> String {
-    format!("/describe {reference} {:?}", description.trim())
+    format!(
+        "/describe {} {}",
+        quote_argument(reference),
+        quote_argument(description.trim())
+    )
 }
 
 #[cfg(test)]

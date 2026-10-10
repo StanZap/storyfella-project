@@ -34,7 +34,7 @@ use storyfella_studio_core::registry::{
 };
 
 /// The id the caret bridge binds to. One command bar at a time.
-const BAR_ID: &str = "svs-cmdbar";
+pub const BAR_ID: &str = "svs-cmdbar";
 
 /// Prefills the command field and puts the caret in it.
 ///
@@ -44,13 +44,25 @@ const BAR_ID: &str = "svs-cmdbar";
 /// field may sit on a screen (the canvas) still hidden when the caller runs, so
 /// focus is retried across frames until the bar is visible.
 pub fn prefill(mut composer: Signal<String>, command: impl Into<String>) {
-    composer.set(command.into());
+    let command = command.into();
+    let encoded = serde_json::to_string(&command).expect("command string serializes");
+    composer.set(command);
+    document::eval(&format!(
+        "const el = document.getElementById('{BAR_ID}'); if (el) el.value = {encoded};"
+    ));
     document::eval(&focus_bar(true));
 }
 
 /// Focuses the command field without changing it (the `/` shortcut).
 pub fn focus_field() {
     document::eval(&focus_bar(false));
+}
+
+/// Clear accepted input in native and application state. A conditional typing
+/// sync can skip a value after a burst of native input events.
+pub fn clear(mut composer: Signal<String>) {
+    composer.set(String::new());
+    document::eval(&format!("const el = document.getElementById('{BAR_ID}'); if (el) {{ el.value = ''; el.style.height = 'auto'; el.setSelectionRange(0, 0); }}"));
 }
 
 /// The script that focuses the command bar once it is visible; `caret_to_end`
@@ -247,12 +259,11 @@ pub fn CommandBar(
     use_future(move || async move {
         let mut bridge = document::eval(CARET_BRIDGE);
         while let Ok((text, offset)) = bridge.recv::<(String, usize)>().await {
-            if *value.peek() != text {
-                value.set(text);
-                selected.set(0);
-                dismissed.set(false);
+            // Native oninput owns text. Queued caret events can contain the
+            // old command after submission or completion.
+            if *value.peek() == text {
+                caret.set(offset);
             }
-            caret.set(offset);
         }
     });
 
@@ -264,7 +275,11 @@ pub fn CommandBar(
     let segments = paint(&text, &known);
     let completions = completion::complete(&text, position, &refs);
     let help = completion::signature(&text, position);
-    let showing = *focused.read() && !completions.is_empty() && !*dismissed.read() && !disabled;
+    let showing = *focused.read()
+        && !text.is_empty()
+        && !completions.is_empty()
+        && !*dismissed.read()
+        && !disabled;
     let index = (*selected.read()).min(completions.items.len().saturating_sub(1));
 
     let replace = completions.replace;

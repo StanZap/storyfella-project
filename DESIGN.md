@@ -4,7 +4,7 @@ This is the central UI and UX reference for Studio, including the shared playbac
 surface used by Preview. Read it before changing a user-facing flow or component.
 It defines required behavior, the visual vocabulary, and the findings from
 the 2026-10-07 sweep. The remediation record in §9 describes the implementation
-and its verification as of 2026-10-08; the original observations remain in §7.
+and its verification through 2026-10-10; the original observations remain in §7.
 Requirements are ongoing review criteria, not a claim of accessibility certification.
 
 [ROADMAP §12](docs/ROADMAP.md#12-suggested-implementation-order) owns delivery
@@ -26,6 +26,9 @@ understandable without knowing Rust, the CLI, or the backend process model.
 - Make available actions discoverable with both a pointer and a keyboard.
 - Share terminology, state, and behavior across equivalent surfaces.
 - Show useful information first; technical context is optional detail.
+- Keep routine guidance out of the workspace. Use concise labels, named icons,
+  tooltips and disclosures; reserve visible supporting copy for decisions,
+  errors and meaningful state.
 - Ask for a decision when it prevents a meaningful mistake. Routine navigation,
   validation and reversible editing should remain fluid.
 - Empty, loading, pending, offline, failed and complete are distinct states.
@@ -337,8 +340,8 @@ screen, and actions route to the correct editor/context.
 **Live + source.** Storage's Reveal click did nothing: `PathRow` has no handler.
 General's Background generation is `Toggle { enabled: true }` with a default
 no-op callback; Appearance offers only Dark. Canvas shows three unimplemented
-tools. See [settings.rs](apps/studio/src/ui/settings.rs) and
-[tools.rs](apps/studio/src/ui/tools.rs). Implement real controls or present
+tools (the former `ui/tools.rs` module was removed in the 2026-10-10 pass).
+See [settings.rs](apps/studio/src/ui/settings.rs). Implement real controls or present
 readonly information; remove planned tools from the production rail.
 **Acceptance:** every enabled control produces its labeled result, and disabled
 controls describe a current actionable constraint.
@@ -575,7 +578,7 @@ checkout. Keep the original acceptance criteria as regression checks.
 | SF-UX-06 | Invalid commands and failed planning retain text and target; accepted requests have recoverable history. | [Canvas](apps/studio/src/ui/canvas.rs); live invalid command retains exact text. |
 | SF-UX-07 | Navigation dispatch includes implemented bindings and a timed `g` prefix; unavailable bindings are removed. Native field undo keeps precedence. | [keyboard bridge](apps/studio/src/ui/keys.rs), [shortcuts](apps/studio/src/ui/shortcuts.rs); live `g s`, Cmd+K and field Tab. |
 | SF-UX-08 | Workspace owns the palette, with a visible Commands button and focused-window shortcut on every screen. | [workspace](apps/studio/src/ui/mod.rs), [palette](apps/studio/src/ui/palette.rs); live Settings Cmd+K. |
-| SF-UX-09 | Reveal opens the path and reports failure; theme/background behavior is readonly information; only implemented Pointer appears in the rail. | [settings](apps/studio/src/ui/settings.rs), [tools](apps/studio/src/ui/tools.rs), [components](apps/studio/src/ui/components.rs). |
+| SF-UX-09 | Reveal opens the path and reports failure; theme/background behavior is readonly information. The remaining Pointer button and its unused driver/shortcut model were removed on 2026-10-10 because selecting it performed no editing action. | [settings](apps/studio/src/ui/settings.rs), [canvas](apps/studio/src/ui/canvas.rs), [components](apps/studio/src/ui/components.rs). |
 | SF-UX-10 | Fields/switches have names, Settings descriptions are associated, combobox/listbox state is exposed, notices announce state, and decorative highlights are hidden from accessibility. | [components](apps/studio/src/ui/components.rs), [Writer](apps/studio/src/ui/writer.rs), [palette](apps/studio/src/ui/palette.rs); live accessibility tree shows named editors and inert dialog background. |
 | SF-UX-11 | Small metadata has a 12px floor, muted colors are brighter, enabled targets have a 24px floor, focus is visible, reduced motion is respected and narrow layouts adapt. | [styles](apps/studio/tailwind.css), [workspace](apps/studio/src/ui/mod.rs); rendered macOS inspection. Full contrast/zoom coverage remains below. |
 | SF-UX-12 | Each size field keeps its own invalid draft and error; Scene and Beat have separate defaults. | [settings](apps/studio/src/ui/settings.rs); source review. |
@@ -778,3 +781,49 @@ Repository checks passed: workspace all-target check and tests, strict Clippy
 for Atelier/Studio/Studio core, formatting, the runnable Studio build through
 xtask, and the signed Atelier macOS bundle. Clipforge's `xtask check`, `xtask ci`
 (including MCP smoke), formatting and strict inference-crate Clippy also passed.
+
+### Studio workspace and visual actions · 2026-10-10
+
+The workspace now has stable icon-and-label navigation, a project switcher and
+named icon actions for commands, save, undo and redo. Authoring requires an open
+project; the prerequisite offers a direct Projects action while keeping task
+owners mounted. Routine explanatory copy was removed from the gallery,
+inspector, project cards and action bars. Generation settings and provenance
+use disclosures. Artwork actions, the variant strip and the command composer
+occupy separate layout regions so they do not cover the image.
+
+New artifact, variant, edit, regenerate and attach-adapter actions open focused
+forms, validate locally and compile through the shared typed operation layer.
+The palette offers these actions, workspace navigation, save/undo/redo, artifacts
+and every slash operation. Argument-requiring commands prefill the composer;
+they never submit incomplete operations. Visual target actions use artifact
+identity, and contextual slash prefixes/completion safely quote spaced names
+and smart punctuation. `/` reaches the composer from other screens outside
+text entry. Failed commands retain input with local feedback and direct Details.
+
+Live testing found and fixed two event bugs: delayed caret events restored
+submitted commands, and an import effect subscribed to its own loading state,
+reopening the native picker. Native text input now owns command text; explicit
+prefill/clear synchronizes the field. The picker effect reads task state without
+subscribing to it.
+
+macOS acceptance used an isolated bundle and project data. Checks exercised
+project creation and prerequisites; form and slash creation of text artifacts;
+quoted-name description updates and Tab completion; palette navigation from an
+input; invalid-command retention; accepted-command clearing; approved artwork
+preview, editable import name and completion without repeated pickers; edit
+validation, ordinary typing, contained Tab navigation, Escape/focus return;
+variant and adapter dialogs; generation inheritance, sampling selection, seed
+pinning and toolbar undo/redo. At approximately 1,203 × 644 logical pixels,
+the workspace actions, composer and dialog footers remained reachable and the
+inspector scrolled independently. Smaller widths, 200% text scaling, assistive
+technology, Linux/Windows native interaction and fresh inference output are
+not covered by this acceptance pass. Studio's hosted image-provider UI remains
+planned; this pass preserves the existing inference path.
+
+Final verification passed: workspace all-target check, workspace tests, strict
+Studio/Studio-core Clippy, formatting and the runnable Dioxus build. The final
+isolated build reopened saved artwork and retained generation settings; ordinary
+typing of a quoted-name command updated the description, cleared its native
+field and disabled submission. Palette navigation and global command entry
+also passed on that build. Logs are under `.svs-e2e/logs/studio-ux-*`.

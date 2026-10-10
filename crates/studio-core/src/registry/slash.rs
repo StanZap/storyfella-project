@@ -51,6 +51,28 @@ pub fn is_slash_command(input: &str) -> bool {
     input.trim_start().starts_with('/')
 }
 
+/// Serialize one argument without losing spaces, quotes or smart punctuation.
+/// Shared by UI-generated commands and completion insertion.
+pub fn quote_argument(value: &str) -> String {
+    if !value.is_empty()
+        && !value.starts_with('-')
+        && !value
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '\\' | '"' | '“' | '”' | '—' | '–'))
+    {
+        return value.to_owned();
+    }
+    let mut quoted = String::from("\"");
+    for c in value.chars() {
+        if matches!(c, '\\' | '"' | '“' | '”' | '—' | '–') {
+            quoted.push('\\');
+        }
+        quoted.push(c);
+    }
+    quoted.push('"');
+    quoted
+}
+
 /// One operation's grammar: the shape the parser expects and the flags it
 /// accepts.
 ///

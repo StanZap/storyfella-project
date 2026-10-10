@@ -50,17 +50,25 @@ pub struct Shortcut {
     pub scope: Scope,
 }
 
+const fn primary(mac: &'static str, other: &'static str) -> &'static str {
+    if cfg!(target_os = "macos") {
+        mac
+    } else {
+        other
+    }
+}
+
 pub const SHORTCUTS: &[Shortcut] = &[
     // ------------------------------------------------------------- global
     Shortcut {
         action: "palette",
-        keys: "⌃K",
+        keys: primary("⌘K", "Ctrl+K"),
         label: "Open the command palette",
         scope: Scope::Global,
     },
     Shortcut {
         action: "save",
-        keys: "⌃S",
+        keys: primary("⌘S", "Ctrl+S"),
         label: "Save the project",
         scope: Scope::Global,
     },
@@ -84,13 +92,13 @@ pub const SHORTCUTS: &[Shortcut] = &[
     },
     Shortcut {
         action: "undo",
-        keys: "⌃Z",
+        keys: primary("⌘Z", "Ctrl+Z"),
         label: "Undo",
         scope: Scope::Global,
     },
     Shortcut {
         action: "redo",
-        keys: "⌃⇧Z",
+        keys: primary("⌘⇧Z", "Ctrl+Shift+Z"),
         label: "Redo",
         scope: Scope::Global,
     },
@@ -110,7 +118,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut {
         action: "new",
         keys: "n",
-        label: "New character",
+        label: "New artifact",
         scope: Scope::Grid,
     },
     // ------------------------------------------------------------- detail
@@ -156,13 +164,6 @@ pub const SHORTCUTS: &[Shortcut] = &[
         label: "Show or hide the variants",
         scope: Scope::Detail,
     },
-    // ------------------------------------------------------- canvas tools
-    Shortcut {
-        action: "tool-pointer",
-        keys: "p",
-        label: "Put the canvas tools away",
-        scope: Scope::Detail,
-    },
 ];
 
 /// The shortcut for an action, if it has one.
@@ -187,25 +188,6 @@ pub fn for_scope(scope: Scope) -> impl Iterator<Item = &'static Shortcut> {
     SHORTCUTS
         .iter()
         .filter(move |shortcut| shortcut.scope == scope)
-}
-
-/// A one-line hint strip: `hjkl move · ⏎ open · n new`.
-pub fn hint_line(scope: Scope) -> String {
-    for_scope(scope)
-        .map(|shortcut| format!("{} {}", shortcut.keys, short_label(shortcut.label)))
-        .collect::<Vec<_>>()
-        .join(" · ")
-}
-
-/// The first word or two of a label, for the status bar where the full
-/// sentence would not fit.
-fn short_label(label: &str) -> String {
-    label
-        .split_whitespace()
-        .take(2)
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
 }
 
 #[cfg(test)]
@@ -268,13 +250,5 @@ mod tests {
             tooltip("Attach an adapter", "attach-lora"),
             "Attach an adapter"
         );
-    }
-
-    #[test]
-    fn the_hint_line_reads_as_a_strip() {
-        let hint = hint_line(Scope::Grid);
-        assert!(hint.contains("hjkl move"));
-        assert!(hint.contains("⏎ open"));
-        assert!(hint.contains('·'));
     }
 }

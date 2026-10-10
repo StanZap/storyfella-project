@@ -91,8 +91,6 @@ pub enum StepVerb {
     Cursor(String),
     /// Show or hide the command palette.
     Palette(bool),
-    /// Pick a canvas tool, so the rail visibly changes the way a key does.
-    SelectTool(crate::ui::tools::Tool),
     /// Put an artifact into the rendering state, wait, then complete it
     /// with its existing picture.
     ///
@@ -164,7 +162,6 @@ impl StepVerb {
             Self::Say => String::new(),
             Self::Caret(line) => format!("caret to line {line}"),
             Self::TypeStory(_) => "type in the Writer".to_owned(),
-            Self::SelectTool(tool) => format!("pick the {} tool", tool.label().to_lowercase()),
             Self::Cursor(name) => format!("cursor to \"{name}\""),
             Self::Palette(true) => "open the palette".to_owned(),
             Self::Palette(false) => "close the palette".to_owned(),
@@ -219,13 +216,6 @@ impl StepVerb {
             "cursor" => Self::Cursor(text(&value)?),
             "type_story" => Self::TypeStory(text(&value)?),
             "palette" => Self::Palette(value.as_bool().unwrap_or(true)),
-            "select_tool" => {
-                let name = text(&value)?;
-                Self::SelectTool(
-                    crate::ui::tools::Tool::parse(&name)
-                        .ok_or_else(|| format!("{name:?} is not a canvas tool the rail offers"))?,
-                )
-            }
             "simulate_render" => Self::SimulateRender(text(&value)?),
             "go_settings" => Self::GoSettings,
             "create_project" => Self::CreateProject(text(&value)?),
@@ -672,9 +662,6 @@ pub struct DriveContext {
     pub writer_caret: crate::ui::WriterCaret,
     pub grid_cursor: crate::ui::GridCursor,
     pub palette_open: Signal<bool>,
-    /// The canvas tool rail, so a plan can demonstrate a tool through the
-    /// same state a hand drives.
-    pub active_tool: crate::ui::canvas::ActiveTool,
 }
 
 /// The live state of a run, as the assistant card renders it.
@@ -967,10 +954,6 @@ async fn execute_step(
         }
         StepVerb::Palette(open) => {
             ctx.palette_open.clone().set(*open);
-            StepStatus::Passed
-        }
-        StepVerb::SelectTool(tool) => {
-            ctx.active_tool.0.clone().set(*tool);
             StepStatus::Passed
         }
         StepVerb::SimulateRender(name) => {
@@ -1601,17 +1584,6 @@ mod tests {
     fn typing_obeys_pause_stop_and_mode_without_corrupting_unicode() {
         let mut dom = VirtualDom::new(TypingProbe);
         dom.rebuild_in_place();
-    }
-
-    #[test]
-    fn a_tool_a_plan_cannot_use_is_rejected_at_parse() {
-        // Crop is in the rail but does nothing yet. A plan naming it should
-        // fail when it loads, not silently do nothing halfway through a demo.
-        let error = Plan::from_yaml(
-            "name: \"x\"\ndescription: \"d\"\nsteps:\n  - select_tool: \"nonsense\"\n",
-        )
-        .unwrap_err();
-        assert!(error.contains("nonsense"), "{error}");
     }
 
     #[test]

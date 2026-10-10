@@ -8,6 +8,7 @@ pub fn ArtworkImport(
     mut app_state: Signal<AppState>,
     asset_directory: PathBuf,
     disabled: bool,
+    trigger: Signal<u64>,
 ) -> Element {
     let mut pending = use_signal(|| None::<Arc<ApprovedArtwork>>);
     let mut preview = use_signal(String::new);
@@ -17,9 +18,10 @@ pub fn ArtworkImport(
     let mut importing = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
     let mut review_project = use_signal(|| None::<PathBuf>);
-    let project = app_state.read().project_path.clone();
-    let pick = move |_| {
-        if disabled || loading() || importing() {
+    let mut pick = move || {
+        // This action runs inside a trigger effect. Reading task state must
+        // not subscribe that effect and reopen the picker when loading ends.
+        if disabled || *loading.peek() || *importing.peek() {
             return;
         }
         let Some(path) = rfd::FileDialog::new()
@@ -30,7 +32,7 @@ pub fn ArtworkImport(
             return;
         };
         loading.set(true);
-        review_project.set(app_state.read().project_path.clone());
+        review_project.set(app_state.peek().project_path.clone());
         error.set(None);
         spawn(async move {
             let result = tokio::task::spawn_blocking(move || {
@@ -55,6 +57,13 @@ pub fn ArtworkImport(
             }
         });
     };
+    let trigger_value = trigger();
+    use_effect(use_reactive(&trigger_value, move |value| {
+        if value > 0 {
+            pick();
+        }
+    }));
+    let (name_id, name_mount) = super::text_input::use_text_value(name(), None);
     let apply = move |_| {
         if importing() {
             return;
@@ -115,22 +124,17 @@ pub fn ArtworkImport(
         });
     };
     rsx! {
-        div { class: "flex flex-col gap-1",
-            button {
-                class: "rounded-lg bg-violet-400/15 px-3 py-1.5 text-[11px] font-semibold text-violet-200 hover:bg-violet-400/25 disabled:opacity-40",
-                disabled: disabled || loading() || importing() || project.is_none(), onclick: pick,
-                if loading() { "Loading artwork…" } else { "Import Atelier artwork" }
-            }
-            if pending().is_none() { if let Some(message) = error() { p { role: "alert", class: "max-w-sm text-xs text-rose-300", "{message}" } } }
+        if pending().is_none() {
+            if loading() { p { role: "status", class: "px-4 py-2 text-xs", "Loading artwork…" } }
+            if let Some(message) = error() { p { role: "alert", class: "studio-inline-error", "{message}" } }
         }
         if let Some(artwork) = pending() {
             super::dialog::Dialog { title: "Import approved artwork", on_close: move |_| { if !importing() { pending.set(None); error.set(None); } },
                 div { class: "w-[420px] max-w-full space-y-4 p-6",
                     h2 { class: "text-lg font-semibold text-zinc-100", "Import approved artwork" }
-                    p { class: "text-sm text-zinc-400", "Adds a completed image to this project. No generation or API charge." }
                     img { src: preview(), alt: "Approved artwork preview", class: "h-40 w-full rounded-lg bg-zinc-900 object-contain" }
                     label { class: "block text-sm text-zinc-300", "Name",
-                        input { class: "mt-1 w-full rounded-lg bg-zinc-900 p-2 text-zinc-100 ring-1 ring-zinc-700", autofocus: true, disabled: importing(), value: name(), oninput: move |event| name.set(event.value()) }
+                        input { class: "mt-1 w-full rounded-lg bg-zinc-900 p-2 text-zinc-100 ring-1 ring-zinc-700", autofocus: true, disabled: importing(), id: name_id, onmounted: name_mount, oninput: move |event| name.set(event.value()) }
                     }
                     label { class: "block text-sm text-zinc-300", "Use as",
                         select { class: "mt-1 w-full rounded-lg bg-zinc-900 p-2 text-zinc-100", disabled: importing(), value: kind().as_str(),
@@ -138,7 +142,9 @@ pub fn ArtworkImport(
                             option { value: "character", "Character" } option { value: "environment", "Environment" } option { value: "object", "Object" }
                         }
                     }
-                    p { class: "max-h-28 overflow-y-auto whitespace-pre-wrap break-words text-xs text-zinc-500", "{artwork.provenance}" }
+                    details { summary { class: "text-xs text-zinc-400", "Provenance" }
+                        p { class: "mt-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-words text-xs text-zinc-400", "{artwork.provenance}" }
+                    }
                     if let Some(message) = error() { p { role: "alert", class: "text-sm text-rose-300", "{message}" } }
                     div { class: "flex justify-end gap-2",
                         button { class: "rounded-lg px-3 py-2 text-sm text-zinc-300", disabled: importing(), onclick: move |_| { pending.set(None); error.set(None); }, "Cancel" }

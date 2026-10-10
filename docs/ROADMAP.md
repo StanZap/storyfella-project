@@ -599,8 +599,8 @@ remain **planned**; see [Atelier](atelier.md) for limits and verification.
    are gated, per the execution model). The legacy storyboard model was
    removed
    with it (`src/models/`, `src/timeline/`, schema v3 drops `project_json`).
-   — **✅ implemented**; artboard pan/zoom, `c:` autocomplete, and syntax
-   highlighting remain deferred (§6).
+   — **✅ implemented**; `c:` autocomplete and command syntax highlighting
+   are implemented. Artboard pan/zoom remains deferred (§6).
 5. **Generation quality controls:** configurable per-kind default sizes
    (`[generation.sizes]`), default step count (`[generation] steps`), and
    the Settings screen to edit them live (persisted to `config/storyfella.toml`,
@@ -737,6 +737,10 @@ remain **planned**; see [Atelier](atelier.md) for limits and verification.
     Change location/Open folder controls and explicit restart feedback. One
     `storyfella.toml` contains application and inference settings; old user
     settings migrate once while preserving originals and existing model files.
+    The 2026-10-10 workspace pass adds stable icon navigation, visual art-action
+    forms using shared typed operations, contextual palette actions, a separate
+    command dock and quieter inspector/project surfaces. It fixes command
+    clearing and repeated artwork pickers found during live macOS acceptance.
     §9 records changes, regression evidence and remaining cross-platform,
     assistive-technology and failure-injection coverage. — **✅ remediation implemented; broader manual acceptance tracked in DESIGN.md**
 

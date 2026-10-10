@@ -16,6 +16,8 @@ use storyfella_studio_core::registry::{Artifact, ArtifactKind, ArtifactRegistry,
 use crate::state::AppState;
 
 use super::{
+    actions::{ActionRequest, ArtAction, StudioAction},
+    components::IconButton,
     generated_asset_url,
     icons::{Icon, IconName},
 };
@@ -128,12 +130,11 @@ pub fn ordered_ids(registry: &ArtifactRegistry, query: &str) -> Vec<Uuid> {
 pub fn Gallery(
     app_state: Signal<AppState>,
     mut filter: Signal<String>,
-    mut composer: Signal<String>,
     /// The keyboard cursor, as an index into [`ordered_ids`].
     cursor: Signal<usize>,
     disabled: bool,
-    asset_directory: std::path::PathBuf,
 ) -> Element {
+    let actions = use_context::<ActionRequest>();
     let (filter_id, filter_mount) = super::text_input::use_text_value(filter(), None);
     let registry = app_state.read().registry.clone();
     let query = filter.read().to_ascii_lowercase();
@@ -149,11 +150,16 @@ pub fn Gallery(
         if tiles.is_empty() {
             return None;
         }
+        let heading = if kind == ArtifactKind::Story {
+            "Stories".to_owned()
+        } else {
+            format!("{kind}s")
+        };
         Some(rsx! {
             section { key: "{kind}",
                 div { class: "mb-3 flex items-center gap-2",
                     p { class: "text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-600",
-                        "{kind}s"
+                        "{heading}"
                     }
                     span { class: "text-[10px] text-zinc-700", "{tiles.len()}" }
                     div { class: "h-px flex-1 bg-white/[0.055]" }
@@ -178,13 +184,15 @@ pub fn Gallery(
     rsx! {
         div { class: "min-h-0 w-full flex-1 overflow-y-auto",
             div { class: "sticky top-0 z-10 flex items-center gap-3 border-b border-white/[0.05] bg-zinc-950/80 px-6 py-3 backdrop-blur-xl",
-                super::artwork_import::ArtworkImport { app_state, asset_directory, disabled }
-                p { class: "text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-600",
-                    "Artifacts · {result_count} shown"
+                button { class: "studio-button studio-button-primary", disabled,
+                    title: super::shortcuts::tooltip("New artifact", "new"),
+                    onclick: move |_| actions.send(StudioAction::Art(ArtAction::Create(ArtifactKind::Character))),
+                    Icon { name: IconName::Add, class: "size-4" }
+                    "New artifact"
                 }
-                p { class: "text-[10px] text-zinc-700",
-                    "{super::shortcuts::hint_line(super::shortcuts::Scope::Grid)}"
-                }
+                IconButton { icon: IconName::Upload, label: "Import Atelier artwork", disabled,
+                    onclick: move |_| actions.send(StudioAction::ImportArtwork) }
+                span { class: "text-xs text-zinc-500", "{result_count}" }
                 input {
                     class: "ml-auto h-8 w-56 rounded-lg bg-white/[0.045] px-3 text-[11px] text-zinc-200 outline-none ring-1 ring-inset ring-white/[0.06] transition placeholder:text-zinc-700 focus:ring-violet-400/40",
                     aria_label: "Filter artifacts",
@@ -223,14 +231,11 @@ pub fn Gallery(
                         Icon { name: IconName::Layers, class: "size-5" }
                     }
                     p { class: "mt-4 text-[13px] font-semibold text-zinc-200", "Start with an artifact" }
-                    p { class: "mt-1 max-w-sm text-[11px] leading-5 text-zinc-500",
-                        "Create your first character, environment, or object with the prompt bar below."
-                    }
                     button {
                         class: "mt-4 rounded-lg bg-violet-400/15 px-3 py-1.5 text-[11px] font-semibold text-violet-200 transition hover:bg-violet-400/25 disabled:opacity-40",
                         disabled,
-                        onclick: move |_| super::cmdbar::prefill(composer, "/create character "),
-                        "New character"
+                        onclick: move |_| actions.send(StudioAction::Art(ArtAction::Create(ArtifactKind::Character))),
+                        "New artifact"
                     }
                 }
             } else if focused.is_none() {
@@ -239,7 +244,7 @@ pub fn Gallery(
                     button { class: "mt-3 rounded bg-violet-400/15 px-3 py-2", onclick: move |_| filter.set(String::new()), "Clear filter" }
                 }
             } else {
-                div { class: "space-y-8 px-6 pb-28 pt-6", {groups} }
+                div { class: "space-y-8 px-6 pb-6 pt-6", {groups} }
             }
         }
     }

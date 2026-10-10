@@ -3,9 +3,8 @@
 //! Two states, not a split. At rest the screen is the artifact grid
 //! (`super::gallery`); opening one replaces it with the detail pane (image,
 //! description, variants, revisions, children, operation log). The tokenized
-//! command bar (`super::cmdbar`) sits under both. Context actions (New
-//! variant, Regenerate, Modify) prefill it, so there is exactly one input
-//! path — the same typed vocabulary as the `svs` CLI.
+//! command bar (`super::cmdbar`) sits under both. Context actions use visual
+//! forms, compiled to the same typed operations as the bar and `svs` CLI.
 //!
 //! `modify` is an instruction edit — a reference image plus a grounded
 //! instruction — so it runs unattended and this screen has no checkpoint to
@@ -29,8 +28,10 @@ use crate::{
 };
 
 use super::{
+    actions::{ActionRequest, ArtAction, StudioAction},
+    art_actions::ArtActionDialog,
     cmdbar::{self, CommandBar},
-    components::EmptyVisual,
+    components::{EmptyVisual, IconButton},
     gallery::Gallery,
     generated_asset_url,
     icons::{Icon, IconName},
@@ -38,19 +39,14 @@ use super::{
     shortcuts,
 };
 
-/// The active canvas tool, in context for the same reason the panel toggles
-/// are: the key handler lives in the workspace and the rail lives in the
-/// detail pane, and a shortcut that does not reach the rail is a shortcut
-/// the tooltip lies about.
-#[derive(Clone, Copy)]
-pub struct ActiveTool(pub Signal<super::tools::Tool>);
-
 /// Collapse state for the detail panels, in context so the key handler and
 /// the pane share one source of truth.
 #[derive(Clone, Copy)]
 pub struct HistoryOpen(pub Signal<bool>);
 #[derive(Clone, Copy)]
 pub struct VariantsOpen(pub Signal<bool>);
+#[derive(Clone, Copy)]
+pub struct InspectorOpen(pub Signal<bool>);
 
 #[component]
 pub fn Canvas(
@@ -61,7 +57,7 @@ pub fn Canvas(
 ) -> Element {
     // Owned by the Workspace: the composer's text is the same signal the
     // automation driver types into (a `compose` step writes it visibly).
-    let mut composer = use_context::<Signal<String>>();
+    let composer = use_context::<Signal<String>>();
     let mut requests = use_signal(Vec::<(String, Option<Uuid>)>::new);
     let project_path = app_state.read().project_path.clone();
     use_effect(use_reactive(&project_path, move |_| {
@@ -70,6 +66,10 @@ pub fn Canvas(
     let filter = use_signal(String::new);
     let activity = use_signal(OpActivity::default);
     let mut error_report = use_context::<Signal<Option<ReportedError>>>();
+    let mut command_error = use_signal(|| None::<ReportedError>);
+    let mut action_request = use_context::<ActionRequest>().0;
+    let mut pending_action = use_signal(|| None::<(ArtAction, Option<std::path::PathBuf>)>);
+    let mut import_trigger = use_signal(|| 0_u64);
     let selected = app_state.read().selected_artifact().cloned();
     let busy = activity.read().is_busy();
     // The chip the composer shows: free-form changes apply to the viewed
@@ -92,7 +92,24 @@ pub fn Canvas(
     // A free-form message proposed as an operation stack, awaiting approval.
     let mut proposal = use_signal(|| None::<StackProposal>);
     let reviewing = proposal.read().is_some();
-    let disabled = busy || reviewing;
+    let disabled = busy || reviewing || project_path.is_none();
+    use_effect(move || {
+        let Some(action) = action_request() else {
+            return;
+        };
+        action_request.set(None);
+        match action {
+            StudioAction::FocusCommand => cmdbar::focus_field(),
+            StudioAction::ImportArtwork if !disabled => {
+                let next = import_trigger.peek().wrapping_add(1);
+                import_trigger.set(next);
+            }
+            StudioAction::Art(action) if !disabled => {
+                pending_action.set(Some((action, app_state.peek().project_path.clone())));
+            }
+            _ => {}
+        }
+    });
 
     // The inspector's controls are commands: they take the same path a
     // typed one does, so the rail and the bar cannot diverge.
@@ -107,7 +124,10 @@ pub fn Canvas(
         if let Err(report) =
             commands::run_slash_command(app_state, backend(), defaults.read().clone(), ui, &input)
         {
+            command_error.set(Some(report.clone()));
             error_report.set(Some(report.log()));
+        } else {
+            command_error.set(None);
         }
     };
 
@@ -119,7 +139,8 @@ pub fn Canvas(
     use_context_provider(|| HistoryOpen(show_history));
     let show_variants = use_signal(|| true);
     use_context_provider(|| VariantsOpen(show_variants));
-    let active_tool = use_context::<ActiveTool>().0;
+    let show_inspector = use_signal(|| true);
+    use_context_provider(|| InspectorOpen(show_inspector));
     // The grid's keyboard cursor. Kept here rather than inside Gallery so
     // the key handler and the grid share one source of truth.
     let mut grid_cursor = use_context::<super::GridCursor>().0;
@@ -149,7 +170,9 @@ pub fn Canvas(
                     app_state.write().select_artifact(*id);
                 }
             }
-            "n" if !viewing => cmdbar::prefill(composer, "/create character "),
+            "n" if !viewing => action_request.set(Some(StudioAction::Art(ArtAction::Create(
+                storyfella_studio_core::registry::ArtifactKind::Character,
+            )))),
             // In detail, `[` and `]` walk the variant filmstrip — the same
             // set the strip shows, so the keys and the row agree.
             key @ ("[" | "]") if viewing => {
@@ -177,19 +200,6 @@ pub fn Canvas(
                 drop(state);
                 app_state.write().select_artifact(target);
             }
-            // Tool keys. `from_key` refuses the ones that are listed but
-            // not implemented, so a dimmed rail button and a dead key agree.
-            key if viewing
-                && key.chars().count() == 1
-                && super::tools::Tool::from_key(key.chars().next().unwrap_or(' ')).is_some() =>
-            {
-                let Some(tool) = super::tools::Tool::from_key(key.chars().next().unwrap_or(' '))
-                else {
-                    return;
-                };
-                let mut active = active_tool;
-                active.set(tool);
-            }
             "e" if viewing => {
                 let mut open = show_history;
                 let now = *open.peek();
@@ -201,23 +211,18 @@ pub fn Canvas(
                 open.set(!now);
             }
             key @ ("v" | "r" | "m") if viewing => {
-                // Prefill rather than run: every one of these needs an
-                // argument, so the caret goes to the bar.
-                let reference = app_state
+                if let Some(artifact) = app_state
                     .peek()
                     .selected_artifact()
-                    .map(|artifact| app_state.peek().registry.ref_of(artifact.id));
-                if let Some(reference) = reference {
-                    let op = match key {
-                        "v" => "variant",
-                        "r" => "regenerate",
-                        _ => "modify",
+                    .filter(|a| a.kind.is_visual())
+                {
+                    let action = match key {
+                        "v" => ArtAction::Variant(artifact.variant_of.unwrap_or(artifact.id)),
+                        "r" => ArtAction::Regenerate(artifact.id),
+                        _ => ArtAction::Modify(artifact.id),
                     };
-                    cmdbar::prefill(composer, format!("/{op} {reference} "));
+                    action_request.set(Some(StudioAction::Art(action)));
                 }
-            }
-            "/" => {
-                cmdbar::focus_field();
             }
             key if !viewing => {
                 let at = *grid_cursor.peek();
@@ -250,15 +255,18 @@ pub fn Canvas(
             if let Err(report) =
                 commands::run_slash_command(app_state, backend(), defaults, ui, &input)
             {
+                command_error.set(Some(report.clone()));
                 error_report.set(Some(report.log()));
             } else {
+                command_error.set(None);
                 requests
                     .write()
                     .insert(0, (composer(), app_state.read().selected_artifact_id));
                 requests.write().truncate(10);
-                composer.set(String::new());
+                cmdbar::clear(composer);
             }
         } else {
+            command_error.set(None);
             // Free text: the LLM proposes the operations; the user approves.
             propose_operations(
                 app_state,
@@ -283,7 +291,7 @@ pub fn Canvas(
                         on_approve: move |selected: Vec<Operation>| {
                             requests.write().insert(0, (composer(), app_state.read().selected_artifact_id));
                             requests.write().truncate(10);
-                            composer.set(String::new());
+                            cmdbar::clear(composer);
                             proposal.set(None);
                             let ui = ExecutionUi {
                                 activity,
@@ -315,15 +323,12 @@ pub fn Canvas(
                     app_state,
                     filter,
                     cursor: grid_cursor,
-                    composer,
                     disabled,
-                    asset_directory: asset_directory.clone(),
                 }
             } else {
                 Detail {
                     app_state,
                     artifact: selected,
-                    composer,
                     activity,
                     disabled,
                     onrun: run_command,
@@ -353,12 +358,23 @@ pub fn Canvas(
                 ref_candidates,
                 onsubmit: submit,
                 requests,
+                error: command_error(),
                 on_restore: move |index: usize| {
                     if let Some((request, target)) = requests.read().get(index) {
                         cmdbar::prefill(composer, request.clone());
                         if let Some(target) = target { app_state.write().select_artifact(*target); }
                     }
                 },
+            }
+        }
+        super::artwork_import::ArtworkImport { app_state, asset_directory, disabled, trigger: import_trigger }
+        if let Some((action, project)) = pending_action() {
+            ArtActionDialog {
+                action, project, app_state, defaults, disabled,
+                onrun: move |operation| {
+                    commands::run_operations(app_state, backend(), vec![operation], defaults.read().clone(), ExecutionUi { activity, error_report });
+                },
+                onclose: move |_| pending_action.set(None),
             }
         }
         {proposal_modal}
@@ -628,13 +644,13 @@ fn status_dot_class(status: RevisionStatus) -> &'static str {
 fn Detail(
     app_state: Signal<AppState>,
     artifact: Option<Artifact>,
-    mut composer: Signal<String>,
     activity: Signal<OpActivity>,
     disabled: bool,
     on_rerun: EventHandler<Operation>,
     /// Runs a command exactly as the command bar would.
     onrun: EventHandler<String>,
 ) -> Element {
+    let show_inspector = use_context::<InspectorOpen>().0;
     let count = app_state.read().registry.artifacts.len();
     let rail = artifact.as_ref().map(|artifact| {
         let registry = app_state.read().registry.clone();
@@ -664,7 +680,6 @@ fn Detail(
                         app_state,
                         artifact: artifact.clone(),
                         registry: app_state.read().registry.clone(),
-                        composer,
                         activity,
                         disabled,
                         onrun,
@@ -682,7 +697,7 @@ fn Detail(
                 },
             }
         }
-        {rail}
+        if show_inspector() { {rail} }
         }
     }
 }
@@ -692,19 +707,17 @@ fn ArtifactDetail(
     app_state: Signal<AppState>,
     artifact: Artifact,
     registry: storyfella_studio_core::registry::ArtifactRegistry,
-    mut composer: Signal<String>,
     activity: Signal<OpActivity>,
     disabled: bool,
     onrun: EventHandler<String>,
     on_rerun: EventHandler<Operation>,
 ) -> Element {
+    let actions = use_context::<ActionRequest>();
+    let mut show_inspector = use_context::<InspectorOpen>().0;
     let mut show_history = use_context::<HistoryOpen>().0;
     let mut show_variants = use_context::<VariantsOpen>().0;
     let image = app_state.read().display_image(&artifact).map(str::to_owned);
     let is_visual = is_visual(&artifact);
-    // The active canvas tool. Pointer is the resting state, so opening an
-    // artifact never lands you in a mode you did not ask for.
-    let tool = use_context::<ActiveTool>().0;
     let mut screen = use_context::<Signal<super::AppScreen>>();
     let caret = use_context::<super::WriterCaret>();
     let analysis = storyfella_language::analyze(
@@ -747,13 +760,8 @@ fn ArtifactDetail(
         .collect();
     let log_entries: Vec<storyfella_studio_core::registry::ops::OperationLogEntry> =
         registry.log_for(artifact.id).cloned().collect();
-    // Context actions prefill the composer; the prefixes are computed once
-    // so the closures capture strings, not the registry.
-    let ref_label = registry.ref_of(artifact.id);
-    let variant_prefix = format!("/variant {ref_label} ");
-    let regenerate_prefix = format!("/regenerate {ref_label} ");
-    let modify_prefix = format!("/modify {ref_label} ");
-    let variant_prefix_strip = variant_prefix.clone();
+    // Commands emitted by history use identity, independent of display names.
+    let ref_label = format!("c:{}", artifact.id);
     // The strip shows the base and its variants, so it stays the same set
     // whether you opened the base or one of its variants.
     let base_thumb = registry
@@ -799,9 +807,8 @@ fn ArtifactDetail(
                 }
             }
 
-            // Floats over the render: no background, no border, so the
-            // picture reads as the surface and this reads as chrome on it.
-            div { class: "pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center gap-2 px-4 py-2.5",
+            // Keep actions above the render so they never cover the image.
+            div { class: "flex shrink-0 items-center gap-2 border-b border-white/[0.05] px-4 py-2.5",
                 div { class: "pointer-events-auto flex min-w-0 items-center gap-1.5",
                     button {
                         class: "-ml-1.5 flex items-center gap-1 rounded-lg px-1.5 py-1 text-[11px] font-medium text-zinc-500 transition hover:bg-white/[0.06] hover:text-zinc-200",
@@ -821,30 +828,30 @@ fn ArtifactDetail(
 
                 div { class: "pointer-events-auto ml-auto flex shrink-0 items-center gap-0.5",
                     if is_visual {
-                        IconAction {
+                        IconButton {
                             icon: IconName::Add,
-                            title: shortcuts::tooltip("New variant", "new-variant"),
+                            label: shortcuts::tooltip("New variant", "new-variant"),
                             disabled,
-                            onclick: move |_| cmdbar::prefill(composer, variant_prefix.clone()),
+                            onclick: move |_| actions.send(StudioAction::Art(ArtAction::Variant(base_id))),
                         }
-                        IconAction {
+                        IconButton {
                             icon: IconName::Refresh,
-                            title: shortcuts::tooltip("Regenerate", "regenerate"),
+                            label: shortcuts::tooltip("Regenerate", "regenerate"),
                             disabled,
-                            onclick: move |_| cmdbar::prefill(composer, regenerate_prefix.clone()),
+                            onclick: move |_| actions.send(StudioAction::Art(ArtAction::Regenerate(artifact.id))),
                         }
                         if image.is_some() {
-                            IconAction {
-                                icon: IconName::Generate,
-                                title: shortcuts::tooltip("Modify", "modify"),
+                            IconButton {
+                                icon: IconName::Edit,
+                                label: shortcuts::tooltip("Edit image", "modify"),
                                 disabled,
-                                onclick: move |_| cmdbar::prefill(composer, modify_prefix.clone()),
+                                onclick: move |_| actions.send(StudioAction::Art(ArtAction::Modify(artifact.id))),
                             }
                         }
                         span { class: "mx-1 h-4 w-px bg-white/[0.08]" }
-                        IconAction {
+                        IconButton {
                             icon: IconName::Layers,
-                            title: shortcuts::tooltip(
+                            label: shortcuts::tooltip(
                                 if show_variants() { "Hide variants" } else { "Show variants" },
                                 "toggle-variants",
                             ),
@@ -852,23 +859,26 @@ fn ArtifactDetail(
                             onclick: move |_| { let now = show_variants(); show_variants.set(!now); },
                         }
                     }
-                    IconAction {
+                    IconButton {
                         icon: IconName::List,
-                        title: shortcuts::tooltip(
+                        label: shortcuts::tooltip(
                             if show_history() { "Hide history" } else { "Show history" },
                             "toggle-history",
                         ),
                         active: show_history(),
                         onclick: move |_| { let now = show_history(); show_history.set(!now); },
                     }
+                    IconButton {
+                        icon: IconName::Sliders,
+                        label: if show_inspector() { "Hide inspector" } else { "Show inspector" },
+                        active: show_inspector(),
+                        onclick: move |_| { let open = show_inspector(); show_inspector.set(!open); },
+                    }
                 }
             }
 
             // The render takes whatever the other two regions leave.
             div { class: "relative min-h-0 flex-1 overflow-hidden bg-black/25",
-                if is_visual && image.is_some() {
-                    ToolRail { tool, disabled }
-                }
                 match image {
                     Some(path) => rsx! {
                         if let Some(url) = generated_asset_url(&path) {
@@ -882,7 +892,7 @@ fn ArtifactDetail(
                             EmptyVisual {
                                 icon: IconName::Generate,
                                 title: if is_visual { "No image yet" } else { "Not a visual artifact" },
-                                description: if is_visual { "The first image is generated with the create — this one failed or predates it. Run /regenerate to retry (Qwen-Image-2.1 must be provisioned)." } else { "This artifact carries text only — its images come from the layers that use it." }
+                                description: if is_visual { "Regenerate to create an image." } else { "" }
                             }
                         }
                     },
@@ -890,9 +900,9 @@ fn ArtifactDetail(
             }
 
             if is_visual && show_variants() {
-                // Floats over the render, pinned left. Always the base plus
+                // Keep the strip below the render. Always the base plus
                 // its variants, whichever member is open.
-                div { class: "pointer-events-none absolute bottom-3 left-0 z-20 flex max-w-[60%] items-end gap-2 overflow-x-auto px-4",
+                div { class: "flex shrink-0 items-end gap-2 overflow-x-auto border-t border-white/[0.05] px-4 py-2",
                     div { class: "pointer-events-auto flex items-start gap-2 rounded-xl bg-black/45 p-2 backdrop-blur ring-1 ring-inset ring-white/[0.07]",
                     VariantChip {
                         label: "base".to_owned(),
@@ -918,7 +928,7 @@ fn ArtifactDetail(
                         class: "shrink-0",
                         disabled,
                         title: shortcuts::tooltip("New variant", "new-variant"),
-                        onclick: move |_| cmdbar::prefill(composer, variant_prefix_strip.clone()),
+                        onclick: move |_| actions.send(StudioAction::Art(ArtAction::Variant(base_id))),
                         div { class: "grid h-16 w-12 place-items-center rounded-lg border border-dashed border-white/[0.12] text-lg font-light text-zinc-700 transition hover:text-zinc-300",
                             "+"
                         }
@@ -933,7 +943,7 @@ fn ArtifactDetail(
             // Collapsed by default: the picture is the subject, and the
             // history is reference you open when you want it.
             if show_history() {
-            div { class: "min-h-0 max-h-[38%] shrink-0 overflow-y-auto border-t border-white/[0.05] px-5 pb-24 pt-3",
+            div { class: "min-h-0 max-h-[38%] shrink-0 overflow-y-auto border-t border-white/[0.05] px-5 pb-4 pt-3",
             if !artifact.revisions.is_empty() {
                 Section { title: format!("Revisions ({})", artifact.revisions.len()),
                     // Canon renders the description; an experiment renders a
@@ -1015,9 +1025,6 @@ fn ArtifactDetail(
 
             if !log_entries.is_empty() {
                 Section { title: format!("Operation log ({})", log_entries.len()),
-                    p { class: "mb-2 -mt-2 text-[9px] leading-4 text-zinc-700",
-                        "Re-run an applied operation with the refresh icon — a fresh seed, same prompt (regenerate/modify/draft only)."
-                    }
                     div { class: "space-y-0.5",
                         for entry in log_entries.iter().rev() {
                             div { class: "flex items-center gap-3 rounded-lg px-2 py-1.5",
@@ -1037,27 +1044,6 @@ fn ArtifactDetail(
             }
             }
             }
-        }
-    }
-}
-
-/// A square icon button. `title` carries the tooltip, which the callers
-/// build from [`shortcuts::tooltip`] so a key is never hardcoded twice.
-#[component]
-fn IconAction(
-    icon: IconName,
-    title: String,
-    #[props(default = false)] disabled: bool,
-    #[props(default = false)] active: bool,
-    onclick: EventHandler<()>,
-) -> Element {
-    rsx! {
-        button {
-            class: if active { "grid size-7 place-items-center rounded-lg bg-violet-400/15 text-violet-300 transition" } else { "grid size-7 place-items-center rounded-lg text-zinc-500 transition hover:bg-white/[0.07] hover:text-zinc-100 disabled:opacity-30" },
-            title,
-            disabled,
-            onclick: move |_| onclick.call(()),
-            Icon { name: icon, class: "size-3.5" }
         }
     }
 }
@@ -1220,6 +1206,7 @@ fn Composer(
     onsubmit: EventHandler<()>,
     requests: Signal<Vec<(String, Option<Uuid>)>>,
     on_restore: EventHandler<usize>,
+    error: Option<ReportedError>,
 ) -> Element {
     let empty = value.read().trim().is_empty();
     let busy = activity.read().is_busy();
@@ -1228,14 +1215,17 @@ fn Composer(
         _ => None,
     };
     rsx! {
-        footer { class: "pointer-events-none absolute inset-x-0 bottom-0 z-30 px-6 pb-5",
-            div { class: "pointer-events-auto mx-auto w-full max-w-2xl",
+        footer { class: "studio-composer",
+            div { class: "mx-auto w-full max-w-3xl",
+                div { class: "mb-2 flex items-center gap-2",
+                    label { r#for: cmdbar::BAR_ID, class: "text-xs font-medium text-zinc-300", "Command or request" }
                 if !requests.read().is_empty() {
-                    select { aria_label: "Restore a submitted request", disabled, class: "mb-2 max-w-full rounded bg-zinc-900 px-3 py-1 text-xs text-zinc-300",
+                    select { aria_label: "Restore a submitted request", disabled, class: "ml-auto max-w-[50%] rounded bg-zinc-900 px-2 py-1 text-xs text-zinc-300",
                         value: "", oninput: move |event| { if let Ok(index) = event.value().parse::<usize>() { on_restore.call(index); } },
-                        option { value: "", "Restore a submitted request…" }
+                        option { value: "", "Recent requests" }
                         for (index, (request, _)) in requests.read().iter().enumerate() { option { value: "{index}", "{request}" } }
                     }
+                }
                 }
                 // One opaque box: the target chip rides inside it at the top,
                 // above the field rather than beside it, so the field still
@@ -1269,8 +1259,14 @@ fn Composer(
                             disabled: disabled || busy || empty,
                             onclick: move |_| onsubmit.call(()),
                             Icon { name: IconName::Arrow, class: "size-3" }
-                            "Run"
+                            if is_slash_command(&value()) { "Run command" } else { "Review request" }
                         }
+                    }
+                }
+                if let Some(report) = error {
+                    div { role: "alert", class: "studio-inline-error mt-2 flex items-center gap-2",
+                        span { class: "min-w-0 flex-1", "{report.code.message()}" }
+                        super::components::ErrorDetailsButton { error: report }
                     }
                 }
             }
@@ -1384,31 +1380,5 @@ mod tests {
             ops[4].note.is_none(),
             "a draft on a text artifact is a legitimate request"
         );
-    }
-}
-
-/// The canvas tool rail: one icon per tool, floating over the render.
-///
-/// Tools that are planned but unimplemented are shown disabled rather than
-/// hidden — the shape of the toolset is information, and a tool that appears
-/// only once it works looks like a tool that was never going to exist.
-#[component]
-fn ToolRail(mut tool: Signal<super::tools::Tool>, disabled: bool) -> Element {
-    use super::tools::Tool;
-    rsx! {
-        div { class: "pointer-events-none absolute left-3 top-3 z-20 flex flex-col gap-1 rounded-xl bg-black/45 p-1 backdrop-blur ring-1 ring-inset ring-white/[0.07]",
-            div { class: "pointer-events-auto flex flex-col gap-0.5",
-                for item in Tool::ALL {
-                    IconAction {
-                        key: "{item.action()}",
-                        icon: item.icon(),
-                        title: shortcuts::tooltip(item.label(), item.action()),
-                        disabled,
-                        active: tool() == item,
-                        onclick: move |_| tool.set(item),
-                    }
-                }
-            }
-        }
     }
 }

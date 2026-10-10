@@ -8,7 +8,10 @@ use storyfella_studio_core::persistence::ProjectDb;
 
 use crate::{commands, state::AppState};
 
-use super::icons::{Icon, IconName};
+use super::{
+    components::IconButton,
+    icons::{Icon, IconName},
+};
 
 /// One row of the Recent list: a `.svs-project.db` file plus the headline
 /// counts read from it.
@@ -47,6 +50,7 @@ pub fn Projects(
         rsx! {
             button {
                 class: "group flex w-full items-center gap-5 border-y border-white/[0.06] py-5 text-left",
+                title: item.path.display().to_string(),
                 onclick: move |event| {
                     let path = item.path.clone();
                     match commands::open_project(&path, app_state) {
@@ -64,7 +68,6 @@ pub fn Projects(
                 div { class: "min-w-0 flex-1",
                     h3 { class: "truncate text-sm font-medium text-zinc-200 group-hover:text-white", "{item.name}" }
                     p { class: "mt-1 text-[11px] text-zinc-600", "{item.artifacts} artifacts" }
-                    p { class: "mt-0.5 truncate text-[10px] text-zinc-700", "{item.path.display()}" }
                 }
                 Icon { name: IconName::Arrow, class: "size-4 text-zinc-700 transition group-hover:translate-x-1 group-hover:text-zinc-300" }
             }
@@ -136,9 +139,7 @@ pub fn Projects(
             div { class: "mx-auto max-w-5xl",
                 header { class: "mb-12 flex items-end justify-between",
                     div {
-                        p { class: "mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-violet-400", "Workspace" }
                         h1 { class: "text-3xl font-semibold tracking-[-0.04em] text-zinc-100", "Your stories" }
-                        p { class: "mt-2 text-sm text-zinc-600", "Create, continue, and shape visual sequences." }
                     }
                     button {
                         class: "flex h-9 items-center gap-2 rounded-xl bg-white/[0.05] px-4 text-xs font-medium text-zinc-300 transition hover:bg-white/[0.09] hover:text-white",
@@ -152,7 +153,7 @@ pub fn Projects(
                     div {
                         div { class: "mb-4 flex items-center justify-between",
                             h2 { class: "text-sm font-medium text-zinc-300", "Recent" }
-                            button { onclick: move |_| { scan_errors.set(Vec::new()); recent.set(scan_projects(&refresh_dir)); }, "Refresh" }
+                            IconButton { label: "Refresh recent projects", icon: IconName::Refresh, onclick: move |_| { scan_errors.set(Vec::new()); recent.set(scan_projects(&refresh_dir)); } }
                         }
                         for message in load_errors.iter().chain(scan_errors.read().iter()) {
                             p { role: "alert", class: "mb-3 break-words text-xs text-amber-300", "{message}" }
@@ -172,10 +173,10 @@ pub fn Projects(
                     aside { class: "border-l border-white/[0.06] pl-10",
                         div { class: "mb-5 grid size-10 place-items-center rounded-xl bg-white/[0.045] text-zinc-400", Icon { name: IconName::Add, class: "size-4" } }
                         h2 { class: "text-sm font-medium text-zinc-200", "Start a new story" }
-                        p { class: "mt-2 text-xs leading-5 text-zinc-600", "Begin with an idea. Structure and visuals can evolve as you work." }
+                        label { r#for: name_id.clone(), class: "mt-5 block text-xs text-zinc-400", "Story name" }
                         input {
                             aria_label: "Story name",
-                            class: "mt-6 h-10 w-full border-b border-white/[0.1] bg-transparent text-sm text-zinc-100 outline-none transition placeholder:text-zinc-700 focus:border-violet-400/60",
+                            class: "mt-2 h-10 w-full border-b border-white/[0.1] bg-transparent text-sm text-zinc-100 outline-none transition placeholder:text-zinc-700 focus:border-violet-400/60",
                             placeholder: "Story name",
                             id: name_id,
                             onmounted: name_mount,
@@ -190,13 +191,10 @@ pub fn Projects(
                         }
 
                         div { class: "mt-8 border-t border-white/[0.06] pt-5",
-                            p { class: "text-xs font-medium text-zinc-400", "Or open the sample" }
-                            p { class: "mt-1.5 text-[11px] leading-5 text-zinc-600",
-                                "Twelve artifacts with variants, and a story that names three that do not exist yet — enough to see how the screens behave when they are full."
-                            }
                             button {
                                 class: "mt-4 flex h-9 w-full items-center justify-center gap-2 rounded-xl bg-violet-400/15 text-[11px] font-semibold text-violet-200 transition hover:bg-violet-400/25",
                                 onclick: create_sample,
+                                title: "Create a separate example story with characters, artwork and variants",
                                 "Create sample project"
                             }
                         }

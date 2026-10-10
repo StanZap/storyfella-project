@@ -5,6 +5,28 @@ use storyfella_studio_core::{errors::ReportedError, runtime::HealthStatus};
 use super::dialog::Dialog;
 use super::icons::{Icon, IconName};
 
+/// A named, keyboard-accessible action shared by Studio's compact toolbars.
+#[component]
+pub fn IconButton(
+    label: String,
+    icon: IconName,
+    #[props(default)] disabled: bool,
+    #[props(default)] active: bool,
+    onclick: EventHandler<MouseEvent>,
+) -> Element {
+    rsx! {
+        button {
+            r#type: "button",
+            class: if active { "studio-icon-button is-active" } else { "studio-icon-button" },
+            aria_label: label.clone(),
+            title: label,
+            disabled,
+            onclick,
+            Icon { name: icon, class: "size-[18px]" }
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct ErrorDetails(pub Signal<Option<ReportedError>>);
 

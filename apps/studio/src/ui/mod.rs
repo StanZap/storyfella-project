@@ -1,3 +1,5 @@
+mod actions;
+mod art_actions;
 mod artwork_import;
 pub mod canvas;
 mod close;
@@ -16,7 +18,6 @@ mod projects;
 mod settings;
 pub mod shortcuts;
 mod text_input;
-pub mod tools;
 pub mod writer;
 
 pub const QUIT_MENU_ID: &str = "storyfella-quit";
@@ -39,7 +40,7 @@ use crate::{
 };
 
 use canvas::Canvas;
-use components::{ErrorDetailsHost, ErrorToast};
+use components::{ErrorDetailsHost, ErrorToast, IconButton};
 use guide::GuideCard;
 use icons::{Icon, IconName};
 use plans::Plans;
@@ -128,6 +129,36 @@ pub enum AppScreen {
     Plans,
     Settings,
 }
+impl AppScreen {
+    pub const ALL: [Self; 6] = [
+        Self::Writer,
+        Self::Canvas,
+        Self::Preview,
+        Self::Projects,
+        Self::Plans,
+        Self::Settings,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Projects => "Projects",
+            Self::Writer => "Story",
+            Self::Canvas => "Canvas",
+            Self::Preview => "Preview",
+            Self::Plans => "Plans",
+            Self::Settings => "Settings",
+        }
+    }
+    fn icon(self) -> IconName {
+        match self {
+            Self::Projects => IconName::Folder,
+            Self::Writer => IconName::Book,
+            Self::Canvas => IconName::Image,
+            Self::Preview => IconName::Play,
+            Self::Plans => IconName::Workflow,
+            Self::Settings => IconName::Settings,
+        }
+    }
+}
 
 /// Starts a plan run through the shared driver surface: installs the
 /// session (the assistant card appears) and executes the steps. A run is
@@ -144,7 +175,6 @@ fn start_plan(
     writer_caret: WriterCaret,
     grid_cursor: GridCursor,
     palette_open: Signal<bool>,
-    active_tool: canvas::ActiveTool,
     driver_ui: ExecutionUi,
     session: Signal<Option<GuideSession>>,
     plan: Plan,
@@ -170,7 +200,6 @@ fn start_plan(
         writer_caret,
         grid_cursor,
         palette_open,
-        active_tool,
     };
     driver::run_plan(ctx, driver_ui, plan, mode, session, exit_on_done);
 }
@@ -185,6 +214,8 @@ pub fn Workspace(
     // canvas cannot save until a project file is bound.
     let mut screen = use_signal(|| AppScreen::Projects);
     use_context_provider(|| screen);
+    let action_request = actions::ActionRequest(use_signal(|| None));
+    use_context_provider(|| action_request);
     use_context_provider(|| app_state);
     let mut playback = use_signal(storyfella_playback_ui::PlaybackModel::default);
     use_context_provider(|| playback);
@@ -261,11 +292,6 @@ pub fn Workspace(
     use_context_provider(|| writer_caret);
     let grid_cursor = GridCursor(use_signal(|| 0usize));
     use_context_provider(|| grid_cursor);
-    // The canvas tool is provided here, beside the other cursors, rather
-    // than in the canvas: the driver context is built at this level, and a
-    // plan that drives a tool has to reach the same signal the rail does.
-    let active_tool = canvas::ActiveTool(use_signal(tools::Tool::default));
-    use_context_provider(|| active_tool);
 
     // The automation driver: its own execution surface (the assistant card
     // and the runner observe it; the global toast stays untouched) and the
@@ -310,7 +336,6 @@ pub fn Workspace(
                 writer_caret,
                 grid_cursor,
                 palette_open,
-                active_tool,
                 hook_driver_ui,
                 session,
                 plan,
@@ -390,6 +415,13 @@ pub fn Workspace(
         // `Ctrl/Cmd+Z` and `+Shift+Z` (claimed by the bridge in `keys.rs`) are
         // the header's undo/redo, so the key and the button cannot disagree.
         match press.key.as_str() {
+            "/" => {
+                if app_state.read().project_path.is_some() {
+                    screen.set(AppScreen::Canvas);
+                    action_request.send(actions::StudioAction::FocusCommand);
+                }
+                return;
+            }
             "save" => {
                 save_current_project(app_state, error_report);
                 return;
@@ -453,7 +485,6 @@ pub fn Workspace(
                 writer_caret,
                 grid_cursor,
                 palette_open,
-                active_tool,
                 plans_driver_ui.clone(),
                 session,
                 plan,
@@ -464,56 +495,44 @@ pub fn Workspace(
     };
 
     rsx! {
-        // The prototype's chrome: a top bar of screen tabs, the work, and a
-        // status bar. The old icon rail is gone — with two primary screens
-        // and a palette, a permanent 64px column was navigation nobody used.
         main { class: "studio-shell grid h-screen grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden bg-[#0b0b0e] font-sans text-zinc-100 selection:bg-violet-500/30",
-
-            header { class: "flex min-w-0 flex-wrap items-center gap-3.5 border-b border-white/[0.055] bg-[#101014] px-3.5 py-2",
+            header { class: "studio-header",
                 button {
-                    class: "text-[11px] font-semibold uppercase tracking-[0.04em] text-zinc-600 transition hover:text-zinc-400",
+                    class: "studio-project-switcher",
+                    title: "Choose project",
                     onclick: move |_| screen.set(AppScreen::Projects),
-                    "Storyfella"
+                    Icon { name: IconName::Folder, class: "size-[18px] shrink-0" }
+                    span { class: "truncate", if app_state.read().project_path.is_some() { "{project_name}" } else { "Open a project" } }
                 }
-                p { class: "min-w-0 truncate text-[12px] text-zinc-400",
-                    "{project_name}"
-                    if dirty {
-                        span { class: "ml-1.5 text-violet-400", title: "Unsaved changes", "●" }
-                    }
-                }
-
-                nav { class: "ml-auto flex items-center gap-0.5",
-                    ScreenTab { label: "Story", hint: "g s", active: screen() == AppScreen::Writer, onclick: move |_| screen.set(AppScreen::Writer) }
-                    ScreenTab { label: "Canvas", hint: "g c", active: screen() == AppScreen::Canvas, onclick: move |_| screen.set(AppScreen::Canvas) }
-                    ScreenTab { label: "Preview", hint: "", active: screen() == AppScreen::Preview, onclick: move |_| screen.set(AppScreen::Preview) }
-                    ScreenTab { label: "Projects", hint: "", active: screen() == AppScreen::Projects, onclick: move |_| screen.set(AppScreen::Projects) }
-                    ScreenTab { label: "Plans", hint: "", active: screen() == AppScreen::Plans, onclick: move |_| screen.set(AppScreen::Plans) }
-                    ScreenTab { label: "Settings", hint: "", active: screen() == AppScreen::Settings, onclick: move |_| screen.set(AppScreen::Settings) }
-                }
-
-                div { class: "flex items-center gap-1",
-                    button { class: "rounded-lg px-3 py-1 text-xs text-zinc-300", onclick: move |_| palette_open.set(true), "Commands…" }
-                    button { aria_label: "Undo", class: "grid size-7 place-items-center rounded-lg text-zinc-600 transition hover:bg-white/[0.05] hover:text-zinc-200 disabled:opacity-30", title: shortcuts::tooltip("Undo", "undo"), disabled: !app_state.read().can_undo(), onclick: move |_| { app_state.write().undo(); },
-                        Icon { name: IconName::Undo, class: "size-3" }
-                    }
-                    button { aria_label: "Redo", class: "grid size-7 place-items-center rounded-lg text-zinc-600 transition hover:bg-white/[0.05] hover:text-zinc-200 disabled:opacity-30", title: shortcuts::tooltip("Redo", "redo"), disabled: !app_state.read().can_redo(), onclick: move |_| { app_state.write().redo(); },
-                        Icon { name: IconName::Redo, class: "size-3" }
-                    }
-                    button { aria_label: "Save project", class: "grid size-7 place-items-center rounded-lg text-zinc-600 transition hover:bg-white/[0.05] hover:text-zinc-200 disabled:opacity-30", title: "Save project and descriptions (Cmd/Ctrl+S)", disabled: !dirty, onclick: move |_| save_current_project(app_state, error_report),
-                        Icon { name: IconName::Save, class: "size-3" }
-                    }
+                span { class: "text-sm font-medium text-zinc-400", "{screen().label()}" }
+                div { class: "ml-auto flex items-center gap-1",
+                    IconButton { label: shortcuts::tooltip("Commands and navigation", "palette"), icon: IconName::Search, onclick: move |_| palette_open.set(true) }
+                    span { class: "mx-2 h-5 w-px bg-white/10" }
+                    IconButton { label: shortcuts::tooltip("Undo", "undo"), icon: IconName::Undo, disabled: !app_state.read().can_undo(), onclick: move |_| { app_state.write().undo(); } }
+                    IconButton { label: shortcuts::tooltip("Redo", "redo"), icon: IconName::Redo, disabled: !app_state.read().can_redo(), onclick: move |_| { app_state.write().redo(); } }
+                    IconButton { label: shortcuts::tooltip("Save project", "save"), icon: IconName::Save, disabled: !dirty || app_state.read().project_path.is_none(), onclick: move |_| save_current_project(app_state, error_report) }
                 }
             }
-
-            div { class: "min-h-0 min-w-0",
+            div { class: "flex min-h-0 min-w-0",
+                nav { class: "studio-navigation", aria_label: "Workspace navigation",
+                    for destination in [AppScreen::Writer, AppScreen::Canvas, AppScreen::Preview] {
+                        ScreenTab { destination, active: screen() == destination, onclick: move |_| screen.set(destination) }
+                    }
+                    div { class: "min-h-4 flex-1" }
+                    for destination in [AppScreen::Projects, AppScreen::Plans, AppScreen::Settings] {
+                        ScreenTab { destination, active: screen() == destination, onclick: move |_| screen.set(destination) }
+                    }
+                }
+                div { class: "min-h-0 min-w-0 flex-1",
                 // Keep task owners and drafts alive while navigating. Hidden screens
                 // are excluded from focus and accessibility by the native attribute.
                 div { hidden: screen() != AppScreen::Projects, class: "h-full", Projects { config: config.clone(), app_state, on_open: move |_| screen.set(AppScreen::Canvas) } }
-                div { hidden: screen() != AppScreen::Writer, class: "h-full", Writer { app_state } }
-                div { hidden: screen() != AppScreen::Canvas, class: "h-full", Canvas { app_state, backend, defaults, asset_directory: config.asset_dir.join("generated") } }
-                div { hidden: screen() != AppScreen::Preview, class: "h-full", preview::Preview { app_state } }
+                div { hidden: screen() != AppScreen::Writer, class: "h-full", ProjectGate { open: app_state.read().project_path.is_some(), Writer { app_state } } }
+                div { hidden: screen() != AppScreen::Canvas, class: "h-full", ProjectGate { open: app_state.read().project_path.is_some(), Canvas { app_state, backend, defaults, asset_directory: config.asset_dir.join("generated") } } }
+                div { hidden: screen() != AppScreen::Preview, class: "h-full", ProjectGate { open: app_state.read().project_path.is_some(), preview::Preview { app_state } } }
                 div { hidden: screen() != AppScreen::Plans, class: "h-full", Plans { on_run: on_run_plan, running: app_state.read().operation_in_progress() || session.read().as_ref().is_some_and(|run| matches!(run.state, driver::GuideState::Running)) } }
                 div { hidden: screen() != AppScreen::Settings, class: "h-full", Settings { config: config.clone(), backend, defaults } }
+                }
             }
 
             // Status bar: where the keyboard hints and counts live, so they
@@ -524,7 +543,7 @@ pub fn Workspace(
                 }
                 span { "{artifact_count} artifacts" }
                 div { class: "ml-auto flex items-center gap-3",
-                    span { class: "font-sans text-zinc-700", "Cmd/Ctrl+K commands · Cmd/Ctrl+S save" }
+                    span { class: "font-sans text-zinc-400", "{shortcuts::keys(\"palette\").unwrap_or_default()} commands · {shortcuts::keys(\"save\").unwrap_or_default()} save" }
                 }
             }
         }
@@ -533,10 +552,14 @@ pub fn Workspace(
         close::CloseGuard { config: config.clone(), app_state, composer }
         if palette_open() {
             palette::Palette { app_state, open: palette_open, onpick: move |action| {
-                screen.set(AppScreen::Canvas);
                 match action {
-                    palette::Action::Compose(command) => cmdbar::prefill(composer, command),
-                    palette::Action::Open(id) => app_state.write().select_artifact(id),
+                    palette::Action::Navigate(destination) => screen.set(destination),
+                    palette::Action::Task(action) => { screen.set(AppScreen::Canvas); action_request.send(action); }
+                    palette::Action::Save => save_current_project(app_state, error_report),
+                    palette::Action::Undo => { app_state.write().undo(); }
+                    palette::Action::Redo => { app_state.write().redo(); }
+                    palette::Action::Compose(command) => { screen.set(AppScreen::Canvas); cmdbar::prefill(composer, command); }
+                    palette::Action::Open(id) => { screen.set(AppScreen::Canvas); app_state.write().select_artifact(id); }
                 }
             } }
         }
@@ -544,22 +567,33 @@ pub fn Workspace(
     }
 }
 
-/// One screen tab in the top bar.
+/// Keep authoring screens mounted while a project prerequisite is visible.
 #[component]
-fn ScreenTab(
-    label: &'static str,
-    hint: &'static str,
-    active: bool,
-    onclick: EventHandler<()>,
-) -> Element {
+fn ProjectGate(open: bool, children: Element) -> Element {
+    let mut screen = use_context::<Signal<AppScreen>>();
+    rsx! {
+        if !open {
+            div { class: "grid h-full place-content-center justify-items-center gap-4",
+                Icon { name: IconName::Folder, class: "size-8 text-zinc-400" }
+                h2 { class: "text-lg font-semibold", "Open a project to begin" }
+                button { class: "studio-button studio-button-primary", onclick: move |_| screen.set(AppScreen::Projects), "Choose project" }
+            }
+        }
+        div { hidden: !open, class: "h-full", {children} }
+    }
+}
+
+/// Primary and utility destinations in the workspace rail.
+#[component]
+fn ScreenTab(destination: AppScreen, active: bool, onclick: EventHandler<()>) -> Element {
     rsx! {
         button {
-            class: if active { "flex items-center gap-1.5 rounded-lg bg-violet-400/15 px-2.5 py-1 text-[11px] font-medium text-violet-300" } else { "flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-medium text-zinc-600 transition hover:text-zinc-300" },
+            class: if active { "studio-nav-item is-active" } else { "studio-nav-item" },
+            title: destination.label(),
+            aria_current: active.then_some("page"),
             onclick: move |_| onclick.call(()),
-            "{label}"
-            if !hint.is_empty() {
-                span { class: "font-mono text-[9px] opacity-55", "{hint}" }
-            }
+            Icon { name: destination.icon(), class: "size-5" }
+            span { "{destination.label()}" }
         }
     }
 }

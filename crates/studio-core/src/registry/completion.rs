@@ -189,6 +189,12 @@ pub fn classify(tokens: &[Token]) -> Vec<TokenKind> {
             // Quoted text is content, never syntax — the same rule the
             // parser applies when splitting flags.
             if token.quoted {
+                if index == 1
+                    && token.text.starts_with("c:")
+                    && op.is_some_and(|op| op.params.first() == Some(&"c:<ref>"))
+                {
+                    return TokenKind::Ref;
+                }
                 return TokenKind::Text;
             }
             if token.text.starts_with("c:") {
@@ -315,9 +321,11 @@ pub fn complete(input: &str, cursor: usize, refs: &[RefCandidate]) -> Completion
                 let bare = typed.strip_prefix("c:").unwrap_or(typed);
                 let items: Vec<Completion> = refs
                     .iter()
-                    .filter(|candidate| candidate.name.contains(bare))
+                    .filter(|candidate| {
+                        candidate.name.to_lowercase().contains(&bare.to_lowercase())
+                    })
                     .map(|candidate| Completion {
-                        label: format!("c:{}", candidate.name),
+                        label: slash::quote_argument(&format!("c:{}", candidate.name)),
                         hint: candidate.hint.clone(),
                         kind: CompletionKind::Ref,
                     })
@@ -407,6 +415,23 @@ fn flag_value_count(before: &[&Token], op: &OpSpec) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reference_completion_preserves_spaced_quoted_and_unicode_names() {
+        for name in ["Captain Mara", "A \\\"quoted\\\" name", "海辺 — “Mara”"] {
+            let refs = vec![RefCandidate::new(name, "character")];
+            let input = "/describe ";
+            let completed = complete(input, input.len(), &refs);
+            let command = format!("{input}{} \"A captain\"", completed.items[0].label);
+            let crate::registry::ops::Operation::Describe { target, .. } =
+                slash::parse_slash(&command).unwrap()
+            else {
+                panic!("Wrong command")
+            };
+            assert_eq!(target.0, format!("c:{name}"));
+            assert_eq!(classify(&tokenize(&command))[1], TokenKind::Ref);
+        }
+    }
 
     fn refs() -> Vec<RefCandidate> {
         vec![
