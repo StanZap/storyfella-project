@@ -368,7 +368,7 @@ impl AppConfig {
             seed_app_config(path)?;
         }
         if let Some(path) = ai.as_deref() {
-            seed_shared_config(path)?;
+            prepare_shared_config(path)?;
         }
         Self::load_split(app, ai)
     }
@@ -1389,6 +1389,16 @@ fn seed_app_config(path: &Path) -> Result<(), ConfigError> {
     write_new_config(path, &format!("{header}{body}"))
 }
 
+/// Prepares the shared AI config at `path`: brings a legacy `providers.toml` at
+/// the same location to its current name first, so a machine that configured
+/// Clipforge before the rename is *migrated* rather than shadowed by a freshly
+/// seeded `clipforge.toml`, then creates the file with Storyfella's defaults when
+/// it is still absent.
+fn prepare_shared_config(path: &Path) -> Result<(), ConfigError> {
+    clipforge_inference::config::migrate_legacy_config_at(path);
+    seed_shared_config(path)
+}
+
 /// Writes the shared AI configuration with Storyfella's defaults the first time
 /// it is needed, so a machine with no `clipforge.toml` still gets the image
 /// engine, planner and vision endpoints. An existing file is never touched, and
@@ -1963,6 +1973,26 @@ mod tests {
             "# already here\n[defaults]\ntext = 'kept'\n"
         );
         assert!(app.exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_legacy_shared_config_is_migrated_before_the_seed() {
+        let directory =
+            std::env::temp_dir().join(format!("svs-shared-migrate-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let legacy = directory.join("providers.toml");
+        let contents = "[defaults]\ntext = \"local\"\n\
+             [providers.local]\nkind = \"openai\"\ncapabilities = [\"text\"]\n\
+             base_url = \"http://localhost:8080/v1\"\nmodel = \"bonsai-27b\"\n";
+        std::fs::write(&legacy, contents).unwrap();
+        let ai = directory.join("clipforge.toml");
+
+        prepare_shared_config(&ai).expect("prepares");
+
+        // The legacy registry is migrated, not shadowed by a fresh seed.
+        assert!(!legacy.exists(), "the legacy file was renamed");
+        assert_eq!(std::fs::read_to_string(&ai).unwrap(), contents);
         std::fs::remove_dir_all(directory).unwrap();
     }
 
