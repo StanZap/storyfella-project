@@ -125,6 +125,9 @@ button { min-width: 24px; min-height: 24px; }
 .studio-button:hover:not(:disabled), .studio-icon-button:hover:not(:disabled),
 .studio-nav-item:hover, .studio-project-switcher:hover { background: rgb(167 139 250 / .2); }
 .studio-button-primary:hover:not(:disabled) { background: #6d28d9; }
+.studio-button-danger { color: #fda4af; background: rgb(244 63 94 / .08); }
+.studio-button-danger:hover:not(:disabled) { background: rgb(244 63 94 / .16); }
+.studio-problems[open] .studio-disclosure-arrow { transform: rotate(90deg); }
 .studio-task-form { display: flex; flex-direction: column; gap: 20px; width: min(540px, calc(100vw - 32px)); padding: 24px; }
 .studio-field { display: flex; flex-direction: column; gap: 8px; font-size: .8125rem; color: #d4d4d8; }
 .studio-textarea { width: 100%; resize: vertical; border-radius: 10px; padding: 12px; font-size: .875rem; line-height: 1.6; background: rgb(255 255 255 / .04); }

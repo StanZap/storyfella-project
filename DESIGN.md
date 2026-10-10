@@ -885,3 +885,29 @@ covers missing/available images, aliases, original target identity, no selection
 and no project. Workspace all-target check/tests, all 95 Studio tests, strict
 Studio Clippy, formatting, stylesheet generation and runnable build passed.
 Logs use `.svs-e2e/logs/studio-edit-entry-*`. No fresh image generation was needed.
+
+### Writer controls and quitting · 2026-10-10
+
+Rename is a focused native dialog with the current scene/beat name prefilled,
+Enter to submit, local validation and Escape/focus return. The toolbar enables
+it only for resolved scene or beat symbols. Renaming still uses the shared
+source/catalog mutation and joint undo. Problems starts collapsed with visible
+error/warning totals; its bounded list has readable messages, secondary codes
+and locations, severity markers, filtering and click-to-source navigation.
+The redundant readiness paragraph and caret-following footer copy are removed.
+
+Quit uses the shared task layout and styled Cancel, Discard and quit, and Save
+and quit controls. Save is visibly disabled for an active operation or unsent
+request, with a concise reason. Recognized action searches no longer block a
+clean quit; assistant prose and explicit slash commands remain protected, as
+do unsaved project changes and description drafts.
+
+Isolated macOS acceptance verified invalid/valid rename, rapid Enter, source
+and artwork identity changes, undo, Escape/focus return, collapsed Problems,
+error/warning filters and navigation to the sixth diagnostic. Quit checks
+verified focus containment, request preservation after cancellation, clean
+quitting with an `edit` search, and pending description persistence through
+Save and quit and reopening. Workspace all-target check/tests (97 Studio
+tests), strict Studio Clippy, formatting, stylesheet generation and runnable
+build passed. Logs use `.svs-e2e/logs/studio-writer-controls-*`. Cross-platform
+native styling and screen-reader acceptance remain outside this pass.

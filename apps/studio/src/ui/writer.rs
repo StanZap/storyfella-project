@@ -279,6 +279,44 @@ fn highlight(line: &str, known: &[String]) -> Vec<Piece> {
 }
 
 #[component]
+fn RenameSymbolDialog(
+    app_state: Signal<AppState>,
+    offset: usize,
+    name: String,
+    onclose: EventHandler<()>,
+) -> Element {
+    let mut replacement = use_signal(|| name.clone());
+    let mut error = use_signal(|| None::<String>);
+    let (id, mount) = super::text_input::use_text_value(replacement(), None);
+    rsx! {
+        super::dialog::Dialog { title: "Rename scene or beat", on_close: onclose,
+            form { class: "studio-task-form", onsubmit: move |event| {
+                event.prevent_default();
+                match app_state.write().rename_story_symbol(offset, replacement().trim()) {
+                    Ok(()) => onclose.call(()),
+                    Err(message) => error.set(Some(message)),
+                }
+            },
+                header { class: "flex items-center gap-3",
+                    h2 { class: "flex-1 text-xl font-semibold", "Rename {name}" }
+                    IconButton { label: "Close", icon: IconName::Close, onclick: move |_| onclose.call(()) }
+                }
+                label { class: "studio-field", r#for: id.clone(), span { "New name" }
+                    input { id, onmounted: mount, autofocus: true, class: "setting-control font-mono", aria_label: "New symbol name",
+                        oninput: move |event| { replacement.set(event.value()); error.set(None); }
+                    }
+                }
+                if let Some(message) = error() { p { role: "alert", class: "studio-inline-error", "{message}" } }
+                footer { class: "flex justify-end gap-2",
+                    button { r#type: "button", class: "studio-button", onclick: move |_| onclose.call(()), "Cancel" }
+                    button { r#type: "submit", class: "studio-button studio-button-primary", disabled: replacement().trim().is_empty(), "Rename" }
+                }
+            }
+        }
+    }
+}
+
+#[component]
 pub fn Writer(app_state: Signal<AppState>) -> Element {
     let mut error_report = use_context::<Signal<Option<ReportedError>>>();
     let caret = use_context::<super::WriterCaret>();
@@ -288,8 +326,7 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
     let mut show_completions = use_signal(|| false);
     let mut completion_index = use_signal(|| 0usize);
     let mut show_references = use_signal(|| false);
-    let mut rename_name = use_signal(String::new);
-    let (rename_id, rename_mount) = super::text_input::use_text_value(rename_name(), None);
+    let mut rename_target = use_signal(|| None::<(usize, String)>);
     let mut problem_filter = use_signal(|| "all".to_owned());
     let mut edit_error = use_signal(|| None::<String>);
     let source = app_state.read().story.source().to_owned();
@@ -303,6 +340,15 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
     let catalog = AssetCatalog::from_registry(&registry);
     let analysis = analyze(&source, &catalog.assets);
     let compilation = storyfella_compiler::compile_analysis(&analysis, &catalog.bindings);
+    let diagnostics: Vec<_> = compilation
+        .diagnostics
+        .iter()
+        .filter(|d| match problem_filter().as_str() {
+            "errors" => d.severity == Severity::Error,
+            "warnings" => d.severity != Severity::Error,
+            _ => true,
+        })
+        .collect();
     let offset = analysis.document.source.offset(cursor()).unwrap_or(0);
     let completions = if show_completions() {
         storyfella_language::complete(&analysis, offset, &catalog.assets)
@@ -314,6 +360,15 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
     let definition = analysis
         .definition_at(offset)
         .and_then(|span| analysis.document.source.position(span.start));
+    let rename_symbol = analysis
+        .definition_at(offset)
+        .and_then(|span| {
+            analysis
+                .symbols
+                .iter()
+                .find(|symbol| symbol.name.span == span)
+        })
+        .map(|symbol| symbol.name.value.clone());
     let reference_positions: Vec<_> = analysis
         .references_at(offset, true)
         .iter()
@@ -543,17 +598,9 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                             let result = storyfella_language::format(&analysis).and_then(|edits| storyfella_language::apply_edits(analysis.document.source.text(), &edits));
                             match result { Ok(source) => { app_state.write().set_story_source(source); edit_error.set(None); }, Err(error) => edit_error.set(Some(error)) }
                         } }
-                        details {
-                        summary { title: "Rename symbol at the caret", aria_label: "Rename symbol", class: "studio-icon-button cursor-pointer list-none", Icon { name: IconName::Edit, class: "size-4" } }
-                        div { class: "flex flex-wrap items-center gap-2 p-2",
-                        label { r#for: rename_id.clone(), "New name" }
-                        input { id: rename_id, onmounted: rename_mount, aria_label: "New symbol name", class: "w-32 rounded bg-white/[0.05] px-2 py-1 font-mono text-zinc-200", placeholder: "new_name", oninput: move |event| rename_name.set(event.value()) }
-                        button { onclick: move |_| {
-                            let offset = storyfella_language::Source::new(app_state.read().story.source()).offset(cursor()).unwrap_or(0);
-                            edit_error.set(app_state.write().rename_story_symbol(offset, &rename_name()).err());
-                        }, "Rename" }
-                        }
-                        }
+                        IconButton { label: "Rename scene or beat", icon: IconName::Edit, disabled: rename_symbol.is_none(), onclick: move |_| {
+                            if let Some(name) = rename_symbol.clone() { rename_target.set(Some((offset, name))); }
+                        } }
                     }
                     if let Some(error) = edit_error() { p { class: "px-4 py-1 text-[11px] text-rose-300", "{error}" } }
                     if show_references() {
@@ -563,45 +610,50 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                             }
                         }
                     }
-                    div { class: "flex items-center gap-3 px-4 py-1",
-                        p { role: "status", class: "text-xs text-zinc-300",
-                            "{compilation.diagnostics.iter().filter(|d| d.severity == Severity::Error).count()} errors · {compilation.diagnostics.iter().filter(|d| d.severity != Severity::Error).count()} warnings"
-                        }
-                        select { aria_label: "Filter story problems", class: "rounded bg-zinc-900 px-2 py-1 text-xs text-zinc-200", oninput: move |event| problem_filter.set(event.value()),
-                            option { value: "all", selected: problem_filter() == "all", "All problems" }
-                            option { value: "errors", selected: problem_filter() == "errors", "Errors" }
-                            option { value: "warnings", selected: problem_filter() == "warnings", "Warnings" }
-                        }
-                    }
-                    div { class: "max-h-40 overflow-y-auto flex flex-col",
-                    for diagnostic in compilation.diagnostics.iter().filter(|d| match problem_filter().as_str() {
-                        "errors" => d.severity == Severity::Error,
-                        "warnings" => d.severity != Severity::Error,
-                        _ => true,
-                    }) {
-                        if let Some(position) = analysis.document.source.position(diagnostic.span.start) {
-                            button { class: if diagnostic.severity == Severity::Error { "px-4 py-1 text-left font-mono text-[11px] text-rose-300" } else { "px-4 py-1 text-left font-mono text-[11px] text-amber-300" },
-                                onclick: move |_| { cursor.set(position); focus_position(position); },
-                                "{position.line + 1}:{position.character + 1} · {diagnostic.code} · {diagnostic.message}"
+                    details { class: "studio-problems shrink-0 border-t border-white/[0.05]",
+                        summary { class: "flex cursor-pointer list-none items-center gap-2 px-4 py-2 text-xs text-zinc-300",
+                            Icon { name: IconName::Arrow, class: "studio-disclosure-arrow size-3.5 text-zinc-500" }
+                            span { "Problems" }
+                            span { role: "status", class: "ml-auto text-zinc-400",
+                                "{compilation.diagnostics.iter().filter(|d| d.severity == Severity::Error).count()} errors · {compilation.diagnostics.iter().filter(|d| d.severity != Severity::Error).count()} warnings"
                             }
                         }
-                    }
-                    }
-                    if let Some(plan) = &compilation.plan {
-                        p { class: "px-4 py-1 text-[11px] text-zinc-500", "Playback readiness: {plan.readiness.pending_assets.len()} pending asset uses · {plan.readiness.unsupported_directions.len()} unsupported directions" }
-                    }
-                    if analysis.has_errors() {
-                        p { class: "px-4 py-1 text-[11px] text-amber-300", "Story artwork keeps the last valid scene and beat association while this draft has errors." }
+                        div { class: "px-4 py-2",
+                            select { aria_label: "Filter story problems", oninput: move |event| problem_filter.set(event.value()),
+                                option { value: "all", selected: problem_filter() == "all", "All problems" }
+                                option { value: "errors", selected: problem_filter() == "errors", "Errors" }
+                                option { value: "warnings", selected: problem_filter() == "warnings", "Warnings" }
+                            }
+                        }
+                        div { class: "max-h-40 overflow-y-auto flex flex-col pb-2",
+                            for diagnostic in &diagnostics {
+                                if let Some(position) = analysis.document.source.position(diagnostic.span.start) {
+                                    button { class: "flex items-start gap-2 px-4 py-2 text-left text-xs text-zinc-300 hover:bg-white/[0.04]",
+                                        onclick: move |_| { cursor.set(position); focus_position(position); },
+                                        span { class: if diagnostic.severity == Severity::Error { "mt-1 size-1.5 shrink-0 rounded-full bg-rose-400" } else { "mt-1 size-1.5 shrink-0 rounded-full bg-amber-400" } }
+                                        span { class: "min-w-0 flex-1 break-words", "{diagnostic.message}" }
+                                        span { class: "shrink-0 font-mono text-[10px] text-zinc-500", "{diagnostic.code} · {position.line + 1}:{position.character + 1}" }
+                                    }
+                                }
+                            }
+                        }
+                        if diagnostics.is_empty() {
+                            p { role: "status", class: "px-4 pb-3 text-xs text-zinc-400", "No problems in this filter." }
+                        }
+                        if analysis.has_errors() {
+                            p { class: "px-4 py-1 text-[11px] text-amber-300", "Story artwork keeps the last valid scene and beat association while this draft has errors." }
+                        }
                     }
                     div { class: "flex items-center gap-3 border-t border-white/[0.05] px-4 py-1.5",
                         p { class: "font-mono text-[10px] text-zinc-700",
                             "line {at + 1} of {lines.len()}"
                         }
-                        p { class: "ml-auto font-mono text-[10px] text-zinc-800",
-                            "the panel follows the caret"
-                        }
                     }
                 }
+            }
+
+            if let Some((offset, name)) = rename_target() {
+                RenameSymbolDialog { app_state, offset, name, onclose: move |_| rename_target.set(None) }
             }
 
             // ------------------------------------------------------- panel

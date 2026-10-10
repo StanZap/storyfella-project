@@ -748,6 +748,11 @@ remain **planned**; see [Atelier](atelier.md) for limits and verification.
     Explicit edit queries now explain missing images/selections and offer
     generation for the selected artwork before editing, instead of falling
     through to the assistant. Missing/available-image paths passed live checks.
+    Writer rename opens a focused form; Problems starts collapsed with
+    navigable, filtered diagnostics. Quit uses styled save/discard controls and
+    distinguishes transient action searches from unsent requests. Isolated
+    macOS checks verified rename/undo, filtering/jumps, request protection and
+    description persistence through Save and quit.
     §9 records changes, regression evidence and remaining cross-platform,
     assistive-technology and failure-injection coverage. — **✅ remediation implemented; broader manual acceptance tracked in DESIGN.md**
 

@@ -10,11 +10,24 @@ use storyfella_studio_core::{
     errors::{ErrorCode, ReportedError},
 };
 
+fn has_unsent_request(state: &AppState, request: &str) -> bool {
+    if request.trim().is_empty() {
+        return false;
+    }
+    // Searches are transient navigation; explicit commands and assistant
+    // instructions are drafts that must not disappear on an ordinary quit.
+    if request.trim_start().starts_with('/') {
+        return true;
+    }
+    let actions = super::palette::quick_actions(state, request);
+    actions.entries.is_empty() && actions.prerequisite.is_none()
+}
+
 fn needs_close_confirmation(state: &AppState, request: &str) -> bool {
     state.has_unsaved_changes
         || state.has_description_drafts()
         || state.operation_in_progress()
-        || !request.trim().is_empty()
+        || has_unsent_request(state, request)
 }
 
 #[component]
@@ -63,20 +76,25 @@ pub fn CloseGuard(
     });
     let save_window = desktop.clone();
     let working = app_state.read().operation_in_progress();
-    let unsent = !composer.read().trim().is_empty();
+    let unsent = has_unsent_request(&app_state.read(), &composer.read());
+    let title = if working || unsent {
+        "Quit Studio?"
+    } else {
+        "Save before quitting?"
+    };
     rsx! {
         if confirm() {
-            Dialog { title: "Save before quitting?", on_close: move |_| confirm.set(false),
-                div { class: "max-w-xl space-y-4 p-6",
-                    h2 { class: "text-lg font-semibold", "Save before quitting?" }
-                    p { "Save the project and pending descriptions, discard them, or keep working." }
-                    if working { p { "An artwork operation is running. Wait for it to finish before saving and quitting." } }
-                    if unsent { p { "The command bar contains an unsent request. Submit it or clear it before saving and quitting." } }
-                    if let Some(message) = error() { p { role: "alert", class: "text-rose-300", "{message}" } }
-                    div { class: "flex flex-wrap gap-3",
-                        button { autofocus: true, onclick: move |_| confirm.set(false), "Cancel" }
-                        button { onclick: move |_| { desktop.set_close_behavior(WindowCloseBehaviour::WindowCloses); desktop.close(); }, "Discard and quit" }
-                        button { disabled: working || unsent, onclick: move |_| {
+            Dialog { title, on_close: move |_| confirm.set(false),
+                div { class: "studio-task-form",
+                    h2 { class: "text-xl font-semibold", "{title}" }
+                    if !working && !unsent { p { class: "text-sm text-zinc-300", "Save your changes before quitting." } }
+                    if working { p { role: "status", class: "text-sm text-amber-300", "Wait for the artwork operation to finish before saving." } }
+                    if unsent { p { role: "status", class: "text-sm text-amber-300", "You have an unsent request. Cancel to submit or clear it." } }
+                    if let Some(message) = error() { p { role: "alert", class: "studio-inline-error", "{message}" } }
+                    footer { class: "flex flex-wrap justify-end gap-2",
+                        button { class: "studio-button", autofocus: true, onclick: move |_| confirm.set(false), "Cancel" }
+                        button { class: "studio-button studio-button-danger", onclick: move |_| { desktop.set_close_behavior(WindowCloseBehaviour::WindowCloses); desktop.close(); }, "Discard and quit" }
+                        button { class: "studio-button studio-button-primary", disabled: working || unsent, onclick: move |_| {
                             let applied = app_state.write().apply_description_drafts().map_err(|message| ReportedError::plain(ErrorCode::AppCommandInvalid, message));
                             let result = applied.and_then(|_| {
                                     if app_state.read().project_path.is_none() {
@@ -94,5 +112,43 @@ pub fn CloseGuard(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn action_searches_do_not_block_quit_but_requests_and_commands_do() {
+        let state = AppState::default();
+        for search in ["", "  ", "edit"] {
+            assert!(!has_unsent_request(&state, search), "{search}");
+            assert!(!needs_close_confirmation(&state, search), "{search}");
+        }
+        let mut state = state;
+        state.project_path = Some("test-project.db".into());
+        assert!(!needs_close_confirmation(&state, "new story"));
+        for request in [
+            "Give the harbor golden evening light",
+            "/create",
+            "/modify harbor_dock make it blue",
+        ] {
+            assert!(has_unsent_request(&state, request), "{request}");
+            assert!(needs_close_confirmation(&state, request), "{request}");
+        }
+    }
+
+    #[test]
+    fn searches_still_protect_project_changes() {
+        let mut state = AppState::default();
+        state.has_unsaved_changes = true;
+        assert!(needs_close_confirmation(&state, "edit"));
+        state.has_unsaved_changes = false;
+        state.set_description_draft(uuid::Uuid::new_v4(), "An unfinished description".into());
+        assert!(needs_close_confirmation(&state, "edit"));
+        let mut state = AppState::default();
+        state.begin_operation();
+        assert!(needs_close_confirmation(&state, "edit"));
     }
 }
