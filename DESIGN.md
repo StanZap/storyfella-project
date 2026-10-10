@@ -10,6 +10,8 @@ Requirements are ongoing review criteria, not a claim of accessibility certifica
 [ROADMAP §12](docs/ROADMAP.md#12-suggested-implementation-order) owns delivery
 status. This document owns interaction and presentation rules.
 [The walkthrough](docs/ux-walkthrough.md) supplies authoring scenarios;
+[the power-user guide](docs/studio-power-user-guide.md) documents current workflows
+and the 2026-10-10 follow-up assessment, including still-unimplemented improvements;
 [the earlier UI plan](docs/design/ui-plan.md) records prototype decisions and
 implementation history. If an earlier prototype conflicts with this standard,
 use this standard and update the affected documentation with the implementation.
