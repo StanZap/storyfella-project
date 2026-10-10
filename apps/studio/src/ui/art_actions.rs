@@ -109,11 +109,19 @@ pub fn ArtActionDialog(
     });
     let create = matches!(action, ArtAction::Create(_));
     let adapter = matches!(action, ArtAction::AttachAdapter(_));
+    let first_image = matches!(action, ArtAction::Regenerate(id) if app_state.read().registry.artifact(id)
+        .is_some_and(|artifact| app_state.read().display_image(artifact).is_none()));
+    let title = if first_image {
+        "Generate image"
+    } else {
+        action.title()
+    };
     let show_name = create || adapter || matches!(action, ArtAction::Variant(_));
     let label = match action {
         ArtAction::Create(_) if kind().is_visual() => "Create and render",
         ArtAction::Create(_) => "Create entry",
         ArtAction::Variant(_) => "Create and render variant",
+        ArtAction::Regenerate(_) if first_image => "Generate image",
         ArtAction::Regenerate(_) => "Generate new revision",
         ArtAction::Modify(_) => "Generate edited image",
         ArtAction::AttachAdapter(_) => "Attach adapter",
@@ -142,10 +150,10 @@ pub fn ArtActionDialog(
         }
     };
     rsx! {
-        Dialog { title: action.title(), on_close: onclose,
+        Dialog { title, on_close: onclose,
             form { class: "studio-task-form", onsubmit: submit,
                 header { class: "flex items-center gap-3",
-                    h2 { class: "flex-1 text-xl font-semibold", "{action.title()}" }
+                    h2 { class: "flex-1 text-xl font-semibold", "{title}" }
                     IconButton { label: "Close", icon: IconName::Close, onclick: move |_| onclose.call(()) }
                 }
                 if let Some(target) = target_name { p { class: "text-sm text-zinc-400", "For {target}" } }

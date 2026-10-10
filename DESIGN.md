@@ -861,3 +861,27 @@ remain outside this acceptance pass. Logs use `.svs-e2e/logs/studio-quick-*`.
 
 Verification passed: workspace all-target check and tests, strict Studio
 Clippy, formatting, stylesheet generation and the runnable Dioxus build.
+
+### Edit prerequisites in the action entry · 2026-10-10
+
+An explicit `edit`, `modify`, `/modify` or `edit image` query now exposes an
+unmet prerequisite instead of silently falling back to Ask assistant. Selected
+artwork without an image shows “This artwork has no image to edit yet” and
+offers Generate image first for that same artifact. Enter opens the generation
+form; generation still requires submitting that form. Its title and primary
+action say Generate image when there is no existing image. With no visual
+selection, the entry asks the user to select artwork, retains the query and
+disables submission. Ordinary Enter does not send that blocked action to the
+planner. Completed artwork continues to open Edit image. Longer instructions
+remain assistant requests; Cmd/Ctrl+Enter is still an explicit request shortcut.
+The general palette's unavailable Edit image row explains the missing image.
+Keyboard hints describe the actual choice count and request/action behavior.
+
+Isolated macOS checks used `harbor_dock` without an image and a completed
+`Cabin library copy`: prerequisite feedback, Enter to the generation form,
+Escape/focus return, no-selection Enter retaining input without planner calls,
+and rapid typing/Enter to the completed artwork's edit form passed. A regression
+covers missing/available images, aliases, original target identity, no selection
+and no project. Workspace all-target check/tests, all 95 Studio tests, strict
+Studio Clippy, formatting, stylesheet generation and runnable build passed.
+Logs use `.svs-e2e/logs/studio-edit-entry-*`. No fresh image generation was needed.

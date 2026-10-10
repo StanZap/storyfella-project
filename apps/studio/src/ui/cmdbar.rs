@@ -282,18 +282,22 @@ pub fn CommandBar(
     let segments = paint(&text, &known);
     let completions = completion::complete(&text, position, &refs);
     let action_mode = !raw_command(&text);
-    let quick = palette::quick_entries(&app_state.read(), &text);
+    let actions = palette::quick_actions(&app_state.read(), &text);
+    let quick = actions.entries;
+    let prerequisite = actions.prerequisite;
+    let request_option =
+        !text.trim().is_empty() && !slash::is_slash_command(&text) && prerequisite.is_none();
     let help = (!action_mode)
         .then(|| completion::signature(&text, position))
         .flatten();
     let count = if action_mode {
-        quick.len() + usize::from(!text.trim().is_empty() && !slash::is_slash_command(&text))
+        quick.len() + usize::from(request_option)
     } else {
         completions.items.len()
     };
-    let showing = focused() && count > 0 && !dismissed() && !disabled;
+    let showing = focused() && (count > 0 || prerequisite.is_some()) && !dismissed() && !disabled;
     let index = (*selected.read()).min(count.saturating_sub(1));
-    let scroll_id = showing.then(|| format!("command-option-{index}"));
+    let scroll_id = (showing && count > 0).then(|| format!("command-option-{index}"));
     use_effect(use_reactive(&scroll_id, move |id| {
         if let Some(id) = id {
             document::eval(&format!(
@@ -313,22 +317,27 @@ pub fn CommandBar(
         // Input and Enter can arrive before the next render. Resolve from
         // current signals so fast typing cannot run a stale request/action.
         let current = value.peek().clone();
+        let actions = palette::quick_actions(&app_state.peek(), &current);
         let action = if !raw_command(&current)
             && !*dismissed.peek()
             && (!current.trim().is_empty() || *focused.peek())
         {
-            let entries = palette::quick_entries(&app_state.peek(), &current);
-            entries.get(*selected.peek()).map(|e| e.action.clone())
+            actions
+                .entries
+                .get(*selected.peek())
+                .map(|e| e.action.clone())
         } else {
             None
         };
         if let Some(action) = action {
             choose.call(action);
-        } else {
+        } else if raw_command(&current) || actions.prerequisite.is_none() {
             onsubmit.call(());
         }
     });
-    let fallback_label = if slash::is_slash_command(&text) {
+    let fallback_label = if prerequisite.is_some() {
+        "Edit image unavailable"
+    } else if slash::is_slash_command(&text) {
         "Run command"
     } else {
         "Review request"
@@ -382,6 +391,9 @@ pub fn CommandBar(
             // completion popup, opening upward
             if showing {
                 div { class: "absolute bottom-full left-0 z-40 mb-3 w-full min-w-[280px] overflow-hidden rounded-xl bg-[#17171d] shadow-[0_-12px_40px_rgba(0,0,0,.35)] ring-1 ring-white/[0.09]",
+                    if let Some(prerequisite) = prerequisite {
+                        p { role: "status", class: "px-4 pt-3 pb-2 text-sm text-zinc-400", "{prerequisite}" }
+                    }
                     div { id: "command-completions", role: "listbox", aria_label: if action_mode { "Actions" } else { "Command completions" }, class: "max-h-[min(300px,45vh)] overflow-y-auto p-1",
                     if action_mode {
                         for (slot, entry) in quick.iter().enumerate() {
@@ -395,7 +407,7 @@ pub fn CommandBar(
                                 }
                             }
                         }
-                        if !text.trim().is_empty() && !slash::is_slash_command(&text) {
+                        if request_option {
                             div { id: "command-option-{quick.len()}", role: "option", aria_selected: index == quick.len(),
                                 class: if index == quick.len() { "flex cursor-pointer items-center gap-3 rounded-lg bg-violet-400/15 px-3 py-2" } else { "flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 hover:bg-white/[0.04]" },
                                 onmousedown: move |event| { event.prevent_default(); onsubmit.call(()); },
@@ -420,7 +432,11 @@ pub fn CommandBar(
                     }
                     }
                     div { class: "border-t border-white/[0.06] px-3 py-1.5 text-[10px] text-zinc-600",
-                        if action_mode { "↑↓ choose · ↵ open · Esc dismiss" } else { "⇥ complete · ↵ run · ⇧↵ newline" }
+                        if !action_mode { "⇥ complete · ↵ run · ⇧↵ newline" }
+                        else if count == 0 { "Esc dismiss" }
+                        else if quick.is_empty() { "↵ review request · Esc dismiss" }
+                        else if count == 1 { "↵ open · Esc dismiss" }
+                        else { "↑↓ choose · ↵ open · Esc dismiss" }
                     }
                 }
             }
@@ -447,7 +463,7 @@ pub fn CommandBar(
                         aria_haspopup: "listbox",
                         aria_autocomplete: "list",
                         aria_controls: if showing { "command-completions" } else { "" },
-                        aria_activedescendant: if showing { format!("command-option-{index}") } else { String::new() },
+                        aria_activedescendant: if showing && count > 0 { format!("command-option-{index}") } else { String::new() },
                         class: "studio-command-input relative z-20 block max-h-24 w-full resize-none overflow-y-auto bg-transparent text-sm leading-5 text-transparent caret-violet-300 disabled:opacity-40",
                         rows: "1",
                         placeholder: "Search actions or describe a change…",
@@ -506,8 +522,10 @@ pub fn CommandBar(
                         },
                     }
                 }
-                button { r#type: "button", class: "studio-icon-button", aria_label: submit_label, title: submit_label,
-                    disabled: disabled || (text.trim().is_empty() && !showing),
+                button { r#type: "button", class: "studio-icon-button", aria_label: submit_label,
+                    title: prerequisite.filter(|_| quick.is_empty()).unwrap_or(submit_label),
+                    disabled: disabled || (text.trim().is_empty() && !showing)
+                        || (prerequisite.is_some() && (quick.is_empty() || dismissed())),
                     onmousedown: move |event| event.prevent_default(),
                     onclick: move |_| activate.call(()),
                     Icon { name: IconName::Arrow, class: "size-4" }

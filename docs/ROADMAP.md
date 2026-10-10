@@ -745,6 +745,9 @@ remain **planned**; see [Atelier](atelier.md) for limits and verification.
     artwork opening via arrows/Enter, explicit assistant requests, and opt-in
     slash argument completion. Native selects match textboxes; field focus
     uses an inset treatment. Rapid Enter dispatch reads current input.
+    Explicit edit queries now explain missing images/selections and offer
+    generation for the selected artwork before editing, instead of falling
+    through to the assistant. Missing/available-image paths passed live checks.
     §9 records changes, regression evidence and remaining cross-platform,
     assistive-technology and failure-injection coverage. — **✅ remediation implemented; broader manual acceptance tracked in DESIGN.md**
 

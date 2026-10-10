@@ -151,7 +151,13 @@ pub fn entries(state: &AppState, query: &str) -> Vec<Entry> {
         ] {
             entries.push(Entry {
                 label: label.into(),
-                hint: artifact.name.clone(),
+                hint: if matches!(action, ArtAction::Modify(_))
+                    && state.display_image(artifact).is_none()
+                {
+                    "Generate an image first".into()
+                } else {
+                    artifact.name.clone()
+                },
                 action: Action::Task(StudioAction::Art(action)),
                 is_op: false,
                 enabled: available
@@ -229,8 +235,51 @@ fn form_action(state: &AppState, command: &str) -> Option<Action> {
     Some(Action::Task(StudioAction::Art(action)))
 }
 
+/// Inline action results and an unmet prerequisite for an explicit edit action.
+pub struct QuickActions {
+    pub entries: Vec<Entry>,
+    pub prerequisite: Option<&'static str>,
+}
+
+pub fn quick_actions(state: &AppState, query: &str) -> QuickActions {
+    let mut entries = quick_entries(state, query);
+    let query = query.trim().trim_start_matches('/');
+    let prerequisite = if !["edit", "modify", "edit image"]
+        .iter()
+        .any(|alias| query.eq_ignore_ascii_case(alias))
+    {
+        None
+    } else if state.project_path.is_none() {
+        Some("Open a project to edit artwork.")
+    } else if state.operation_in_progress() {
+        Some("Wait for the current task to finish.")
+    } else if let Some(artifact) = state.selected_artifact().filter(|a| a.kind.is_visual()) {
+        if state.display_image(artifact).is_some() {
+            None
+        } else {
+            entries.insert(
+                0,
+                Entry {
+                    label: "Generate image first".into(),
+                    hint: artifact.name.clone(),
+                    action: Action::Task(StudioAction::Art(ArtAction::Regenerate(artifact.id))),
+                    is_op: false,
+                    enabled: true,
+                },
+            );
+            Some("This artwork has no image to edit yet.")
+        }
+    } else {
+        Some("Select artwork to edit its image.")
+    };
+    QuickActions {
+        entries,
+        prerequisite,
+    }
+}
+
 /// Discoverable actions for the inline entry; raw syntax is opt-in.
-pub fn quick_entries(state: &AppState, query: &str) -> Vec<Entry> {
+fn quick_entries(state: &AppState, query: &str) -> Vec<Entry> {
     let query = query.trim().trim_start_matches('/');
     let mut found = entries(state, "");
     found.retain(|e| {
@@ -479,6 +528,66 @@ mod tests {
             )))
         );
         assert!(quick_entries(&state, "Give her a blue coat and retain her pose").is_empty());
+    }
+
+    #[test]
+    fn edit_actions_explain_missing_images_and_offer_generation_for_the_same_target() {
+        let mut state = state_with(&[("Harbor door", ArtifactKind::Environment)]);
+        state.project_path = Some("edit-prerequisites.svs-project.db".into());
+        let id = state.registry.artifacts[0].id;
+        state.select_artifact(id);
+        for query in ["edit", " EDIT ", "/modify", "edit image"] {
+            let result = quick_actions(&state, query);
+            assert_eq!(
+                result.prerequisite,
+                Some("This artwork has no image to edit yet.")
+            );
+            assert_eq!(result.entries[0].label, "Generate image first");
+            assert_eq!(
+                result.entries[0].action,
+                Action::Task(StudioAction::Art(ArtAction::Regenerate(id)))
+            );
+        }
+        let entry = entries(&state, "Edit image").remove(0);
+        assert!(!entry.enabled);
+        assert_eq!(entry.hint, "Generate an image first");
+
+        let revision = state
+            .registry
+            .start_revision(
+                id,
+                "Harbor door".into(),
+                None,
+                None,
+                storyfella_studio_core::registry::RevisionOrigin::Canon,
+            )
+            .unwrap();
+        state
+            .registry
+            .finish_revision(id, revision, "assets/harbor-door.png".into())
+            .unwrap();
+        let result = quick_actions(&state, "edit");
+        assert!(result.prerequisite.is_none());
+        assert_eq!(
+            result.entries[0].action,
+            Action::Task(StudioAction::Art(ArtAction::Modify(id)))
+        );
+        assert!(quick_actions(&state, "Edit the door to be blue")
+            .prerequisite
+            .is_none());
+
+        state.clear_selection();
+        let result = quick_actions(&state, "edit");
+        assert_eq!(
+            result.prerequisite,
+            Some("Select artwork to edit its image.")
+        );
+        assert!(result.entries.is_empty());
+        state.project_path = None;
+        assert_eq!(
+            quick_actions(&state, "edit").prerequisite,
+            Some("Open a project to edit artwork.")
+        );
     }
 
     #[test]
