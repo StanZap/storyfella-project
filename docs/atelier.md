@@ -83,6 +83,17 @@ deployments releases the previously owned server before loading the next model.
 The app does not download weights or compile the server on submission. Missing
 setup reports an error while keeping the source and prompt draft.
 
+The generation rail's aspect presets (**1:1 / 3:2 / 2:3**) set the output size,
+and the rail reports whether the machine's shared `sd-server` is answering
+(`Local server: running · <model>` or `stopped · starts on demand`), re-probed on
+demand, when the provider changes, and after each generation. For a local
+provider, **Settings** carries the sampling **steps** (blank uses the model's
+default — 25 for Qwen, 8 for Krea) and the output **width**/**height**, all as
+numeric steppers, alongside the **LoRA adapters** added from a searchable picker
+(each applied adapter carries its own weight, default 1.0). The sampling options
+ride the shared image request's native fields (`clipforge_inference::images::Request`);
+hosted providers ignore them and use the preset aspect sizes.
+
 Configuration and shared loopback tests pass on this Mac; actual Linux CUDA
 inference and Linux native interaction still require verification on that machine.
 
@@ -92,8 +103,10 @@ it with **Smaller/Larger**. Painted marks move with the image. Placement, deleti
 and painting are undoable. Images participate in full-resolution CPU/Metal
 exports, project saves and artwork rotation/flip/resize.
 
-**Paint mask / Erase mask** create a source-resolution draft with undo/redo.
-Drafts save with their image and reload when it is reopened. **Use mask** sends
+**Paint mask**, **Erase mask** and **Box selection** create a source-resolution
+draft with undo/redo. **Box selection** fills a dragged rectangle, so an edit
+touches only that region. Drafts save with their image and reload when it is
+reopened. **Use mask** sends
 the draft to a supported editing model. The shared API uses white for editable
 pixels and black for protected pixels; Atelier composites protected source pixels
 back into a successful result. A masked result must retain source dimensions.
@@ -104,6 +117,11 @@ Use card **Reference** actions to add up to two additional inputs. The selected
 source is Image 1; additional references are Images 2 and 3. New-image generation
 does not use the editing basket. Unsupported mask/multi-reference combinations
 fail before credentials are requested or a paid job is submitted.
+
+The Draw workspace's **Generate from drawing** rasterizes the current canvas,
+adds it as a project reference and opens it in the image workspace as the edit
+source, so a prompt renders an image from the sketch. It needs a provider that
+supports editing.
 
 | Editing route | Ordered images | Mask |
 | --- | --- | --- |

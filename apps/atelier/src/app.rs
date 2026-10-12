@@ -1,5 +1,6 @@
 use crate::{
     document::{self, Brush, Document, History, Layer, Point as DocPoint, Stroke, Tool},
+    native_images::ServerStatus,
     providers::{self, Settings},
     viewport::Viewport,
     worker::{self, Event, Storage, Workers},
@@ -7,7 +8,7 @@ use crate::{
 use gpui_kit::{
     component::{
         input::{InputState, TextareaState},
-        select::{SelectEvent, SelectState},
+        select::{SearchableVec, SelectEvent, SelectState},
         IndexPath,
     },
     *,
@@ -169,6 +170,12 @@ pub struct DrawingApp {
     pub settings: Settings,
     pub generation_provider_select: Entity<SelectState<Vec<String>>>,
     pub settings_provider_select: Entity<SelectState<Vec<String>>>,
+    /// The searchable picker that adds a LoRA adapter to the local settings.
+    pub lora_select: Entity<SelectState<SearchableVec<String>>>,
+    /// Per-adapter weight inputs, keyed by the registered adapter name.
+    pub lora_weights: std::collections::BTreeMap<String, Entity<InputState>>,
+    /// The last probed state of the machine's shared local image server.
+    pub server_status: Option<ServerStatus>,
     pub settings_save: Option<(Settings, String)>,
     pub settings_save_error: Option<String>,
     pub generation: Option<Arc<AtomicBool>>,
@@ -195,10 +202,12 @@ pub struct DrawingApp {
     pub positive_node: Entity<InputState>,
     pub latent_node: Entity<InputState>,
     pub seed_node: Entity<InputState>,
+    pub steps: Entity<InputState>,
     pub note: Entity<TextareaState>,
     pub ref_name: Entity<InputState>,
     pub ref_tags: Entity<InputState>,
-    pub generation_size: usize,
+    pub generation_width: Entity<InputState>,
+    pub generation_height: Entity<InputState>,
     pub editing_image: bool,
     pub image_details_open: bool,
     pub focus: FocusHandle,
@@ -266,6 +275,52 @@ impl DrawingApp {
         let positive_node = input(settings.positive_node.clone(), window, cx);
         let latent_node = input(settings.latent_node.clone(), window, cx);
         let seed_node = input(settings.seed_node.clone(), window, cx);
+        let steps = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(
+                    settings
+                        .steps
+                        .map(|steps| steps.to_string())
+                        .unwrap_or_default(),
+                )
+                .step(1.0)
+                .min(1.0)
+        });
+        let lora_weights: std::collections::BTreeMap<String, Entity<InputState>> = settings
+            .loras
+            .iter()
+            .map(|lora| {
+                let input = cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .default_value(format!("{:.2}", lora.multiplier))
+                        .step(0.05)
+                        .min(0.0)
+                        .max(2.0)
+                });
+                (lora.name.clone(), input)
+            })
+            .collect();
+        let addable_loras: Vec<String> = crate::native_images::available_loras(&settings)
+            .into_iter()
+            .filter(|name| !settings.loras.iter().any(|lora| lora.name == *name))
+            .collect();
+        let lora_select = cx.new(|cx| {
+            SelectState::new(SearchableVec::new(addable_loras), None, window, cx).searchable(true)
+        });
+        let generation_width = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(settings.width.to_string())
+                .step(64.0)
+                .min(256.0)
+                .max(2048.0)
+        });
+        let generation_height = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(settings.height.to_string())
+                .step(64.0)
+                .min(256.0)
+                .max(2048.0)
+        });
         let note = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder("What did you notice?")
@@ -405,6 +460,9 @@ impl DrawingApp {
             settings,
             generation_provider_select,
             settings_provider_select,
+            lora_select,
+            lora_weights,
+            server_status: None,
             settings_save: None,
             settings_save_error: None,
             generation: None,
@@ -431,10 +489,12 @@ impl DrawingApp {
             positive_node,
             latent_node,
             seed_node,
+            steps,
             note,
             ref_name,
             ref_tags,
-            generation_size: 0,
+            generation_width,
+            generation_height,
             editing_image: restoring_edit,
             image_details_open: false,
             focus: cx.focus_handle(),
@@ -443,6 +503,7 @@ impl DrawingApp {
         };
         app.sync_ref_inputs(window, cx);
         app.refresh_library();
+        app.refresh_server_status();
         app.subscriptions
             .push(cx.observe(&app.prompt, |this, _, cx| {
                 this.capture_prompt(cx);
@@ -468,6 +529,15 @@ impl DrawingApp {
                 },
             ));
         }
+        app.subscriptions.push(cx.subscribe_in(
+            &app.lora_select,
+            window,
+            |this, _, event: &SelectEvent<SearchableVec<String>>, window, cx| {
+                if let SelectEvent::Confirm(Some(name)) = event {
+                    this.add_lora(name.clone(), window, cx);
+                }
+            },
+        ));
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |_, cx| {
             weak.update(cx, |this, cx| {
@@ -1108,6 +1178,88 @@ impl DrawingApp {
         self.settings.positive_node = self.positive_node.read(cx).value().trim().to_owned();
         self.settings.latent_node = self.latent_node.read(cx).value().trim().to_owned();
         self.settings.seed_node = self.seed_node.read(cx).value().trim().to_owned();
+        self.settings.steps = self
+            .steps
+            .read(cx)
+            .value()
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|steps| *steps > 0);
+        if let Ok(width) = self.generation_width.read(cx).value().trim().parse::<u32>() {
+            self.settings.width = width.clamp(256, 2048);
+        }
+        if let Ok(height) = self
+            .generation_height
+            .read(cx)
+            .value()
+            .trim()
+            .parse::<u32>()
+        {
+            self.settings.height = height.clamp(256, 2048);
+        }
+        for lora in &mut self.settings.loras {
+            if let Some(input) = self.lora_weights.get(&lora.name) {
+                if let Ok(multiplier) = input.read(cx).value().trim().parse::<f32>() {
+                    lora.multiplier = multiplier.clamp(0.0, 2.0);
+                }
+            }
+        }
+    }
+
+    /// The adapters the local provider offers that are not applied yet.
+    pub fn available_lora_names(&self) -> Vec<String> {
+        crate::native_images::available_loras(&self.settings)
+            .into_iter()
+            .filter(|name| !self.settings.loras.iter().any(|lora| lora.name == *name))
+            .collect()
+    }
+
+    /// Rebuilds the adapter picker's items and clears its selection.
+    pub fn refresh_lora_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let names = self.available_lora_names();
+        self.lora_select.update(cx, |state, cx| {
+            state.set_items(SearchableVec::new(names), window, cx);
+            state.set_selected_index(None, window, cx);
+        });
+    }
+
+    /// Applies an adapter at full strength (the picker's confirm action).
+    pub fn add_lora(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.loras.iter().any(|lora| lora.name == name) {
+            return;
+        }
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value("1.00")
+                .step(0.05)
+                .min(0.0)
+                .max(2.0)
+        });
+        self.lora_weights.insert(name.clone(), input);
+        self.settings.loras.push(providers::LoraSetting {
+            name,
+            multiplier: 1.0,
+        });
+        self.refresh_lora_select(window, cx);
+        self.save_settings(cx);
+    }
+
+    /// Removes an applied adapter.
+    pub fn remove_lora(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings.loras.retain(|lora| lora.name != name);
+        self.lora_weights.remove(name);
+        self.refresh_lora_select(window, cx);
+        self.save_settings(cx);
+    }
+
+    /// Re-probes the machine's shared local image server in the background.
+    pub fn refresh_server_status(&mut self) {
+        if self.settings.provider.native_architecture().is_none() {
+            self.server_status = None;
+            return;
+        }
+        let _ = self.workers.probe.send(self.settings.clone());
     }
     pub fn select_provider(
         &mut self,
@@ -1140,6 +1292,8 @@ impl DrawingApp {
         if !provider.supports_edit() {
             self.editing_image = false;
         }
+        self.refresh_lora_select(window, cx);
+        self.refresh_server_status();
         self.save_settings(cx);
         cx.notify();
     }
@@ -1309,7 +1463,7 @@ impl DrawingApp {
                 size: mask
                     .as_ref()
                     .map(|mask| (mask.width, mask.height))
-                    .unwrap_or([(1024, 1024), (1536, 1024), (1024, 1536)][self.generation_size]),
+                    .unwrap_or((self.settings.width, self.settings.height)),
                 source,
                 references,
                 mask,
@@ -1815,13 +1969,20 @@ impl DrawingApp {
                                 if let Some(old) = self.mask_preview.take() {
                                     let _ = window.drop_image(old);
                                 }
-                                self.generation_size = if width > height {
-                                    1
+                                let (width, height) = if width > height {
+                                    (1536, 1024)
                                 } else if height > width {
-                                    2
+                                    (1024, 1536)
                                 } else {
-                                    0
+                                    (1024, 1024)
                                 };
+                                self.generation_width
+                                    .update(cx, |s, cx| s.set_value(width.to_string(), window, cx));
+                                self.generation_height.update(cx, |s, cx| {
+                                    s.set_value(height.to_string(), window, cx)
+                                });
+                                self.settings.width = width;
+                                self.settings.height = height;
                                 self.mask_redo.clear();
                                 self.use_mask = false;
                                 self.refresh_mask_preview();
@@ -1931,6 +2092,7 @@ impl DrawingApp {
                 }
                 Event::Generated(id, result) => {
                     self.refresh_library();
+                    self.refresh_server_status();
                     if id == self.job_id {
                         let cancelled = self
                             .generation
@@ -1983,6 +2145,7 @@ impl DrawingApp {
                         }
                     }
                 }
+                Event::ServerStatus(status) => self.server_status = Some(status),
                 Event::GenerationProgress(id, message) => {
                     if id == self.job_id
                         && self

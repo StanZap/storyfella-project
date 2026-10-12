@@ -46,6 +46,16 @@ pub fn generate(request: Request) -> Result<Reference> {
         .map(|r| STANDARD.decode(&r.image))
         .collect::<std::result::Result<Vec<_>, _>>()?;
     image_request.mask = request.mask.as_ref().map(|mask| mask.png()).transpose()?;
+    image_request.steps = request.settings.steps;
+    image_request.loras = request
+        .settings
+        .loras
+        .iter()
+        .map(|lora| clipforge_inference::sd::LoraSelection {
+            path: lora.name.clone(),
+            multiplier: lora.multiplier,
+        })
+        .collect();
     image_request.cancel = request.cancel;
     image_request.progress = request.progress;
     // The GPUI worker owns its runtime; Clipforge remains async and UI-independent.

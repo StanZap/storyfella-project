@@ -142,16 +142,6 @@ pub struct CompletionUsage {
     pub total_tokens: u64,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ModelList {
-    pub data: Vec<Model>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Model {
-    pub id: String,
-}
-
 #[derive(Debug, Error)]
 pub enum LlmError {
     #[error("failed to construct HTTP client: {0}")]
@@ -302,13 +292,6 @@ impl LlmClient {
     /// file persists the choice across runs).
     pub fn set_model(&mut self, model: String) {
         self.config.model = model;
-    }
-
-    pub async fn list_models(&self) -> Result<ModelList, LlmError> {
-        let url = format!("{}/models", self.config.base_url.trim_end_matches('/'));
-        let request = self.authorize(self.http.get(url));
-        let response = request.send().await.map_err(LlmError::Request)?;
-        Self::decode(response).await
     }
 
     pub async fn chat(&self, messages: &[ChatMessage]) -> Result<ChatCompletion, LlmError> {

@@ -138,6 +138,20 @@ impl DrawingApp {
                                 cx.notify();
                             })),
                     )
+                    .child(
+                        tool_button("mask-rect", "mask-rect", "Box selection")
+                            .atelier_selected(self.mask_tool == Tool::Rect, cx)
+                            .disabled(
+                                self.comparing
+                                    || self.generation.is_some()
+                                    || self.opening_image.is_some(),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.finish_mask();
+                                this.mask_tool = Tool::Rect;
+                                cx.notify();
+                            })),
+                    )
                     .when(
                         self.mask_tool != Tool::Hand
                             || self.mask.as_ref().is_some_and(|m| !m.strokes.is_empty())

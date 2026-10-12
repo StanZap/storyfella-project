@@ -41,6 +41,70 @@ pub(crate) fn deployment(
     Ok(providers.image_deployment_for(id, capability)?)
 }
 
+/// The LoRA adapters the selected local provider registers, named as the server
+/// expects (see `sd::prepare_lora_links`). Empty when no local provider is
+/// selected or its directory is missing.
+pub fn available_loras(settings: &Settings) -> Vec<String> {
+    let Ok(providers) = config::user_or_built_in() else {
+        return Vec::new();
+    };
+    let Ok(deployment) = deployment(settings, &providers, false) else {
+        return Vec::new();
+    };
+    clipforge_inference::sd::available_loras(&deployment.lora_dir)
+}
+
+/// Whether the machine's shared local image server is answering.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ServerStatus {
+    /// The selected provider is not local, so no server is used.
+    NotLocal,
+    /// The shared `sd-server` is answering; the resident model when reported.
+    Running { model: Option<String> },
+    /// Not answering; the app starts it on demand.
+    Stopped,
+}
+
+/// Probes the machine's shared `sd-server` for the selected local provider.
+/// Read-only: nothing is started or stopped.
+pub fn server_status(settings: &Settings) -> ServerStatus {
+    if settings.provider.native_architecture().is_none() {
+        return ServerStatus::NotLocal;
+    }
+    let Ok(providers) = config::user_or_built_in() else {
+        return ServerStatus::Stopped;
+    };
+    let Ok(deployment) = deployment(settings, &providers, false) else {
+        return ServerStatus::Stopped;
+    };
+    let Some(state_dir) = config::default_state_dir() else {
+        return ServerStatus::Stopped;
+    };
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return ServerStatus::Stopped;
+    };
+    runtime.block_on(async {
+        if !matches!(
+            control::status(&Managed::Image(deployment.clone()), &state_dir).await,
+            control::ServerState::Up { .. }
+        ) {
+            return ServerStatus::Stopped;
+        }
+        let model = clipforge_inference::sd::Client::new(format!(
+            "http://{}:{}",
+            deployment.host, deployment.port
+        ))
+        .capabilities()
+        .await
+        .ok()
+        .map(|capabilities| capabilities.model.name);
+        ServerStatus::Running { model }
+    })
+}
+
 struct CachedClient {
     deployment: ImageDeployment,
     client: Client,

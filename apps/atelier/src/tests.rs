@@ -332,6 +332,73 @@ fn masks_use_white_for_editable_pixels_black_for_protected_and_erase_correctly()
 }
 
 #[test]
+fn a_hosted_provider_reports_no_local_server() {
+    let settings = Settings::default();
+    assert_eq!(settings.provider, Provider::GptImage);
+    assert_eq!(
+        crate::native_images::server_status(&settings),
+        crate::native_images::ServerStatus::NotLocal
+    );
+}
+
+#[test]
+fn a_box_selection_masks_only_its_rectangle() {
+    let mask = crate::edit::MaskDraft {
+        width: 128,
+        height: 96,
+        strokes: vec![Stroke {
+            brush: Brush::Ink,
+            pressures: vec![].into(),
+            tool: Tool::Rect,
+            size: 12.,
+            opacity: 1.,
+            points: vec![Point { x: 20., y: 20. }, Point { x: 80., y: 60. }].into(),
+        }],
+    };
+    let image = image::load_from_memory(&mask.png().unwrap())
+        .unwrap()
+        .to_rgba8();
+    assert_eq!(image.dimensions(), (128, 96));
+    assert_eq!(image.get_pixel(40, 40).0, [255, 255, 255, 255]);
+    assert_eq!(image.get_pixel(10, 10).0, [0, 0, 0, 255]);
+    assert_eq!(image.get_pixel(90, 80).0, [0, 0, 0, 255]);
+    // Compositing changes only the box; the protected corners are preserved.
+    let original = colored_reference("Original", [10, 40, 90, 255], 128, 96);
+    let generated = colored_reference("Changed", [240, 20, 30, 255], 128, 96);
+    let pixels = document::decode_reference(&mask.composite(&original, &generated).unwrap())
+        .unwrap()
+        .to_rgba8();
+    assert_eq!(pixels.get_pixel(40, 40).0, [240, 20, 30, 255]);
+    assert_eq!(pixels.get_pixel(10, 10).0, [10, 40, 90, 255]);
+    assert!(mask.validate().is_ok());
+}
+#[test]
+fn local_sampling_settings_round_trip() {
+    let settings = Settings {
+        steps: Some(30),
+        width: 1536,
+        height: 1024,
+        loras: vec![providers::LoraSetting {
+            name: "characters-mia.safetensors".into(),
+            multiplier: 0.8,
+        }],
+        ..Settings::default()
+    };
+    let restored: Settings =
+        serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+    assert_eq!(restored.steps, Some(30));
+    assert_eq!((restored.width, restored.height), (1536, 1024));
+    assert_eq!(restored.loras.len(), 1);
+    assert_eq!(restored.loras[0].name, "characters-mia.safetensors");
+    assert_eq!(restored.loras[0].multiplier, 0.8);
+    // Legacy settings without the new keys load with defaults.
+    let legacy: Settings =
+        serde_json::from_value(serde_json::json!({"provider":"QwenNative"})).unwrap();
+    assert_eq!(legacy.steps, None);
+    assert!(legacy.loras.is_empty());
+}
+
+#[test]
 fn mask_drafts_reload_with_their_image_and_invalid_drafts_are_reported() {
     let directory = temporary("mask-drafts");
     let reference = Arc::new(colored_reference("Image", [1, 2, 3, 255], 128, 96));

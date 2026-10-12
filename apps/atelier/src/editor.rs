@@ -154,13 +154,18 @@ impl DrawingApp {
                 self.message("Mask point limit reached. Undo or clear the mask.", true);
                 return;
             }
+            let points: Vec<DocPoint> = if self.mask_tool == Tool::Rect {
+                vec![point, point]
+            } else {
+                vec![point]
+            };
             mask.strokes.push(Stroke {
                 brush: Brush::Ink,
                 pressures: vec![].into(),
                 tool: self.mask_tool,
                 size: self.mask_size,
                 opacity: 1.,
-                points: vec![point].into(),
+                points: points.into(),
             });
             self.mask_active = true;
             self.use_mask = true;
@@ -171,6 +176,21 @@ impl DrawingApp {
     }
     pub fn mask_move(&mut self, position: gpui_kit::Point<Pixels>) {
         if !self.mask_active {
+            return;
+        }
+        if self.mask_tool == Tool::Rect {
+            // A rectangle drags its second corner; a stray point outside the
+            // image is ignored rather than ending the selection.
+            let Some(point) = self.mask_point(position) else {
+                return;
+            };
+            if let Some(stroke) = self.mask.as_mut().and_then(|m| m.strokes.last_mut()) {
+                if stroke.tool == Tool::Rect && stroke.points.len() == 2 {
+                    Arc::make_mut(&mut stroke.points)[1] = point;
+                    self.mask_dirty = true;
+                    self.refresh_mask_preview();
+                }
+            }
             return;
         }
         let Some(point) = self.mask_point(position) else {
@@ -310,6 +330,50 @@ impl DrawingApp {
             self.restore_prompt(window, cx);
             self.prompt.update(cx, |s, cx| s.focus(window, cx));
         }
+    }
+    /// Rasterizes the current drawing and opens it in the image editor as the
+    /// generative reference, so a prompt can render an image from the sketch.
+    pub fn generate_from_drawing(&mut self, cx: &mut Context<Self>) {
+        if !self.settings.provider.supports_edit() {
+            self.message(
+                "Choose an editing provider — Qwen (local) or a hosted edit model — to generate from a drawing",
+                true,
+            );
+            return;
+        }
+        self.finish_stroke();
+        let bytes = match document::raster(&self.doc, document::MAX_EDGE, true).and_then(|image| {
+            let mut cursor = std::io::Cursor::new(Vec::new());
+            image.write_to(&mut cursor, image::ImageFormat::Png)?;
+            Ok(cursor.into_inner())
+        }) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.message(format!("Could not read the drawing: {error}"), true);
+                return;
+            }
+        };
+        let reference = match document::reference_from_bytes(
+            format!("{} drawing", self.doc.title),
+            &bytes,
+            "Atelier drawing · used as a generation reference".into(),
+        ) {
+            Ok(reference) => Arc::new(reference),
+            Err(error) => {
+                self.message(format!("Could not use the drawing: {error}"), true);
+                return;
+            }
+        };
+        self.checkpoint();
+        self.doc.references.push(reference.clone());
+        self.doc.reference = Some(self.doc.references.len() - 1);
+        self.changed();
+        self.open_image(reference, cx);
+        self.message(
+            "Drawing opened · describe the image you want to render from it",
+            false,
+        );
+        cx.notify();
     }
     pub fn add_opened_image_layer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((reference, _, width, height)) = self.opened_image.clone() else {

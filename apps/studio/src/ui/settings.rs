@@ -2,12 +2,12 @@ use std::time::Duration;
 
 use dioxus::prelude::*;
 
+use clipforge_inference::chat::Client as ChatClient;
 use storyfella_studio_core::config::{
     AppConfig, ChatCapability, ChatEndpointField, ChatProvider, NewChatProvider,
     NewChatProviderKind,
 };
 use storyfella_studio_core::errors::{CodedError, ReportedError};
-use storyfella_studio_core::llm::{LlmClient, LlmConfig};
 use storyfella_studio_core::registry::{
     backend::CreativeBackend, discover_loras, GenerationDefaults, LoraBinding,
 };
@@ -480,22 +480,22 @@ fn fetch_models(config: &AppConfig, capability: ChatCapability, mut state: Signa
         return;
     }
     let deployment = match capability {
-        ChatCapability::Text => config.text.as_ref(),
-        ChatCapability::Vision => config.vision.as_ref(),
+        ChatCapability::Text => config.text.clone(),
+        ChatCapability::Vision => config.vision.clone(),
     };
-    let Some(deployment) = deployment else {
+    let Some(mut deployment) = deployment else {
         state.set(ModelListState::Empty);
         return;
     };
     let managed = deployment.server.is_some();
-    let mut lm_config = LlmConfig::from(deployment);
-    lm_config.timeout = Duration::from_secs(5);
+    // Listing is a quick probe, not a generation: cap it well below the
+    // deployment's (often generous) request timeout.
+    deployment.timeout = Duration::from_secs(5);
     state.set(ModelListState::Loading);
     spawn(async move {
-        let result = async { LlmClient::new(lm_config)?.list_models().await }.await;
+        let result = ChatClient::new(deployment).list_models().await;
         match result {
-            Ok(models) => {
-                let mut ids: Vec<String> = models.data.into_iter().map(|model| model.id).collect();
+            Ok(mut ids) => {
                 ids.sort();
                 ids.dedup();
                 state.set(ModelListState::Ready(ids));

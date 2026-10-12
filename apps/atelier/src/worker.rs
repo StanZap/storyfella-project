@@ -43,6 +43,7 @@ pub enum Event {
     Workflow(Result<serde_json::Value>),
     Settings(Result<()>),
     SettingsApplied(Result<()>),
+    ServerStatus(crate::native_images::ServerStatus),
 }
 pub enum Storage {
     Artwork(Arc<Reference>, PathBuf),
@@ -77,6 +78,7 @@ pub struct Workers {
     pub native: Arc<crate::native_images::NativeImages>,
     pub mask: Sender<(u64, crate::edit::MaskDraft)>,
     pub storage: Sender<Storage>,
+    pub probe: Sender<providers::Settings>,
     pub render: Sender<(u64, Document, Viewport, bool)>,
     pub events: Receiver<Event>,
     pub sender: Sender<Event>,
@@ -344,6 +346,24 @@ pub fn start() -> Workers {
             }
         }
     });
+    let (probe, probe_queue) = mpsc::channel::<providers::Settings>();
+    let probe_sender = sender.clone();
+    std::thread::spawn(move || {
+        while let Ok(mut settings) = probe_queue.recv() {
+            // Coalesce to the latest request; only the newest state matters.
+            while let Ok(next) = probe_queue.try_recv() {
+                settings = next;
+            }
+            if probe_sender
+                .send(Event::ServerStatus(crate::native_images::server_status(
+                    &settings,
+                )))
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
     let (render, queue) = mpsc::channel::<(u64, Document, Viewport, bool)>();
     let tx = sender.clone();
     std::thread::spawn(move || {
@@ -371,6 +391,7 @@ pub fn start() -> Workers {
         native: Arc::new(Default::default()),
         mask,
         storage,
+        probe,
         render,
         events,
         sender,
@@ -450,7 +471,7 @@ pub fn generate(mut request: Request, id: u64, sender: Sender<Event>, directory:
 }
 pub fn render_image(mut image: RgbaImage) -> Arc<gpui_kit::RenderImage> {
     // GPUI's sprite atlas expects BGRA.
-    for pixel in image.as_flat_samples_mut().samples.chunks_exact_mut(4) {
+    for pixel in image.as_flat_samples_mut().samples.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     Arc::new(gpui_kit::RenderImage::new(vec![image::Frame::new(image)]))

@@ -204,23 +204,19 @@ async fn main() -> Result<()> {
 }
 
 async fn list_models(config: &AppConfig, base_url: &str, timeout_seconds: u64) -> Result<()> {
-    let client = client_for(
-        config,
-        base_url,
-        &config
-            .planner_config()
-            .context("no `text` provider is configured")?
-            .model,
-        Duration::from_secs(timeout_seconds),
-    )?;
-    let mut models = client
+    let mut deployment = config
+        .text
+        .clone()
+        .context("no `text` provider is configured")?;
+    deployment.base_url = base_url.to_owned();
+    deployment.timeout = Duration::from_secs(timeout_seconds);
+    let mut ids = clipforge_inference::chat::Client::new(deployment)
         .list_models()
         .await
-        .context("list models from the endpoint")?
-        .data;
-    models.sort_by(|a, b| a.id.cmp(&b.id));
-    for model in models {
-        println!("{}", model.id);
+        .context("list models from the endpoint")?;
+    ids.sort();
+    for id in ids {
+        println!("{id}");
     }
     Ok(())
 }

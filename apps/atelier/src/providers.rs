@@ -99,6 +99,14 @@ pub struct ProviderProfile {
     pub edit_model: String,
     pub endpoint: String,
 }
+/// A LoRA adapter applied to a local generation: the name the server registers
+/// it under (see `clipforge_inference::sd::prepare_lora_links`) and its
+/// strength.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LoraSetting {
+    pub name: String,
+    pub multiplier: f32,
+}
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -111,6 +119,13 @@ pub struct Settings {
     pub positive_node: String,
     pub latent_node: String,
     pub seed_node: String,
+    /// Sampling steps for the local model; `None` uses its profile default.
+    pub steps: Option<u32>,
+    /// The generation canvas size, in pixels.
+    pub width: u32,
+    pub height: u32,
+    /// LoRA adapters applied to local generations.
+    pub loras: Vec<LoraSetting>,
     pub reduced_motion: bool,
 }
 impl Default for Settings {
@@ -126,6 +141,10 @@ impl Default for Settings {
             positive_node: "6".into(),
             latent_node: "5".into(),
             seed_node: "3".into(),
+            steps: None,
+            width: 1024,
+            height: 1024,
+            loras: Vec::new(),
             reduced_motion: false,
         }
     }

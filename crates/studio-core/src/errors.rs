@@ -113,6 +113,7 @@ pub enum ErrorCode {
     RuntimeReadinessTimeout,
     RuntimeJobFailed,
     RuntimeProfileMismatch,
+    RuntimeServerExited,
     RuntimeCreateAssetDirectory,
     RuntimeImportAsset,
     RuntimeModelCreateDirectory,
@@ -600,6 +601,13 @@ impl ErrorCode {
                  the shared owner started), or stop a foreign one with \
                  `svs runtime stop --force`, then retry.",
             ),
+            Self::RuntimeServerExited => (
+                "SVS-RTE-126",
+                "Generation server exited before it was ready",
+                "The native sd-server exited before it reported readiness. Check the \
+                 server log for the reason — a wrong or mismatched model weight \
+                 override is the usual cause — fix it in Settings, and retry.",
+            ),
             Self::RuntimeCreateAssetDirectory => (
                 "SVS-RTE-124",
                 "Could not create asset directory",
@@ -831,6 +839,7 @@ impl CodedError for clipforge_inference::sd::RuntimeError {
             Self::Stop(_) => ErrorCode::RuntimeGenerationStop,
             Self::ReadinessTimeout(_) => ErrorCode::RuntimeReadinessTimeout,
             Self::ProfileMismatch { .. } => ErrorCode::RuntimeProfileMismatch,
+            Self::Exited { .. } => ErrorCode::RuntimeServerExited,
         }
     }
 }
@@ -857,6 +866,18 @@ impl CodedError for clipforge_inference::sd::ClientError {
             Self::ReferenceImage { .. } => ErrorCode::GenReference,
             Self::ImagePayload(_) => ErrorCode::GenImage,
             Self::JobFailed(_) | Self::WaitTimeout(_) => ErrorCode::RuntimeJobFailed,
+        }
+    }
+}
+
+/// The shared chat client's errors (`clipforge_inference::chat`). The planner,
+/// vision and model-list surfaces all reach the endpoint through this client, so
+/// their failures carry the same codes wherever they surface.
+impl CodedError for clipforge_inference::chat::ChatError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::Request(_) | Self::Empty => ErrorCode::LlmRequest,
+            Self::Status { .. } => ErrorCode::LlmStatus,
         }
     }
 }
@@ -918,7 +939,7 @@ mod tests {
     fn registry_size_is_pinned() {
         assert_eq!(
             codes().len(),
-            90,
+            91,
             "update the registry count when adding error codes"
         );
     }
@@ -954,6 +975,16 @@ mod tests {
         let copy = report.copy_text();
         assert!(copy.contains("- operation: /create character Mia"));
         assert!(copy.contains("- prompt: a lantern on a shelf"));
+    }
+
+    /// A native server that exits before it answers maps to its own code, not
+    /// the generic start/readiness ones — `clipforge-inference` grew the variant.
+    #[test]
+    fn an_exited_generation_server_has_its_own_code() {
+        let error = clipforge_inference::sd::RuntimeError::Exited {
+            reason: "sd-server exited before it became ready".to_owned(),
+        };
+        assert_eq!(error.report().code, ErrorCode::RuntimeServerExited);
     }
 
     /// The app-level plain constructor follows the same shape.
@@ -1063,6 +1094,7 @@ mod tests {
             ErrorCode::RuntimeReadinessTimeout,
             ErrorCode::RuntimeJobFailed,
             ErrorCode::RuntimeProfileMismatch,
+            ErrorCode::RuntimeServerExited,
             ErrorCode::RuntimeCreateAssetDirectory,
             ErrorCode::RuntimeImportAsset,
             ErrorCode::RuntimeModelCreateDirectory,

@@ -16,6 +16,9 @@ pub enum Tool {
     Pencil,
     Eraser,
     Hand,
+    /// A rectangular region: a mask stroke whose two points are opposite
+    /// corners. Only the mask editor produces it.
+    Rect,
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Brush {
@@ -488,6 +491,10 @@ pub fn raster(doc: &Document, max_edge: u32, transparent: bool) -> Result<RgbaIm
             if stroke.points.is_empty() {
                 continue;
             }
+            if stroke.tool == Tool::Rect {
+                paint_rectangle(&mut pixels, stroke, scale);
+                continue;
+            }
             if stroke.brush != Brush::Ink || !stroke.pressures.is_empty() {
                 paint_brush(&mut pixels, stroke, scale);
                 continue;
@@ -547,7 +554,7 @@ pub fn raster(doc: &Document, max_edge: u32, transparent: bool) -> Result<RgbaIm
     }
     let mut bytes = output.take();
     // tiny-skia uses premultiplied RGBA; image encoders need straight RGBA.
-    for p in bytes.chunks_exact_mut(4) {
+    for p in bytes.as_chunks_mut::<4>().0 {
         if p[3] != 0 {
             for i in 0..3 {
                 p[i] = ((p[i] as u32 * 255 + p[3] as u32 / 2) / p[3] as u32).min(255) as u8;
@@ -568,7 +575,7 @@ pub fn image_layer_pixels(
         let decoded = decode_reference(&image.reference)?.to_rgba8();
         let (w, h) = decoded.dimensions();
         let mut bytes = decoded.into_raw();
-        for p in bytes.chunks_exact_mut(4) {
+        for p in bytes.as_chunks_mut::<4>().0 {
             for c in 0..3 {
                 p[c] = ((p[c] as u32 * p[3] as u32 + 127) / 255) as u8;
             }
@@ -619,6 +626,25 @@ pub fn export_image(path: &Path, image: RgbaImage, quality: u8) -> Result<()> {
     atomic_write(path, &bytes.into_inner())
 }
 
+/// Fills the rectangle spanned by a [`Tool::Rect`] stroke's two corner points.
+fn paint_rectangle(pixels: &mut tiny_skia::Pixmap, stroke: &Stroke, scale: f32) {
+    if stroke.points.len() < 2 {
+        return;
+    }
+    let first = stroke.points[0];
+    let second = stroke.points[1];
+    let Some(rect) = tiny_skia::Rect::from_ltrb(
+        first.x.min(second.x) * scale,
+        first.y.min(second.y) * scale,
+        first.x.max(second.x) * scale,
+        first.y.max(second.y) * scale,
+    ) else {
+        return;
+    };
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color_rgba8(41, 37, 44, (stroke.opacity * 255.) as u8);
+    pixels.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
+}
 // Union circular footprints before compositing so opacity does not depend on event frequency.
 // Grain is anchored to document coordinates and is deterministic across saves/renders.
 fn paint_brush(pixels: &mut tiny_skia::Pixmap, stroke: &Stroke, scale: f32) {

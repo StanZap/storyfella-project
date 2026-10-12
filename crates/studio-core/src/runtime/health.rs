@@ -1,11 +1,10 @@
 use std::{fmt::Display, future::Future, time::Duration};
 
+use clipforge_inference::chat::Client as ChatClient;
 use clipforge_inference::sd::{model_matches, qwen_image_2_1};
+use clipforge_inference::ChatDeployment;
 
-use crate::{
-    config::AppConfig,
-    llm::{LlmClient, LlmConfig},
-};
+use crate::config::AppConfig;
 
 use super::CreativeRuntime;
 
@@ -97,30 +96,14 @@ pub async fn check_all(config: &AppConfig, runtime: &CreativeRuntime) -> Vec<Ser
 
 async fn check_llm(config: &AppConfig) -> ServiceHealth {
     match &config.text {
-        Some(deployment) => {
-            check_chat(
-                ServiceId::Llm,
-                LlmConfig::from(deployment),
-                &deployment.model,
-                deployment.server.is_some(),
-            )
-            .await
-        }
+        Some(deployment) => check_chat(ServiceId::Llm, deployment.clone()).await,
         None => unconfigured(ServiceId::Llm, "text"),
     }
 }
 
 async fn check_vision(config: &AppConfig) -> ServiceHealth {
     match &config.vision {
-        Some(deployment) => {
-            check_chat(
-                ServiceId::Vision,
-                LlmConfig::from(deployment),
-                &deployment.model,
-                deployment.server.is_some(),
-            )
-            .await
-        }
+        Some(deployment) => check_chat(ServiceId::Vision, deployment.clone()).await,
         None => unconfigured(ServiceId::Vision, "vision"),
     }
 }
@@ -139,28 +122,20 @@ fn unconfigured(id: ServiceId, capability: &str) -> ServiceHealth {
 /// configured model is among the ones it serves. `managed` marks a provider
 /// whose `llama-server` the app starts on demand: an unstarted one is `Idle`,
 /// not a failure, so it reads the same as the image engine before a generation.
-async fn check_chat(
-    id: ServiceId,
-    mut lm_config: LlmConfig,
-    configured: &str,
-    managed: bool,
-) -> ServiceHealth {
-    lm_config.timeout = Duration::from_secs(CHECK_TIMEOUT_SECONDS);
-    let client = match LlmClient::new(lm_config) {
-        Ok(client) => client,
-        Err(error) => {
-            return ServiceHealth::new(id, HealthStatus::Offline, format!("client error: {error}"));
-        }
-    };
+async fn check_chat(id: ServiceId, mut deployment: ChatDeployment) -> ServiceHealth {
+    let configured = deployment.model.clone();
+    let managed = deployment.server.is_some();
+    deployment.timeout = Duration::from_secs(CHECK_TIMEOUT_SECONDS);
+    let client = ChatClient::new(deployment);
     match with_timeout(client.list_models(), CHECK_TIMEOUT_SECONDS + 5).await {
         Ok(models) => {
-            if models.data.iter().any(|model| model.id == configured) {
+            if models.iter().any(|model| model == &configured) {
                 ServiceHealth::new(
                     id,
                     HealthStatus::Online,
                     format!(
                         "reachable · {} model(s) · '{configured}' loaded",
-                        models.data.len()
+                        models.len()
                     ),
                 )
             } else {

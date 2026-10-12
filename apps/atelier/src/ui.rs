@@ -7,7 +7,7 @@ use crate::{
 use gpui_kit::{
     component::{
         button::*,
-        input::{Input, InputState, Textarea},
+        input::{Input, InputState, NumberInput, Textarea},
         select::Select,
         *,
     },
@@ -56,6 +56,7 @@ fn icon(name: &str) -> Icon {
         "package"=>"<path d='m12 2 9 5v10l-9 5-9-5V7zM3 7l9 5 9-5M12 12v10M7 4l10 5'/>",
         "compare"=>"<rect x='3' y='3' width='18' height='18' rx='2'/><path d='M12 3v18M6 12h3M15 12h3'/>",
         "mask"=>"<rect x='3' y='3' width='18' height='18' rx='2' stroke-dasharray='3 3'/><path d='m7 16 9-9M7 11l4-4M12 17l5-5'/>",
+        "mask-rect"=>"<rect x='4' y='5' width='16' height='14' rx='1' stroke-dasharray='3 3'/>",
         "reference"=>"<rect x='3' y='3' width='13' height='13' rx='2'/><path d='M8 21h13V8M3 12l4-4 4 4 2-2 3 3'/>",
         "info"=>"<circle cx='12' cy='12' r='9'/><path d='M12 11v6M12 7h.01'/>",
         "open"=>"<path d='M3 7V4h6l3 3h9v3M3 10h18l-3 11H3z'/>",
@@ -114,6 +115,29 @@ impl AtelierSelection for Button {
 
 fn field(name: &'static str, input: &Entity<InputState>) -> Div {
     column().gap_1().child(label(name)).child(Input::new(input))
+}
+
+/// A labelled numeric stepper, the numeric counterpart to [`field`].
+fn number_field(name: &'static str, input: &Entity<InputState>) -> Div {
+    column()
+        .gap_1()
+        .child(label(name))
+        .child(NumberInput::new(input).small())
+}
+
+/// The status line for the machine's shared local image server.
+fn server_status_label(status: Option<&crate::native_images::ServerStatus>) -> String {
+    use crate::native_images::ServerStatus;
+    match status {
+        Some(ServerStatus::Running { model: Some(model) }) => {
+            format!("Local server: running · {model}")
+        }
+        Some(ServerStatus::Running { model: None }) => "Local server: running".to_string(),
+        Some(ServerStatus::Stopped) | None => {
+            "Local server: stopped · starts on demand".to_string()
+        }
+        Some(ServerStatus::NotLocal) => String::new(),
+    }
 }
 
 impl DrawingApp {
@@ -390,6 +414,20 @@ impl DrawingApp {
                         cx.notify();
                     })),
             )
+            .child({
+                let editing = self.settings.provider.supports_edit();
+                tool_button(
+                    "generate-from-drawing",
+                    "sparkle",
+                    if editing {
+                        "Generate an image from this drawing"
+                    } else {
+                        "Needs an editing provider — Qwen (local) or a hosted edit model"
+                    },
+                )
+                .disabled(!editing)
+                .on_click(cx.listener(|this, _, _, cx| this.generate_from_drawing(cx)))
+            })
             .child(div().flex_1())
             .child(
                 tool_button("zoom-out", "minus", "Zoom out").on_click(cx.listener(
@@ -1535,24 +1573,76 @@ impl DrawingApp {
                     ),
             )
             .child(Textarea::new(&self.prompt).h(px(180.)))
+            .when(
+                self.settings.provider.native_architecture().is_some(),
+                |p| {
+                    let active = self.settings.loras.len();
+                    p.child(
+                        row()
+                            .child(label(server_status_label(self.server_status.as_ref())).flex_1())
+                            .child(
+                                tool_button(
+                                    "refresh-server-status",
+                                    "undo",
+                                    "Check the local server",
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.refresh_server_status();
+                                        cx.notify();
+                                    },
+                                )),
+                            ),
+                    )
+                    .child(
+                        row().child(
+                            Button::new("generation-loras")
+                                .ghost()
+                                .small()
+                                .label(if active == 0 {
+                                    "LoRA adapters".to_string()
+                                } else {
+                                    format!("LoRA adapters · {active}")
+                                })
+                                .tooltip("Manage LoRA adapters, steps and size in Settings")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.panel = Panel::Settings;
+                                    cx.notify();
+                                })),
+                        ),
+                    )
+                },
+            )
             .child(
                 row()
                     .children(
-                        ["1:1", "3:2", "2:3"]
-                            .into_iter()
-                            .enumerate()
-                            .map(|(i, aspect)| {
-                                Button::new(format!("aspect-{i}"))
-                                    .ghost()
-                                    .small()
-                                    .label(aspect)
-                                    .atelier_selected(self.generation_size == i, cx)
-                                    .disabled(self.editing_image && self.use_mask)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.generation_size = i;
-                                        cx.notify();
-                                    }))
-                            }),
+                        [
+                            ("1:1", 1024, 1024),
+                            ("3:2", 1536, 1024),
+                            ("2:3", 1024, 1536),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, (name, w, h))| {
+                            Button::new(format!("aspect-{i}"))
+                                .ghost()
+                                .small()
+                                .label(name)
+                                .atelier_selected(
+                                    self.settings.width == w && self.settings.height == h,
+                                    cx,
+                                )
+                                .disabled(self.editing_image && self.use_mask)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.generation_width
+                                        .update(cx, |s, cx| s.set_value(w.to_string(), window, cx));
+                                    this.generation_height
+                                        .update(cx, |s, cx| s.set_value(h.to_string(), window, cx));
+                                    this.settings.width = w;
+                                    this.settings.height = h;
+                                    cx.notify();
+                                }))
+                        }),
                     )
                     .child(div().flex_1())
                     .child(
@@ -2024,15 +2114,64 @@ impl DrawingApp {
             );
         self.overlay("Canvas & project", content, cx)
     }
+    fn lora_editor(&self, cx: &mut Context<Self>) -> Div {
+        let discovered = crate::native_images::available_loras(&self.settings);
+        let addable: Vec<String> = discovered
+            .iter()
+            .filter(|name| !self.settings.loras.iter().any(|lora| lora.name == **name))
+            .cloned()
+            .collect();
+        let mut content = column().child(label("LoRA adapters")).child(
+            Select::new(&self.lora_select)
+                .placeholder("Add adapter…")
+                .search_placeholder("Search adapters")
+                .cleanable(false)
+                .disabled(addable.is_empty())
+                .w_full(),
+        );
+        if discovered.is_empty() {
+            content = content.child(label("No adapters found in this model's lora directory."));
+        } else if self.settings.loras.is_empty() {
+            content = content.child(label("No adapters applied."));
+        }
+        for lora in &self.settings.loras {
+            let name = lora.name.clone();
+            let mut entry = row().child(div().flex_1().min_w_0().truncate().child(name.clone()));
+            if let Some(input) = self.lora_weights.get(&name) {
+                entry = entry.child(NumberInput::new(input).small().w(px(84.)));
+            }
+            entry = entry.child(
+                tool_button(format!("lora-remove-{name}"), "close", "Remove adapter").on_click(
+                    cx.listener(move |this, _, window, cx| {
+                        this.remove_lora(&name, window, cx);
+                        cx.notify();
+                    }),
+                ),
+            );
+            content = content.child(entry);
+        }
+        content
+    }
     fn provider_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let provider = self.settings.provider;
         let mut content = column().child(self.provider_choices(true));
         if provider.native_architecture().is_some() {
-            content = content.child(label(if provider.supports_edit() {
-                "Generation and editing · one source image"
-            } else {
-                "Generation only"
-            }));
+            content = content
+                .child(label(if provider.supports_edit() {
+                    "Generation and editing · one source image"
+                } else {
+                    "Generation only"
+                }))
+                .child(number_field(
+                    "Sampling steps (blank = default)",
+                    &self.steps,
+                ))
+                .child(
+                    row()
+                        .child(number_field("Width", &self.generation_width).flex_1())
+                        .child(number_field("Height", &self.generation_height).flex_1()),
+                )
+                .child(self.lora_editor(cx));
         } else if provider != Provider::Comfy {
             content = content
                 .child(label("Model presets"))
