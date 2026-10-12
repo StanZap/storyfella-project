@@ -2,6 +2,7 @@ use crate::{
     document::{self, Brush, Document, History, Layer, Point as DocPoint, Stroke, Tool},
     native_images::ServerStatus,
     providers::{self, Settings},
+    queue::{JobState, Queue, QueuedRequest},
     viewport::Viewport,
     worker::{self, Event, Storage, Workers},
 };
@@ -46,6 +47,33 @@ pub enum Panel {
     Settings,
     Help,
     Brushes,
+    Queue,
+    FromDrawing,
+    /// Render parameters (size, steps, adapters) for the next request.
+    ImageSettings,
+}
+
+/// The default prompt for "Generate from drawing" when the whole canvas is used.
+pub(crate) const FROM_DRAWING_PROMPT: &str = "Generate an image using this drawing as a reference.";
+/// The default prompt when a canvas region is selected. Box select crops the
+/// reference to that region, so the rest of the image is composed to match it.
+pub(crate) const FROM_DRAWING_REGION_PROMPT: &str = "Generate an image using the selected area of this drawing as a reference. Modify only the selected area and preserve the rest.";
+
+/// Clamps two document-space corners to a pixel rectangle (x, y, width, height),
+/// or `None` when a side is smaller than 16 px.
+pub(crate) fn region_rect(
+    a: DocPoint,
+    b: DocPoint,
+    width: u32,
+    height: u32,
+) -> Option<(u32, u32, u32, u32)> {
+    let (width, height) = (width as f32, height as f32);
+    let x0 = a.x.min(b.x).floor().clamp(0., width) as u32;
+    let y0 = a.y.min(b.y).floor().clamp(0., height) as u32;
+    let x1 = a.x.max(b.x).ceil().clamp(0., width) as u32;
+    let y1 = a.y.max(b.y).ceil().clamp(0., height) as u32;
+    let (w, h) = (x1.saturating_sub(x0), y1.saturating_sub(y0));
+    (w >= 16 && h >= 16).then_some((x0, y0, w, h))
 }
 
 pub struct StudyCard {
@@ -180,6 +208,15 @@ pub struct DrawingApp {
     pub settings_save_error: Option<String>,
     pub generation: Option<Arc<AtomicBool>>,
     pub generation_error: Option<String>,
+    /// The queued and recently completed image requests, oldest first.
+    pub queue: Queue,
+    /// The canvas region (document coordinates) selected for "Generate from
+    /// drawing"; `None` means the full canvas.
+    pub generation_region: Option<(DocPoint, DocPoint)>,
+    /// The drag anchor while a region is being selected on the canvas.
+    pub(crate) region_drag: Option<DocPoint>,
+    /// The prompt used by the "Generate from drawing" panel.
+    pub from_drawing_prompt: Entity<TextareaState>,
     pub job_id: u64,
     pub job_epoch: u64,
     pub timer_seconds: u32,
@@ -320,6 +357,11 @@ impl DrawingApp {
                 .step(64.0)
                 .min(256.0)
                 .max(2048.0)
+        });
+        let from_drawing_prompt = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder("Describe the image to generate from your drawing…")
+                .default_value(FROM_DRAWING_PROMPT.to_string())
         });
         let note = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -467,6 +509,10 @@ impl DrawingApp {
             settings_save_error: None,
             generation: None,
             generation_error: None,
+            queue: Queue::default(),
+            generation_region: None,
+            region_drag: None,
+            from_drawing_prompt,
             job_id: 0,
             job_epoch: 0,
             timer_seconds: 300,
@@ -755,47 +801,80 @@ impl DrawingApp {
         self.sync_ref_inputs(window, cx);
         self.restore_prompt(window, cx);
     }
+    /// Renames the inspected image (on the Image page) or the selected project
+    /// reference, updating every copy the app holds: the project's own record,
+    /// the inspected copy, the cached preview label and the shared record when
+    /// the image is in the reference library.
     pub fn edit_reference(&mut self, cx: &mut Context<Self>) {
-        if self.page == Page::Image {
-            let name = self.ref_name.read(cx).value().trim().to_owned();
-            let tags = self.ref_tags.read(cx).value().to_string();
-            if name.is_empty() || name.len() > 512 || tags.len() > 32_768 {
-                self.message(
-                    "Enter a name (up to 512 bytes) and tags (up to 32 KB)",
-                    true,
-                );
-                return;
-            }
-            if let Some((reference, _, _, _)) = &mut self.opened_image {
-                let reference = Arc::make_mut(reference);
-                reference.name = name;
-                reference.tags = tags;
-                let _ = self.workers.storage.send(Storage::LibraryUpdate(
-                    self.data_dir.join("library"),
-                    Arc::new(reference.clone()),
-                    crate::library::Update::Details,
-                ));
-            }
+        let name = self.ref_name.read(cx).value().trim().to_owned();
+        let tags = self.ref_tags.read(cx).value().to_string();
+        if name.is_empty() || name.len() > 512 || tags.len() > 32_768 {
+            self.message(
+                "Enter a name (up to 512 bytes) and tags (up to 32 KB)",
+                true,
+            );
             return;
         }
-        if let Some(i) = self.doc.reference {
-            let name = self.ref_name.read(cx).value().trim().to_owned();
-            let tags = self.ref_tags.read(cx).value().to_string();
-            if name.is_empty() {
-                self.message("Reference name cannot be empty", true);
-                return;
-            }
+        let target = if self.page == Page::Image {
+            self.opened_image
+                .as_ref()
+                .map(|(reference, _, _, _)| crate::library::id(reference))
+        } else {
+            self.doc
+                .reference
+                .and_then(|i| self.doc.references.get(i))
+                .map(|reference| crate::library::id(reference))
+        };
+        let Some(target) = target else {
+            return;
+        };
+        if self
+            .doc
+            .references
+            .iter()
+            .any(|reference| crate::library::id(reference) == target)
+        {
             self.checkpoint();
+        }
+        if let Some(i) = self
+            .doc
+            .references
+            .iter()
+            .position(|reference| crate::library::id(reference) == target)
+        {
             let reference = Arc::make_mut(&mut self.doc.references[i]);
-            reference.name = name;
-            reference.tags = tags;
-            let _ = self.workers.storage.send(Storage::LibraryUpdate(
-                self.data_dir.join("library"),
-                self.doc.references[i].clone(),
-                crate::library::Update::Details,
-            ));
+            reference.name = name.clone();
+            reference.tags = tags.clone();
+            if let Some((cached, _)) = self
+                .reference_cache
+                .iter_mut()
+                .find(|(reference, _)| crate::library::id(reference) == target)
+            {
+                let cached = Arc::make_mut(cached);
+                cached.name = name.clone();
+                cached.tags = tags.clone();
+            }
             self.changed();
         }
+        if let Some((reference, _, _, _)) = &mut self.opened_image {
+            if crate::library::id(reference) == target {
+                let reference = Arc::make_mut(reference);
+                reference.name = name.clone();
+                reference.tags = tags.clone();
+            }
+        }
+        if let Some(reference) = self
+            .all_references()
+            .into_iter()
+            .find(|reference| crate::library::id(reference) == target)
+        {
+            let _ = self.workers.storage.send(Storage::LibraryUpdate(
+                self.data_dir.join("library"),
+                reference,
+                crate::library::Update::Details,
+            ));
+        }
+        self.message("Image details saved", false);
     }
     pub fn save_note(&mut self, cx: &mut Context<Self>) {
         self.checkpoint();
@@ -1035,6 +1114,14 @@ impl DrawingApp {
         window.focus(&self.focus, cx);
         self.finish_stroke();
         self.tablet.drain();
+        if self.panel == Panel::FromDrawing && event.button == MouseButton::Left {
+            if let Some(point) = self.doc_point(event.position) {
+                self.region_drag = Some(point);
+                self.generation_region = Some((point, point));
+                cx.notify();
+            }
+            return;
+        }
         if self.tool == Tool::Hand
             && self.moving_image
             && event.button == MouseButton::Left
@@ -1082,6 +1169,15 @@ impl DrawingApp {
         }
     }
     pub fn pointer_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        if self.region_drag.is_some() {
+            if let Some(point) = self.doc_point(event.position) {
+                if let Some(anchor) = self.region_drag {
+                    self.generation_region = Some((anchor, point));
+                    cx.notify();
+                }
+            }
+            return;
+        }
         // Consume standalone tablet points before this later mouse event to preserve order.
         self.tablet_samples(cx);
         self.pointer_sample(event, crate::tablet::current_pressure(), cx);
@@ -1354,11 +1450,11 @@ impl DrawingApp {
             self.settings_save = Some((self.settings.clone(), key));
         }
     }
-    pub fn generate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Validates the composer's current request, captures it as a queue entry,
+    /// and starts it when the queue is idle. Validation stays here so a bad
+    /// request never reaches the queue.
+    pub fn enqueue_generation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.restore_prompt(window, cx);
-        if self.generation.is_some() {
-            return;
-        }
         self.settings_from_inputs(cx);
         let source = if self.editing_image {
             if !self.settings.provider.supports_edit() {
@@ -1445,48 +1541,350 @@ impl DrawingApp {
             );
             return;
         }
-        let cancel = Arc::new(AtomicBool::new(false));
         self.generation_error = None;
-        self.job_id += 1;
-        self.job_epoch = self.epoch;
-        self.generation_view_id = self
+        let view_id = self
             .opened_image
             .as_ref()
             .filter(|_| self.page == Page::Image)
             .map(|(r, _, _, _)| crate::library::id(r));
+        self.queue.enqueue(
+            QueuedRequest {
+                settings: self.settings.clone(),
+                prompt,
+                source,
+                references,
+                mask,
+                editing: self.editing_image,
+            },
+            self.epoch,
+            view_id,
+        );
+        self.message(format!("Queued · {} waiting", self.queue.pending()), false);
+        self.pump_queue();
+        cx.notify();
+    }
+    /// Starts the next queued request when nothing is running and the queue is
+    /// not paused. A completion calls this again, so exactly one runs at a time.
+    fn pump_queue(&mut self) {
+        if self.generation.is_some() || self.queue.is_paused() {
+            return;
+        }
+        let Some(id) = self.queue.next_queued() else {
+            return;
+        };
+        let (epoch, view_id, request) = {
+            let Some(item) = self.queue.get_mut(id) else {
+                return;
+            };
+            item.state = JobState::Running {
+                progress: String::new(),
+            };
+            (item.epoch, item.view_id.clone(), item.request.clone())
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.job_id = id;
+        self.job_epoch = epoch;
+        self.generation_view_id = view_id;
+        let size = request.size();
         worker::generate(
             providers::Request {
                 native: self.workers.native.clone(),
                 keys_path: self.data_dir.join("api-keys.json"),
-                settings: self.settings.clone(),
-                prompt,
-                size: mask
-                    .as_ref()
-                    .map(|mask| (mask.width, mask.height))
-                    .unwrap_or((self.settings.width, self.settings.height)),
-                source,
-                references,
-                mask,
+                settings: request.settings,
+                prompt: request.prompt,
+                size,
+                source: request.source,
+                references: request.references,
+                mask: request.mask,
                 progress: None,
                 cancel: cancel.clone(),
             },
-            self.job_id,
+            id,
             self.workers.sender.clone(),
             self.data_dir.clone(),
         );
         self.generation = Some(cancel);
         self.message(
-            if self.editing_image {
-                "Editing image…"
-            } else {
-                "Creating image…"
-            },
+            format!("Generating · {} queued", self.queue.pending()),
             false,
         );
     }
+    /// Pauses or resumes dispatch. A running image always finishes.
+    pub fn queue_pause_toggle(&mut self, cx: &mut Context<Self>) {
+        let paused = self.queue.toggle_paused();
+        self.message(
+            if paused {
+                "Queue paused · the running image finishes"
+            } else {
+                "Queue resumed"
+            },
+            false,
+        );
+        if !paused {
+            self.pump_queue();
+        }
+        cx.notify();
+    }
+    /// Drops finished history, keeping queued and running work.
+    pub fn queue_clear_finished(&mut self, cx: &mut Context<Self>) {
+        self.queue.clear_finished();
+        self.message("Cleared finished requests", false);
+        cx.notify();
+    }
+    /// Removes a queued (not yet started) request.
+    pub fn queue_remove(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.queue.remove(id);
+        cx.notify();
+    }
+    /// Every image the app can resolve: the project's own images first, then the
+    /// shared reference library, deduplicated by content so a promoted image is
+    /// not listed twice. A project image is the authoritative record when the
+    /// same image also exists in the library.
+    pub fn all_references(&self) -> Vec<Arc<document::Reference>> {
+        let mut seen = std::collections::HashSet::new();
+        self.doc
+            .references
+            .iter()
+            .cloned()
+            .chain(self.library.iter().map(|(reference, _)| reference.clone()))
+            .filter(|reference| seen.insert(crate::library::id(reference)))
+            .collect()
+    }
+    /// Whether the inspected image is in the shared reference library.
+    pub fn image_is_shared(&self) -> bool {
+        self.opened_image
+            .as_ref()
+            .is_some_and(|(reference, _, _, _)| {
+                let id = crate::library::id(reference);
+                self.library
+                    .iter()
+                    .any(|(candidate, _)| crate::library::id(candidate) == id)
+            })
+    }
+    /// Adds the inspected image to the shared reference library so another
+    /// project can reuse it.
+    pub fn promote_opened_image(&mut self, cx: &mut Context<Self>) {
+        let Some((reference, _, _, _)) = self.opened_image.clone() else {
+            return;
+        };
+        if self.image_is_shared() {
+            self.message("This image is already in the reference library", false);
+            cx.notify();
+            return;
+        }
+        if self
+            .workers
+            .storage
+            .send(Storage::LibraryAdd(
+                self.data_dir.join("library"),
+                vec![reference.clone()],
+            ))
+            .is_err()
+        {
+            self.message("Storage worker stopped. Try restarting Atelier.", true);
+        } else {
+            self.message(
+                format!("Added “{}” to the reference library", reference.name),
+                false,
+            );
+        }
+        cx.notify();
+    }
+    /// The selected canvas region as a clamped pixel rectangle (x, y, width,
+    /// height), or `None` when the whole canvas is used or the selection is too
+    /// small to be meaningful.
+    pub fn region_bounds(&self) -> Option<(u32, u32, u32, u32)> {
+        let (a, b) = self.generation_region?;
+        region_rect(a, b, self.doc.width, self.doc.height)
+    }
+
+    /// Uses the whole canvas as the reference area and clears any selection.
+    pub fn use_full_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.region_drag = None;
+        self.generation_region = None;
+        self.set_from_drawing_default(false, window, cx);
+        cx.notify();
+    }
+
+    /// Opens the "Generate from drawing" panel and seeds its prompt for the
+    /// current area mode.
+    pub fn open_from_drawing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.panel = Panel::FromDrawing;
+        self.region_drag = None;
+        self.set_from_drawing_default(self.generation_region.is_some(), window, cx);
+        cx.notify();
+    }
+
+    /// Toggles box select. Turning it on seeds the region with the whole canvas,
+    /// which a canvas drag then refines; turning it off returns to the full
+    /// canvas.
+    pub fn toggle_box_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.generation_region.is_some() {
+            self.use_full_canvas(window, cx);
+            return;
+        }
+        self.generation_region = Some((
+            DocPoint { x: 0., y: 0. },
+            DocPoint {
+                x: self.doc.width as f32,
+                y: self.doc.height as f32,
+            },
+        ));
+        self.set_from_drawing_default(true, window, cx);
+        cx.notify();
+    }
+
+    /// Replaces the panel prompt with the mode's default unless the user edited it.
+    fn set_from_drawing_default(
+        &mut self,
+        region: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let default = if region {
+            FROM_DRAWING_REGION_PROMPT
+        } else {
+            FROM_DRAWING_PROMPT
+        };
+        let current = self.from_drawing_prompt.read(cx).value().trim().to_owned();
+        if current.is_empty()
+            || current == FROM_DRAWING_PROMPT
+            || current == FROM_DRAWING_REGION_PROMPT
+        {
+            self.from_drawing_prompt.update(cx, |state, cx| {
+                state.set_value(default.to_string(), window, cx)
+            });
+        }
+    }
+
+    /// Called on canvas mouse-up, ending a region drag. A drag too small to be a
+    /// real selection is discarded and the area mode follows the result.
+    pub fn finish_drawing_region(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.region_drag = None;
+        if self.generation_region.is_some() && self.region_bounds().is_none() {
+            self.generation_region = None;
+        }
+        if self.panel == Panel::FromDrawing {
+            self.set_from_drawing_default(self.region_bounds().is_some(), window, cx);
+        }
+    }
+
+    /// Rasterizes the drawing (cropped to the selected region when one is set),
+    /// opens it as the editing source and queues a generation with the panel's
+    /// prompt.
+    pub fn generate_from_drawing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.settings.provider.supports_edit() {
+            self.message(
+                "Choose an editing provider — Qwen (local) or a hosted edit model — to generate from a drawing",
+                true,
+            );
+            return;
+        }
+        self.finish_stroke();
+        let prompt = self.from_drawing_prompt.read(cx).value().trim().to_owned();
+        if prompt.is_empty() {
+            self.message("Describe the image to generate from your drawing", true);
+            return;
+        }
+        let raster = match document::raster(&self.doc, document::MAX_EDGE, true) {
+            Ok(raster) => raster,
+            Err(error) => {
+                self.message(format!("Could not read the drawing: {error}"), true);
+                return;
+            }
+        };
+        let region = self.region_bounds();
+        let image = match region {
+            Some((x, y, w, h)) => image::imageops::crop_imm(&raster, x, y, w, h).to_image(),
+            None => raster,
+        };
+        let label = match region {
+            Some((_, _, w, h)) => format!("{} region {w}×{h}", self.doc.title),
+            None => format!("{} drawing", self.doc.title),
+        };
+        let bytes = match (|| -> anyhow::Result<Vec<u8>> {
+            let mut cursor = std::io::Cursor::new(Vec::new());
+            image.write_to(&mut cursor, image::ImageFormat::Png)?;
+            Ok(cursor.into_inner())
+        })() {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.message(format!("Could not use the drawing: {error}"), true);
+                return;
+            }
+        };
+        let reference = match document::reference_from_bytes(
+            label,
+            &bytes,
+            "Atelier drawing · used as a generation reference".into(),
+        ) {
+            Ok(reference) => Arc::new(reference),
+            Err(error) => {
+                self.message(format!("Could not use the drawing: {error}"), true);
+                return;
+            }
+        };
+        let preview = match document::decode_reference(&reference) {
+            Ok(decoded) => worker::render_image(document::thumbnail(decoded, 800).to_rgba8()),
+            Err(error) => {
+                self.message(format!("Could not use the drawing: {error}"), true);
+                return;
+            }
+        };
+        self.checkpoint();
+        self.reference_cache
+            .push((reference.clone(), preview.clone()));
+        self.doc.references.push(reference.clone());
+        self.references.push(preview);
+        self.doc.reference = Some(self.doc.references.len() - 1);
+        self.changed();
+        self.panel = Panel::None;
+        self.open_image(reference.clone(), cx);
+        self.use_mask = false;
+        self.editing_image = true;
+        // Seed the composer prompt for this new source so the request carries it.
+        self.settings_from_inputs(cx);
+        let target = crate::library::id(&reference);
+        self.prompt_target = target.clone();
+        self.doc.active_prompt_target = Some(target.clone());
+        self.doc
+            .prompt_drafts
+            .insert(target.clone(), prompt.clone());
+        self.prompt
+            .update(cx, |state, cx| state.set_value(prompt.clone(), window, cx));
+        self.queue.enqueue(
+            QueuedRequest {
+                settings: self.settings.clone(),
+                prompt,
+                source: Some(reference),
+                references: vec![],
+                mask: None,
+                editing: true,
+            },
+            self.epoch,
+            Some(target),
+        );
+        self.pump_queue();
+        self.message(
+            if region.is_some() {
+                "Queued from the selected region"
+            } else {
+                "Queued from the drawing"
+            },
+            false,
+        );
+        cx.notify();
+    }
+
+    /// Stops the running request. Its result is discarded when it arrives.
     pub fn cancel_generation(&mut self) {
         if let Some(cancel) = &self.generation {
             cancel.store(true, Ordering::Relaxed);
+            if let Some(item) = self.queue.get_mut(self.job_id) {
+                item.state = JobState::Running {
+                    progress: "Cancelling…".into(),
+                };
+            }
             self.message("Cancellation requested · waiting for provider", false);
         }
     }
@@ -2051,43 +2449,47 @@ impl DrawingApp {
                 }
                 Event::Imported(epoch, into_project, result) => {
                     self.refresh_library();
-                    if !into_project || epoch != self.epoch {
+                    if !into_project {
                         match result {
-                            Ok(_) => self.message("Images saved to shared library", false),
+                            Ok(_) => {
+                                self.message("Images saved to the shared reference library", false)
+                            }
                             Err(error) => self.message(format!("Import failed: {error:#}"), true),
                         }
                         continue;
                     }
-                    if epoch == self.epoch {
-                        match result {
-                            Ok(refs) => {
-                                let total = self.doc.embedded_image_bytes()
-                                    + refs.iter().map(|(r, _)| r.image.len()).sum::<usize>();
-                                if self.doc.references.len() + refs.len() > 128
-                                    || total > 64 * 1024 * 1024
-                                {
-                                    self.message(
-                                        "Project reference limit reached (128 images / 64 MB)",
-                                        true,
-                                    );
-                                    continue;
-                                }
-                                self.checkpoint();
-                                for (reference, image) in refs {
-                                    let reference = Arc::new(reference);
-                                    let image = worker::render_image(image);
-                                    self.reference_cache
-                                        .push((reference.clone(), image.clone()));
-                                    self.doc.references.push(reference);
-                                    self.references.push(image);
-                                }
-                                self.doc.reference = Some(self.doc.references.len() - 1);
-                                self.changed();
-                                self.sync_ref_inputs(window, cx);
-                                self.message("References imported", false);
+                    if epoch != self.epoch {
+                        self.message("Import discarded · the project changed", true);
+                        continue;
+                    }
+                    match result {
+                        Ok(refs) => {
+                            let total = self.doc.embedded_image_bytes()
+                                + refs.iter().map(|(r, _)| r.image.len()).sum::<usize>();
+                            if self.doc.references.len() + refs.len() > 128
+                                || total > 64 * 1024 * 1024
+                            {
+                                self.message(
+                                    "Project reference limit reached (128 images / 64 MB)",
+                                    true,
+                                );
+                                continue;
                             }
-                            Err(e) => self.message(format!("Import failed: {e}"), true),
+                            self.checkpoint();
+                            for (reference, image) in refs {
+                                let reference = Arc::new(reference);
+                                let image = worker::render_image(image);
+                                self.reference_cache
+                                    .push((reference.clone(), image.clone()));
+                                self.doc.references.push(reference);
+                                self.references.push(image);
+                            }
+                            self.doc.reference = Some(self.doc.references.len() - 1);
+                            self.changed();
+                            self.sync_ref_inputs(window, cx);
+                            self.message("References imported", false);
                         }
+                        Err(e) => self.message(format!("Import failed: {e}"), true),
                     }
                 }
                 Event::Generated(id, result) => {
@@ -2099,6 +2501,9 @@ impl DrawingApp {
                             .take()
                             .is_some_and(|c| c.load(Ordering::Relaxed));
                         if cancelled {
+                            if let Some(item) = self.queue.get_mut(id) {
+                                item.state = JobState::Cancelled;
+                            }
                             self.message(
                                 "Generation cancelled; provider charges may still apply",
                                 false,
@@ -2135,14 +2540,21 @@ impl DrawingApp {
                                     } else {
                                         self.message("Image saved to the shared library; this project was not changed",false);
                                     }
+                                    if let Some(item) = self.queue.get_mut(id) {
+                                        item.state = JobState::Done;
+                                    }
                                 }
                                 Err(e) => {
                                     let message = format!("Could not create image: {e:#}");
                                     self.generation_error = Some(message.clone());
+                                    if let Some(item) = self.queue.get_mut(id) {
+                                        item.state = JobState::Failed(message.clone());
+                                    }
                                     self.message(message, true);
                                 }
                             }
                         }
+                        self.pump_queue();
                     }
                 }
                 Event::ServerStatus(status) => self.server_status = Some(status),
@@ -2153,6 +2565,11 @@ impl DrawingApp {
                             .as_ref()
                             .is_some_and(|c| !c.load(Ordering::Relaxed))
                     {
+                        if let Some(item) = self.queue.get_mut(id) {
+                            item.state = JobState::Running {
+                                progress: message.clone(),
+                            };
+                        }
                         self.message(message, false);
                     }
                 }

@@ -568,6 +568,29 @@ generation/editing and Krea 2 Turbo generation are connected through Clipforge;
 actual Linux CUDA inference requires a run on that machine.
 See [iteration acceptance](atelier-iteration-acceptance.md).
 
+**Generation queue: implemented.** The Atelier generation rail queues requests.
+**Add to queue** captures the provider, model, prompt, width, height, sampling
+steps and the applied LoRA adapters (each with its weight) as an immutable
+snapshot and runs one request at a time on the shared image server. **Pause**
+holds dispatch without interrupting a running image, **Stop** cancels the running
+request, a queued request can be removed, and **Clear finished** drops completed
+history; the list labels each request's state. Size, steps and adapters are set
+per request in the **Image settings** window, and Settings no longer duplicates
+them. The queue has its own panel, opened from a header badge that counts
+outstanding requests. **Generate from drawing** opens a compact panel that
+auto-switches to a **box select** region when the canvas is dragged, then
+rasterizes the area and queues it. See [Atelier](atelier.md). Live multi-request
+validation on a real provider is pending; the queue's ordering, pause, removal,
+history-clearing and region-clamping rules are unit-tested.
+
+**Reference library scoping: implemented.** The Atelier reference library is the
+shared collection, not every image ever made: generated images, edits and project
+imports stay in their project, and only an import into the **All projects** tab
+or an explicit **Add to reference library** action adds an image to the
+collection. Project-only images are renamed and favorited locally, and the
+version strip, before/after comparison and draft restore resolve project and
+collection images together. See [Atelier](atelier.md).
+
 1. **The API:** artifact domain model (artifact kinds, variants, scenes,
    beats — the registry), typed operation set + pipeline builder (closed
    vocabulary — `LoadImage`/`Checkpoint`/`Generate`/`Llm`; typed intermediates,

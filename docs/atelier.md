@@ -26,12 +26,16 @@ or migrated; enter the key once in Settings.
 
 ## Image workflow
 
-**Library → All projects** is the reusable image collection. Importing there
-stores an immutable original without attaching it to the current study.
-**This project** shows embedded references; **Use** adds a library image to the
-project. Saved projects retain their own copies and do not depend on library
-paths. Search matches names/tags; favorites filter the collection. Open an image
-to edit its global name/tags. Project reference metadata remains project-local.
+**Library → All projects** is the **shared reference collection** — images
+explicitly added for reuse: imports into that tab and any project image promoted
+with **Add to reference library** (the toolbar action in the image workspace).
+**This project** shows the project's own images. **Use** copies a shared
+reference into the project. Generated images, edits and imports made elsewhere
+stay in their project and never enter the shared collection on their own, so the
+collection is not a dumping ground of every image ever made; renaming or
+favoriting a project-only image applies to that project, not the collection.
+Saved projects retain their own copies and do not depend on library paths. Search
+matches names/tags; favorites filter the collection.
 
 Imported and generated originals retain their full dimensions and original
 bytes. Display thumbnails are separate. Old projects that already contain a
@@ -83,16 +87,31 @@ deployments releases the previously owned server before loading the next model.
 The app does not download weights or compile the server on submission. Missing
 setup reports an error while keeping the source and prompt draft.
 
-The generation rail's aspect presets (**1:1 / 3:2 / 2:3**) set the output size,
-and the rail reports whether the machine's shared `sd-server` is answering
-(`Local server: running · <model>` or `stopped · starts on demand`), re-probed on
-demand, when the provider changes, and after each generation. For a local
-provider, **Settings** carries the sampling **steps** (blank uses the model's
-default — 25 for Qwen, 8 for Krea) and the output **width**/**height**, all as
-numeric steppers, alongside the **LoRA adapters** added from a searchable picker
-(each applied adapter carries its own weight, default 1.0). The sampling options
-ride the shared image request's native fields (`clipforge_inference::images::Request`);
-hosted providers ignore them and use the preset aspect sizes.
+The generation rail carries the prompt, the aspect presets (**1:1 / 3:2 / 2:3**)
+and **Add to queue**, and reports whether the machine's shared `sd-server` is
+answering (`Local server: running · <model>` or `stopped · starts on demand`),
+re-probed on demand, when the provider changes, and after each generation. A gear
+in the rail — and in the Generate-from-drawing panel — opens the **Image
+settings** window with the sampling **steps** (blank uses the model's default —
+25 for Qwen, 8 for Krea), the output **width**/**height**, and the **LoRA
+adapters** added from a searchable picker (each applied adapter carries its own
+weight, default 1.0), all as per-request controls. **Settings** keeps the
+provider, model, endpoint and credentials. The sampling options ride the shared
+image request's native fields (`clipforge_inference::images::Request`); hosted
+providers ignore them and use the preset aspect sizes.
+
+**Generation is queued.** **Add to queue** captures the request — provider,
+model, prompt, width, height, steps and the applied LoRA adapters with their
+weights — and runs it after the requests already waiting, so several images can
+be prepared before any finishes. Exactly one request runs at a time, on the same
+shared server. **Pause** holds dispatch (a running image always finishes),
+**Stop** cancels the running request, a queued request can be removed, and
+**Clear finished** drops completed history. Each queue entry keeps the values it
+was created with, so editing the live controls afterwards never changes work
+already queued. The queue has its own panel, opened from the header badge (which
+counts outstanding requests) or the rail's summary; it lists each request with
+its state (Queued, Running with its progress, Done, Failed, Cancelled) and
+carries Pause/Stop/Clear.
 
 Configuration and shared loopback tests pass on this Mac; actual Linux CUDA
 inference and Linux native interaction still require verification on that machine.
@@ -118,10 +137,15 @@ source is Image 1; additional references are Images 2 and 3. New-image generatio
 does not use the editing basket. Unsupported mask/multi-reference combinations
 fail before credentials are requested or a paid job is submitted.
 
-The Draw workspace's **Generate from drawing** rasterizes the current canvas,
-adds it as a project reference and opens it in the image workspace as the edit
-source, so a prompt renders an image from the sketch. It needs a provider that
-supports editing.
+The Draw workspace's **Generate from drawing** opens a compact panel with an area
+control and the prompt. Dragging on the canvas switches it to **Box select**
+automatically and shows the region size; the box-select toggle turns it on (seeded
+with the whole canvas) or off (**Full canvas**). A gear opens the same **Image
+settings** window for size, steps and adapters. The prompt defaults to using the
+drawing as a reference — and for a region, to modifying only the selected area and
+preserving the rest. **Generate** rasterizes the area (cropped to the region when
+one is set), adds it as a project reference, opens it as the edit source, and
+queues it. It needs a provider that supports editing.
 
 | Editing route | Ordered images | Mask |
 | --- | --- | --- |

@@ -48,7 +48,10 @@ pub enum Event {
 pub enum Storage {
     Artwork(Arc<Reference>, PathBuf),
     CanvasArtwork(Document, PathBuf, bool),
-    Library(PathBuf, Vec<Arc<Reference>>),
+    /// Loads the shared reference library (read-only).
+    Library(PathBuf),
+    /// Adds originals to the shared reference library, then reloads it.
+    LibraryAdd(PathBuf, Vec<Arc<Reference>>),
     LibraryUpdate(PathBuf, Arc<Reference>, crate::library::Update),
     OpenImage(Arc<Reference>, PathBuf),
     CompareImage(Arc<Reference>),
@@ -142,7 +145,18 @@ pub fn start() -> Workers {
                     Ok(path)
                 })(
                 )),
-                Storage::Library(directory, references) => Event::Library((|| {
+                Storage::Library(directory) => Event::Library((|| {
+                    crate::library::load(&directory)?
+                        .into_iter()
+                        .map(|reference| {
+                            let image =
+                                document::thumbnail(document::decode_reference(&reference)?, 360)
+                                    .to_rgba8();
+                            Ok((reference, image))
+                        })
+                        .collect()
+                })()),
+                Storage::LibraryAdd(directory, references) => Event::Library((|| {
                     for reference in references {
                         crate::library::store(&directory, &reference)?;
                     }
@@ -309,7 +323,11 @@ pub fn start() -> Workers {
                             );
                         }
                         for (reference, _) in &refs {
-                            crate::library::store(&directory, reference)?;
+                            // An import into the shared collection becomes a global
+                            // reference; an import into a project stays project-local.
+                            if !into_project {
+                                crate::library::store(&directory, reference)?;
+                            }
                         }
                         Ok(refs)
                     })(),
@@ -411,12 +429,6 @@ pub(crate) fn apply_settings(
 }
 pub fn generate(mut request: Request, id: u64, sender: Sender<Event>, directory: PathBuf) {
     std::thread::spawn(move || {
-        let originals: Vec<_> = request
-            .source
-            .iter()
-            .chain(&request.references)
-            .cloned()
-            .collect();
         let mask = request.mask.clone();
         let source = request.source.clone();
         let parent = request
@@ -428,26 +440,15 @@ pub fn generate(mut request: Request, id: u64, sender: Sender<Event>, directory:
         request.progress = Some(Box::new(move |message| {
             let _ = progress_sender.send(Event::GenerationProgress(id, message));
         }));
-        let result = (|| {
-            for original in &originals {
-                crate::library::store(&directory.join("library"), original)?;
-            }
-            providers::generate(request)
-        })()
-        .and_then(|mut reference| {
+        let result = providers::generate(request).and_then(|mut reference| {
             if let (Some(mask), Some(source)) = (&mask, &source) {
                 reference = mask.composite(source, &reference)?;
             }
             reference.parent = parent;
             reference.prompt = prompt;
             if let Some(source) = &source {
-                let number = std::fs::read_dir(directory.join("library"))?
-                    .filter_map(Result::ok)
-                    .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
-                    .count();
-                reference.name = format!("Edit {number} · {}", source.name);
+                reference.name = format!("Edit · {}", source.name);
             }
-            crate::library::store(&directory.join("library"), &reference)?;
             let directory = directory.join("generated");
             let decoded = document::decode_reference(&reference)?;
             let image = document::thumbnail(decoded.clone(), 800).to_rgba8();

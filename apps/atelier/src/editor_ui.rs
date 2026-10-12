@@ -73,6 +73,13 @@ impl DrawingApp {
                         cx.listener(|this, _, window, cx| this.pick(Picker::Artwork, window, cx)),
                     ),
                 )
+                .child(
+                    tool_button("image-add-library", "reference", "Add to reference library")
+                        .disabled(self.image_is_shared())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.promote_opened_image(cx);
+                        })),
+                )
                 .child(label(format!("{width} × {height}")));
         }
         workspace = workspace.child(toolbar);
@@ -405,37 +412,28 @@ impl DrawingApp {
         workspace = workspace.child(stage);
         if let Some((reference, _, _, _)) = &self.opened_image {
             let id = crate::library::id(reference);
-            let family = crate::library::family(
-                reference,
-                &self
-                    .library
-                    .iter()
-                    .map(|(r, _)| r.clone())
-                    .collect::<Vec<_>>(),
-            );
+            let all = self.all_references();
+            let family = crate::library::family(reference, &all);
             let mut versions = row()
                 .id("image-versions")
                 .h(px(44.))
                 .px_4()
                 .overflow_x_scroll()
                 .bg(rgb(0xffffff));
-            let mut relatives: Vec<_> = self
-                .library
+            let mut relatives: Vec<_> = all
                 .iter()
-                .enumerate()
-                .filter(|(_, (r, _))| family.contains(&crate::library::id(r)))
+                .filter(|candidate| family.contains(&crate::library::id(candidate)))
+                .cloned()
                 .collect();
-            relatives.sort_by_key(|(_, (candidate, _))| {
+            relatives.sort_by_key(|candidate| {
                 (candidate.parent.is_some(), crate::library::id(candidate))
             });
-            for (i, (candidate, _)) in relatives {
-                let candidate = candidate.clone();
-                let parent_name = candidate.parent.as_ref().and_then(|parent| {
-                    self.library
-                        .iter()
-                        .find(|(r, _)| crate::library::id(r) == *parent)
-                        .map(|(r, _)| r.name.clone())
-                });
+            for (i, candidate) in relatives.into_iter().enumerate() {
+                let parent_name = candidate
+                    .parent
+                    .as_ref()
+                    .and_then(|parent| all.iter().find(|r| crate::library::id(r) == *parent))
+                    .map(|r| r.name.clone());
                 let description = parent_name
                     .map(|parent| format!("{} · From {parent}", candidate.name))
                     .unwrap_or_else(|| candidate.name.clone());

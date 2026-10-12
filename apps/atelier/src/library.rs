@@ -72,7 +72,12 @@ pub enum Update {
 }
 pub fn update(directory: &Path, reference: &Reference, update: Update) -> Result<()> {
     let path = directory.join(format!("{}.json", id(reference)));
-    ensure!(path.exists(), "Image is not saved in the library");
+    if !path.exists() {
+        // The image is not in the shared reference library. Its name, tags and
+        // favorite are project-local and saved with the project, so there is no
+        // shared record to update.
+        return Ok(());
+    }
     let mut record: Record = serde_json::from_slice(&fs::read(&path)?)?;
     match update {
         Update::Details => {

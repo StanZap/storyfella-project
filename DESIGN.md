@@ -967,3 +967,67 @@ Verification: `cargo check --workspace --all-targets`, `cargo test --workspace`,
 --all-targets -- -D warnings` and `cargo fmt --all -- --check` pass. Live
 multi-front-end reuse and the Settings Start/Stop/residency interactions remain a
 manual check.
+
+### Atelier generation queue · 2026-10-12
+
+The Atelier generation rail now queues requests instead of running one at a time.
+**Add to queue** validates and captures the request — provider, model, prompt,
+width, height, sampling steps and the applied LoRA adapters with their weights —
+and runs it after those already waiting, so several images can be prepared before
+any finishes. Exactly one request runs at a time on the shared server. **Pause**
+holds dispatch without interrupting the running image, **Stop** cancels it, a
+queued request can be removed, and **Clear finished** drops completed history.
+Each entry keeps the values it was created with, so later control edits never
+change work already queued. The list labels every state in text (Queued, Running
+with its progress, Done, Failed, Cancelled) and pairs each with a colour, never
+colour alone.
+
+Size, steps and LoRA adapters are per-request controls in a floating **Image
+settings** window (a gear in the rail and in the Generate-from-drawing panel);
+Settings keeps the provider, model, endpoint and credentials. This is a
+state-only change: `queue.rs` owns the request snapshots,
+ordering, pause and states, and the app dispatches one item at a time through the
+unchanged `worker::generate`, so no second execution path was added and the
+single-GPU constraint holds.
+
+The queue now lives in its own panel — opened from a header badge that counts
+outstanding requests (queued + running) and from the rail's summary — with
+Pause/Resume, Stop and Clear finished, and one card per request showing its state,
+prompt and settings. The generation rail keeps only the composer and the summary.
+**Generate from drawing** is now a compact panel. Dragging on the canvas switches
+it to **Box select** automatically (a marquee shows the region) and the box-select
+toggle returns to the **full canvas**; it carries the prompt (defaulted to using
+the drawing as a reference, and for a region to modify only the selected area and
+preserve the rest), then rasterizes the area (cropped to the region), opens it as
+the edit source and queues it. Rails and the header were narrowed (left rail
+64→48 px, generation rail 280→232 px, header 54→44 px) and explanatory copy was
+removed to keep the workspace out of the way.
+
+Verification: `cargo test -p storyfella-atelier` (49 tests; seven new — six
+covering queue ordering/pause/history/removal/masked-edit size, one covering
+region clamping) and `cargo clippy -p storyfella-atelier --all-targets -- -D
+warnings` pass. The queue panel, header badge and generate-from-drawing panel
+have not been exercised in a live UI run.
+
+### Atelier shared reference library scoping · 2026-10-12
+
+The Atelier reference library is now the **shared collection**, not a record of
+every image ever made. Generated images, edits and project imports stay in their
+project; only an import into the **All projects** tab or an explicit **Add to
+reference library** action puts an image in the collection. Renaming or favoriting
+a project-only image is a project-local change and a no-op in the library, and the
+image workspace now persists a rename/re-tag to the project's own record and its
+cached preview label, so a project-only image keeps its details across reopen.
+The image workspace's version strip, before/after comparison and draft restore now
+resolve images from the project and the collection together (deduplicated by
+content), so project-only variants appear in their family and remain comparable.
+Existing images already in the collection are left untouched — no destructive
+migration.
+
+Verification: `cargo test -p storyfella-atelier` (48 tests; 2 new covering that a
+project-only image is not shared until promoted, and that the library loads
+without collecting project images) and `cargo clippy -p storyfella-atelier
+--all-targets -- -D warnings` pass. The promote action's live UI behaviour is not
+yet exercised. The test helper now resets its pid-keyed temporary directory so a
+run cannot inherit a fixture left by an earlier one (the pid is reused and TMPDIR
+persists).

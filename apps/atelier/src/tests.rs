@@ -147,6 +147,9 @@ fn stroke(tool: Tool, y: f32) -> Stroke {
 }
 fn temporary(name: &str) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("atelier-tests-{}-{name}", std::process::id()));
+    // Start from an empty directory: the process id can be reused across runs and
+    // TMPDIR persists, so a fixture left by an earlier run must not leak in.
+    let _ = std::fs::remove_dir_all(&path);
     std::fs::create_dir_all(&path).unwrap();
     path
 }
@@ -220,6 +223,90 @@ fn originals_keep_resolution_bytes_and_alpha_across_library_and_projects() {
     std::fs::remove_file(library.join(format!("{id}.image"))).unwrap();
     assert!(crate::library::load(&library).is_err());
     assert!(document::load(&directory.join("Project A.atelier")).is_ok());
+}
+
+#[test]
+fn project_images_are_not_shared_until_promoted() {
+    let directory = temporary("shared-scope");
+    let library = directory.join("library");
+    let variant = colored_reference("Variant", [10, 20, 30, 255], 64, 64);
+    let id = crate::library::id(&variant);
+
+    // A project-only image has no shared record, and renaming it is a harmless
+    // no-op in the library: its name, tags and favorite stay project-local.
+    crate::library::update(&library, &variant, crate::library::Update::Details).unwrap();
+    assert!(!library.join(format!("{id}.json")).exists());
+    assert!(crate::library::load(&library).unwrap().is_empty());
+
+    // Promoting it (what "Add to reference library" does) makes it shared.
+    crate::library::store(&library, &variant).unwrap();
+    let shared = crate::library::load(&library).unwrap();
+    assert_eq!(shared.len(), 1);
+    assert_eq!(crate::library::id(&shared[0]), id);
+}
+
+#[test]
+fn the_shared_library_loads_without_collecting_project_images() {
+    let directory = temporary("library-load");
+    let library = directory.join("library");
+    let shared = colored_reference("Shared", [1, 2, 3, 255], 48, 48);
+    crate::library::store(&library, &shared).unwrap();
+    let workers = worker::start();
+
+    // A plain load reports only what is actually in the shared collection.
+    workers
+        .storage
+        .send(Storage::Library(library.clone()))
+        .unwrap();
+    match workers.events.recv_timeout(Duration::from_secs(5)).unwrap() {
+        Event::Library(Ok(items)) => assert_eq!(items.len(), 1),
+        _ => panic!("The library should load"),
+    }
+
+    // Adding (a promote) stores the original and reloads the collection.
+    let added = colored_reference("Added", [4, 5, 6, 255], 48, 48);
+    workers
+        .storage
+        .send(Storage::LibraryAdd(library, vec![Arc::new(added)]))
+        .unwrap();
+    match workers.events.recv_timeout(Duration::from_secs(5)).unwrap() {
+        Event::Library(Ok(items)) => assert_eq!(items.len(), 2),
+        _ => panic!("The added original should reload"),
+    }
+}
+
+#[test]
+fn region_rect_clamps_and_rejects_tiny_selections() {
+    let wide = crate::app::region_rect(
+        Point { x: -10., y: 5.5 },
+        Point { x: 120.4, y: 90.2 },
+        128,
+        96,
+    );
+    assert_eq!(wide, Some((0, 5, 121, 86)));
+    // A reversed drag produces the same rectangle.
+    let reversed = crate::app::region_rect(
+        Point { x: 120.4, y: 90.2 },
+        Point { x: -10., y: 5.5 },
+        128,
+        96,
+    );
+    assert_eq!(reversed, wide);
+    // Below 16 px on a side the selection is ignored.
+    assert_eq!(
+        crate::app::region_rect(Point { x: 10., y: 10. }, Point { x: 24., y: 24. }, 128, 96),
+        None
+    );
+    // A selection outside the canvas clamps away.
+    assert_eq!(
+        crate::app::region_rect(
+            Point { x: 200., y: 200. },
+            Point { x: 300., y: 300. },
+            128,
+            96,
+        ),
+        None
+    );
 }
 
 #[test]

@@ -19,6 +19,10 @@ use std::time::Duration;
 pub(crate) const WINE: u32 = 0x790e26;
 const INK: u32 = 0x201d26;
 const MUTED: u32 = 0x756b79;
+/// Pending / in-progress state; never the only signal.
+const AMBER: u32 = 0x9a6b06;
+/// A completed request.
+const GREEN: u32 = 0x2f6b3a;
 pub(crate) const BORDER: u32 = 0xe1dce5;
 const SURFACE: u32 = 0xf7f6f8;
 pub fn panel() -> Div {
@@ -36,6 +40,19 @@ pub(crate) fn column() -> Div {
 }
 pub(crate) fn label(text: impl Into<SharedString>) -> Div {
     div().text_xs().text_color(rgb(MUTED)).child(text.into())
+}
+
+/// The label for a queued request's state. Colour never carries the meaning
+/// alone; the text always names the state.
+fn job_state_label(state: &crate::queue::JobState) -> Div {
+    use crate::queue::JobState;
+    let color = match state {
+        JobState::Queued | JobState::Cancelled => MUTED,
+        JobState::Running { .. } => AMBER,
+        JobState::Done => GREEN,
+        JobState::Failed(_) => WINE,
+    };
+    label(state.label()).text_color(rgb(color))
 }
 fn separator() -> Div {
     div().h(px(1.)).w_full().bg(rgb(BORDER)).my_2()
@@ -152,6 +169,9 @@ impl DrawingApp {
             Panel::Canvas => Some(self.canvas_settings(cx)),
             Panel::Settings => Some(self.provider_settings(cx)),
             Panel::Help => Some(self.help(cx)),
+            Panel::Queue => Some(self.queue_panel(cx)),
+            Panel::FromDrawing => Some(self.from_drawing_panel(cx)),
+            Panel::ImageSettings => Some(self.image_settings(cx)),
             Panel::None => None,
         };
         div()
@@ -210,7 +230,7 @@ impl DrawingApp {
     }
     fn header(&self, cx: &mut Context<Self>) -> Div {
         row()
-            .h(px(54.))
+            .h(px(44.))
             .px_4()
             .border_b_1()
             .border_color(rgb(BORDER))
@@ -304,14 +324,62 @@ impl DrawingApp {
                     },
                 )),
             )
+            .child(div().w(px(8.)))
+            .child(self.queue_button(cx))
+    }
+    /// The header's queue control: an icon with a count badge while requests are
+    /// outstanding, opening the queue panel.
+    fn queue_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let outstanding = self.queue.outstanding();
+        div()
+            .relative()
+            .child(
+                tool_button(
+                    "open-queue",
+                    "layers",
+                    if outstanding == 0 {
+                        "Generation queue"
+                    } else {
+                        "Generation queue · requests waiting"
+                    },
+                )
+                .atelier_selected(self.panel == Panel::Queue, cx)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.panel = if this.panel == Panel::Queue {
+                        Panel::None
+                    } else {
+                        Panel::Queue
+                    };
+                    cx.notify();
+                })),
+            )
+            .when(outstanding > 0, |element| {
+                element.child(
+                    div()
+                        .absolute()
+                        .top(px(-5.))
+                        .right(px(-5.))
+                        .min_w(px(16.))
+                        .h(px(16.))
+                        .px(px(4.))
+                        .rounded_full()
+                        .bg(rgb(WINE))
+                        .text_color(rgb(0xffffff))
+                        .text_xs()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(outstanding.to_string()),
+                )
+            })
     }
     fn rail(&self, cx: &mut Context<Self>) -> Div {
         let mut rail = column()
             .items_center()
-            .w(px(64.))
+            .w(px(48.))
             .flex_shrink_0()
-            .py_4()
-            .gap_3()
+            .py_3()
+            .gap_2()
             .border_r_1()
             .border_color(rgb(BORDER));
         for (tool, name, tooltip) in [
@@ -351,7 +419,7 @@ impl DrawingApp {
             )
             .child(div().flex_1())
             .child(
-                tool_button("rail-settings", "settings", "Generation settings")
+                tool_button("rail-settings", "settings", "Provider settings")
                     .atelier_selected(self.panel == Panel::Settings, cx)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.panel = if this.panel == Panel::Settings {
@@ -426,7 +494,10 @@ impl DrawingApp {
                     },
                 )
                 .disabled(!editing)
-                .on_click(cx.listener(|this, _, _, cx| this.generate_from_drawing(cx)))
+                .atelier_selected(self.panel == Panel::FromDrawing, cx)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.open_from_drawing(window, cx);
+                }))
             })
             .child(div().flex_1())
             .child(
@@ -507,6 +578,7 @@ impl DrawingApp {
         let brush = self.size();
         let tool = self.tool;
         let guides = self.guides;
+        let region = self.generation_region;
 
         div()
             .id("canvas-viewport")
@@ -524,15 +596,17 @@ impl DrawingApp {
             .on_mouse_move(cx.listener(|this, event, _, cx| this.pointer_move(event, cx)))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
+                cx.listener(|this, _, window, cx| {
                     this.finish_stroke();
+                    this.finish_drawing_region(window, cx);
                     cx.notify();
                 }),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
+                cx.listener(|this, _, window, cx| {
                     this.finish_stroke();
+                    this.finish_drawing_region(window, cx);
                     cx.notify();
                 }),
             )
@@ -633,6 +707,43 @@ impl DrawingApp {
                             }
                             if let Ok(path) = path.build() {
                                 window.paint_path(path, rgba(0x790e2640));
+                            }
+                        }
+                        if let Some((a, b)) = region {
+                            let corners = [
+                                crate::document::Point { x: a.x, y: a.y },
+                                crate::document::Point { x: b.x, y: a.y },
+                                crate::document::Point { x: b.x, y: b.y },
+                                crate::document::Point { x: a.x, y: b.y },
+                            ];
+                            let (mut min_x, mut min_y) = (f32::MAX, f32::MAX);
+                            let (mut max_x, mut max_y) = (f32::MIN, f32::MIN);
+                            for corner in corners {
+                                let view_point = view.to_view(corner, w as f32, h as f32);
+                                min_x = min_x.min(view_point.x);
+                                min_y = min_y.min(view_point.y);
+                                max_x = max_x.max(view_point.x);
+                                max_y = max_y.max(view_point.y);
+                            }
+                            let rect = Bounds::new(
+                                point(
+                                    paper.origin.x + px(min_x * scale),
+                                    paper.origin.y + px(min_y * scale),
+                                ),
+                                size(px((max_x - min_x) * scale), px((max_y - min_y) * scale)),
+                            );
+                            window.paint_quad(fill(rect, rgba(0x790e2620)));
+                            let mut border = PathBuilder::stroke(px(1.5));
+                            border.move_to(rect.origin);
+                            border.line_to(point(rect.origin.x + rect.size.width, rect.origin.y));
+                            border.line_to(point(
+                                rect.origin.x + rect.size.width,
+                                rect.origin.y + rect.size.height,
+                            ));
+                            border.line_to(point(rect.origin.x, rect.origin.y + rect.size.height));
+                            border.close();
+                            if let Ok(border) = border.build() {
+                                window.paint_path(border, rgb(WINE));
                             }
                         }
                         if tool != Tool::Hand {
@@ -1508,7 +1619,7 @@ impl DrawingApp {
                 || !self.edit_model.read(cx).value().trim().is_empty());
         let mut content = column()
             .id("generate-panel")
-            .w(px(280.))
+            .w(px(232.))
             .flex_shrink_0()
             .h_full()
             .overflow_y_scroll()
@@ -1520,9 +1631,14 @@ impl DrawingApp {
                 row()
                     .child(self.provider_choices(false).flex_1().min_w_0())
                     .child(
-                        tool_button("generation-settings", "settings", "Provider settings")
+                        tool_button("generation-settings", "settings", "Image settings")
+                            .atelier_selected(self.panel == Panel::ImageSettings, cx)
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.panel = Panel::Settings;
+                                this.panel = if this.panel == Panel::ImageSettings {
+                                    Panel::None
+                                } else {
+                                    Panel::ImageSettings
+                                };
                                 cx.notify();
                             })),
                     ),
@@ -1576,7 +1692,6 @@ impl DrawingApp {
             .when(
                 self.settings.provider.native_architecture().is_some(),
                 |p| {
-                    let active = self.settings.loras.len();
                     p.child(
                         row()
                             .child(label(server_status_label(self.server_status.as_ref())).flex_1())
@@ -1594,83 +1709,60 @@ impl DrawingApp {
                                 )),
                             ),
                     )
-                    .child(
-                        row().child(
-                            Button::new("generation-loras")
-                                .ghost()
-                                .small()
-                                .label(if active == 0 {
-                                    "LoRA adapters".to_string()
-                                } else {
-                                    format!("LoRA adapters · {active}")
-                                })
-                                .tooltip("Manage LoRA adapters, steps and size in Settings")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.panel = Panel::Settings;
-                                    cx.notify();
-                                })),
-                        ),
-                    )
                 },
             )
             .child(
+                row().children(
+                    [
+                        ("1:1", 1024, 1024),
+                        ("3:2", 1536, 1024),
+                        ("2:3", 1024, 1536),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (name, w, h))| {
+                        Button::new(format!("aspect-{i}"))
+                            .ghost()
+                            .small()
+                            .label(name)
+                            .atelier_selected(
+                                self.settings.width == w && self.settings.height == h,
+                                cx,
+                            )
+                            .disabled(self.editing_image && self.use_mask)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.generation_width
+                                    .update(cx, |s, cx| s.set_value(w.to_string(), window, cx));
+                                this.generation_height
+                                    .update(cx, |s, cx| s.set_value(h.to_string(), window, cx));
+                                this.settings.width = w;
+                                this.settings.height = h;
+                                cx.notify();
+                            }))
+                    }),
+                ),
+            )
+            .child(
                 row()
-                    .children(
-                        [
-                            ("1:1", 1024, 1024),
-                            ("3:2", 1536, 1024),
-                            ("2:3", 1024, 1536),
-                        ]
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, (name, w, h))| {
-                            Button::new(format!("aspect-{i}"))
-                                .ghost()
-                                .small()
-                                .label(name)
-                                .atelier_selected(
-                                    self.settings.width == w && self.settings.height == h,
-                                    cx,
-                                )
-                                .disabled(self.editing_image && self.use_mask)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.generation_width
-                                        .update(cx, |s, cx| s.set_value(w.to_string(), window, cx));
-                                    this.generation_height
-                                        .update(cx, |s, cx| s.set_value(h.to_string(), window, cx));
-                                    this.settings.width = w;
-                                    this.settings.height = h;
-                                    cx.notify();
-                                }))
-                        }),
+                    .child(
+                        Button::new("enqueue-generation")
+                            .primary()
+                            .icon(icon("sparkle"))
+                            .label("Add to queue")
+                            .tooltip(if self.settings.provider.hosted().is_none() {
+                                "Queue an image with the settings above"
+                            } else {
+                                "Queue an image · API charges apply"
+                            })
+                            .disabled(self.editing_image && !can_edit)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.enqueue_generation(window, cx);
+                            })),
                     )
                     .child(div().flex_1())
-                    .child(
-                        tool_button(
-                            "generate",
-                            "sparkle",
-                            if self.settings.provider.hosted().is_none() {
-                                if self.editing_image {
-                                    "Generate edited version"
-                                } else {
-                                    "Generate image"
-                                }
-                            } else if self.editing_image {
-                                "Generate edited version · API charges apply"
-                            } else {
-                                "Generate image · API charges apply"
-                            },
-                        )
-                        .primary()
-                        .disabled(self.generation.is_some() || (self.editing_image && !can_edit))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.generate(window, cx);
-                            cx.notify();
-                        })),
-                    )
                     .when(self.generation.is_some(), |p| {
                         p.child(
-                            tool_button("cancel-generation", "close", "Cancel generation")
+                            tool_button("cancel-generation", "close", "Stop the running image")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.cancel_generation();
                                     cx.notify();
@@ -1678,6 +1770,25 @@ impl DrawingApp {
                         )
                     }),
             )
+            .when(!self.queue.is_empty(), |p| {
+                p.child(
+                    Button::new("queue-summary")
+                        .ghost()
+                        .small()
+                        .w_full()
+                        .icon(icon("layers"))
+                        .label(format!(
+                            "{} waiting · {} finished",
+                            self.queue.pending(),
+                            self.queue.finished()
+                        ))
+                        .tooltip("Open the generation queue")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.panel = Panel::Queue;
+                            cx.notify();
+                        })),
+                )
+            })
             .when_some(self.generation_error.as_ref(), |p, error| {
                 p.child(label(error.clone()).text_color(rgb(WINE)))
             })
@@ -1751,6 +1862,179 @@ impl DrawingApp {
         }
         content
     }
+    /// The queue panel, opened from the header badge or the generation rail.
+    fn queue_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut content = column().child(
+            row()
+                .child(
+                    label(format!(
+                        "{} waiting · {} finished",
+                        self.queue.pending(),
+                        self.queue.finished()
+                    ))
+                    .flex_1(),
+                )
+                .when(!self.queue.is_empty(), |row| {
+                    let paused = self.queue.is_paused();
+                    row.child(
+                        tool_button(
+                            "queue-pause",
+                            if paused { "play" } else { "pause" },
+                            if paused {
+                                "Resume the queue"
+                            } else {
+                                "Pause the queue"
+                            },
+                        )
+                        .atelier_selected(paused, cx)
+                        .on_click(cx.listener(|this, _, _, cx| this.queue_pause_toggle(cx))),
+                    )
+                })
+                .when(self.generation.is_some(), |row| {
+                    row.child(
+                        tool_button("cancel-generation", "close", "Stop the running image")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.cancel_generation();
+                                cx.notify();
+                            })),
+                    )
+                })
+                .when(self.queue.finished() > 0, |row| {
+                    row.child(
+                        tool_button("queue-clear", "trash", "Clear finished requests")
+                            .on_click(cx.listener(|this, _, _, cx| this.queue_clear_finished(cx))),
+                    )
+                }),
+        );
+        if self.queue.is_empty() {
+            content = content.child(self.queue_empty_state());
+        } else {
+            for item in self.queue.items() {
+                content = content.child(self.queue_row(item, cx));
+            }
+        }
+        self.overlay("Generation queue", content, cx)
+    }
+    /// One queue entry, oldest first. A queued request can be removed; a running
+    /// or finished one is left in place so its outcome stays visible.
+    fn queue_row(&self, item: &crate::queue::QueueItem, cx: &mut Context<Self>) -> Div {
+        use crate::queue::JobState;
+        let id = item.id;
+        let prompt = item
+            .request
+            .prompt
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let mut detail = column()
+            .gap_1()
+            .flex_1()
+            .min_w_0()
+            .child(div().text_sm().truncate().child(prompt))
+            .child(label(item.request.summary()));
+        match &item.state {
+            JobState::Running { progress } if !progress.is_empty() => {
+                detail = detail.child(label(progress.clone()));
+            }
+            JobState::Failed(message) => {
+                detail = detail.child(label(message.clone()).text_color(rgb(WINE)));
+            }
+            _ => {}
+        }
+        let mut entry = row()
+            .items_start()
+            .gap_3()
+            .child(
+                div()
+                    .w(px(66.))
+                    .flex_shrink_0()
+                    .child(job_state_label(&item.state)),
+            )
+            .child(detail);
+        if item.state == JobState::Queued {
+            entry = entry.child(
+                tool_button(format!("queue-remove-{id}"), "close", "Remove from queue")
+                    .on_click(cx.listener(move |this, _, _, cx| this.queue_remove(id, cx))),
+            );
+        }
+        panel().w_full().p_3().child(entry)
+    }
+    fn queue_empty_state(&self) -> Div {
+        column().items_center().justify_center().py_8().child(
+            div()
+                .text_sm()
+                .text_color(rgb(MUTED))
+                .child("Nothing queued"),
+        )
+    }
+    /// The "Generate from drawing" panel: the reference area (drag on the canvas
+    /// to select one) and the prompt. Render parameters live in Image settings.
+    fn from_drawing_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let region = self.region_bounds();
+        let mut area = row().child(
+            tool_button(
+                "region-box",
+                "mask-rect",
+                if region.is_some() {
+                    "Box select · drag on the canvas to change it"
+                } else {
+                    "Box select · drag on the canvas to choose an area"
+                },
+            )
+            .atelier_selected(region.is_some(), cx)
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_box_select(window, cx))),
+        );
+        if let Some((_, _, w, h)) = region {
+            area = area.child(label(format!("{w} × {h} px")).flex_1());
+        } else {
+            area = area.child(label("Full canvas").flex_1());
+        }
+        let area = area.child(
+            tool_button("from-drawing-settings", "settings", "Image settings").on_click(
+                cx.listener(|this, _, _, cx| {
+                    this.panel = Panel::ImageSettings;
+                    cx.notify();
+                }),
+            ),
+        );
+        let content = column()
+            .child(area)
+            .child(label("Prompt"))
+            .child(Textarea::new(&self.from_drawing_prompt).h(px(150.)))
+            .child(
+                Button::new("from-drawing-generate")
+                    .primary()
+                    .w_full()
+                    .icon(icon("sparkle"))
+                    .label("Generate")
+                    .tooltip(if self.settings.provider.hosted().is_none() {
+                        "Generate from the drawing"
+                    } else {
+                        "Generate from the drawing · API charges apply"
+                    })
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.generate_from_drawing(window, cx);
+                    })),
+            );
+        self.overlay("Generate from drawing", content, cx)
+    }
+    /// Render parameters for the next request: output size, steps and adapters.
+    fn image_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        let native = self.settings.provider.native_architecture().is_some();
+        let mut content = column().child(
+            row()
+                .child(number_field("Width", &self.generation_width).flex_1())
+                .child(number_field("Height", &self.generation_height).flex_1()),
+        );
+        if native {
+            content = content
+                .child(number_field("Steps", &self.steps))
+                .child(self.lora_editor(cx));
+        }
+        self.overlay("Image settings", content, cx)
+    }
     fn reference_details(&self, cx: &mut Context<Self>) -> Div {
         let mut details = column()
             .child(field("Name", &self.ref_name))
@@ -1789,7 +2073,7 @@ impl DrawingApp {
             .absolute()
             .top(px(64.))
             .right(px(16.))
-            .w(px(if settings { 480. } else { 370. }))
+            .w(px(if settings { 440. } else { 320. }))
             .when(settings, |p| {
                 p.bottom(px(16.)).flex().flex_col().overflow_hidden()
             })
@@ -1804,6 +2088,10 @@ impl DrawingApp {
                     .child(
                         tool_button("close-overlay", "close", "Close panel").on_click(cx.listener(
                             |this, _, window, cx| {
+                                if this.panel == Panel::FromDrawing {
+                                    this.generation_region = None;
+                                    this.region_drag = None;
+                                }
                                 this.panel = Panel::None;
                                 window.focus(&this.focus, cx);
                                 cx.notify();
@@ -2162,16 +2450,9 @@ impl DrawingApp {
                 } else {
                     "Generation only"
                 }))
-                .child(number_field(
-                    "Sampling steps (blank = default)",
-                    &self.steps,
-                ))
-                .child(
-                    row()
-                        .child(number_field("Width", &self.generation_width).flex_1())
-                        .child(number_field("Height", &self.generation_height).flex_1()),
-                )
-                .child(self.lora_editor(cx));
+                .child(label(
+                    "Size, steps and LoRA adapters are set per request in the generation rail.",
+                ));
         } else if provider != Provider::Comfy {
             content = content
                 .child(label("Model presets"))

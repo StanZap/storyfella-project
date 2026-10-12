@@ -12,6 +12,7 @@ mod image_execution;
 mod library;
 mod native_images;
 mod providers;
+mod queue;
 mod stroke_curve;
 mod tablet;
 #[cfg(test)]

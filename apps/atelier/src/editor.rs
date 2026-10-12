@@ -14,12 +14,9 @@ impl DrawingApp {
         }
         let target = self.doc.active_prompt_target.as_deref().unwrap_or("new");
         let source = self
-            .library
-            .iter()
-            .map(|(r, _)| r)
-            .chain(self.doc.references.iter())
-            .find(|r| crate::library::id(r) == target)
-            .cloned();
+            .all_references()
+            .into_iter()
+            .find(|r| crate::library::id(r) == target);
         if let Some(source) = source {
             self.open_image(source, cx);
         } else {
@@ -53,10 +50,7 @@ impl DrawingApp {
         if self
             .workers
             .storage
-            .send(Storage::Library(
-                self.data_dir.join("library"),
-                self.doc.references.clone(),
-            ))
+            .send(Storage::Library(self.data_dir.join("library")))
             .is_err()
         {
             self.library_loading = false;
@@ -105,10 +99,10 @@ impl DrawingApp {
             self.comparing = true;
             return;
         }
-        let Some((reference, _)) = self
-            .library
-            .iter()
-            .find(|(r, _)| crate::library::id(r) == parent)
+        let Some(reference) = self
+            .all_references()
+            .into_iter()
+            .find(|r| crate::library::id(r) == parent)
         else {
             self.message("The original version is missing from the library", true);
             return;
@@ -330,50 +324,6 @@ impl DrawingApp {
             self.restore_prompt(window, cx);
             self.prompt.update(cx, |s, cx| s.focus(window, cx));
         }
-    }
-    /// Rasterizes the current drawing and opens it in the image editor as the
-    /// generative reference, so a prompt can render an image from the sketch.
-    pub fn generate_from_drawing(&mut self, cx: &mut Context<Self>) {
-        if !self.settings.provider.supports_edit() {
-            self.message(
-                "Choose an editing provider — Qwen (local) or a hosted edit model — to generate from a drawing",
-                true,
-            );
-            return;
-        }
-        self.finish_stroke();
-        let bytes = match document::raster(&self.doc, document::MAX_EDGE, true).and_then(|image| {
-            let mut cursor = std::io::Cursor::new(Vec::new());
-            image.write_to(&mut cursor, image::ImageFormat::Png)?;
-            Ok(cursor.into_inner())
-        }) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                self.message(format!("Could not read the drawing: {error}"), true);
-                return;
-            }
-        };
-        let reference = match document::reference_from_bytes(
-            format!("{} drawing", self.doc.title),
-            &bytes,
-            "Atelier drawing · used as a generation reference".into(),
-        ) {
-            Ok(reference) => Arc::new(reference),
-            Err(error) => {
-                self.message(format!("Could not use the drawing: {error}"), true);
-                return;
-            }
-        };
-        self.checkpoint();
-        self.doc.references.push(reference.clone());
-        self.doc.reference = Some(self.doc.references.len() - 1);
-        self.changed();
-        self.open_image(reference, cx);
-        self.message(
-            "Drawing opened · describe the image you want to render from it",
-            false,
-        );
-        cx.notify();
     }
     pub fn add_opened_image_layer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((reference, _, width, height)) = self.opened_image.clone() else {

@@ -44,10 +44,14 @@ The macOS development bundle uses ad hoc signing and needs no certificate setup.
 - 30-second, 2-, 5- and 10-minute studies, pause/reset, practice prompts and project reflection notes.
 - Study gallery for the latest 48 archived sessions. New/Open archives the current study before switching; archive/open failures preserve the current document.
 - fal.ai, Replicate, Alibaba Model Studio and GPT Image generation/editing, plus local ComfyUI generation, with background jobs, errors and cancellation.
+- A generation queue with its own panel, reached from a header badge that counts outstanding requests: pause, stop the running request, remove queued requests and clear finished history. Each request keeps its own prompt, size, steps and LoRA adapters.
 - Shared icon controls, surface panels and selection styles, accessible icon labels, gentle panel reveal and a reduced-motion setting.
 
-The **All projects** library stores full-resolution originals for cross-project
-reuse; **Use** embeds a portable reference in the current project. Open any image
+The **All projects** library is the **shared reference collection**: images
+explicitly added for cross-project reuse — imports into that tab and project
+images promoted with **Add to reference library**. **Use** embeds a portable
+reference in the current project. Generated images and project imports stay in
+their project and never enter the shared collection on their own. Open any image
 for zoom/pan, versions, before/after, masks, editable library details and original
 export. **Add to canvas** makes an editable image layer with paint/erase, move,
 scale, opacity and undo. Generated images also retain PNG/metadata copies in
@@ -95,6 +99,22 @@ it. Outputs are saved locally with provider, model, prompt, source name and host
 job ID where available. Full-resolution originals remain in the shared library.
 Square, landscape and portrait output use the existing size controls. Actions
 use your provider account and may incur charges.
+
+**Add to queue** captures the prompt, width, height, sampling steps and the
+applied LoRA adapters (set in **Image settings**) and runs the request after those
+already waiting — one at a time. The queue has its own panel, opened from the
+header badge (which counts outstanding requests) or the rail: **Pause** holds
+dispatch without interrupting a running image, **Stop** cancels the running
+request, a queued request can be removed, and **Clear finished** drops completed
+history. Each entry keeps the values it was created with.
+
+**Generate from drawing** (the canvas toolbar) opens a compact panel. Drag on the
+canvas to select a **box select** area — the panel switches to it automatically
+and shows the size — or use the box-select toggle to switch back to the **full
+canvas**. Review the prompt (defaulted to using the drawing as a reference) and
+**Generate** to rasterize the area, open it as the edit source and queue it. Size,
+steps and adapters come from **Image settings** (the gear in the panel or the
+rail).
 
 fal's Qwen Image 3 accepts only opaque editing inputs, so that adapter composites
 transparent references onto white before upload. Other adapters retain source
@@ -152,7 +172,7 @@ Control is also accepted for canvas save/undo/open shortcuts.
 
 ## Implementation and validation
 
-`document.rs` owns projects, shared stroke snapshots, bounded history, validation, atomic writes and CPU raster utilities. `viewport.rs` provides inverse transforms. `worker.rs` separates storage,
+`document.rs` owns projects, shared stroke snapshots, bounded history, validation, atomic writes and CPU raster utilities. `viewport.rs` provides inverse transforms. `queue.rs` owns the generation queue — request snapshots, ordering, pause and states. `worker.rs` separates storage,
 raster work, session previews and generation from UI interaction. `providers.rs`
 implements ComfyUI, provider profiles and app-data API-key storage; `image_execution.rs`
 adapts shared image generation/editing, and `native_images.rs` retains the managed
