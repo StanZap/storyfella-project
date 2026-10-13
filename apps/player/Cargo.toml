@@ -8,6 +8,7 @@ description = "Standalone visual desktop host for the shared Storyfella runtime.
 [dependencies]
 storyfella-playback-ui.workspace = true
 storyfella-studio-core = { path = "../../crates/studio-core" }
+storyfella-runtime.workspace = true
 dioxus.workspace = true
 clap.workspace = true
 rfd.workspace = true

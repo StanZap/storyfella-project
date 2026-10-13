@@ -30,6 +30,11 @@
 .sf-stage { position: relative; flex: 1; min-height: 0; display: flex; overflow: auto; isolation: isolate; background: #12191e; }
 .sf-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: -2; }
 .sf-backdrop-contained { object-fit: contain; }
+.sf-missing-backdrop {
+    position: absolute; inset: 0; z-index: -2; display: grid; place-items: center;
+    background: #050607; color: #687078; font-size: 12px; letter-spacing: .08em;
+    text-transform: uppercase;
+}
 .sf-stage::before {
     content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none;
     background: linear-gradient(180deg, #080d1266, #080d1210 28%, #080d1288 60%, #080d12f2 100%);
@@ -40,6 +45,10 @@
 .sf-reading h2 { font-size: clamp(24px, 2.2vw, 32px); font-weight: 400; line-height: 1.4; margin: 0 0 16px; }
 .sf-dialogue { display: flex; align-items: flex-start; gap: 20px; }
 .sf-portrait { width: 48px; height: 48px; object-fit: cover; border-radius: 50%; flex: none; margin-top: 3px; }
+.sf-missing-portrait {
+    display: grid; place-items: center; background: #050607; color: #687078;
+    border: 1px solid #ffffff1c; font-size: 18px;
+}
 .sf-dialogue-text { min-width: 0; flex: 1; }
 .sf-speaker { color: var(--sf-muted); margin: 0 0 6px; font-size: 13px; }
 .sf-story-text { font-size: clamp(22px, 2vw, 29px); font-weight: 400; line-height: 1.55; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }

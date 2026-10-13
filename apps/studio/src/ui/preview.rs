@@ -2,11 +2,16 @@ use super::{AppScreen, WriterCaret};
 use crate::state::AppState;
 use dioxus::prelude::*;
 use storyfella_playback_ui::{PlaybackModel, PlaybackPanel};
+use storyfella_runtime::AssetPolicy;
 use storyfella_studio_core::playback::PlaybackSession;
 
 pub fn start_preview(mut model: Signal<PlaybackModel>, app_state: Signal<AppState>) {
     let state = app_state.read();
-    let result = PlaybackSession::compile(state.story.source(), &state.registry);
+    let result = PlaybackSession::compile_with_policy(
+        state.story.source(),
+        &state.registry,
+        AssetPolicy::AllowMissing,
+    );
     drop(state);
     model.write().install(result);
 }

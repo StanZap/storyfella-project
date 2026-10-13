@@ -1,4 +1,4 @@
-use storyfella_runtime::{Command, Phase};
+use storyfella_runtime::{AssetPolicy, Command, Event, Phase};
 use storyfella_studio_core::{playback::PlaybackSession, registry::RevisionOrigin};
 
 fn directory() -> std::path::PathBuf {
@@ -118,4 +118,24 @@ fn missing_wrong_and_unreadable_pinned_resources_block_before_execution() {
     assert!(PlaybackSession::open(&dir.join("absent.sf"), None).is_err());
     assert!(!dir.join("absent.db").exists());
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn allow_missing_assets_keeps_text_playback_available() {
+    let source = "scene harbor\n  mara: Welcome to Bellwater\n  end\n";
+    let session = PlaybackSession::compile_with_policy(
+        source,
+        &storyfella_studio_core::registry::ArtifactRegistry::new(),
+        AssetPolicy::AllowMissing,
+    )
+    .unwrap();
+    assert!(session.visuals.is_empty());
+    assert!(session.last_events.iter().any(|event| matches!(
+        event,
+        Event::Text {
+            speaker: None,
+            text,
+            ..
+        } if text.value == "Welcome to Bellwater"
+    )));
 }

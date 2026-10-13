@@ -6,11 +6,15 @@ and [the execution runtime](runtime.md). Player has no dependency on Studio stat
 No model configuration, generation or inference process is needed for playback.
 
 Preview → **Apply draft** compiles the current unsaved Writer
-source with exact completed active registry revisions. Syntax/flow errors,
-pending artwork and unsupported shot/style/mood block starting. Every plan
-binding is resolved by asset UUID and exact revision UUID, with matching name/
-kind and a completed revision. An absent revision, missing/unreadable file or
-undecodable image is explained before execution. Newer artwork is never a fallback.
+source with exact completed active registry revisions. Syntax/flow errors and
+unsupported shot/style/mood block starting. Studio Preview permits pending
+artwork and shows black placeholders; standalone Player remains strict unless
+started with `--allow-missing-assets`. Every plan binding is resolved by asset
+UUID and exact revision UUID, with matching name/kind and a completed revision.
+An absent revision, missing/unreadable file or undecodable image is explained
+before strict visual execution. With `--allow-missing-assets`, those visuals
+are omitted and the story continues with black placeholders; newer artwork is
+never a fallback.
 All used bindings, including artwork in alternate routes, are checked first.
 
 The session retains its compiled source and decoded PNG visuals. Editing source,

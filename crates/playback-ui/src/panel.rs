@@ -95,6 +95,8 @@ pub fn PlaybackPanel(
                 if let Some(backdrop) = backdrop {
                     img { class: if location.is_some() { "sf-backdrop" } else { "sf-backdrop sf-backdrop-contained" },
                         src: "{backdrop.image_url}", alt: "{backdrop.binding.name}" }
+                } else {
+                    div { class: "sf-missing-backdrop", aria_label: "Artwork unavailable", "Artwork unavailable" }
                 }
                 if let Some(session) = session {
                     div { class: "sf-scene-label",
@@ -114,7 +116,11 @@ pub fn PlaybackPanel(
                             _ => match &instruction.kind {
                                 InstructionKind::Speech { speaker, thought, text } => rsx! {
                                     div { class: "sf-dialogue",
-                                        if let Some(portrait) = portrait { img { class: "sf-portrait", src: "{portrait.image_url}", alt: "{portrait.binding.name}" } }
+                                        if let Some(portrait) = portrait {
+                                            img { class: "sf-portrait", src: "{portrait.image_url}", alt: "{portrait.binding.name}" }
+                                        } else {
+                                            div { class: "sf-portrait sf-missing-portrait", aria_label: "Portrait unavailable", "?" }
+                                        }
                                         div { class: "sf-dialogue-text",
                                             p { class: "sf-speaker", "{speaker.name.value}" if *thought { " · thought" } }
                                             p { class: if *thought { "sf-story-text sf-thought" } else { "sf-story-text" }, "{text.value}" }

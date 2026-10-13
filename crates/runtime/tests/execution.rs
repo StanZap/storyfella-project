@@ -1,6 +1,8 @@
 use storyfella_compiler::{compile, AssetBinding, InstructionKind, SceneId, StoryPlan};
 use storyfella_language::{AssetKind, Span};
-use storyfella_runtime::{Command, Event, Phase, Runtime, TextKind, TRANSITION_BUDGET};
+use storyfella_runtime::{
+    AssetPolicy, Command, Event, Phase, Runtime, TextKind, TRANSITION_BUDGET,
+};
 
 fn plan(source: &str) -> StoryPlan {
     compile(
@@ -140,6 +142,25 @@ fn intentional_jump_cycle_is_bounded_and_recoverable() {
             scene: SceneId("exit".into()),
         })
         .unwrap();
+    assert_eq!(runtime.state().phase, Phase::Complete);
+}
+
+#[test]
+fn missing_assets_can_run_with_blackbox_policy() {
+    let source = "scene harbor\n  cast: mara\n  mara: Welcome to Bellwater\n  end\n";
+    let plan = storyfella_compiler::compile(source, &[]).plan.unwrap();
+    assert!(Runtime::start(plan.clone()).is_err());
+    let (mut runtime, events) =
+        Runtime::start_with_policy(plan, AssetPolicy::AllowMissing).unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::Text {
+            kind: TextKind::Dialogue,
+            speaker: None,
+            ..
+        }
+    )));
+    runtime.dispatch(Command::Advance).unwrap();
     assert_eq!(runtime.state().phase, Phase::Complete);
 }
 

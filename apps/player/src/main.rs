@@ -2,6 +2,7 @@ use clap::Parser;
 use dioxus::prelude::*;
 use std::path::PathBuf;
 use storyfella_playback_ui::{PlaybackModel, PlaybackPanel};
+use storyfella_runtime::AssetPolicy;
 use storyfella_studio_core::playback::PlaybackSession;
 
 #[derive(Clone, Parser)]
@@ -11,6 +12,9 @@ struct Options {
     /// Resource database for a compiled JSON plan with pinned artwork.
     #[arg(long)]
     project: Option<PathBuf>,
+    /// Play despite missing or unreadable artwork, using black placeholders.
+    #[arg(long)]
+    allow_missing_assets: bool,
 }
 
 fn main() {
@@ -29,8 +33,17 @@ fn Player() -> Element {
     let options = use_context::<Options>();
     let model = use_signal(|| {
         let mut model = PlaybackModel::default();
+        let policy = if options.allow_missing_assets {
+            AssetPolicy::AllowMissing
+        } else {
+            AssetPolicy::RequireCompleted
+        };
         if let Some(input) = &options.input {
-            model.install(PlaybackSession::open(input, options.project.as_deref()));
+            model.install(PlaybackSession::open_with_policy(
+                input,
+                options.project.as_deref(),
+                policy,
+            ));
         } else if options.project.is_some() {
             model.error = Some("--project requires a compiled JSON input".into());
         }
@@ -38,11 +51,13 @@ fn Player() -> Element {
     });
     rsx! {
         style { "html,body,#main {{height:100%;margin:0;background:#121619}}" }
-        PlaybackPanel { model, on_open: move |_| { spawn(open_story(model)); } }
+        PlaybackPanel { model, on_open: move |_| {
+            spawn(open_story(model, options.allow_missing_assets));
+        } }
     }
 }
 
-async fn open_story(mut model: Signal<PlaybackModel>) {
+async fn open_story(mut model: Signal<PlaybackModel>, allow_missing_assets: bool) {
     let window = dioxus::desktop::window().window.clone();
     let Some(input) = rfd::AsyncFileDialog::new()
         .set_parent(window.as_ref())
@@ -52,8 +67,13 @@ async fn open_story(mut model: Signal<PlaybackModel>) {
     else {
         return;
     };
+    let policy = if allow_missing_assets {
+        AssetPolicy::AllowMissing
+    } else {
+        AssetPolicy::RequireCompleted
+    };
     let project = if input.path().extension().is_some_and(|e| e == "json") {
-        match PlaybackSession::plan_requires_project(input.path()) {
+        match PlaybackSession::plan_requires_project_with_policy(input.path(), policy) {
             Ok(false) => None,
             Ok(true) => {
                 let Some(file) = rfd::AsyncFileDialog::new()
@@ -75,7 +95,9 @@ async fn open_story(mut model: Signal<PlaybackModel>) {
     } else {
         None
     };
-    model
-        .write()
-        .install(PlaybackSession::open(input.path(), project.as_deref()));
+    model.write().install(PlaybackSession::open_with_policy(
+        input.path(),
+        project.as_deref(),
+        policy,
+    ));
 }

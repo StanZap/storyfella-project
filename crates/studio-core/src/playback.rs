@@ -12,7 +12,7 @@ use std::{
 };
 use storyfella_compiler::{AssetBinding, StoryPlan};
 use storyfella_language::{analyze, Source};
-use storyfella_runtime::{Command, Event, Runtime, SavedState};
+use storyfella_runtime::{AssetPolicy, Command, Event, Runtime, SavedState};
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
@@ -36,12 +36,25 @@ impl PlaybackSession {
     /// Used by the Player's open dialog to request a resource project only
     /// when a valid ready compiled plan actually contains artwork bindings.
     pub fn plan_requires_project(path: &Path) -> Result<bool, String> {
+        Self::plan_requires_project_with_policy(path, AssetPolicy::RequireCompleted)
+    }
+    pub fn plan_requires_project_with_policy(
+        path: &Path,
+        asset_policy: AssetPolicy,
+    ) -> Result<bool, String> {
         let plan = read_plan(path)?;
-        storyfella_runtime::validate_plan(&plan)
-            .map(|bindings| !bindings.is_empty())
+        storyfella_runtime::validate_plan_with_policy(&plan, asset_policy)
+            .map(|bindings| asset_policy == AssetPolicy::RequireCompleted && !bindings.is_empty())
             .map_err(|e| e.to_string())
     }
     pub fn compile(source: &str, registry: &ArtifactRegistry) -> Result<Self, String> {
+        Self::compile_with_policy(source, registry, AssetPolicy::RequireCompleted)
+    }
+    pub fn compile_with_policy(
+        source: &str,
+        registry: &ArtifactRegistry,
+        asset_policy: AssetPolicy,
+    ) -> Result<Self, String> {
         let catalog = AssetCatalog::from_registry(registry);
         let analysis = analyze(source, &catalog.assets);
         let compilation = storyfella_compiler::compile_analysis(&analysis, &catalog.bindings);
@@ -64,11 +77,20 @@ impl PlaybackSession {
                 .collect::<Vec<_>>()
                 .join("\n")
         })?;
-        Self::from_plan(plan, registry)
+        Self::from_plan_with_policy(plan, registry, asset_policy)
     }
 
     pub fn from_plan(plan: StoryPlan, registry: &ArtifactRegistry) -> Result<Self, String> {
-        let bindings = storyfella_runtime::validate_plan(&plan).map_err(|e| e.to_string())?;
+        Self::from_plan_with_policy(plan, registry, AssetPolicy::RequireCompleted)
+    }
+
+    pub fn from_plan_with_policy(
+        plan: StoryPlan,
+        registry: &ArtifactRegistry,
+        asset_policy: AssetPolicy,
+    ) -> Result<Self, String> {
+        let bindings = storyfella_runtime::validate_plan_with_policy(&plan, asset_policy)
+            .map_err(|e| e.to_string())?;
         let mut visuals = Vec::new();
         for binding in bindings {
             let resolve = || -> Result<Visual, String> {
@@ -115,14 +137,19 @@ impl PlaybackSession {
                     ),
                 })
             };
-            visuals.push(resolve().map_err(|e| {
-                format!(
-                    "Artwork '{}' revision {}: {e}",
-                    binding.name, binding.revision
-                )
-            })?);
+            match resolve() {
+                Ok(visual) => visuals.push(visual),
+                Err(_error) if asset_policy == AssetPolicy::AllowMissing => {}
+                Err(error) => {
+                    return Err(format!(
+                        "Artwork '{}' revision {}: {error}",
+                        binding.name, binding.revision
+                    ));
+                }
+            }
         }
-        let (runtime, events) = Runtime::start(plan).map_err(|e| e.to_string())?;
+        let (runtime, events) =
+            Runtime::start_with_policy(plan, asset_policy).map_err(|e| e.to_string())?;
         Ok(Self {
             runtime,
             visuals,
@@ -133,6 +160,14 @@ impl PlaybackSession {
     /// Open a .sf/.db pair, or a compiled JSON plan with an optional resource DB.
     /// Refuse absent databases before ProjectDb can create one.
     pub fn open(input: &Path, project: Option<&Path>) -> Result<Self, String> {
+        Self::open_with_policy(input, project, AssetPolicy::RequireCompleted)
+    }
+
+    pub fn open_with_policy(
+        input: &Path,
+        project: Option<&Path>,
+        asset_policy: AssetPolicy,
+    ) -> Result<Self, String> {
         match input.extension().and_then(|e| e.to_str()) {
             Some("sf" | "db") => {
                 if project.is_some() {
@@ -140,7 +175,7 @@ impl PlaybackSession {
                 }
                 let database = input.with_extension("db");
                 let stored = load_project(&database)?;
-                Self::compile(stored.story.source(), &stored.registry)
+                Self::compile_with_policy(stored.story.source(), &stored.registry, asset_policy)
             }
             Some("json") => {
                 let plan = read_plan(input)?;
@@ -148,7 +183,7 @@ impl PlaybackSession {
                     Some(path) => load_project(path)?.registry,
                     None => ArtifactRegistry::new(),
                 };
-                Self::from_plan(plan, &registry)
+                Self::from_plan_with_policy(plan, &registry, asset_policy)
             }
             _ => Err("Open a .sf/.db project pair or compiled .json plan".into()),
         }
@@ -159,8 +194,12 @@ impl PlaybackSession {
         Ok(())
     }
     pub fn restore(&mut self, saved: SavedState) -> Result<(), String> {
-        let runtime =
-            Runtime::restore(self.runtime.plan().clone(), saved).map_err(|e| e.to_string())?;
+        let runtime = Runtime::restore_with_policy(
+            self.runtime.plan().clone(),
+            saved,
+            self.runtime.asset_policy(),
+        )
+        .map_err(|e| e.to_string())?;
         self.runtime = runtime;
         self.last_events.clear();
         Ok(())

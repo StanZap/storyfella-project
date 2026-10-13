@@ -1,11 +1,17 @@
 # Story execution
 
 `storyfella-runtime` consumes a version-1 compiler `StoryPlan`, independently of
-Studio, GUI and inference. `Runtime::start` validates before executing. It checks
+Studio, GUI and inference. `Runtime::start` validates before executing and
+requires completed artwork. `Runtime::start_with_policy(...,
+AssetPolicy::AllowMissing)` permits pending or unavailable artwork while
+preserving the exact source and flow checks.
+
+Both modes check
 the supported version, gathers consistent pinned bindings, recompiles the retained
 source and requires exact plan equality. This uses compiler rules for imported
 identities, flow, ranges and requirements. Pending artwork and unsupported
-shot/style/mood block execution. Hosts additionally resolve exact resources.
+shot/style/mood block execution. Hosts additionally resolve exact resources in
+strict mode; allow-missing hosts omit unavailable visuals.
 
 Execution is manual and host-driven: no clocks, sleeps, audio or automatic text
 duration. `Advance` passes the current text, `SelectChoice { index }` uses a

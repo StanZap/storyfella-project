@@ -1,0 +1,135 @@
+story "The Bell Beneath the Water"
+
+# This example intentionally uses narration only.
+# It can be played before any artwork or character assets exist.
+
+scene arrival
+  cast: elian
+  beat the_road
+    narrate: The road to Bellwater disappeared beneath the evening mist, but Elian kept walking. The village lay somewhere beyond the fields, hidden by reeds and low stone walls.
+    elian: "The letter said midnight. I still have time."
+    elian think: If the bell is real, someone wanted me to hear it.
+    narrate: Every few minutes the old brass compass in Elian's pocket gave a small, uncertain tremor. Its needle did not point north. It pointed toward the soundless hollow where the drowned bell was said to be sleeping.
+    narrate: The story had come from a letter with no signature. At midnight, it promised, the bell would ring beneath the reservoir, and whoever heard it would remember one thing they had tried hardest to forget.
+    narrate: Behind the last hedgerow, the path divided. One track climbed toward the abandoned observatory. The other descended through willow trees toward the dark water. Both were marked by the same white stone.
+    narrate: Elian rested a hand on the stone. It was warm despite the cold air, and a shallow groove ran across its surface like a line drawn by a tide.
+    choice "Which path should Elian take?"
+      option "Climb toward the observatory": observatory
+      option "Follow the willows to the reservoir": reservoir
+
+scene observatory
+  cast: elian, the_keeper
+  beat the_climb
+    narrate: The climb began gently, winding through grass silvered by moonlight. Below, Bellwater village showed a few lamps, each one trembling in the mist like a star seen through moving glass.
+    narrate: The observatory had been closed for twenty years. Its dome was split down the middle, and ivy had entered through the windows, crossing the old instruments with patient green fingers.
+    narrate: On the entrance step, Elian found a row of wet footprints. They began at the threshold and continued inward, although the night had been dry and the hilltop wind had erased every other mark.
+    narrate: Inside, the air smelled of dust, rain, and something mineral. A brass plaque beside the staircase carried the name of the first astronomer, followed by a date and a single sentence: The sky remembers every witness.
+    narrate: The central telescope still pointed through the broken dome. Elian turned its wheel and saw not the stars but the reservoir, magnified until every ripple became a black valley.
+    narrate: At the center of the water stood a small island. On the island was a bell tower that did not appear from the hill, from the road, or from any map Elian had studied.
+    narrate: A ledger lay open beneath the telescope. Its pages listed visitors to the observatory, year after year, until the entries stopped on the night the reservoir was filled.
+    narrate: The last page contained a fresh line in wet ink. Elian read the name once, then looked again. It was their own name, written in a hand they did not recognize.
+    the_keeper: "You should not have come up here."
+    elian: "Then why leave the door open?"
+    narrate: Beneath the name was a time: eleven forty-seven. There were thirteen minutes until midnight.
+    narrate: A slow vibration passed through the floor. Dust fell from the dome, and somewhere far below the hill a bell answered, muffled by earth and water.
+    narrate: Elian searched the room and found a narrow brass key hidden inside the telescope's cracked wooden case. Its teeth were shaped like waves.
+    narrate: The stairway below the observatory had been sealed with boards, but the key opened a small iron door behind the old star charts.
+    narrate: The passage beyond descended into the hill. Water ran along the walls in thin shining threads, all of it flowing upward.
+    narrate: At the bottom, the tunnel opened onto a stone ledge above the reservoir. The hidden bell tower stood closer now, its windows lit from within.
+    narrate: A narrow boat waited at the ledge. No rope held it. It moved only when Elian stepped inside, turning toward the island without a sound.
+    narrate: The boat crossed the black water. Beneath its hull, pale shapes drifted in the depths, keeping pace but never rising.
+    narrate: On the island, the bell tower door stood open. A stairway curled downward instead of up, leading below the waterline.
+    narrate: The first bell stroke came before Elian reached the bottom. The sound did not travel through the air. It arrived as a memory of rain on a childhood roof.
+    narrate: At the foot of the stair, a room waited beneath the reservoir. Its walls were covered with names, some carved deeply, some barely begun.
+    narrate: Elian saw the letter's handwriting among them. Then, under it, a blank space opened in the stone as if waiting for the final name.
+    goto bell_chamber
+
+scene reservoir
+  cast: elian
+  beat the_descent
+    narrate: The willow path descended toward the reservoir, where the mist gathered thickly between the trunks. Each branch held drops of water that reflected a different patch of sky.
+    narrate: Elian followed the sound of footsteps ahead. Whenever the path curved, the footsteps stopped. Whenever Elian moved again, they began at the same careful distance.
+    narrate: At the water's edge stood a weathered ferry post. A bell rope hung from it, disappearing into the reservoir instead of rising toward a boat.
+    narrate: The rope was dry and warm. When Elian touched it, the surface of the water drew inward, making a dark circle that widened without a ripple.
+    narrate: A wooden skiff drifted out of the fog. Its boards were painted with names, but the paint had faded until only the first letters remained.
+    narrate: Elian stepped aboard. The skiff turned by itself and carried them toward the middle of the reservoir, where the moon's reflection had broken into a stairway of light.
+    narrate: The village vanished behind the mist. Even the willows disappeared. There was only the soft dip of the oar that no one held and the patient breathing of the water.
+    narrate: Beneath the surface, a row of windows appeared. Warm light shone through them, and behind the glass moved shadows that seemed to be waiting for someone.
+    narrate: The skiff stopped above a patch of water clear enough to show the old village below. Streets ran beneath the reservoir, and every door stood open.
+    narrate: One house looked familiar. Its garden wall leaned at the same angle as the wall around the home where Elian had grown up.
+    narrate: A figure stood in that submerged garden. It raised one hand, not waving, but pointing toward the bell tower hidden beneath the island.
+    elian think: The water remembers the village better than the village remembers itself.
+    narrate: The first bell stroke sounded. The water remained still, yet the skiff rocked as though a great weight had passed beneath it.
+    narrate: A ladder rose from the lake, each rung shining with a thin coat of silver. It led down, not up, into the drowned street.
+    narrate: Elian tied the skiff to the bell rope and climbed. The water closed over their head without wetting their clothes.
+    narrate: Below the surface, the air was cold and clear. The drowned village stretched in both directions, its signs readable, its windows glowing with patient lamplight.
+    narrate: At the end of the main street stood the bell tower. Its foundation had been built around an older stone chamber, and a door in the tower's base opened as Elian approached.
+    narrate: Inside, the bell rope descended through the floor. It continued down a stairwell where every step carried a faint echo of a voice.
+    narrate: The voices were not calling Elian's name. They were repeating promises made long ago and abandoned before anyone could hear them.
+    narrate: At the bottom, the stair opened into a circular room beneath the reservoir. Names covered the walls, some carved deeply, some barely begun.
+    narrate: Elian found the letter's handwriting there. Beside it was an unfinished line, waiting for a memory to complete it.
+    goto bell_chamber
+
+scene bell_chamber
+  cast: elian
+  beat beneath_the_water
+    narrate: The chamber had no visible ceiling. Above it, dark water pressed against a thin skin of glass, and slow shadows passed across it like clouds.
+    narrate: In the center stood the drowned bell. It hung from a frame of black wood, perfectly dry, with green light shining through the cracks in its bronze surface.
+    narrate: A small table held three objects: a cup filled with clear water, a rusted hand mirror, and a folded page from the unsigned letter.
+    narrate: Elian unfolded the page. The writing explained that the bell did not grant answers. It returned the moment before an answer had been refused.
+    narrate: The reservoir had once covered an entire village. When the water rose, the villagers were promised a new beginning, but the promise required everyone to leave one memory behind.
+    narrate: Most had surrendered a face, a name, or the sound of a voice. One person had refused. The bell had been built to keep that refusal from vanishing.
+    narrate: The mirror showed a room from years ago. A child stood beside a rain-streaked window, listening to someone promise they would come back before nightfall.
+    narrate: Elian knew the room. They remembered the window, the blue blanket, and the small wooden boat on the floor. They did not remember who had made the promise.
+    narrate: The bell moved slightly. Its clapper touched the bronze, but no sound came. The chamber waited for Elian to choose what the memory should become.
+    choice "What should Elian do with the unfinished memory?"
+      option "Drink the water and remember": remember
+      option "Close the mirror and let it remain unknown": release
+
+scene remember
+  beat the_returned_memory
+    narrate: Elian lifted the cup. The water tasted of iron and summer rain, and the chamber filled with the smell of the old house by the river.
+    narrate: The memory returned slowly. First came the sound of a kettle. Then the scrape of a chair. Then a voice singing badly while folding a blue blanket.
+    narrate: The person at the window was Elian's older sister, Mara. She had promised to return before nightfall because she meant to bring back a wooden boat from the far bank.
+    narrate: Mara had not returned. The river had risen, the bridge had failed, and the village had spent years speaking around the absence as though silence could make it gentler.
+    narrate: The bell rang. This time the sound traveled through the chamber, through the water, and into every stone of the drowned village.
+    narrate: Windows opened below. Lamps brightened. The shadows in the submerged streets turned toward the tower, no longer waiting but listening.
+    narrate: On the wall, the unfinished name completed itself. MARA appeared in the stone, followed by a second line: remembered without being held.
+    narrate: Elian understood the bell's promise. Remembering was not a door back into the past. It was a way of letting the past stop knocking.
+    elian: "Mara, I remember you."
+    narrate: The water above the chamber began to glow. Through it, Elian saw the village as it had been before the reservoir, every roof and garden restored by moonlight.
+    narrate: Mara stood on the old bridge. She did not speak. She only lifted the wooden boat, set it on the river, and allowed it to drift away.
+    narrate: The image faded. The bell gave one final quiet note, and the stairway began to rise.
+    narrate: Elian climbed until the water became mist, the mist became rain, and the rain became the ordinary night above Bellwater.
+    narrate: At the reservoir shore, dawn was beginning. The willows were only trees again, and the ferry post held no rope.
+    narrate: The brass compass in Elian's pocket had stopped trembling. Its needle pointed north, as compasses were supposed to do.
+    narrate: In the village, people opened their doors as the first sunlight reached the roofs. No one asked Elian where they had been.
+    narrate: On the hill, the observatory dome caught the light. For one instant, a small brass glimmer moved behind its broken windows.
+    narrate: Elian walked toward Bellwater carrying the memory carefully, not as a burden, but as a lantern that no longer needed to be lit.
+    narrate: The day became warm. The reservoir became blue. Beneath it, the bell settled into silence.
+    end
+scene release
+  cast: elian
+  beat the_quiet_choice
+    narrate: Elian closed the mirror. The chamber darkened, but the darkness did not feel empty. It felt like a room where someone had finally stopped searching.
+    narrate: The bell remained still. The water above the glass lost its green light and became an ordinary black ceiling beneath an ordinary lake.
+    narrate: Elian placed the folded letter beside the cup. The writing had faded until only the first sentence remained: Some doors open when you stop asking them to.
+    narrate: The names on the walls did not disappear. They softened, becoming less like records and more like seeds waiting beneath the earth.
+    narrate: A current moved through the chamber. It lifted the mirror, carried it toward the stair, and left the table empty.
+    narrate: Elian began to climb. With every step, the voices grew quieter, not because they had been defeated, but because they no longer needed an answer.
+    narrate: Above the waterline, the village lights were fading. The submerged windows closed one by one, and the drowned streets folded into darkness.
+    narrate: The skiff waited at the surface. Its painted names had washed away, leaving the boards pale and clean.
+    narrate: Elian crossed the reservoir beneath a sky turning grey at the edges. Behind them, the island was only a low patch of reeds.
+    narrate: At the shore, the bell rope lay coiled around the ferry post. It was cold now, and ordinary enough to ignore.
+    narrate: The letter was still in Elian's pocket, but its page was blank. The promise had not been fulfilled. It had simply stopped demanding to be fulfilled.
+    narrate: Bellwater appeared through the willow branches. Chimneys began to smoke, and somewhere a baker opened a door onto the waking street.
+    narrate: Elian entered the village without telling anyone about the chamber. Some experiences became smaller when explained too quickly.
+    elian think: Not every silence is waiting for me to fill it.
+    narrate: At the inn, a woman placed a bowl of hot porridge on the table and asked whether the road had been difficult.
+    narrate: Elian thought of the bell, the names, and the face in the mirror. Then they answered honestly that the road had been long.
+    narrate: Outside, the reservoir reflected the morning sky. Nothing moved beneath its surface.
+    narrate: The day became warm. The willows became green. The road home waited beyond the fields.
+    narrate: Elian walked toward it without the compass, leaving the instrument on the inn's windowsill for anyone who might need a direction.
+    narrate: Behind the village, a single deep note passed through the earth. It was so quiet that it could have been thunder far away.
+    narrate: Elian did not turn around. The sound faded, and the morning continued.
+    end

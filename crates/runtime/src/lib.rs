@@ -12,6 +12,12 @@ pub const TRANSITION_BUDGET: usize = 128;
 pub const SAVE_VERSION: u32 = 1;
 const MAX_RESTORE_COMMANDS: usize = 100_000;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssetPolicy {
+    RequireCompleted,
+    AllowMissing,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("Invalid story plan: {0}")]
@@ -28,6 +34,13 @@ pub enum Error {
 /// validates identities, flow, ranges, requirements and every instruction using
 /// the single compiler implementation, including arbitrary imported JSON.
 pub fn validate_plan(plan: &StoryPlan) -> Result<Vec<AssetBinding>, Error> {
+    validate_plan_with_policy(plan, AssetPolicy::RequireCompleted)
+}
+
+pub fn validate_plan_with_policy(
+    plan: &StoryPlan,
+    asset_policy: AssetPolicy,
+) -> Result<Vec<AssetBinding>, Error> {
     if plan.version != PLAN_VERSION {
         return Err(Error::InvalidPlan(format!(
             "unsupported version {}",
@@ -63,7 +76,10 @@ pub fn validate_plan(plan: &StoryPlan) -> Result<Vec<AssetBinding>, Error> {
                 .into(),
         ));
     }
-    if !plan.readiness.ready() {
+    if !plan.readiness.unsupported_directions.is_empty()
+        || (asset_policy == AssetPolicy::RequireCompleted
+            && !plan.readiness.pending_assets.is_empty())
+    {
         let pending = plan
             .readiness
             .pending_assets
@@ -174,11 +190,19 @@ pub struct Runtime {
     identity: String,
     state: State,
     commands: Vec<Command>,
+    asset_policy: AssetPolicy,
 }
 
 impl Runtime {
     pub fn start(plan: StoryPlan) -> Result<(Self, Vec<Event>), Error> {
-        validate_plan(&plan)?;
+        Self::start_with_policy(plan, AssetPolicy::RequireCompleted)
+    }
+
+    pub fn start_with_policy(
+        plan: StoryPlan,
+        asset_policy: AssetPolicy,
+    ) -> Result<(Self, Vec<Event>), Error> {
+        validate_plan_with_policy(&plan, asset_policy)?;
         let identity = Sha256::digest(serde_json::to_vec(&plan).expect("serializable plan"))
             .iter()
             .map(|byte| format!("{byte:02x}"))
@@ -195,6 +219,7 @@ impl Runtime {
                 paused: false,
             },
             commands: Vec::new(),
+            asset_policy,
         };
         let mut events = Vec::new();
         runtime.enter(0, &mut events);
@@ -207,6 +232,9 @@ impl Runtime {
     }
     pub fn state(&self) -> &State {
         &self.state
+    }
+    pub fn asset_policy(&self) -> AssetPolicy {
+        self.asset_policy
     }
     pub fn current(&self) -> &Instruction {
         &self.plan.scenes[self.state.scene].instructions[self.state.instruction]
@@ -222,7 +250,14 @@ impl Runtime {
     /// Replay bounded transitions and compare the checkpoint instead of trusting
     /// deserialized indices, active assets or a purported waiting position.
     pub fn restore(plan: StoryPlan, saved: SavedState) -> Result<Self, Error> {
-        let (mut runtime, _) = Self::start(plan)?;
+        Self::restore_with_policy(plan, saved, AssetPolicy::RequireCompleted)
+    }
+    pub fn restore_with_policy(
+        plan: StoryPlan,
+        saved: SavedState,
+        asset_policy: AssetPolicy,
+    ) -> Result<Self, Error> {
+        let (mut runtime, _) = Self::start_with_policy(plan, asset_policy)?;
         if saved.version != SAVE_VERSION || saved.plan_identity != runtime.identity {
             return Err(Error::InvalidState(
                 "version or exact plan identity differs; restart this story".into(),
@@ -349,10 +384,7 @@ impl Runtime {
                     });
                 }
                 InstructionKind::Assets { kind, assets } => {
-                    let bindings: Vec<_> = assets
-                        .into_iter()
-                        .map(|a| a.binding.expect("validated ready plan"))
-                        .collect();
+                    let bindings: Vec<_> = assets.into_iter().filter_map(|a| a.binding).collect();
                     self.state.assets.retain(|a| a.kind != kind);
                     self.state.assets.extend(bindings.clone());
                     events.push(Event::Assets {
@@ -366,9 +398,10 @@ impl Runtime {
                     thought,
                     text,
                 } => {
-                    let binding = speaker.binding.expect("validated ready plan");
-                    if !self.state.assets.iter().any(|a| a.id == binding.id) {
-                        self.state.assets.push(binding.clone());
+                    if let Some(binding) = speaker.binding.as_ref() {
+                        if !self.state.assets.iter().any(|a| a.id == binding.id) {
+                            self.state.assets.push(binding.clone());
+                        }
                     }
                     self.state.phase = Phase::Text;
                     events.push(Event::Text {
@@ -377,7 +410,7 @@ impl Runtime {
                         } else {
                             TextKind::Dialogue
                         },
-                        speaker: Some(binding),
+                        speaker: speaker.binding,
                         text,
                         source: instruction.source,
                     });
