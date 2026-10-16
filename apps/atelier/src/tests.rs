@@ -805,99 +805,59 @@ fn queued_saves_keep_latest_recovery() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 #[test]
-fn settings_save_stores_provider_key_separately_from_settings() {
-    let directory = temporary("settings-and-key");
-    let path = directory.join("settings.json");
-    let mut settings = Settings::default();
-    settings.select_provider(Provider::Replicate);
-    settings.model = "custom-generation-model".into();
-    let mut stored = None;
-    worker::apply_settings(
-        &settings,
-        &path,
-        Some("  test-api-key  "),
-        |provider, key| {
-            stored = Some((provider, key.to_owned()));
-            Ok(())
-        },
-    )
-    .unwrap();
-    assert_eq!(stored, Some((Provider::Replicate, "test-api-key".into())));
-    let bytes = std::fs::read(&path).unwrap();
-    let restored: Settings = serde_json::from_slice(&bytes).unwrap();
-    assert!(restored == settings);
-    assert!(!String::from_utf8(bytes).unwrap().contains("test-api-key"));
-    // Saving without a replacement key keeps the existing credential untouched.
-    worker::apply_settings(&settings, &path, Some("  "), |_, _| {
-        panic!("A blank key must not replace a saved credential")
-    })
-    .unwrap();
-    std::fs::remove_dir_all(directory).unwrap();
-}
-#[test]
 fn settings_save_reports_failures_without_claiming_success() {
     let directory = temporary("settings-save-errors");
     let path = directory.join("settings.json");
     std::fs::write(&path, "previous settings").unwrap();
-    let error = worker::apply_settings(&Settings::default(), &path, Some("test-key"), |_, _| {
-        anyhow::bail!("Key storage unavailable")
-    })
-    .unwrap_err();
-    assert!(format!("{error:#}").contains("Key storage unavailable"));
+    let error = worker::apply_settings(&Settings::default(), &directory, "").unwrap_err();
+    assert!(format!("{error:#}").contains("Settings file was not saved"));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "previous settings");
-    let error =
-        worker::apply_settings(&Settings::default(), &directory, None, |_, _| Ok(())).unwrap_err();
-    assert!(error.to_string().contains("Settings file was not saved"));
     std::fs::remove_dir_all(directory).unwrap();
 }
 #[test]
-fn saved_keys_survive_reopening_and_remain_provider_scoped() {
-    let directory = temporary("saved-keys");
-    let path = directory.join("api-keys.json");
-    providers::store_key(&path, Provider::Fal, " fal-key ").unwrap();
-    providers::store_key(&path, Provider::Replicate, "replicate-key").unwrap();
+fn shared_provider_config_supplies_hosted_image_credentials() {
+    let registry = clipforge_inference::Providers::from_toml(
+        r#"
+            [defaults]
+            t2i = "replicate-image"
+            edit = "replicate-image"
+
+            [providers.replicate-image]
+            kind = "replicate"
+            capabilities = ["t2i", "edit"]
+            base_url = "https://api.replicate.com/v1"
+            model = "alibaba/qwen-image-3"
+            api_key = "replicate-from-shared-config"
+        "#,
+        std::path::Path::new("."),
+    )
+    .unwrap();
+
     assert_eq!(
-        providers::resolve_key(&path, Provider::Fal, None).unwrap(),
-        "fal-key"
+        providers::shared_config_key(Provider::Replicate, &registry).as_deref(),
+        Some("replicate-from-shared-config")
     );
     assert_eq!(
-        providers::resolve_key(&path, Provider::Replicate, None).unwrap(),
-        "replicate-key"
+        providers::shared_stored_api_key(Provider::Replicate, &registry).as_deref(),
+        Some("replicate-from-shared-config")
     );
-    providers::store_key(&path, Provider::Fal, "replacement").unwrap();
-    assert_eq!(
-        providers::resolve_key(&path, Provider::Fal, None).unwrap(),
-        "replacement"
-    );
-    assert_eq!(
-        providers::resolve_key(&path, Provider::Replicate, None).unwrap(),
-        "replicate-key"
-    );
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-    }
-    std::fs::write(&path, b"invalid json").unwrap();
-    assert_eq!(
-        providers::resolve_key(&path, Provider::Fal, Some(" env-key ".into())).unwrap(),
-        "env-key"
-    );
-    assert!(providers::resolve_key(&path, Provider::Fal, None)
-        .unwrap_err()
-        .to_string()
-        .contains("Could not read saved API keys"));
-    std::fs::remove_file(&path).unwrap();
-    assert!(
-        providers::resolve_key(&path, Provider::Fal, Some(" ".into()))
-            .unwrap_err()
-            .to_string()
-            .contains("Add your fal.ai key")
-    );
-    std::fs::remove_dir_all(directory).unwrap();
+
+    let environment_registry = clipforge_inference::Providers::from_toml(
+        r#"
+            [defaults]
+            t2i = "replicate-image"
+
+            [providers.replicate-image]
+            kind = "replicate"
+            capabilities = ["t2i"]
+            base_url = "https://api.replicate.com/v1"
+            model = "alibaba/qwen-image-3"
+            api_key_env = "ATELIER_TEST_PROVIDER_KEY"
+        "#,
+        std::path::Path::new("."),
+    )
+    .unwrap();
+    assert!(providers::shared_stored_api_key(Provider::Replicate, &environment_registry).is_none());
 }
 fn workflow() -> serde_json::Value {
     serde_json::json!({"6":{"class_type":"CLIPTextEncode","inputs":{"text":"old"}},"5":{"class_type":"EmptyLatentImage","inputs":{"width":512,"height":512,"batch_size":4}},"3":{"class_type":"KSampler","inputs":{"seed":1}},"9":{"class_type":"SaveImage","inputs":{}}})
@@ -965,7 +925,6 @@ fn comfy_generation_roundtrip_with_local_mock_server() {
     });
     let reference = providers::generate(providers::Request {
         native: Arc::new(Default::default()),
-        keys_path: Default::default(),
         settings: Settings {
             provider: Provider::Comfy,
             endpoint: format!("http://{address}"),
@@ -989,7 +948,6 @@ fn comfy_generation_roundtrip_with_local_mock_server() {
 fn generation_cancellation_prevents_network_submission() {
     let result = providers::generate(providers::Request {
         native: Arc::new(Default::default()),
-        keys_path: Default::default(),
         settings: Settings::default(),
         prompt: "Study".into(),
         source: None,

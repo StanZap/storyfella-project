@@ -49,8 +49,6 @@ pub enum Panel {
     Brushes,
     Queue,
     FromDrawing,
-    /// Render parameters (size, steps, adapters) for the next request.
-    ImageSettings,
 }
 
 /// The default prompt for "Generate from drawing" when the whole canvas is used.
@@ -167,6 +165,8 @@ pub struct DrawingApp {
     pub ref_pan: DocPoint,
     pub ref_drag: Option<gpui_kit::Point<Pixels>>,
     pub page: Page,
+    /// Where the image inspector should return when its Back control is used.
+    pub image_return_page: Page,
     pub panel: Panel,
     pub dock: bool,
     pub grid: bool,
@@ -232,10 +232,10 @@ pub struct DrawingApp {
     prompt_target: String,
     pub(crate) restore_draft_source: bool,
     pub search: Entity<InputState>,
-    pub key: Entity<InputState>,
     pub endpoint: Entity<InputState>,
     pub model: Entity<InputState>,
     pub edit_model: Entity<InputState>,
+    pub key: Entity<InputState>,
     pub positive_node: Entity<InputState>,
     pub latent_node: Entity<InputState>,
     pub seed_node: Entity<InputState>,
@@ -301,14 +301,18 @@ impl DrawingApp {
                 )
         });
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search references"));
-        let key = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("API key for selected provider")
-                .masked(true)
-        });
         let endpoint = input(settings.endpoint.clone(), window, cx);
         let model = input(settings.model.clone(), window, cx);
         let edit_model = input(settings.edit_model.clone(), window, cx);
+        let key_value = clipforge_inference::config::user_or_built_in()
+            .ok()
+            .and_then(|registry| providers::shared_stored_api_key(settings.provider, &registry))
+            .unwrap_or_default();
+        let key = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(key_value)
+                .masked(true)
+        });
         let positive_node = input(settings.positive_node.clone(), window, cx);
         let latent_node = input(settings.latent_node.clone(), window, cx);
         let seed_node = input(settings.seed_node.clone(), window, cx);
@@ -471,6 +475,7 @@ impl DrawingApp {
             render_segments: 0,
             references,
             page: Page::Draw,
+            image_return_page: Page::Library,
             panel: Panel::None,
             dock: true,
             grid: false,
@@ -528,10 +533,10 @@ impl DrawingApp {
             prompt_target,
             restore_draft_source: restoring_edit,
             search,
-            key,
             endpoint,
             model,
             edit_model,
+            key,
             positive_node,
             latent_node,
             seed_node,
@@ -1384,7 +1389,11 @@ impl DrawingApp {
         self.endpoint.update(cx, |s, cx| {
             s.set_value(self.settings.endpoint.clone(), window, cx)
         });
-        self.key.update(cx, |s, cx| s.set_value("", window, cx));
+        let key = clipforge_inference::config::user_or_built_in()
+            .ok()
+            .and_then(|registry| providers::shared_stored_api_key(provider, &registry))
+            .unwrap_or_default();
+        self.key.update(cx, |s, cx| s.set_value(key, window, cx));
         if !provider.supports_edit() {
             self.editing_image = false;
         }
@@ -1431,7 +1440,7 @@ impl DrawingApp {
         }
         self.settings_from_inputs(cx);
         self.settings.remember_provider();
-        let key = self.key.read(cx).value().to_string();
+        let key = self.key.read(cx).value().trim().to_owned();
         self.settings_save_error = None;
         if self
             .workers
@@ -1439,7 +1448,7 @@ impl DrawingApp {
             .send(Storage::ApplySettings(
                 self.settings.clone(),
                 self.data_dir.join("settings.json"),
-                (!key.trim().is_empty()).then(|| key.clone()),
+                key.clone(),
             ))
             .is_err()
         {
@@ -1450,6 +1459,34 @@ impl DrawingApp {
             self.settings_save = Some((self.settings.clone(), key));
         }
     }
+
+    /// Starts a new image from a game-art brief while leaving the prompt fully editable.
+    pub fn apply_creation_recipe(
+        &mut self,
+        prompt: &str,
+        width: u32,
+        height: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editing_image = false;
+        self.restore_prompt(window, cx);
+        self.prompt.update(cx, |state, cx| {
+            state.set_value(prompt.to_owned(), window, cx)
+        });
+        self.generation_width.update(cx, |state, cx| {
+            state.set_value(width.to_string(), window, cx)
+        });
+        self.generation_height.update(cx, |state, cx| {
+            state.set_value(height.to_string(), window, cx)
+        });
+        self.settings.width = width;
+        self.settings.height = height;
+        self.generation_error = None;
+        self.capture_prompt(cx);
+        cx.notify();
+    }
+
     /// Validates the composer's current request, captures it as a queue entry,
     /// and starts it when the queue is idle. Validation stays here so a bad
     /// request never reaches the queue.
@@ -1555,6 +1592,7 @@ impl DrawingApp {
                 references,
                 mask,
                 editing: self.editing_image,
+                placement: None,
             },
             self.epoch,
             view_id,
@@ -1589,7 +1627,6 @@ impl DrawingApp {
         worker::generate(
             providers::Request {
                 native: self.workers.native.clone(),
-                keys_path: self.data_dir.join("api-keys.json"),
                 settings: request.settings,
                 prompt: request.prompt,
                 size,
@@ -1635,6 +1672,39 @@ impl DrawingApp {
     pub fn queue_remove(&mut self, id: u64, cx: &mut Context<Self>) {
         self.queue.remove(id);
         cx.notify();
+    }
+
+    /// Re-queues a failed request with the same captured settings and source.
+    pub fn queue_retry(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(item) = self.queue.get(id) else {
+            return;
+        };
+        let JobState::Failed(_) = item.state else {
+            return;
+        };
+        let request = item.request.clone();
+        let epoch = item.epoch;
+        let view_id = item.view_id.clone();
+        self.queue.enqueue(request, epoch, view_id);
+        self.message("Request re-queued", false);
+        self.pump_queue();
+        cx.notify();
+    }
+
+    /// Opens the generated reference associated with a completed queue item.
+    pub fn open_queue_result(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(result_id) = self.queue.get(id).and_then(|item| item.result_id.clone()) else {
+            return;
+        };
+        let Some(reference) = self
+            .all_references()
+            .into_iter()
+            .find(|reference| crate::library::id(reference) == result_id)
+        else {
+            self.message("The generated image is no longer available", true);
+            return;
+        };
+        self.open_image(reference, cx);
     }
     /// Every image the app can resolve: the project's own images first, then the
     /// shared reference library, deduplicated by content so a promoted image is
@@ -1839,9 +1909,8 @@ impl DrawingApp {
         self.doc.reference = Some(self.doc.references.len() - 1);
         self.changed();
         self.panel = Panel::None;
-        self.open_image(reference.clone(), cx);
         self.use_mask = false;
-        self.editing_image = true;
+        self.editing_image = false;
         // Seed the composer prompt for this new source so the request carries it.
         self.settings_from_inputs(cx);
         let target = crate::library::id(&reference);
@@ -1860,6 +1929,7 @@ impl DrawingApp {
                 references: vec![],
                 mask: None,
                 editing: true,
+                placement: region,
             },
             self.epoch,
             Some(target),
@@ -2124,29 +2194,14 @@ impl DrawingApp {
                     let pending = self.settings_save.take();
                     match result {
                         Ok(()) => {
-                            if let Some((saved, key)) = pending {
+                            if let Some((saved, _)) = pending {
                                 self.settings_from_inputs(cx);
                                 self.settings.remember_provider();
-                                let same_key = self.settings.provider == saved.provider
-                                    && self.key.read(cx).value() == key;
-                                if self.panel == Panel::Settings
-                                    && self.settings == saved
-                                    && same_key
-                                {
+                                if self.panel == Panel::Settings && self.settings == saved {
                                     self.panel = Panel::None;
                                     window.focus(&self.focus, cx);
                                 }
-                                if same_key {
-                                    self.key.update(cx, |s, cx| s.set_value("", window, cx));
-                                }
-                                self.message(
-                                    if key.trim().is_empty() {
-                                        "Settings saved"
-                                    } else {
-                                        "Settings and API key saved"
-                                    },
-                                    false,
-                                );
+                                self.message("Settings saved", false);
                             }
                         }
                         Err(error) => {
@@ -2511,13 +2566,45 @@ impl DrawingApp {
                         } else {
                             match result {
                                 Ok((reference, image)) => {
+                                    let result_id = crate::library::id(&reference);
+                                    let placement =
+                                        self.queue.get(id).and_then(|item| item.request.placement);
                                     if self.job_epoch == self.epoch
                                         && self.doc.references.len() < 128
                                         && self.doc.embedded_image_bytes() + reference.image.len()
                                             <= 64 * 1024 * 1024
                                     {
-                                        self.checkpoint();
                                         let reference = Arc::new(reference);
+                                        if let Some(placement) = placement {
+                                            self.checkpoint();
+                                            match document::decode_reference(&reference) {
+                                                Ok(decoded) => {
+                                                    if let Err(error) = self
+                                                        .add_generated_image_layer(
+                                                            reference.clone(),
+                                                            decoded.width(),
+                                                            decoded.height(),
+                                                            placement,
+                                                        )
+                                                    {
+                                                        self.message(
+                                                            format!(
+                                                                "Could not place generated image: {error}"
+                                                            ),
+                                                            true,
+                                                        );
+                                                    }
+                                                }
+                                                Err(error) => self.message(
+                                                    format!(
+                                                        "Could not read generated image dimensions: {error}"
+                                                    ),
+                                                    true,
+                                                ),
+                                            }
+                                        } else {
+                                            self.checkpoint();
+                                        }
                                         let image = worker::render_image(image);
                                         self.reference_cache
                                             .push((reference.clone(), image.clone()));
@@ -2526,6 +2613,10 @@ impl DrawingApp {
                                         self.doc.reference = Some(self.doc.references.len() - 1);
                                         self.changed();
                                         self.sync_ref_inputs(window, cx);
+                                        if placement.is_some() {
+                                            self.generation_region = None;
+                                            self.region_drag = None;
+                                        }
                                         if self.page == Page::Image
                                             && self.opened_image.as_ref().is_some_and(
                                                 |(r, _, _, _)| {
@@ -2542,6 +2633,7 @@ impl DrawingApp {
                                     }
                                     if let Some(item) = self.queue.get_mut(id) {
                                         item.state = JobState::Done;
+                                        item.result_id = Some(result_id);
                                     }
                                 }
                                 Err(e) => {

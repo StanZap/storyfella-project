@@ -19,10 +19,10 @@ in `~/Library/Application Support/Atelier` (macOS) or `~/.local/share/Atelier`.
 The root Cargo patch and vendored GPUI Metal renderer remain in this workspace.
 FineWineTTS retains its separate GPUI renderer patch for its review application.
 The macOS development bundle uses ad hoc signing without certificate setup.
-Provider keys use `api-keys.json` in Atelier's user app data directory on every
-platform. Environment keys take precedence; blank input preserves saved keys.
-Keys stay out of projects and exports. Existing Keychain entries are not read
-or migrated; enter the key once in Settings.
+Provider keys resolve from environment variables first, then the matching hosted
+provider entry in the shared `clipforge.toml`. Atelier's Credentials section can
+update that shared provider entry directly; it does not maintain a second
+credential store. Keys stay out of projects and exports.
 
 ## Image workflow
 
@@ -138,14 +138,13 @@ does not use the editing basket. Unsupported mask/multi-reference combinations
 fail before credentials are requested or a paid job is submitted.
 
 The Draw workspace's **Generate from drawing** opens a compact panel with an area
-control and the prompt. Dragging on the canvas switches it to **Box select**
-automatically and shows the region size; the box-select toggle turns it on (seeded
-with the whole canvas) or off (**Full canvas**). A gear opens the same **Image
-settings** window for size, steps and adapters. The prompt defaults to using the
-drawing as a reference — and for a region, to modifying only the selected area and
-preserving the rest. **Generate** rasterizes the area (cropped to the region when
-one is set), adds it as a project reference, opens it as the edit source, and
-queues it. It needs a provider that supports editing.
+control, prompt, output size, steps and adapter controls. Dragging on the canvas
+switches it to **Box select** automatically and shows the region size; the
+box-select toggle turns it on (seeded with the whole canvas) or off (**Full
+canvas**). The prompt defaults to using the drawing as a reference — and for a
+region, to modifying only the selected area and preserving the rest. **Generate**
+rasterizes the area, queues it, and places the result as a new image layer over
+the selected area when it completes. It needs a provider that supports editing.
 
 | Editing route | Ordered images | Mask |
 | --- | --- | --- |
@@ -182,7 +181,8 @@ Atelier text/vision assistant are separate future work.
 `clipforge_inference::images::Client::generate(Request)` owns managed/native and
 hosted image execution, route capabilities, masks/reference wire formats, polling,
 cancellation and bounded downloads. The GPUI worker owns its Tokio runtime;
-Atelier owns app-data API-key storage, files, document history and ComfyUI.
+Atelier owns files, document history and ComfyUI. Hosted provider keys are saved
+to the shared `clipforge.toml` by Clipforge's atomic, owner-only config writer.
 Hosted services never start/stop native servers. No paid request is automatically
 resubmitted; errors preserve a known job ID. API keys never go to image CDNs.
 

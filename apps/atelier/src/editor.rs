@@ -287,6 +287,9 @@ impl DrawingApp {
             return;
         }
         self.finish_stroke();
+        if self.page != Page::Image {
+            self.image_return_page = self.page;
+        }
         self.page = Page::Image;
         self.editing_image = self.settings.provider.supports_edit();
         self.comparing = false;
@@ -317,6 +320,16 @@ impl DrawingApp {
                 .clamp(0.02, 8.);
             self.image_pan = DocPoint { x: 0., y: 0. };
         }
+    }
+
+    pub fn back_from_image(&mut self, cx: &mut Context<Self>) {
+        self.finish_mask();
+        if self.mask_save_error.is_some() {
+            return;
+        }
+        self.page = self.image_return_page;
+        self.panel = crate::app::Panel::None;
+        cx.notify();
     }
     pub fn edit_opened_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.edit_source().is_some() {
@@ -369,5 +382,53 @@ impl DrawingApp {
         window.focus(&self.focus, cx);
         self.message("Image layer added · draw or erase on this layer", false);
         cx.notify();
+    }
+
+    /// Places a generated result over the canvas rectangle that produced it.
+    pub fn add_generated_image_layer(
+        &mut self,
+        reference: Arc<document::Reference>,
+        width: u32,
+        height: u32,
+        placement: (u32, u32, u32, u32),
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(width > 0 && height > 0, "Generated image has no size");
+        anyhow::ensure!(self.doc.layers.len() < 24, "Maximum 24 layers");
+        anyhow::ensure!(
+            self.doc.embedded_image_bytes() + reference.image.len().saturating_mul(2)
+                <= 64 * 1024 * 1024,
+            "Project images exceed 64 MB"
+        );
+        let (x, y, target_width, target_height) = placement;
+        anyhow::ensure!(
+            target_width > 0
+                && target_height > 0
+                && x.saturating_add(target_width) <= self.doc.width
+                && y.saturating_add(target_height) <= self.doc.height,
+            "Generated image placement is outside the canvas"
+        );
+        self.doc.layers.push(Layer {
+            name: format!("Generated · {}", reference.name),
+            visible: true,
+            opacity: 1.,
+            strokes: vec![],
+            image: Some(document::ImageLayer {
+                reference,
+                transform: [
+                    target_width as f32 / width as f32,
+                    0.,
+                    0.,
+                    target_height as f32 / height as f32,
+                    x as f32,
+                    y as f32,
+                ],
+            }),
+        });
+        self.doc.active_layer = self.doc.layers.len() - 1;
+        self.changed();
+        self.page = Page::Draw;
+        self.dock = true;
+        self.tool = Tool::Pencil;
+        Ok(())
     }
 }

@@ -49,8 +49,9 @@ bundle at `dist/atelier/Atelier.app`). Preserve its Atelier data directory,
 FineWineTTS review app still uses GPUI, so that repository retains its patch.
 Atelier's hosted API wire code and model presets live in
 `clipforge-inference::images`. The GPUI worker owns a Tokio runtime and adapts
-raw output bytes to its document references; app-data API-key storage and ComfyUI workflow
-execution stay app-owned. Studio's creative runtime still uses the native
+raw output bytes to its document references; Atelier saves hosted API keys into
+the shared `clipforge.toml` through `clipforge_inference::Providers`, while
+ComfyUI workflow execution stays app-owned. Studio's creative runtime still uses the native
 `sd` API; hosted-provider UI integration remains separate. See `docs/atelier.md`.
 Atelier's shared library stores immutable full-resolution originals plus global
 metadata and mask drafts under `data_dir/library`; `.atelier` projects embed

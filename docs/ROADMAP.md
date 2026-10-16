@@ -556,9 +556,13 @@ canvases import into Studio's completed revisions through portable `.sfart`
 packages. Studio's hosted-provider selection and a text/vision art assistant
 remain **planned**; see [Atelier](atelier.md) for limits and verification.
 
-**Compact Atelier workspace and portable key storage: implemented.** Named icon
-actions and optional image details follow DESIGN.md. Provider keys persist in
-Atelier user app data across platforms; Keychain integration is deferred.
+**Compact Atelier workspace and shared provider credentials: implemented.**
+Named icon actions and optional image details follow DESIGN.md. Hosted provider
+keys persist in the shared `clipforge.toml` through Clipforge's atomic,
+owner-only config writer. Atelier's Settings field masks stored keys.
+**Game-art creation briefs: implemented.** The new-image composer offers
+editable starting points for characters, objects, backgrounds and narrative
+illustrations, with canvas shapes matched to each asset.
 **Iteration gaps: implemented and checked on macOS.** The real-provider bookshop
 walkthrough demonstrates chained edits and sibling branches. Source-specific
 prompt drafts recover after restart, saved version names retain identity, prompt

@@ -60,7 +60,7 @@ pub fn generate(request: Request) -> Result<Reference> {
     image_request.progress = request.progress;
     // The GPUI worker owns its runtime; Clipforge remains async and UI-independent.
     let output = if let Some(deployment) = deployment {
-        let key = ApiKey::new(providers::api_key(&request.keys_path, provider)?)?;
+        let key = ApiKey::new(providers::api_key(provider)?)?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;

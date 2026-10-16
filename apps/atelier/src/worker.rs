@@ -74,7 +74,7 @@ pub enum Storage {
     Import(u64, Vec<PathBuf>, PathBuf, bool),
     Workflow(PathBuf),
     Settings(providers::Settings, PathBuf),
-    ApplySettings(providers::Settings, PathBuf, Option<String>),
+    ApplySettings(providers::Settings, PathBuf, String),
     Barrier(Sender<()>),
 }
 pub struct Workers {
@@ -349,11 +349,9 @@ pub fn start() -> Workers {
                         .map_err(anyhow::Error::from)
                         .and_then(|bytes| document::atomic_write(&path, &bytes)),
                 ),
-                Storage::ApplySettings(settings, path, key) => Event::SettingsApplied(
-                    apply_settings(&settings, &path, key.as_deref(), |provider, key| {
-                        providers::store_key(&path.with_file_name("api-keys.json"), provider, key)
-                    }),
-                ),
+                Storage::ApplySettings(settings, path, key) => {
+                    Event::SettingsApplied(apply_settings(&settings, &path, &key))
+                }
                 Storage::Barrier(ack) => {
                     let _ = ack.send(());
                     continue;
@@ -418,13 +416,13 @@ pub fn start() -> Workers {
 pub(crate) fn apply_settings(
     settings: &providers::Settings,
     path: &std::path::Path,
-    key: Option<&str>,
-    store_key: impl FnOnce(providers::Provider, &str) -> Result<()>,
+    api_key: &str,
 ) -> Result<()> {
-    let bytes = serde_json::to_vec(settings)?;
-    if let Some(key) = key.filter(|key| !key.trim().is_empty()) {
-        store_key(settings.provider, key.trim()).context("API key was not saved")?;
+    if !api_key.trim().is_empty() {
+        providers::write_shared_api_key(settings, api_key)
+            .context("Shared Clipforge API key was not saved")?;
     }
+    let bytes = serde_json::to_vec(settings)?;
     document::atomic_write(path, &bytes).context("Settings file was not saved")
 }
 pub fn generate(mut request: Request, id: u64, sender: Sender<Event>, directory: PathBuf) {

@@ -64,13 +64,11 @@ Canvas limits are 64–8192 px per edge and 32 megapixels.
 
 Choose a provider in the Library's **Create & edit** panel, then open its Settings.
 Each provider remembers independent generation/editing models and its address.
-Choose a model preset or enter its model IDs. Enter the provider's API key and
-click **Save settings** on any supported desktop platform. Keys are saved as
-plaintext in `api-keys.json` inside Atelier's user app data directory, separate
-from settings and projects. Files created by Atelier have owner-only permissions
-on Unix. Environment credentials take precedence. A blank key preserves the
-saved value. The panel closes after a successful save; errors retain your input.
-Previously saved Keychain keys must be entered once into the new storage.
+Choose a model preset or enter its model IDs. Hosted credentials resolve from the
+environment first, then the matching hosted provider in the shared
+`clipforge.toml`. The Credentials section can update that shared provider entry
+directly; Atelier does not maintain a second credential store. The panel closes
+after a successful settings save; errors retain your input.
 
 | Provider | Credential | Default generation / editing models |
 | --- | --- | --- |
@@ -97,11 +95,14 @@ selected reference plus your instruction to the editing model. Every edit adds
 a new reference and keeps the original; select any earlier image to branch from
 it. Outputs are saved locally with provider, model, prompt, source name and hosted
 job ID where available. Full-resolution originals remain in the shared library.
+For a new image, start from a **Character**, **Object**, **Background**, or
+**Illustration** brief; Atelier sets a fitting canvas shape and leaves the prompt
+open for your details before queueing.
 Square, landscape and portrait output use the existing size controls. Actions
 use your provider account and may incur charges.
 
 **Add to queue** captures the prompt, width, height, sampling steps and the
-applied LoRA adapters (set in **Image settings**) and runs the request after those
+applied LoRA adapters (set inline in the generation panel) and runs the request after those
 already waiting — one at a time. The queue has its own panel, opened from the
 header badge (which counts outstanding requests) or the rail: **Pause** holds
 dispatch without interrupting a running image, **Stop** cancels the running
@@ -111,10 +112,9 @@ history. Each entry keeps the values it was created with.
 **Generate from drawing** (the canvas toolbar) opens a compact panel. Drag on the
 canvas to select a **box select** area — the panel switches to it automatically
 and shows the size — or use the box-select toggle to switch back to the **full
-canvas**. Review the prompt (defaulted to using the drawing as a reference) and
-**Generate** to rasterize the area, open it as the edit source and queue it. Size,
-steps and adapters come from **Image settings** (the gear in the panel or the
-rail).
+canvas**. Review the prompt and the inline output size, steps and adapter controls,
+then **Generate**. The result is added as a new image layer directly over the
+selected area; full-canvas generation adds the layer over the drawing.
 
 fal's Qwen Image 3 accepts only opaque editing inputs, so that adapter composites
 transparent references onto white before upload. Other adapters retain source
@@ -174,7 +174,7 @@ Control is also accepted for canvas save/undo/open shortcuts.
 
 `document.rs` owns projects, shared stroke snapshots, bounded history, validation, atomic writes and CPU raster utilities. `viewport.rs` provides inverse transforms. `queue.rs` owns the generation queue — request snapshots, ordering, pause and states. `worker.rs` separates storage,
 raster work, session previews and generation from UI interaction. `providers.rs`
-implements ComfyUI, provider profiles and app-data API-key storage; `image_execution.rs`
+implements ComfyUI and provider profiles; `image_execution.rs`
 adapts shared image generation/editing, and `native_images.rs` retains the managed
 Qwen/Krea client across iterations. See [Linux CUDA setup](../../docs/atelier.md#local-qwen-and-krea-on-linux-with-cuda).
 `ui.rs` holds shared visual

@@ -175,7 +175,6 @@ impl Settings {
 }
 pub struct Request {
     pub native: Arc<crate::native_images::NativeImages>,
-    pub keys_path: std::path::PathBuf,
     pub settings: Settings,
     pub prompt: String,
     pub size: (u32, u32),
@@ -218,41 +217,136 @@ pub(crate) fn response_json(response: Response) -> Result<Value> {
     }
     Ok(value)
 }
-fn saved_keys(path: &std::path::Path) -> Result<std::collections::BTreeMap<String, String>> {
-    match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).context("Could not read saved API keys"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
-        Err(error) => Err(error).context("Could not read saved API keys"),
-    }
-}
-pub fn store_key(path: &std::path::Path, provider: Provider, key: &str) -> Result<()> {
-    ensure!(!key.trim().is_empty(), "Enter an API key");
-    let mut keys = saved_keys(path)?;
-    keys.insert(provider.account().into(), key.trim().into());
-    document::atomic_write(path, &serde_json::to_vec(&keys)?).context("Could not save API key")
-}
-pub(crate) fn resolve_key(
-    path: &std::path::Path,
+
+pub(crate) fn shared_config_key(
     provider: Provider,
-    environment: Option<String>,
-) -> Result<String> {
-    if let Some(key) = environment.filter(|key| !key.trim().is_empty()) {
-        return Ok(key.trim().to_owned());
-    }
-    if let Some(key) = saved_keys(path)?
-        .remove(provider.account())
+    registry: &clipforge_inference::Providers,
+) -> Option<String> {
+    let configured = shared_provider(registry, provider)?;
+    shared_stored_api_key(provider, registry).or_else(|| {
+        configured
+            .api_key_env
+            .as_deref()
+            .and_then(|name| std::env::var(name).ok())
+            .filter(|key| !key.trim().is_empty())
+            .map(|key| key.trim().to_owned())
+    })
+}
+
+pub(crate) fn shared_stored_api_key(
+    provider: Provider,
+    registry: &clipforge_inference::Providers,
+) -> Option<String> {
+    shared_provider(registry, provider)?
+        .api_key
+        .clone()
+        .filter(|key| !key.trim().is_empty())
+        .map(|key| key.trim().to_owned())
+}
+
+fn shared_provider(
+    registry: &clipforge_inference::Providers,
+    provider: Provider,
+) -> Option<&clipforge_inference::Provider> {
+    let hosted = provider.hosted()?;
+    let matches = |configured: &clipforge_inference::Provider| {
+        matches!(
+            (hosted, configured.kind),
+            (
+                clipforge_inference::images::HostedProvider::Fal,
+                clipforge_inference::ProviderKind::Fal,
+            ) | (
+                clipforge_inference::images::HostedProvider::Replicate,
+                clipforge_inference::ProviderKind::Replicate,
+            ) | (
+                clipforge_inference::images::HostedProvider::Alibaba,
+                clipforge_inference::ProviderKind::Alibaba,
+            ) | (
+                clipforge_inference::images::HostedProvider::GptImage,
+                clipforge_inference::ProviderKind::GptImage,
+            )
+        )
+    };
+    registry
+        .provider_for(clipforge_inference::Capability::T2i)
+        .filter(|(_, configured)| matches(configured))
+        .or_else(|| {
+            registry
+                .provider_for(clipforge_inference::Capability::Edit)
+                .filter(|(_, configured)| matches(configured))
+        })
+        .or_else(|| registry.list().find(|(_, configured)| matches(configured)))
+        .map(|(_, configured)| configured)
+}
+
+fn shared_provider_id(
+    registry: &clipforge_inference::Providers,
+    provider: Provider,
+) -> Option<&str> {
+    let selected = shared_provider(registry, provider)?;
+    registry
+        .list()
+        .find(|(_, configured)| std::ptr::eq(*configured, selected))
+        .map(|(id, _)| id)
+}
+
+pub(crate) fn write_shared_api_key(settings: &Settings, api_key: &str) -> Result<()> {
+    let provider = settings.provider;
+    let path = clipforge_inference::config::default_config_path()
+        .context("Clipforge has no shared configuration path")?;
+    let registry = if path.exists() {
+        clipforge_inference::Providers::load(&path)
+            .context("Could not load the shared Clipforge provider registry")?
+    } else {
+        let hosted = provider
+            .hosted()
+            .context("Only hosted providers have shared API keys")?;
+        let id = provider.account();
+        let kind = match hosted {
+            clipforge_inference::images::HostedProvider::Fal => "fal",
+            clipforge_inference::images::HostedProvider::Replicate => "replicate",
+            clipforge_inference::images::HostedProvider::Alibaba => "alibaba",
+            clipforge_inference::images::HostedProvider::GptImage => "gptimage",
+        };
+        let quote = |value: &str| format!("\"{}\"", value.replace('"', "\\\""));
+        let config = format!(
+            "[defaults]\nt2i = {id}\nedit = {id}\n\n[providers.{id}]\nkind = {kind}\ncapabilities = [\"t2i\", \"edit\"]\nbase_url = {}\nmodel = {}\n",
+            quote(&settings.endpoint),
+            quote(&settings.model),
+            id = quote(id),
+            kind = quote(kind),
+        );
+        clipforge_inference::Providers::from_toml(
+            &config,
+            path.parent().unwrap_or(std::path::Path::new(".")),
+        )
+        .context("Could not initialize the shared Clipforge provider registry")?
+    };
+    let id = shared_provider_id(&registry, provider)
+        .context("No matching hosted provider is configured in clipforge.toml")?;
+    registry
+        .write_api_key(&path, id, api_key)
+        .map_err(anyhow::Error::from)
+        .context("Could not save the shared Clipforge API key")
+}
+
+pub(crate) fn api_key(provider: Provider) -> Result<String> {
+    if let Some(key) = std::env::var(provider.key_env())
+        .ok()
         .filter(|key| !key.trim().is_empty())
     {
         return Ok(key.trim().to_owned());
     }
+    if let Ok(registry) = clipforge_inference::config::user_or_built_in() {
+        if let Some(key) = shared_config_key(provider, &registry) {
+            return Ok(key);
+        }
+    }
     bail!(
-        "Add your {} key in Settings or set {}",
+        "Configure {} in the shared clipforge.toml or set {}",
         provider.name(),
         provider.key_env()
     )
-}
-pub(crate) fn api_key(path: &std::path::Path, provider: Provider) -> Result<String> {
-    resolve_key(path, provider, std::env::var(provider.key_env()).ok())
 }
 pub fn generate(request: Request) -> Result<Reference> {
     ensure!(

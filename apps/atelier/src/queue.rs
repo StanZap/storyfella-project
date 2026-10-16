@@ -19,6 +19,8 @@ pub struct QueuedRequest {
     pub references: Vec<Arc<Reference>>,
     pub mask: Option<MaskDraft>,
     pub editing: bool,
+    /// A drawing selection to receive the generated image, in canvas pixels.
+    pub placement: Option<(u32, u32, u32, u32)>,
 }
 
 impl QueuedRequest {
@@ -78,6 +80,8 @@ pub struct QueueItem {
     pub id: u64,
     pub request: QueuedRequest,
     pub state: JobState,
+    /// The generated reference, when a completed request was added to a project.
+    pub result_id: Option<String>,
     /// The project epoch when the request was queued; a result only changes the
     /// project it was queued for.
     pub epoch: u64,
@@ -101,6 +105,7 @@ impl Queue {
             id,
             request,
             state: JobState::Queued,
+            result_id: None,
             epoch,
             view_id,
         });
@@ -200,6 +205,7 @@ mod tests {
             references: vec![],
             mask: None,
             editing: false,
+            placement: None,
         }
     }
 

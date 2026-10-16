@@ -1,14 +1,30 @@
 # Storyfella Studio design standard and UX audit
 
+### Atelier game-art creation briefs · 2026-10-16
+
+The new-image composer offers editable starting briefs for **Character**,
+**Object**, **Background**, and **Illustration** work. Each brief chooses a
+portrait, square, or landscape canvas that fits the asset and seeds the existing
+per-project prompt draft, so users can move from a game-art intent to the normal
+generation queue without introducing a second generation path. Choosing a brief
+while editing returns the composer to new-image mode; the user can then refine
+the prompt before queueing it. The Settings credential field remains masked and
+uses Clipforge's shared provider config; environment-only keys are resolved for
+requests without being copied into the stored-key field.
+
+Verification: `cargo test -p storyfella-atelier` (48 passed, 11 ignored),
+`cargo clippy -p storyfella-atelier --all-targets -- -D warnings`,
+`cargo fmt --all -- --check`, and `git diff --check` pass. The four brief
+buttons have not yet been exercised in a live UI session.
+
 Atelier acceptance · 2026-10-10: the image workspace uses named icon actions for
 export, canvas placement, edit mode, comparison and masking. Details and provenance
 are disclosed on demand; the prompt has more space and the version strip is compact.
 Isolated macOS checks exercised those controls and resizing to about 1058 × 732
 logical pixels. A live Replicate forest-bookshop generation and evening edit were
 saved as a portable project, original PNGs and approved artwork.
-Provider keys now save in user app data on all desktop platforms. File tests cover
-provider isolation, replacement, environment precedence, malformed storage and
-Unix owner-only permissions. Keychain access and certificate setup are deferred.
+Hosted provider keys save in the shared `clipforge.toml` through Clipforge's
+atomic, owner-only writer; Studio and Atelier read that shared provider config.
 Linux/Windows native interaction and assistive-technology checks remain unverified.
 
 The follow-up [iteration acceptance](docs/atelier-iteration-acceptance.md)

@@ -19,12 +19,16 @@ impl DrawingApp {
             .border_b_1()
             .border_color(rgb(BORDER))
             .child(
-                tool_button("image-back", "back", "Back to library").on_click(cx.listener(
-                    |this, _, _, cx| {
-                        this.page = Page::Library;
-                        cx.notify();
+                tool_button(
+                    "image-back",
+                    "back",
+                    if self.image_return_page == Page::Draw {
+                        "Back to drawing"
+                    } else {
+                        "Back to library"
                     },
-                )),
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.back_from_image(cx))),
             )
             .child(
                 tool_button("image-fit", "fit", "Fit image")
