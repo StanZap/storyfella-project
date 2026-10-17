@@ -49,6 +49,36 @@ prompt and provider/model/job provenance are stored alongside library originals.
 Browsing another image while a job runs does not redirect that job or force the
 completed version over the image being inspected.
 
+The **Projects** page is the top-level entry point for saved `.atelier` projects.
+Creating or opening a project shows **Artboards**. A new project shows a blank
+canvas artboard and a compact image prompt below the artboards. The prompt is
+always available there, with dropdowns for provider, aspect ratio, resolution,
+and sampling steps when the local provider supports them. Select the canvas to
+draw, or an image to open it in the full-height editor. Generated images appear
+in the artboard sequence; the blank canvas placeholder disappears when the
+first image is generated. A canvas with drawing remains in the sequence.
+Artboards and their history belong to the open project. The blank canvas is the
+focal point of a tinted Artboards stage only while the project is empty. In Draw,
+the narrow left rail stacks the brush preset, size step actions, size tag,
+opacity, and smoothing controls on one centerline; brush presets and other rail
+popovers open beside their triggers.
+The Artboards stage centers a single artboard at a larger size and preserves its
+aspect ratio. The prompt stays compact at the bottom of the same workspace;
+it is visible by default and toggles with **⌘P** or the header sparkle action.
+Routine save state appears only in the header.
+A faint plus slot follows existing artboards and adds a blank drawing canvas.
+Select the new canvas to draw; earlier canvases remain editable. The slot does
+not count as an artboard or change the centering of existing artwork.
+New projects receive a local `.atelier` file when created; switching projects
+saves the current project's latest canvas and prompt drafts first.
+
+The image workspace keeps the artwork as its primary surface. **⌘P** or the
+sparkle action toggles the floating edit composer; it summarizes the prompt
+that produced the current artboard and accepts the next variation request. Sending
+the request opens **Artboards**, a horizontal artboard sequence with the pending
+result visible while it runs. Artboard activity is available from its ellipsis as
+a short vertical list; selecting an artboard returns to the full image editor.
+
 Unsent prompts belong to their source image; New image has a separate draft.
 Navigation restores the relevant draft. Project and recovery saves retain the
 active source and drafts, including on quit. Canvas undo does not undo prompt
@@ -87,11 +117,11 @@ deployments releases the previously owned server before loading the next model.
 The app does not download weights or compile the server on submission. Missing
 setup reports an error while keeping the source and prompt draft.
 
-The generation rail carries the prompt, the aspect presets (**1:1 / 3:2 / 2:3**)
+The new-image generation panel carries the prompt, the aspect presets (**1:1 / 3:2 / 2:3**)
 and **Add to queue**, and reports whether the machine's shared `sd-server` is
 answering (`Local server: running · <model>` or `stopped · starts on demand`),
 re-probed on demand, when the provider changes, and after each generation. A gear
-in the rail — and in the Generate-from-drawing panel — opens the **Image
+in the rail opens the **Image
 settings** window with the sampling **steps** (blank uses the model's default —
 25 for Qwen, 8 for Krea), the output **width**/**height**, and the **LoRA
 adapters** added from a searchable picker (each applied adapter carries its own
@@ -137,14 +167,13 @@ source is Image 1; additional references are Images 2 and 3. New-image generatio
 does not use the editing basket. Unsupported mask/multi-reference combinations
 fail before credentials are requested or a paid job is submitted.
 
-The Draw workspace's **Generate from drawing** opens a compact panel with an area
-control, prompt, output size, steps and adapter controls. Dragging on the canvas
-switches it to **Box select** automatically and shows the region size; the
-box-select toggle turns it on (seeded with the whole canvas) or off (**Full
-canvas**). The prompt defaults to using the drawing as a reference — and for a
-region, to modifying only the selected area and preserving the rest. **Generate**
-rasterizes the area, queues it, and places the result as a new image layer over
-the selected area when it completes. It needs a provider that supports editing.
+The Draw workspace's sparkle action or **⌘P** toggles the same compact prompt used
+on Artboards, floating over the bottom of the canvas. It retains the provider,
+aspect, resolution, and local steps controls, with a Full/Area control beside
+them. Area lets a canvas drag select a region; clicking it again returns to the full
+canvas. Submitting uses the drawing as the source, rasterizes any selected area,
+and queues an image layer over the drawing. It needs a provider that supports
+editing.
 
 | Editing route | Ordered images | Mask |
 | --- | --- | --- |

@@ -36,9 +36,11 @@ pub enum Picker {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Page {
+    Projects,
     Draw,
     Library,
     Image,
+    Artboards,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
@@ -48,14 +50,74 @@ pub enum Panel {
     Help,
     Brushes,
     Queue,
-    FromDrawing,
 }
 
-/// The default prompt for "Generate from drawing" when the whole canvas is used.
-pub(crate) const FROM_DRAWING_PROMPT: &str = "Generate an image using this drawing as a reference.";
-/// The default prompt when a canvas region is selected. Box select crops the
-/// reference to that region, so the rest of the image is composed to match it.
-pub(crate) const FROM_DRAWING_REGION_PROMPT: &str = "Generate an image using the selected area of this drawing as a reference. Modify only the selected area and preserve the rest.";
+fn aspect_index(width: u32, height: u32) -> usize {
+    if width == height {
+        0
+    } else if width * 2 == height * 3 {
+        1
+    } else if height * 2 == width * 3 {
+        2
+    } else {
+        3
+    }
+}
+
+fn size_index(short_edge: u32) -> usize {
+    [768, 1024, 1280]
+        .into_iter()
+        .position(|size| size == short_edge)
+        .unwrap_or(3)
+}
+
+fn steps_index(steps: Option<u32>) -> usize {
+    match steps {
+        None => 0,
+        Some(value) => [16, 25, 40]
+            .into_iter()
+            .position(|preset| preset == value)
+            .map(|index| index + 1)
+            .unwrap_or(4),
+    }
+}
+
+fn aspect_choices(width: u32, height: u32) -> Vec<String> {
+    let mut choices = vec![
+        "Square · 1:1".into(),
+        "Landscape · 3:2".into(),
+        "Portrait · 2:3".into(),
+    ];
+    if aspect_index(width, height) == 3 {
+        choices.push(format!("Custom · {width}×{height}"));
+    }
+    choices
+}
+
+fn size_choices(short_edge: u32) -> Vec<String> {
+    let mut choices = vec![
+        "Size · 768 px".into(),
+        "Size · 1024 px".into(),
+        "Size · 1280 px".into(),
+    ];
+    if size_index(short_edge) == 3 {
+        choices.push(format!("Size · {short_edge} px"));
+    }
+    choices
+}
+
+fn steps_choices(steps: Option<u32>) -> Vec<String> {
+    let mut choices = vec![
+        "Steps · Auto".into(),
+        "Steps · 16".into(),
+        "Steps · 25".into(),
+        "Steps · 40".into(),
+    ];
+    if steps_index(steps) == 4 {
+        choices.push(format!("Steps · {}", steps.unwrap_or_default()));
+    }
+    choices
+}
 
 /// Clamps two document-space corners to a pixel rectangle (x, y, width, height),
 /// or `None` when a side is smaller than 16 px.
@@ -74,7 +136,7 @@ pub(crate) fn region_rect(
     (w >= 16 && h >= 16).then_some((x0, y0, w, h))
 }
 
-pub struct StudyCard {
+pub struct ProjectCard {
     pub title: String,
     pub path: PathBuf,
     pub image: Arc<RenderImage>,
@@ -132,9 +194,13 @@ pub struct DrawingApp {
     pub use_mask: bool,
     pub input_references: Vec<Arc<document::Reference>>,
     pub generation_view_id: Option<String>,
-    pub studies: Vec<StudyCard>,
-    pub show_studies: bool,
-    pub studies_loading: bool,
+    pub iteration_source_id: Option<String>,
+    pub iteration_job_id: Option<u64>,
+    pub interaction_open_for: Option<String>,
+    pub show_edit_composer: bool,
+    pub show_artboards_composer: bool,
+    pub projects: Vec<ProjectCard>,
+    pub projects_loading: bool,
     pub doc: Document,
     pub history: History,
     pub view: Viewport,
@@ -168,6 +234,7 @@ pub struct DrawingApp {
     /// Where the image inspector should return when its Back control is used.
     pub image_return_page: Page,
     pub panel: Panel,
+    pub show_drawing_composer: bool,
     pub dock: bool,
     pub grid: bool,
     pub guides: bool,
@@ -198,6 +265,9 @@ pub struct DrawingApp {
     pub settings: Settings,
     pub generation_provider_select: Entity<SelectState<Vec<String>>>,
     pub settings_provider_select: Entity<SelectState<Vec<String>>>,
+    pub artboard_aspect_select: Entity<SelectState<Vec<String>>>,
+    pub artboard_size_select: Entity<SelectState<Vec<String>>>,
+    pub artboard_steps_select: Entity<SelectState<Vec<String>>>,
     /// The searchable picker that adds a LoRA adapter to the local settings.
     pub lora_select: Entity<SelectState<SearchableVec<String>>>,
     /// Per-adapter weight inputs, keyed by the registered adapter name.
@@ -213,9 +283,10 @@ pub struct DrawingApp {
     /// The canvas region (document coordinates) selected for "Generate from
     /// drawing"; `None` means the full canvas.
     pub generation_region: Option<(DocPoint, DocPoint)>,
+    pub selecting_generation_region: bool,
     /// The drag anchor while a region is being selected on the canvas.
     pub(crate) region_drag: Option<DocPoint>,
-    /// The prompt used by the "Generate from drawing" panel.
+    /// The prompt used by the floating drawing composer.
     pub from_drawing_prompt: Entity<TextareaState>,
     pub job_id: u64,
     pub job_epoch: u64,
@@ -230,7 +301,6 @@ pub struct DrawingApp {
     pub height: Entity<InputState>,
     pub prompt: Entity<TextareaState>,
     prompt_target: String,
-    pub(crate) restore_draft_source: bool,
     pub search: Entity<InputState>,
     pub endpoint: Entity<InputState>,
     pub model: Entity<InputState>,
@@ -281,6 +351,35 @@ impl DrawingApp {
         let generation_provider_select =
             cx.new(|cx| SelectState::new(choices.clone(), selected, window, cx));
         let settings_provider_select = cx.new(|cx| SelectState::new(choices, selected, window, cx));
+        let artboard_aspect_select = cx.new(|cx| {
+            SelectState::new(
+                aspect_choices(settings.width, settings.height),
+                Some(IndexPath::new(aspect_index(
+                    settings.width,
+                    settings.height,
+                ))),
+                window,
+                cx,
+            )
+        });
+        let artboard_size_select = cx.new(|cx| {
+            SelectState::new(
+                size_choices(settings.width.min(settings.height)),
+                Some(IndexPath::new(size_index(
+                    settings.width.min(settings.height),
+                ))),
+                window,
+                cx,
+            )
+        });
+        let artboard_steps_select = cx.new(|cx| {
+            SelectState::new(
+                steps_choices(settings.steps),
+                Some(IndexPath::new(steps_index(settings.steps))),
+                window,
+                cx,
+            )
+        });
         let title = input(doc.title.clone(), window, cx);
         let layer_name = input(doc.layers[doc.active_layer].name.clone(), window, cx);
         let width = input(doc.width.to_string(), window, cx);
@@ -363,9 +462,7 @@ impl DrawingApp {
                 .max(2048.0)
         });
         let from_drawing_prompt = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .placeholder("Describe the image to generate from your drawing…")
-                .default_value(FROM_DRAWING_PROMPT.to_string())
+            TextareaState::new(window, cx).placeholder("Describe your image or changes…")
         });
         let note = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -413,9 +510,14 @@ impl DrawingApp {
             use_mask: false,
             input_references: vec![],
             generation_view_id: None,
-            studies: vec![],
-            show_studies: false,
-            studies_loading: false,
+            iteration_source_id: None,
+            iteration_job_id: None,
+            interaction_open_for: None,
+            show_edit_composer: false,
+            show_artboards_composer: true,
+            show_drawing_composer: false,
+            projects: vec![],
+            projects_loading: false,
             reference_cache,
             ref_zoom: 1.,
             ref_pan: DocPoint { x: 0., y: 0. },
@@ -474,7 +576,7 @@ impl DrawingApp {
             render_ms: 0.,
             render_segments: 0,
             references,
-            page: Page::Draw,
+            page: Page::Projects,
             image_return_page: Page::Library,
             panel: Panel::None,
             dock: true,
@@ -507,6 +609,9 @@ impl DrawingApp {
             settings,
             generation_provider_select,
             settings_provider_select,
+            artboard_aspect_select,
+            artboard_size_select,
+            artboard_steps_select,
             lora_select,
             lora_weights,
             server_status: None,
@@ -516,6 +621,7 @@ impl DrawingApp {
             generation_error: None,
             queue: Queue::default(),
             generation_region: None,
+            selecting_generation_region: false,
             region_drag: None,
             from_drawing_prompt,
             job_id: 0,
@@ -531,7 +637,6 @@ impl DrawingApp {
             height,
             prompt,
             prompt_target,
-            restore_draft_source: restoring_edit,
             search,
             endpoint,
             model,
@@ -554,6 +659,7 @@ impl DrawingApp {
         };
         app.sync_ref_inputs(window, cx);
         app.refresh_library();
+        app.refresh_projects();
         app.refresh_server_status();
         app.subscriptions
             .push(cx.observe(&app.prompt, |this, _, cx| {
@@ -580,6 +686,75 @@ impl DrawingApp {
                 },
             ));
         }
+        app.subscriptions.push(cx.subscribe_in(
+            &app.artboard_aspect_select,
+            window,
+            |this, _, event: &SelectEvent<Vec<String>>, window, cx| {
+                if let SelectEvent::Confirm(Some(value)) = event {
+                    if value.starts_with("Custom") {
+                        return;
+                    }
+                    let aspect = if value.starts_with("Landscape") {
+                        1
+                    } else if value.starts_with("Portrait") {
+                        2
+                    } else {
+                        0
+                    };
+                    this.settings_from_inputs(cx);
+                    let size = this.settings.width.min(this.settings.height);
+                    this.set_artboard_dimensions(aspect, size, window, cx);
+                }
+            },
+        ));
+        app.subscriptions.push(cx.subscribe_in(
+            &app.artboard_size_select,
+            window,
+            |this, _, event: &SelectEvent<Vec<String>>, window, cx| {
+                if let SelectEvent::Confirm(Some(value)) = event {
+                    let Some(size) = value
+                        .strip_prefix("Size · ")
+                        .and_then(|text| text.strip_suffix(" px"))
+                        .and_then(|text| text.parse::<u32>().ok())
+                    else {
+                        return;
+                    };
+                    this.settings_from_inputs(cx);
+                    this.set_artboard_dimensions(
+                        if this.settings.width > this.settings.height {
+                            1
+                        } else if this.settings.height > this.settings.width {
+                            2
+                        } else {
+                            0
+                        },
+                        size,
+                        window,
+                        cx,
+                    );
+                }
+            },
+        ));
+        app.subscriptions.push(cx.subscribe_in(
+            &app.artboard_steps_select,
+            window,
+            |this, _, event: &SelectEvent<Vec<String>>, window, cx| {
+                if let SelectEvent::Confirm(Some(value)) = event {
+                    let steps = value
+                        .strip_prefix("Steps · ")
+                        .and_then(|text| text.parse::<u32>().ok());
+                    this.steps.update(cx, |state, cx| {
+                        state.set_value(
+                            steps.map(|count| count.to_string()).unwrap_or_default(),
+                            window,
+                            cx,
+                        )
+                    });
+                    this.save_settings(cx);
+                    cx.notify();
+                }
+            },
+        ));
         app.subscriptions.push(cx.subscribe_in(
             &app.lora_select,
             window,
@@ -936,7 +1111,7 @@ impl DrawingApp {
                 self.doc.layers[self.doc.active_layer].name = layer_name;
             }
             self.doc.title = if title.is_empty() {
-                "Untitled study".into()
+                "Untitled project".into()
             } else {
                 title
             };
@@ -959,7 +1134,7 @@ impl DrawingApp {
         }
         self.finish_stroke();
         let filename = format!(
-            "study-{}-{}.atelier",
+            "project-{}-{}.atelier",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -973,25 +1148,26 @@ impl DrawingApp {
                 epoch: self.epoch,
                 previous: self.doc.clone(),
                 archive: self.data_dir.join("sessions").join(filename),
+                previous_path: self.path.clone(),
                 next: None,
             })
             .is_ok();
         self.message(
             if self.switching {
-                "Archiving previous study…"
+                "Creating project…"
             } else {
                 "Storage worker stopped"
             },
             !self.switching,
         );
     }
-    pub fn refresh_studies(&mut self) {
-        if !self.studies_loading {
-            self.studies_loading = true;
-            worker::studies(self.data_dir.join("sessions"), self.workers.sender.clone());
+    pub fn refresh_projects(&mut self) {
+        if !self.projects_loading {
+            self.projects_loading = true;
+            worker::projects(self.data_dir.clone(), self.workers.sender.clone());
         }
     }
-    pub fn open_study(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+    pub fn open_project(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.capture_prompt(cx);
         if !self.prepare_project_switch() {
             return;
@@ -1011,6 +1187,7 @@ impl DrawingApp {
                 epoch: self.epoch,
                 previous: self.doc.clone(),
                 archive,
+                previous_path: self.path.clone(),
                 next: Some(path),
             })
             .is_ok();
@@ -1107,6 +1284,28 @@ impl DrawingApp {
             self.doc.height as f32,
         ))
     }
+    fn clamped_doc_point(&self, p: gpui_kit::Point<Pixels>) -> DocPoint {
+        let bounds = self.paper_bounds();
+        let scale = self.view.scale(
+            (
+                self.bounds.get().size.width.into(),
+                self.bounds.get().size.height.into(),
+            ),
+            (self.doc.width, self.doc.height),
+        );
+        let (width, height) = self.view.dimensions(self.doc.width, self.doc.height);
+        let view_point = DocPoint {
+            x: (f32::from(p.x - bounds.origin.x) / scale).clamp(0., width),
+            y: (f32::from(p.y - bounds.origin.y) / scale).clamp(0., height),
+        };
+        let document_point =
+            self.view
+                .to_document(view_point, self.doc.width as f32, self.doc.height as f32);
+        DocPoint {
+            x: document_point.x.clamp(0., self.doc.width as f32),
+            y: document_point.y.clamp(0., self.doc.height as f32),
+        }
+    }
     pub fn pointer_down(
         &mut self,
         event: &MouseDownEvent,
@@ -1119,7 +1318,7 @@ impl DrawingApp {
         window.focus(&self.focus, cx);
         self.finish_stroke();
         self.tablet.drain();
-        if self.panel == Panel::FromDrawing && event.button == MouseButton::Left {
+        if self.selecting_generation_region && event.button == MouseButton::Left {
             if let Some(point) = self.doc_point(event.position) {
                 self.region_drag = Some(point);
                 self.generation_region = Some((point, point));
@@ -1175,11 +1374,9 @@ impl DrawingApp {
     }
     pub fn pointer_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
         if self.region_drag.is_some() {
-            if let Some(point) = self.doc_point(event.position) {
-                if let Some(anchor) = self.region_drag {
-                    self.generation_region = Some((anchor, point));
-                    cx.notify();
-                }
+            if let Some(anchor) = self.region_drag {
+                self.generation_region = Some((anchor, self.clamped_doc_point(event.position)));
+                cx.notify();
             }
             return;
         }
@@ -1306,6 +1503,64 @@ impl DrawingApp {
                 }
             }
         }
+    }
+
+    fn set_artboard_dimensions(
+        &mut self,
+        aspect: usize,
+        short_edge: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let short_edge = short_edge.min(if aspect == 0 { 2048 } else { 1364 });
+        let (width, height) = match aspect {
+            1 => (short_edge * 3 / 2, short_edge),
+            2 => (short_edge, short_edge * 3 / 2),
+            _ => (short_edge, short_edge),
+        };
+        self.generation_width.update(cx, |state, cx| {
+            state.set_value(width.to_string(), window, cx)
+        });
+        self.generation_height.update(cx, |state, cx| {
+            state.set_value(height.to_string(), window, cx)
+        });
+        self.settings.width = width;
+        self.settings.height = height;
+        self.save_settings(cx);
+        self.sync_artboard_selects(window, cx);
+        cx.notify();
+    }
+
+    pub fn sync_artboard_selects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings_from_inputs(cx);
+        self.artboard_aspect_select.update(cx, |state, cx| {
+            state.set_items(
+                aspect_choices(self.settings.width, self.settings.height),
+                window,
+                cx,
+            );
+            state.set_selected_index(
+                Some(IndexPath::new(aspect_index(
+                    self.settings.width,
+                    self.settings.height,
+                ))),
+                window,
+                cx,
+            );
+        });
+        self.artboard_size_select.update(cx, |state, cx| {
+            let short_edge = self.settings.width.min(self.settings.height);
+            state.set_items(size_choices(short_edge), window, cx);
+            state.set_selected_index(Some(IndexPath::new(size_index(short_edge))), window, cx);
+        });
+        self.artboard_steps_select.update(cx, |state, cx| {
+            state.set_items(steps_choices(self.settings.steps), window, cx);
+            state.set_selected_index(
+                Some(IndexPath::new(steps_index(self.settings.steps))),
+                window,
+                cx,
+            );
+        });
     }
 
     /// The adapters the local provider offers that are not applied yet.
@@ -1482,9 +1737,64 @@ impl DrawingApp {
         });
         self.settings.width = width;
         self.settings.height = height;
+        self.sync_artboard_selects(window, cx);
         self.generation_error = None;
         self.capture_prompt(cx);
         cx.notify();
+    }
+
+    pub fn open_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.page = Page::Draw;
+        self.show_drawing_composer = false;
+        self.generation_region = None;
+        self.selecting_generation_region = false;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    pub fn create_canvas_artboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.capture_prompt(cx);
+        self.finish_stroke();
+        let previous = self.doc.clone();
+        if let Err(error) = self.doc.create_canvas() {
+            self.message(format!("Canvas: {error}"), true);
+            return;
+        }
+        self.history.checkpoint(&previous);
+        self.doc.active_prompt_target = Some("new".into());
+        self.changed();
+        self.view = Viewport::default();
+        self.panel = Panel::None;
+        self.sync_inputs(window, cx);
+        self.page = Page::Artboards;
+        cx.notify();
+    }
+
+    pub fn open_canvas_artboard(
+        &mut self,
+        canvas_id: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if canvas_id != self.doc.canvas_id {
+            let Some(index) = self
+                .doc
+                .canvases
+                .iter()
+                .position(|canvas| canvas.id == canvas_id)
+            else {
+                return;
+            };
+            self.checkpoint();
+            let current = self.doc.current_canvas();
+            let selected = std::mem::replace(&mut self.doc.canvases[index], current);
+            self.doc.set_current_canvas(selected);
+            self.changed();
+            self.view = Viewport::default();
+            self.panel = Panel::None;
+            self.sync_inputs(window, cx);
+        }
+        self.open_canvas(window, cx);
     }
 
     /// Validates the composer's current request, captures it as a queue entry,
@@ -1584,7 +1894,10 @@ impl DrawingApp {
             .as_ref()
             .filter(|_| self.page == Page::Image)
             .map(|(r, _, _, _)| crate::library::id(r));
-        self.queue.enqueue(
+        let iteration_source_id = source
+            .as_ref()
+            .map(|reference| crate::library::id(reference));
+        let queue_id = self.queue.enqueue(
             QueuedRequest {
                 settings: self.settings.clone(),
                 prompt,
@@ -1597,6 +1910,13 @@ impl DrawingApp {
             self.epoch,
             view_id,
         );
+        self.iteration_source_id = iteration_source_id;
+        self.iteration_job_id = Some(queue_id);
+        self.interaction_open_for = None;
+        self.show_edit_composer = false;
+        self.page = Page::Artboards;
+        self.editing_image = false;
+        self.restore_prompt(window, cx);
         self.message(format!("Queued · {} waiting", self.queue.pending()), false);
         self.pump_queue();
         cx.notify();
@@ -1769,74 +2089,73 @@ impl DrawingApp {
     }
 
     /// Uses the whole canvas as the reference area and clears any selection.
-    pub fn use_full_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn use_full_canvas(&mut self, cx: &mut Context<Self>) {
         self.region_drag = None;
         self.generation_region = None;
-        self.set_from_drawing_default(false, window, cx);
+        self.selecting_generation_region = false;
         cx.notify();
     }
 
-    /// Opens the "Generate from drawing" panel and seeds its prompt for the
-    /// current area mode.
+    /// Opens the floating drawing prompt beside the canvas.
     pub fn open_from_drawing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.panel = Panel::FromDrawing;
+        self.show_drawing_composer = !self.show_drawing_composer;
         self.region_drag = None;
-        self.set_from_drawing_default(self.generation_region.is_some(), window, cx);
+        if self.show_drawing_composer {
+            self.from_drawing_prompt
+                .update(cx, |state, cx| state.focus(window, cx));
+        } else {
+            window.focus(&self.focus, cx);
+        }
         cx.notify();
     }
 
-    /// Toggles box select. Turning it on seeds the region with the whole canvas,
-    /// which a canvas drag then refines; turning it off returns to the full
-    /// canvas.
-    pub fn toggle_box_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.generation_region.is_some() {
-            self.use_full_canvas(window, cx);
+    pub fn toggle_artboards_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_artboards_composer = !self.show_artboards_composer;
+        if self.show_artboards_composer {
+            self.prompt.update(cx, |state, cx| state.focus(window, cx));
+        } else {
+            window.focus(&self.focus, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn open_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.page {
+            Page::Draw => self.open_from_drawing(window, cx),
+            Page::Artboards => self.toggle_artboards_composer(window, cx),
+            Page::Image if self.settings.provider.supports_edit() => {
+                self.show_edit_composer = !self.show_edit_composer;
+                if self.show_edit_composer {
+                    self.edit_opened_image(window, cx);
+                } else {
+                    window.focus(&self.focus, cx);
+                }
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    /// Toggles area selection. A drag on the canvas defines the region.
+    pub fn toggle_box_select(&mut self, cx: &mut Context<Self>) {
+        if self.selecting_generation_region {
+            self.use_full_canvas(cx);
             return;
         }
-        self.generation_region = Some((
-            DocPoint { x: 0., y: 0. },
-            DocPoint {
-                x: self.doc.width as f32,
-                y: self.doc.height as f32,
-            },
-        ));
-        self.set_from_drawing_default(true, window, cx);
+        self.selecting_generation_region = true;
+        self.generation_region = None;
+        self.show_drawing_composer = true;
         cx.notify();
-    }
-
-    /// Replaces the panel prompt with the mode's default unless the user edited it.
-    fn set_from_drawing_default(
-        &mut self,
-        region: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let default = if region {
-            FROM_DRAWING_REGION_PROMPT
-        } else {
-            FROM_DRAWING_PROMPT
-        };
-        let current = self.from_drawing_prompt.read(cx).value().trim().to_owned();
-        if current.is_empty()
-            || current == FROM_DRAWING_PROMPT
-            || current == FROM_DRAWING_REGION_PROMPT
-        {
-            self.from_drawing_prompt.update(cx, |state, cx| {
-                state.set_value(default.to_string(), window, cx)
-            });
-        }
     }
 
     /// Called on canvas mouse-up, ending a region drag. A drag too small to be a
     /// real selection is discarded and the area mode follows the result.
-    pub fn finish_drawing_region(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn finish_drawing_region(&mut self, cx: &mut Context<Self>) {
         self.region_drag = None;
         if self.generation_region.is_some() && self.region_bounds().is_none() {
             self.generation_region = None;
         }
-        if self.panel == Panel::FromDrawing {
-            self.set_from_drawing_default(self.region_bounds().is_some(), window, cx);
-        }
+        cx.notify();
     }
 
     /// Rasterizes the drawing (cropped to the selected region when one is set),
@@ -1854,6 +2173,10 @@ impl DrawingApp {
         let prompt = self.from_drawing_prompt.read(cx).value().trim().to_owned();
         if prompt.is_empty() {
             self.message("Describe the image to generate from your drawing", true);
+            return;
+        }
+        if self.selecting_generation_region && self.region_bounds().is_none() {
+            self.message("Drag on the canvas to select an area", true);
             return;
         }
         let raster = match document::raster(&self.doc, document::MAX_EDGE, true) {
@@ -1909,6 +2232,8 @@ impl DrawingApp {
         self.doc.reference = Some(self.doc.references.len() - 1);
         self.changed();
         self.panel = Panel::None;
+        self.show_drawing_composer = false;
+        self.selecting_generation_region = false;
         self.use_mask = false;
         self.editing_image = false;
         // Seed the composer prompt for this new source so the request carries it.
@@ -1921,7 +2246,7 @@ impl DrawingApp {
             .insert(target.clone(), prompt.clone());
         self.prompt
             .update(cx, |state, cx| state.set_value(prompt.clone(), window, cx));
-        self.queue.enqueue(
+        let queue_id = self.queue.enqueue(
             QueuedRequest {
                 settings: self.settings.clone(),
                 prompt,
@@ -1932,8 +2257,12 @@ impl DrawingApp {
                 placement: region,
             },
             self.epoch,
-            Some(target),
+            Some(target.clone()),
         );
+        self.iteration_source_id = Some(target);
+        self.iteration_job_id = Some(queue_id);
+        self.page = Page::Artboards;
+        self.restore_prompt(window, cx);
         self.pump_queue();
         self.message(
             if region.is_some() {
@@ -2118,7 +2447,7 @@ impl DrawingApp {
                             match result {
                                 Ok(Ok(Some(paths))) if !paths.is_empty() => match picker {
                                     Picker::Open => {
-                                        this.open_study(paths[0].clone(), cx);
+                                        this.open_project(paths[0].clone(), cx);
                                     }
                                     Picker::Import => {
                                         if import_into_project
@@ -2172,7 +2501,10 @@ impl DrawingApp {
         }
     }
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.restore_draft_source && self.opening_image.is_none() {
+        if self.page != Page::Projects
+            && self.page != Page::Artboards
+            && self.opening_image.is_none()
+        {
             self.restore_prompt(window, cx);
         }
         if self.page == Page::Image && self.image_auto_fit && self.opened_image.is_some() {
@@ -2211,21 +2543,21 @@ impl DrawingApp {
                         }
                     }
                 }
-                Event::Studies(result) => {
-                    self.studies_loading = false;
+                Event::Projects(result) => {
+                    self.projects_loading = false;
                     match result {
-                        Ok(studies) => {
-                            self.studies = studies
+                        Ok(projects) => {
+                            self.projects = projects
                                 .into_iter()
-                                .map(|study| StudyCard {
-                                    title: study.title,
-                                    path: study.path,
-                                    image: worker::render_image(study.image),
-                                    note: study.note,
+                                .map(|project| ProjectCard {
+                                    title: project.title,
+                                    path: project.path,
+                                    image: worker::render_image(project.image),
+                                    note: project.note,
                                 })
                                 .collect()
                         }
-                        Err(e) => self.message(format!("Study gallery: {e}"), true),
+                        Err(e) => self.message(format!("Project list: {e}"), true),
                     }
                 }
                 Event::Raster(revision, result) => {
@@ -2304,6 +2636,7 @@ impl DrawingApp {
                                     if revision == self.revision {
                                         self.dirty = false;
                                     }
+                                    self.refresh_projects();
                                     self.message("Project saved", false);
                                 }
                             }
@@ -2356,12 +2689,32 @@ impl DrawingApp {
                                 .cloned()
                                 .zip(self.references.iter().cloned())
                                 .collect();
-                            self.page = Page::Draw;
+                            self.page = Page::Artboards;
+                            self.show_artboards_composer = true;
+                            self.iteration_source_id = None;
+                            self.iteration_job_id = None;
+                            self.interaction_open_for = None;
+                            self.show_edit_composer = false;
                             self.sync_inputs(window, cx);
-                            self.restore_saved_source(cx);
-                            self.message("Study ready · previous study archived", false);
+                            self.editing_image = false;
+                            self.restore_prompt(window, cx);
+                            self.sync_artboard_selects(window, cx);
+                            self.message("Project ready", false);
+                            if self.path.is_none() {
+                                let filename = format!(
+                                    "project-{}-{}.atelier",
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_millis(),
+                                    self.epoch
+                                );
+                                let path = self.data_dir.join(filename);
+                                self.path = Some(path.clone());
+                                self.queue_save(path, false);
+                            }
                         }
-                        Err(e) => self.message(format!("Could not switch studies: {e}"), true),
+                        Err(e) => self.message(format!("Could not open project: {e}"), true),
                     }
                 }
                 Event::Library(result) => {
@@ -2374,9 +2727,6 @@ impl DrawingApp {
                                     (Arc::new(reference), worker::render_image(image))
                                 })
                                 .collect();
-                            if self.restore_draft_source {
-                                self.restore_saved_source(cx);
-                            }
                         }
                         Err(error) => {
                             self.library_error = Some(format!("Could not load library: {error:#}"))
@@ -2611,10 +2961,16 @@ impl DrawingApp {
                                         self.doc.references.push(reference.clone());
                                         self.references.push(image);
                                         self.doc.reference = Some(self.doc.references.len() - 1);
+                                        if self.iteration_job_id == Some(id)
+                                            && self.iteration_source_id.is_none()
+                                        {
+                                            self.iteration_source_id = Some(result_id.clone());
+                                        }
                                         self.changed();
                                         self.sync_ref_inputs(window, cx);
                                         if placement.is_some() {
                                             self.generation_region = None;
+                                            self.selecting_generation_region = false;
                                             self.region_drag = None;
                                         }
                                         if self.page == Page::Image
@@ -2732,10 +3088,10 @@ impl DrawingApp {
         let modifiers = event.keystroke.modifiers;
         if self.page == Page::Image {
             if modifiers.platform || modifiers.control {
-                if key != "z" {
-                    return;
+                match key {
+                    "z" => self.undo_mask(modifiers.shift),
+                    _ => return,
                 }
-                self.undo_mask(modifiers.shift);
             } else {
                 match key {
                     "b" => {
@@ -2807,6 +3163,9 @@ impl DrawingApp {
                 "escape" => {
                     self.finish_stroke();
                     self.panel = Panel::None;
+                    self.show_drawing_composer = false;
+                    self.generation_region = None;
+                    self.selecting_generation_region = false;
                 }
                 _ => return,
             }

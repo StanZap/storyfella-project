@@ -23,7 +23,10 @@ mod worker;
 use app::DrawingApp;
 use gpui_kit::*;
 use std::path::PathBuf;
-gpui_kit::actions!(atelier, [Quit, SaveProject, SaveProjectAs, OpenProject]);
+gpui_kit::actions!(
+    atelier,
+    [Quit, SaveProject, SaveProjectAs, OpenProject, OpenPrompt]
+);
 fn main() {
     let mut args = std::env::args().skip(1);
     let data_dir = match args.next().as_deref() {
@@ -57,9 +60,11 @@ fn main() {
                 KeyBinding::new("cmd-s", SaveProject, None),
                 KeyBinding::new("cmd-shift-s", SaveProjectAs, None),
                 KeyBinding::new("cmd-o", OpenProject, None),
+                KeyBinding::new("cmd-p", OpenPrompt, None),
                 KeyBinding::new("ctrl-s", SaveProject, None),
                 KeyBinding::new("ctrl-shift-s", SaveProjectAs, None),
                 KeyBinding::new("ctrl-o", OpenProject, None),
+                KeyBinding::new("ctrl-p", OpenPrompt, None),
             ]);
             cx.set_menus([
                 Menu::new("Atelier").items([MenuItem::action("Quit Atelier", Quit)]),
@@ -91,7 +96,7 @@ fn main() {
             gpui_kit::open_window(
                 WindowOptions {
                     titlebar: Some(TitlebarOptions {
-                        title: Some("Atelier · Drawing studies".into()),
+                        title: Some("Atelier · Projects".into()),
                         ..Default::default()
                     }),
                     window_bounds: Some(WindowBounds::centered(size(px(1360.), px(900.)), cx)),

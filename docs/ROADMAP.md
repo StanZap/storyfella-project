@@ -567,7 +567,12 @@ illustrations, with canvas shapes matched to each asset.
 walkthrough demonstrates chained edits and sibling branches. Source-specific
 prompt drafts recover after restart, saved version names retain identity, prompt
 reuse is available, and the repeated native Open check passes. First-time-user
-and cross-platform acceptance remain outstanding. Local Qwen Image 2.1
+and cross-platform acceptance remain outstanding. The image editor now has an
+on-demand floating variation composer, and submitting a request opens a
+project-scoped Artboards view from the Projects list. New projects show a blank
+canvas artboard and a compact image prompt visible by default with dropdowns for
+provider, aspect ratio, resolution, and local sampling steps. Drawn and generated
+artboards appear together with compact per-artboard activity summaries. Local Qwen Image 2.1
 generation/editing and Krea 2 Turbo generation are connected through Clipforge;
 actual Linux CUDA inference requires a run on that machine.
 See [iteration acceptance](atelier-iteration-acceptance.md).

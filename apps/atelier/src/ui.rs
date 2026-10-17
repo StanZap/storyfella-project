@@ -7,7 +7,7 @@ use crate::{
 use gpui_kit::{
     component::{
         button::*,
-        input::{Input, InputState, NumberInput, Textarea},
+        input::{Input, InputState, NumberInput, Textarea, TextareaState},
         select::Select,
         *,
     },
@@ -25,6 +25,30 @@ const AMBER: u32 = 0x9a6b06;
 const GREEN: u32 = 0x2f6b3a;
 pub(crate) const BORDER: u32 = 0xe1dce5;
 const SURFACE: u32 = 0xf7f6f8;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PromptComposerMode {
+    Artboards,
+    Drawing,
+}
+
+fn prompt_composer_frame(
+    prompt: &Entity<TextareaState>,
+    controls: impl IntoElement,
+    error: Option<&String>,
+) -> impl IntoElement {
+    panel()
+        .w(px(720.))
+        .max_w_full()
+        .p_3()
+        .shadow_lg()
+        .child(Textarea::new(prompt).h(px(62.)))
+        .child(controls)
+        .when_some(error, |composer, error| {
+            composer.child(label(error.clone()).text_color(rgb(WINE)))
+        })
+}
+
 pub fn panel() -> Div {
     div()
         .bg(rgb(0xffffff))
@@ -74,7 +98,7 @@ fn job_state_label(state: &crate::queue::JobState) -> Div {
 fn separator() -> Div {
     div().h(px(1.)).w_full().bg(rgb(BORDER)).my_2()
 }
-fn icon(name: &str) -> Icon {
+pub(crate) fn icon(name: &str) -> Icon {
     let path=match name {
         "pencil"=>"<path d='m15 4 5 5M4 15l11-11a3 3 0 0 1 5 5L9 20l-6 1z'/>",
         "brush"=>"<path d='m14 3 7 7-9 9-7-7zM5 12l-3 9 9-3M14 3l-3 3'/>",
@@ -94,6 +118,7 @@ fn icon(name: &str) -> Icon {
         "reference"=>"<rect x='3' y='3' width='13' height='13' rx='2'/><path d='M8 21h13V8M3 12l4-4 4 4 2-2 3 3'/>",
         "info"=>"<circle cx='12' cy='12' r='9'/><path d='M12 11v6M12 7h.01'/>",
         "open"=>"<path d='M3 7V4h6l3 3h9v3M3 10h18l-3 11H3z'/>",
+        "more"=>"<circle cx='5' cy='12' r='1'/><circle cx='12' cy='12' r='1'/><circle cx='19' cy='12' r='1'/>",
         "plus"=>"<path d='M12 5v14M5 12h14'/>","minus"=>"<path d='M5 12h14'/>",
         "undo"=>"<path d='m9 4-6 6 6 6M3 10h12a6 6 0 0 1 0 12'/>",
         "redo"=>"<path d='m15 4 6 6-6 6M21 10H9a6 6 0 0 0 0 12'/>",
@@ -102,6 +127,7 @@ fn icon(name: &str) -> Icon {
         "fit"=>"<path d='M3 9V3h6M15 3h6v6M21 15v6h-6M9 21H3v-6'/>",
         "grid"=>"<rect x='3' y='3' width='18' height='18' rx='2'/><path d='M9 3v18M15 3v18M3 9h18M3 15h18'/>",
         "values"=>"<circle cx='12' cy='12' r='9'/><path d='M12 3v18' /><path d='M12 3a9 9 0 0 1 0 18' fill='currentColor'/>",
+        "smooth"=>"<path d='M2 15c3 0 3-6 6-6s3 6 6 6 3-6 6-6h2'/>",
         "eye"=>"<path d='M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z'/><circle cx='12' cy='12' r='3'/>",
         "eye-off"=>"<path d='m3 3 18 18M9 5h3c6 0 10 7 10 7l-3 4M6 6l-4 6s4 7 10 7h3'/>",
         "heart"=>"<path d='M12 21 3 12a6 6 0 0 1 9-8 6 6 0 0 1 9 8z'/>",
@@ -175,11 +201,114 @@ fn server_status_label(status: Option<&crate::native_images::ServerStatus>) -> S
 }
 
 impl DrawingApp {
+    fn projects_workspace(&self, cx: &mut Context<Self>) -> Div {
+        let mut cards = div()
+            .id("project-gallery")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .flex()
+            .flex_wrap()
+            .content_start()
+            .gap_4();
+        for (i, project) in self.projects.iter().enumerate() {
+            let path = project.path.clone();
+            cards = cards.child(
+                panel()
+                    .w(px(240.))
+                    .overflow_hidden()
+                    .child(
+                        img(project.image.clone())
+                            .w_full()
+                            .h(px(180.))
+                            .object_fit(ObjectFit::Contain),
+                    )
+                    .child(
+                        column()
+                            .gap_2()
+                            .p_3()
+                            .child(div().truncate().child(project.title.clone()))
+                            .when(!project.note.is_empty(), |p| {
+                                p.child(
+                                    label(project.note.chars().take(80).collect::<String>())
+                                        .truncate(),
+                                )
+                            })
+                            .child(
+                                Button::new(format!("open-project-{i}"))
+                                    .ghost()
+                                    .small()
+                                    .label("Open project")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.open_project(path.clone(), cx);
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            );
+        }
+        if self.projects.is_empty() {
+            cards = cards.child(
+                column()
+                    .w_full()
+                    .items_center()
+                    .justify_center()
+                    .h(px(240.))
+                    .child(if self.projects_loading {
+                        "Loading projects…"
+                    } else {
+                        "No projects yet"
+                    })
+                    .when(!self.projects_loading, |empty| {
+                        empty.child(
+                            Button::new("empty-new-project")
+                                .primary()
+                                .icon(icon("plus"))
+                                .label("New project")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.new_document(window, cx);
+                                    cx.notify();
+                                })),
+                        )
+                    }),
+            );
+        }
+        column()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .p_6()
+            .child(
+                row()
+                    .child(
+                        div()
+                            .text_xl()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Projects"),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("refresh-projects")
+                            .ghost()
+                            .small()
+                            .icon(icon("rotate"))
+                            .label("Refresh")
+                            .disabled(self.projects_loading)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.refresh_projects();
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(cards)
+    }
     pub fn render_workspace(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let main = match self.page {
+            Page::Projects => self.projects_workspace(cx).into_any_element(),
             Page::Draw => self.draw_workspace(cx).into_any_element(),
             Page::Library => self.library(cx).into_any_element(),
             Page::Image => self.image_workspace(cx).into_any_element(),
+            Page::Artboards => self.artboards_workspace(cx).into_any_element(),
         };
         let overlay = match self.panel {
             Panel::Brushes => Some(self.brush_settings(cx)),
@@ -187,7 +316,6 @@ impl DrawingApp {
             Panel::Settings => Some(self.provider_settings(cx)),
             Panel::Help => Some(self.help(cx)),
             Panel::Queue => Some(self.queue_panel(cx)),
-            Panel::FromDrawing => Some(self.drawing_generation_panel(cx)),
             Panel::None => None,
         };
         div()
@@ -217,13 +345,20 @@ impl DrawingApp {
                 this.pick(Picker::Open, window, cx);
                 cx.stop_propagation();
             }))
+            .on_action(cx.listener(|this, _: &crate::OpenPrompt, window, cx| {
+                this.open_prompt(window, cx);
+                cx.stop_propagation();
+            }))
             .child(self.header(cx))
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .child(self.rail(cx))
+                    .when(
+                        self.page != Page::Projects && self.page != Page::Artboards,
+                        |layout| layout.child(self.rail(cx)),
+                    )
                     .child(main),
             )
             .child(self.status_bar())
@@ -238,7 +373,7 @@ impl DrawingApp {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child("Preparing study…")
+                        .child("Opening project…")
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
                 )
             })
@@ -259,15 +394,21 @@ impl DrawingApp {
             )
             .child(div().w(px(24.)))
             .child(
-                Button::new("draw")
+                Button::new("projects")
                     .ghost()
                     .small()
-                    .label("Draw")
-                    .atelier_selected(self.page == Page::Draw, cx)
-                    .on_click(cx.listener(|this, _, window, cx| {
+                    .label("Projects")
+                    .atelier_selected(
+                        matches!(self.page, Page::Projects | Page::Artboards | Page::Draw)
+                            || (self.page == Page::Image
+                                && self.image_return_page != Page::Library),
+                        cx,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.finish_stroke();
                         this.finish_mask();
-                        this.page = Page::Draw;
-                        window.focus(&this.focus, cx);
+                        this.page = Page::Projects;
+                        this.refresh_projects();
                         cx.notify();
                     })),
             )
@@ -285,63 +426,71 @@ impl DrawingApp {
                     })),
             )
             .child(div().flex_1())
-            .child(
-                Button::new("project-title")
-                    .ghost()
-                    .small()
-                    .label(self.doc.title.clone())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.layer_name.update(cx, |s, cx| {
-                            s.set_value(
-                                this.doc.layers[this.doc.active_layer].name.clone(),
-                                window,
-                                cx,
-                            )
-                        });
-                        this.panel = if this.panel == Panel::Canvas {
-                            Panel::None
-                        } else {
-                            Panel::Canvas
-                        };
-                        cx.notify();
-                    })),
-            )
-            .child(label(if self.dirty { "Edited" } else { "Saved" }))
+            .when(self.page != Page::Projects, |header| {
+                header
+                    .child(
+                        Button::new("project-title")
+                            .ghost()
+                            .small()
+                            .label(self.doc.title.clone())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.layer_name.update(cx, |s, cx| {
+                                    s.set_value(
+                                        this.doc.layers[this.doc.active_layer].name.clone(),
+                                        window,
+                                        cx,
+                                    )
+                                });
+                                this.panel = if this.panel == Panel::Canvas {
+                                    Panel::None
+                                } else {
+                                    Panel::Canvas
+                                };
+                                cx.notify();
+                            })),
+                    )
+                    .child(label(if self.dirty { "Edited" } else { "Saved" }))
+            })
             .child(div().flex_1())
             .child(
-                tool_button("new", "plus", "New study · archives current study").on_click(
-                    cx.listener(|this, _, window, cx| {
+                tool_button("new", "plus", "New project").on_click(cx.listener(
+                    |this, _, window, cx| {
                         this.new_document(window, cx);
                         cx.notify();
-                    }),
-                ),
+                    },
+                )),
             )
             .child(
                 tool_button("open", "open", "Open project · ⌘O").on_click(
                     cx.listener(|this, _, window, cx| this.pick(Picker::Open, window, cx)),
                 ),
             )
-            .child(
-                tool_button("save", "save", "Save project · ⌘S")
-                    .on_click(cx.listener(|this, _, window, cx| this.save(false, window, cx))),
-            )
-            .child(
-                tool_button("export", "export", "Export PNG / JPG").on_click(cx.listener(
-                    |this, _, window, cx| {
-                        this.layer_name.update(cx, |s, cx| {
-                            s.set_value(
-                                this.doc.layers[this.doc.active_layer].name.clone(),
-                                window,
-                                cx,
-                            )
-                        });
-                        this.panel = Panel::Canvas;
-                        cx.notify();
-                    },
-                )),
-            )
-            .child(div().w(px(8.)))
-            .child(self.queue_button(cx))
+            .when(self.page != Page::Projects, |header| {
+                header
+                    .child(
+                        tool_button("save", "save", "Save project · ⌘S").on_click(
+                            cx.listener(|this, _, window, cx| this.save(false, window, cx)),
+                        ),
+                    )
+                    .child(
+                        tool_button("export", "export", "Export PNG / JPG").on_click(cx.listener(
+                            |this, _, window, cx| {
+                                this.layer_name.update(cx, |s, cx| {
+                                    s.set_value(
+                                        this.doc.layers[this.doc.active_layer].name.clone(),
+                                        window,
+                                        cx,
+                                    )
+                                });
+                                this.panel = Panel::Canvas;
+                                cx.notify();
+                            },
+                        )),
+                    )
+            })
+            .when(self.page != Page::Projects, |header| {
+                header.child(div().w(px(8.))).child(self.queue_button(cx))
+            })
     }
     /// The header's queue control: an icon with a count badge while requests are
     /// outstanding, opening the queue panel.
@@ -392,10 +541,11 @@ impl DrawingApp {
     fn rail(&self, cx: &mut Context<Self>) -> Div {
         let mut rail = column()
             .items_center()
-            .w(px(48.))
+            .w(px(if self.page == Page::Draw { 56. } else { 48. }))
             .flex_shrink_0()
             .py_3()
-            .gap_2()
+            .gap_1()
+            .bg(rgb(0xffffff))
             .border_r_1()
             .border_color(rgb(BORDER));
         for (tool, name, tooltip) in [
@@ -414,6 +564,11 @@ impl DrawingApp {
                         cx.notify();
                     })),
             );
+        }
+        if self.page == Page::Draw {
+            rail = rail
+                .child(separator().w(px(40.)))
+                .child(self.brush_rail_controls(cx));
         }
         rail.child(separator().w(px(30.)))
             .child(
@@ -473,8 +628,7 @@ impl DrawingApp {
                     .min_w_0()
                     .h_full()
                     .child(self.canvas_toolbar(cx))
-                    .child(self.canvas(cx))
-                    .child(self.brush_bar(cx)),
+                    .child(self.canvas(cx)),
             )
             .when(self.dock, |layout| layout.child(self.dock_panel(cx)))
     }
@@ -482,6 +636,17 @@ impl DrawingApp {
         row()
             .h(px(46.))
             .px_4()
+            .child(
+                tool_button("canvas-back", "back", "Back to artboards").on_click(cx.listener(
+                    |this, _, window, cx| {
+                        this.finish_stroke();
+                        this.page = Page::Artboards;
+                        this.editing_image = false;
+                        this.restore_prompt(window, cx);
+                        cx.notify();
+                    },
+                )),
+            )
             .child(
                 tool_button("undo", "undo", "Undo · ⌘Z")
                     .disabled(!self.history.can_undo())
@@ -498,23 +663,17 @@ impl DrawingApp {
                         cx.notify();
                     })),
             )
-            .child({
-                let editing = self.settings.provider.supports_edit();
+            .child(
                 tool_button(
                     "generate-from-drawing",
                     "sparkle",
-                    if editing {
-                        "Generate an image from this drawing"
-                    } else {
-                        "Needs an editing provider — Qwen (local) or a hosted edit model"
-                    },
+                    "Prompt from drawing · ⌘P",
                 )
-                .disabled(!editing)
-                .atelier_selected(self.panel == Panel::FromDrawing, cx)
+                .atelier_selected(self.show_drawing_composer, cx)
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.open_from_drawing(window, cx);
-                }))
-            })
+                })),
+            )
             .child(div().flex_1())
             .child(
                 tool_button("zoom-out", "minus", "Zoom out").on_click(cx.listener(
@@ -602,27 +761,29 @@ impl DrawingApp {
             .flex_1()
             .min_h_0()
             .overflow_hidden()
-            .cursor(if self.tool == Tool::Hand {
-                CursorStyle::OpenHand
-            } else {
-                CursorStyle::Crosshair
-            })
+            .cursor(
+                if self.tool == Tool::Hand && !self.selecting_generation_region {
+                    CursorStyle::OpenHand
+                } else {
+                    CursorStyle::Crosshair
+                },
+            )
             .on_mouse_down(MouseButton::Left, cx.listener(Self::pointer_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::pointer_down))
             .on_mouse_move(cx.listener(|this, event, _, cx| this.pointer_move(event, cx)))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
+                cx.listener(|this, _, _, cx| {
                     this.finish_stroke();
-                    this.finish_drawing_region(window, cx);
+                    this.finish_drawing_region(cx);
                     cx.notify();
                 }),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
+                cx.listener(|this, _, _, cx| {
                     this.finish_stroke();
-                    this.finish_drawing_region(window, cx);
+                    this.finish_drawing_region(cx);
                     cx.notify();
                 }),
             )
@@ -787,98 +948,85 @@ impl DrawingApp {
                 )
                 .size_full(),
             )
+            .when(self.show_drawing_composer, |canvas| {
+                canvas.child(self.drawing_composer(cx))
+            })
     }
-    fn brush_bar(&self, cx: &mut Context<Self>) -> Div {
-        row().h(px(56.)).justify_center().px_3().child(
-            panel()
-                .flex()
-                .items_center()
-                .gap_2()
-                .px_3()
-                .py_2()
-                .child(
-                    icon(if self.tool == Tool::Eraser {
-                        "eraser"
-                    } else {
-                        "pencil"
-                    })
-                    .text_color(rgb(WINE)),
-                )
-                .child(
-                    Button::new("brush-picker")
-                        .ghost()
-                        .small()
-                        .label(if self.tool == Tool::Eraser {
-                            "Eraser"
+    fn brush_rail_controls(&self, cx: &mut Context<Self>) -> Div {
+        column()
+            .w_full()
+            .items_center()
+            .gap_1()
+            .child(
+                tool_button("brush-picker", "brush", "Brush presets")
+                    .atelier_selected(self.panel == Panel::Brushes, cx)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.finish_stroke();
+                        this.panel = if this.panel == Panel::Brushes {
+                            Panel::None
                         } else {
-                            self.brush.name()
-                        })
-                        .tooltip("Choose brush and pressure response")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.finish_stroke();
-                            this.panel = if this.panel == Panel::Brushes {
-                                Panel::None
-                            } else {
-                                Panel::Brushes
-                            };
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    tool_button("brush-smaller", "minus", "Smaller brush · [").on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.brush_size(0.8);
-                            cx.notify();
-                        }),
-                    ),
-                )
-                .child(
-                    div()
-                        .w(px(46.))
-                        .text_center()
-                        .child(format!("{} px", self.size().round() as u32)),
-                )
-                .child(
-                    tool_button("brush-larger", "plus", "Larger brush · ]").on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.brush_size(1.25);
-                            cx.notify();
-                        },
-                    )),
-                )
-                .child(
-                    Button::new("brush-opacity")
-                        .ghost()
-                        .small()
-                        .label(format!("{}%", (self.opacity * 100.) as u32))
-                        .tooltip("Cycle pencil opacity")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.opacity = if this.opacity >= 0.99 {
-                                0.2
-                            } else {
-                                (this.opacity + 0.2).min(1.)
-                            };
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Button::new("stabilize")
-                        .ghost()
-                        .small()
-                        .label("Smooth")
-                        .atelier_selected(self.stabilize, cx)
-                        .tooltip("Gentle stroke stabilization")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.stabilize = !this.stabilize;
-                            cx.notify();
-                        })),
-                ),
-        )
+                            Panel::Brushes
+                        };
+                        cx.notify();
+                    })),
+            )
+            .child(
+                tool_button("brush-smaller", "minus", "Smaller brush · [").on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.brush_size(0.8);
+                        cx.notify();
+                    },
+                )),
+            )
+            .child(
+                div()
+                    .w(px(48.))
+                    .h(px(28.))
+                    .rounded_md()
+                    .bg(rgb(0xf7f3f5))
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(format!("{} px", self.size().round() as u32)),
+            )
+            .child(
+                tool_button("brush-larger", "plus", "Larger brush · ]").on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.brush_size(1.25);
+                        cx.notify();
+                    },
+                )),
+            )
+            .child(
+                Button::new("brush-opacity")
+                    .ghost()
+                    .small()
+                    .label(format!("{}%", (self.opacity * 100.) as u32))
+                    .tooltip("Cycle pencil opacity")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.opacity = if this.opacity >= 0.99 {
+                            0.2
+                        } else {
+                            (this.opacity + 0.2).min(1.)
+                        };
+                        cx.notify();
+                    })),
+            )
+            .child(
+                tool_button("stabilize", "smooth", "Smooth strokes")
+                    .atelier_selected(self.stabilize, cx)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.stabilize = !this.stabilize;
+                        cx.notify();
+                    })),
+            )
     }
     fn dock_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut dock = column()
             .id("drawing-dock")
-            .w(px(288.))
+            .w(px(256.))
             .flex_shrink_0()
             .h_full()
             .overflow_y_scroll()
@@ -1243,6 +1391,30 @@ impl DrawingApp {
             )
     }
     fn status_bar(&self) -> Div {
+        if self.page == Page::Projects {
+            return row()
+                .h(px(28.))
+                .px_4()
+                .border_t_1()
+                .border_color(rgb(BORDER))
+                .text_xs()
+                .text_color(rgb(MUTED))
+                .child(format!("{} projects", self.projects.len()))
+                .child(div().flex_1())
+                .child("Stored locally");
+        }
+        if self.page == Page::Artboards {
+            return if self.error {
+                row()
+                    .h(px(28.))
+                    .px_6()
+                    .text_xs()
+                    .text_color(rgb(WINE))
+                    .child(self.status.clone())
+            } else {
+                div()
+            };
+        }
         row()
             .h(px(28.))
             .px_4()
@@ -1274,9 +1446,8 @@ impl DrawingApp {
                     .ghost()
                     .small()
                     .label("All projects")
-                    .atelier_selected(self.shared_library && !self.show_studies, cx)
+                    .atelier_selected(self.shared_library, cx)
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.show_studies = false;
                         this.shared_library = true;
                         this.refresh_library();
                         cx.notify();
@@ -1287,120 +1458,14 @@ impl DrawingApp {
                     .ghost()
                     .small()
                     .label("This project")
-                    .atelier_selected(!self.shared_library && !self.show_studies, cx)
+                    .atelier_selected(!self.shared_library, cx)
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.show_studies = false;
                         this.shared_library = false;
                         cx.notify();
                     })),
             )
-            .child(
-                Button::new("library-studies")
-                    .ghost()
-                    .small()
-                    .label("Studies")
-                    .atelier_selected(self.show_studies, cx)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.show_studies = true;
-                        this.refresh_studies();
-                        cx.notify();
-                    })),
-            )
-    }
-    fn study_gallery(&self, cx: &mut Context<Self>) -> Div {
-        let mut cards = div()
-            .id("study-gallery")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .flex()
-            .flex_wrap()
-            .content_start()
-            .gap_4();
-        for (i, study) in self.studies.iter().enumerate() {
-            let path = study.path.clone();
-            cards = cards.child(
-                panel()
-                    .w(px(240.))
-                    .overflow_hidden()
-                    .child(
-                        img(study.image.clone())
-                            .w_full()
-                            .h(px(180.))
-                            .object_fit(ObjectFit::Contain),
-                    )
-                    .child(
-                        column()
-                            .gap_2()
-                            .p_3()
-                            .child(div().truncate().child(study.title.clone()))
-                            .when(!study.note.is_empty(), |p| {
-                                p.child(
-                                    label(study.note.chars().take(80).collect::<String>())
-                                        .truncate(),
-                                )
-                            })
-                            .child(
-                                Button::new(format!("continue-study-{i}"))
-                                    .ghost()
-                                    .small()
-                                    .label("Continue study")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.open_study(path.clone(), cx);
-                                        cx.notify();
-                                    })),
-                            ),
-                    ),
-            );
-        }
-        if self.studies.is_empty() {
-            cards = cards.child(
-                column()
-                    .w_full()
-                    .items_center()
-                    .justify_center()
-                    .h(px(240.))
-                    .child(if self.studies_loading {
-                        "Loading studies…"
-                    } else {
-                        "Your previous studies will appear here"
-                    }),
-            );
-        }
-        column()
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .p_6()
-            .child(
-                row()
-                    .child(
-                        div()
-                            .text_xl()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Studies"),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        Button::new("refresh-studies")
-                            .ghost()
-                            .small()
-                            .icon(icon("rotate"))
-                            .label("Refresh")
-                            .disabled(self.studies_loading)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.refresh_studies();
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .child(self.library_navigation(cx))
-            .child(cards)
     }
     fn library(&self, cx: &mut Context<Self>) -> Div {
-        if self.show_studies {
-            return self.study_gallery(cx);
-        }
         let query = self.search.read(cx).value().to_lowercase();
         let mut cards = div()
             .id("reference-cards")
@@ -1635,6 +1700,143 @@ impl DrawingApp {
                     .w_full(),
             )
     }
+
+    pub(crate) fn prompt_composer(
+        &self,
+        mode: PromptComposerMode,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let prompt = match mode {
+            PromptComposerMode::Artboards => &self.prompt,
+            PromptComposerMode::Drawing => &self.from_drawing_prompt,
+        };
+        prompt_composer_frame(
+            prompt,
+            row()
+                .pt_1()
+                .items_center()
+                .gap_2()
+                .when(mode == PromptComposerMode::Drawing, |row| {
+                    row.child(
+                        Button::new("drawing-area")
+                            .ghost()
+                            .small()
+                            .icon(icon("mask-rect"))
+                            .label(if self.selecting_generation_region {
+                                "Area"
+                            } else {
+                                "Full"
+                            })
+                            .tooltip("Drag on the canvas to select an area")
+                            .atelier_selected(self.selecting_generation_region, cx)
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_box_select(cx))),
+                    )
+                })
+                .child(
+                    div()
+                        .w(px(if mode == PromptComposerMode::Drawing {
+                            130.
+                        } else {
+                            155.
+                        }))
+                        .flex_shrink_0()
+                        .child(
+                            Select::new(&self.generation_provider_select)
+                                .small()
+                                .accessibility_label("Image provider")
+                                .cleanable(false)
+                                .w_full(),
+                        ),
+                )
+                .child(
+                    div()
+                        .w(px(if mode == PromptComposerMode::Drawing {
+                            145.
+                        } else {
+                            160.
+                        }))
+                        .flex_shrink_0()
+                        .child(
+                            Select::new(&self.artboard_aspect_select)
+                                .small()
+                                .accessibility_label("Aspect ratio")
+                                .cleanable(false)
+                                .w_full(),
+                        ),
+                )
+                .child(
+                    div()
+                        .w(px(if mode == PromptComposerMode::Drawing {
+                            130.
+                        } else {
+                            145.
+                        }))
+                        .flex_shrink_0()
+                        .child(
+                            Select::new(&self.artboard_size_select)
+                                .small()
+                                .accessibility_label("Resolution")
+                                .cleanable(false)
+                                .w_full(),
+                        ),
+                )
+                .when(
+                    self.settings.provider.native_architecture().is_some(),
+                    |row| {
+                        row.child(
+                            div()
+                                .w(px(if mode == PromptComposerMode::Drawing {
+                                    95.
+                                } else {
+                                    125.
+                                }))
+                                .flex_shrink_0()
+                                .child(
+                                    Select::new(&self.artboard_steps_select)
+                                        .small()
+                                        .accessibility_label("Sampling steps")
+                                        .cleanable(false)
+                                        .w_full(),
+                                ),
+                        )
+                    },
+                )
+                .child(div().flex_1())
+                .child(
+                    Button::new(match mode {
+                        PromptComposerMode::Artboards => "artboards-create-image",
+                        PromptComposerMode::Drawing => "from-drawing-generate",
+                    })
+                    .primary()
+                    .icon(icon("sparkle"))
+                    .accessibility_label(match mode {
+                        PromptComposerMode::Artboards => "Create image",
+                        PromptComposerMode::Drawing => "Create from drawing",
+                    })
+                    .tooltip(match mode {
+                        PromptComposerMode::Artboards => "Create image",
+                        PromptComposerMode::Drawing => "Create from drawing",
+                    })
+                    .disabled(
+                        mode == PromptComposerMode::Drawing
+                            && !self.settings.provider.supports_edit(),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| match mode {
+                        PromptComposerMode::Artboards => {
+                            this.editing_image = false;
+                            this.enqueue_generation(window, cx);
+                        }
+                        PromptComposerMode::Drawing => this.generate_from_drawing(window, cx),
+                    })),
+                ),
+            if mode == PromptComposerMode::Artboards {
+                self.generation_error.as_ref()
+            } else {
+                None
+            },
+        )
+    }
+
     pub(crate) fn generate_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let can_edit = self.settings.provider.supports_edit()
             && self.edit_source().is_some()
@@ -1810,6 +2012,7 @@ impl DrawingApp {
                                     .update(cx, |s, cx| s.set_value(h.to_string(), window, cx));
                                 this.settings.width = w;
                                 this.settings.height = h;
+                                this.sync_artboard_selects(window, cx);
                                 cx.notify();
                             }))
                     }),
@@ -2103,71 +2306,18 @@ impl DrawingApp {
                 .child("Nothing queued"),
         )
     }
-    /// The "Generate from drawing" panel: selection, prompt, and request
-    /// parameters stay together so the action can be completed in one place.
-    fn drawing_generation_panel(&self, cx: &mut Context<Self>) -> AnyElement {
-        let region = self.region_bounds();
-        let mut area = row().child(
-            tool_button(
-                "region-box",
-                "mask-rect",
-                if region.is_some() {
-                    "Box select · drag on the canvas to change it"
-                } else {
-                    "Box select · drag on the canvas to choose an area"
-                },
-            )
-            .atelier_selected(region.is_some(), cx)
-            .on_click(cx.listener(|this, _, window, cx| this.toggle_box_select(window, cx))),
-        );
-        if let Some((_, _, w, h)) = region {
-            area = area.child(label(format!("{w} × {h} px")).flex_1());
-        } else {
-            area = area.child(label("Full canvas").flex_1());
-        }
-        let content = column()
-            .child(area)
-            .child(label("Prompt"))
-            .child(Textarea::new(&self.from_drawing_prompt).h(px(150.)))
-            .child(separator())
-            .child(label("Output size"))
-            .child(
-                row()
-                    .child(number_field("Width", &self.generation_width).flex_1())
-                    .child(number_field("Height", &self.generation_height).flex_1()),
-            )
-            .when(
-                self.settings.provider.native_architecture().is_some(),
-                |p| {
-                    p.child(number_field("Steps", &self.steps))
-                        .child(self.lora_editor(cx))
-                },
-            )
-            .child(separator())
-            .child(
-                label(if region.is_some() {
-                    "The result will be placed as a new image layer over this selected area."
-                } else {
-                    "The result will be added as a new image layer over the drawing."
-                })
-                .text_color(rgb(MUTED)),
-            )
-            .child(
-                Button::new("from-drawing-generate")
-                    .primary()
-                    .w_full()
-                    .icon(icon("sparkle"))
-                    .label("Queue drawing edit")
-                    .tooltip(if self.settings.provider.hosted().is_none() {
-                        "Generate from the drawing"
-                    } else {
-                        "Generate from the drawing · API charges apply"
-                    })
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.generate_from_drawing(window, cx);
-                    })),
-            );
-        self.overlay("Generate from drawing", content, cx)
+    fn drawing_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("floating-drawing-composer")
+            .absolute()
+            .bottom(px(18.))
+            .left(px(0.))
+            .right(px(0.))
+            .flex()
+            .justify_center()
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(self.prompt_composer(PromptComposerMode::Drawing, cx))
     }
     fn reference_details(&self, cx: &mut Context<Self>) -> Div {
         let mut details = column()
@@ -2200,22 +2350,33 @@ impl DrawingApp {
     }
     fn overlay(&self, title: &'static str, content: Div, cx: &mut Context<Self>) -> AnyElement {
         let settings = title == "Settings";
+        let rail_brushes = title == "Brushes" && self.page == Page::Draw;
+        let rail_settings = settings && self.page == Page::Draw;
+        let rail_help = title == "Practice" && self.page == Page::Draw;
+        let rail_popup = rail_brushes || rail_settings || rail_help;
         let panel = panel()
             .id(format!("overlay-{title}"))
             // Floating panels must block hitboxes underneath, including canvas focus.
             .occlude()
             .absolute()
-            .top(px(64.))
-            .right(px(16.))
+            .when(rail_popup, |p| p.left(px(64.)))
+            .when(!rail_popup, |p| p.right(px(16.)))
+            .when(rail_brushes, |p| p.top(px(170.)))
+            .when(rail_settings, |p| p.top(px(64.)).bottom(px(80.)))
+            .when(rail_help, |p| p.bottom(px(40.)))
+            .when(!rail_popup, |p| p.top(px(64.)))
             .w(px(if settings {
-                440.
+                360.
             } else if title == "Generation queue" {
-                380.
+                336.
             } else {
-                320.
+                288.
             }))
             .when(settings, |p| {
-                p.bottom(px(16.)).flex().flex_col().overflow_hidden()
+                p.when(!rail_settings, |p| p.bottom(px(16.)))
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
             })
             .when(!settings, |p| p.max_h(px(660.)).overflow_y_scroll())
             .p_5()
@@ -2226,20 +2387,13 @@ impl DrawingApp {
                     .mb_4()
                     .child(div().flex_1().text_lg().child(title))
                     .child(
-                        tool_button(
-                            "close-overlay",
-                            "close",
-                            if title == "Generate from drawing" {
-                                "Back to drawing"
-                            } else {
-                                "Close panel"
+                        tool_button("close-overlay", "close", "Close panel").on_click(cx.listener(
+                            |this, _, window, cx| {
+                                this.panel = Panel::None;
+                                window.focus(&this.focus, cx);
+                                cx.notify();
                             },
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.panel = Panel::None;
-                            window.focus(&this.focus, cx);
-                            cx.notify();
-                        })),
+                        )),
                     ),
             )
             .child(if settings {
@@ -2314,6 +2468,7 @@ impl DrawingApp {
                                 this.brush = brush;
                                 this.tool = Tool::Pencil;
                                 this.pencil_size = brush.size();
+                                this.panel = Panel::None;
                                 cx.notify();
                             })),
                     )

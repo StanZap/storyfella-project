@@ -13,7 +13,7 @@ use std::{
     },
 };
 
-pub struct Study {
+pub struct ProjectPreview {
     pub title: String,
     pub path: PathBuf,
     pub image: RgbaImage,
@@ -26,7 +26,7 @@ pub enum Event {
     MaskSaved(String, u64, Result<()>),
     LibraryUpdated(Result<()>),
     MaskPreview(u64, Result<RgbaImage>),
-    Studies(Result<Vec<Study>>),
+    Projects(Result<Vec<ProjectPreview>>),
     Raster(u64, Result<crate::canvas_renderer::TileBatch>),
     Saved {
         revision: u64,
@@ -69,6 +69,7 @@ pub enum Storage {
         epoch: u64,
         previous: Document,
         archive: PathBuf,
+        previous_path: Option<PathBuf>,
         next: Option<PathBuf>,
     },
     Import(u64, Vec<PathBuf>, PathBuf, bool),
@@ -262,11 +263,15 @@ pub fn start() -> Workers {
                     epoch,
                     previous,
                     archive,
+                    previous_path,
                     next,
                 } => Event::Switched(
                     epoch,
                     (|| {
                         document::save(&archive, &previous)?;
+                        if let Some(path) = previous_path {
+                            document::save(&path, &previous)?;
+                        }
                         let doc = if let Some(path) = &next {
                             document::load(path)?
                         } else {
@@ -476,24 +481,52 @@ pub fn render_image(mut image: RgbaImage) -> Arc<gpui_kit::RenderImage> {
     Arc::new(gpui_kit::RenderImage::new(vec![image::Frame::new(image)]))
 }
 
-pub fn studies(directory: PathBuf, sender: Sender<Event>) {
+pub fn projects(directory: PathBuf, sender: Sender<Event>) {
     std::thread::spawn(move || {
-        let result = (|| -> Result<Vec<Study>> {
+        let result = (|| -> Result<Vec<ProjectPreview>> {
             if !directory.exists() {
                 return Ok(vec![]);
             }
             let mut paths = std::fs::read_dir(directory)?
                 .filter_map(|entry| entry.ok())
                 .map(|entry| entry.path())
-                .filter(|path| path.extension().is_some_and(|ext| ext == "atelier"))
+                .filter(|path| {
+                    path.extension().is_some_and(|ext| ext == "atelier")
+                        && path
+                            .file_name()
+                            .is_none_or(|name| name != "recovery.atelier")
+                })
                 .collect::<Vec<_>>();
             paths.sort_by_key(|path| std::fs::metadata(path).and_then(|m| m.modified()).ok());
             paths.reverse();
-            let mut studies = vec![];
+            let mut projects = vec![];
             for path in paths.into_iter().take(48) {
                 if let Ok(doc) = document::load(&path) {
-                    let image = document::raster(&doc, 360, false)?;
-                    studies.push(Study {
+                    let current_has_artwork = doc
+                        .layers
+                        .iter()
+                        .any(|layer| !layer.strokes.is_empty() || layer.image.is_some());
+                    let image = if current_has_artwork {
+                        document::raster(&doc, 360, false)?
+                    } else if let Some(canvas) = doc.canvases.iter().rev().find(|canvas| {
+                        canvas
+                            .layers
+                            .iter()
+                            .any(|layer| !layer.strokes.is_empty() || layer.image.is_some())
+                    }) {
+                        document::raster_layers(
+                            canvas.width,
+                            canvas.height,
+                            &canvas.layers,
+                            360,
+                            false,
+                        )?
+                    } else if let Some(reference) = doc.references.last() {
+                        document::thumbnail(document::decode_reference(reference)?, 360).to_rgba8()
+                    } else {
+                        document::raster(&doc, 360, false)?
+                    };
+                    projects.push(ProjectPreview {
                         title: doc.title,
                         path,
                         image,
@@ -501,8 +534,8 @@ pub fn studies(directory: PathBuf, sender: Sender<Event>) {
                     });
                 }
             }
-            Ok(studies)
+            Ok(projects)
         })();
-        let _ = sender.send(Event::Studies(result));
+        let _ = sender.send(Event::Projects(result));
     });
 }

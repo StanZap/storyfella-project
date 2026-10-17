@@ -7,25 +7,6 @@ use crate::{
 use gpui_kit::*;
 use std::sync::Arc;
 impl DrawingApp {
-    pub fn restore_saved_source(&mut self, cx: &mut Context<Self>) {
-        self.restore_draft_source = false;
-        if !self.editing_image {
-            return;
-        }
-        let target = self.doc.active_prompt_target.as_deref().unwrap_or("new");
-        let source = self
-            .all_references()
-            .into_iter()
-            .find(|r| crate::library::id(r) == target);
-        if let Some(source) = source {
-            self.open_image(source, cx);
-        } else {
-            self.message(
-                "The saved edit draft's source is missing from the library",
-                true,
-            );
-        }
-    }
     pub fn edit_source(&self) -> Option<Arc<document::Reference>> {
         if self.page == Page::Image {
             if self.opening_image.is_some() {
@@ -291,6 +272,7 @@ impl DrawingApp {
             self.image_return_page = self.page;
         }
         self.page = Page::Image;
+        self.show_edit_composer = false;
         self.editing_image = self.settings.provider.supports_edit();
         self.comparing = false;
         self.comparison_requested = None;
@@ -322,12 +304,17 @@ impl DrawingApp {
         }
     }
 
-    pub fn back_from_image(&mut self, cx: &mut Context<Self>) {
+    pub fn back_from_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.finish_mask();
         if self.mask_save_error.is_some() {
             return;
         }
         self.page = self.image_return_page;
+        if self.page == Page::Artboards {
+            self.editing_image = false;
+            self.restore_prompt(window, cx);
+        }
+        self.show_edit_composer = false;
         self.panel = crate::app::Panel::None;
         cx.notify();
     }

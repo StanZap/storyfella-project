@@ -961,11 +961,12 @@ fn generation_cancellation_prevents_network_submission() {
 }
 
 #[test]
-fn switching_archives_current_study_before_opening_and_reports_failure() {
+fn switching_saves_current_project_before_opening_and_reports_failure() {
     let directory = temporary("switch");
     let mut previous = doc();
     previous.title = "Keep this work".into();
     let archive = directory.join("previous.atelier");
+    let previous_path = directory.join("current.atelier");
     let broken = directory.join("broken.atelier");
     std::fs::write(&broken, b"bad json").unwrap();
     let workers = worker::start();
@@ -975,6 +976,7 @@ fn switching_archives_current_study_before_opening_and_reports_failure() {
             epoch: 7,
             previous: previous.clone(),
             archive: archive.clone(),
+            previous_path: Some(previous_path.clone()),
             next: Some(broken),
         })
         .unwrap();
@@ -986,6 +988,10 @@ fn switching_archives_current_study_before_opening_and_reports_failure() {
         _ => panic!("Unexpected event"),
     }
     assert_eq!(document::load(&archive).unwrap().title, "Keep this work");
+    assert_eq!(
+        document::load(&previous_path).unwrap().title,
+        "Keep this work"
+    );
     let blocked = directory.join("blocked");
     std::fs::write(&blocked, b"not a directory").unwrap();
     workers
@@ -994,6 +1000,7 @@ fn switching_archives_current_study_before_opening_and_reports_failure() {
             epoch: 7,
             previous,
             archive: blocked.join("project.atelier"),
+            previous_path: None,
             next: None,
         })
         .unwrap();

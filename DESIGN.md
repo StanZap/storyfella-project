@@ -1,5 +1,46 @@
 # Storyfella Studio design standard and UX audit
 
+### Atelier project-first handoff · 2026-10-16
+
+Atelier opens to Projects. New projects open to Artboards with a centered blank
+canvas on a quiet tinted stage and a compact image prompt visible by default.
+The blank canvas is an empty-state entry point: the first generated artboard
+replaces it in the sequence. A canvas with actual drawing remains an artboard.
+Sparse artboard sequences are centered, with artwork large enough to lead the
+screen and contextual activity beside the selected artboard.
+Artboards use one light neutral workspace surface from title through composer.
+The artboard retains its native aspect ratio and takes the available visual
+attention; the composer is a compact floating control with settings tags below
+the input. Routine save state belongs in the header, without a second footer.
+When artwork exists, a faint plus artboard follows the real artboards. It adds
+a blank drawing canvas to Artboards, preserving existing canvas artboards. It is
+excluded from the artboard count and from centered artboard layout, so it never
+shifts the artwork.
+The prompt keeps its dropdown controls together below the input for provider,
+aspect ratio, resolution, and local sampling steps. Draw is an editing state
+reached by opening the canvas artboard. Drawing controls belong in its left tool rail;
+the canvas has no separate bottom brush bar. Keep the drawing rail narrow:
+show a centered vertical stack of brush presets, size step actions around a
+compact size tag, opacity, and smoothing. Omit the brush-name caption. Keep the
+rail and the optional side dock slim, and place tool popovers beside their rail
+triggers. Draw reuses the Artboards prompt composer at the bottom of the canvas:
+the same input, provider, aspect, resolution, optional steps, and submit layout.
+Only the submission action changes to use the drawing as its source. Keep its
+top edge free of extra icon and close rows. The drawing composer adds a compact
+Full/Area control alongside the shared settings, with a visible marquee after
+a canvas drag. ⌘P toggles the prompt in each workspace; Artboards shows it by
+default.
+The image editor keeps artwork primary, opens its variation composer only on
+request, and returns submitted work to the project artboard sequence. Artboard
+activity is a short contextual event list with a direct
+full-details action. This is source-level acceptance; live visual and keyboard
+checks remain pending. See [Atelier](docs/atelier.md) for the workflow and
+verification status.
+
+Verification: `cargo test -p storyfella-atelier` (48 passed, 11 ignored),
+`cargo clippy -p storyfella-atelier --all-targets -- -D warnings`, and
+`cargo fmt --package storyfella-atelier -- --check` pass.
+
 ### Atelier game-art creation briefs · 2026-10-16
 
 The new-image composer offers editable starting briefs for **Character**,
@@ -999,7 +1040,7 @@ with its progress, Done, Failed, Cancelled) and pairs each with a colour, never
 colour alone.
 
 Size, steps and LoRA adapters are per-request controls in a floating **Image
-settings** window (a gear in the rail and in the Generate-from-drawing panel);
+settings** window (a gear in the rail);
 Settings keeps the provider, model, endpoint and credentials. This is a
 state-only change: `queue.rs` owns the request snapshots,
 ordering, pause and states, and the app dispatches one item at a time through the
@@ -1010,19 +1051,16 @@ The queue now lives in its own panel — opened from a header badge that counts
 outstanding requests (queued + running) and from the rail's summary — with
 Pause/Resume, Stop and Clear finished, and one card per request showing its state,
 prompt and settings. The generation rail keeps only the composer and the summary.
-**Generate from drawing** is now a compact panel. Dragging on the canvas switches
-it to **Box select** automatically (a marquee shows the region) and the box-select
-toggle returns to the **full canvas**; it carries the prompt (defaulted to using
-the drawing as a reference, and for a region to modify only the selected area and
-preserve the rest), then rasterizes the area (cropped to the region), opens it as
-the edit source and queues it. Rails and the header were narrowed (left rail
-64→48 px, generation rail 280→232 px, header 54→44 px) and explanatory copy was
-removed to keep the workspace out of the way.
+**Generate from drawing** now uses the bottom floating composer shared with
+Artboards. Its Full/Area control switches between the full canvas and area
+selection; a drag shows the selected region. Submission rasterizes the area
+(cropped to the region), opens it as the edit source and queues it. Rails and the header were
+narrowed, and explanatory copy was removed to keep the workspace out of the way.
 
 Verification: `cargo test -p storyfella-atelier` (49 tests; seven new — six
 covering queue ordering/pause/history/removal/masked-edit size, one covering
 region clamping) and `cargo clippy -p storyfella-atelier --all-targets -- -D
-warnings` pass. The queue panel, header badge and generate-from-drawing panel
+warnings` pass. The queue panel, header badge and drawing composer
 have not been exercised in a live UI run.
 
 ### Atelier shared reference library scoping · 2026-10-12

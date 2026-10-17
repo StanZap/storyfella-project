@@ -89,6 +89,32 @@ pub struct Reference {
     pub prompt: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CanvasArtboard {
+    pub id: u32,
+    pub width: u32,
+    pub height: u32,
+    pub layers: Vec<Layer>,
+    pub active_layer: usize,
+}
+
+impl CanvasArtboard {
+    fn blank(id: u32, width: u32, height: u32) -> Self {
+        Self {
+            id,
+            width,
+            height,
+            layers: vec![Layer {
+                name: "Sketch".into(),
+                visible: true,
+                opacity: 1.,
+                strokes: vec![],
+                image: None,
+            }],
+            active_layer: 0,
+        }
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Document {
     pub version: u32,
     pub title: String,
@@ -96,6 +122,12 @@ pub struct Document {
     pub height: u32,
     pub layers: Vec<Layer>,
     pub active_layer: usize,
+    #[serde(default)]
+    pub canvas_id: u32,
+    #[serde(default)]
+    pub canvas_created: bool,
+    #[serde(default)]
+    pub canvases: Vec<CanvasArtboard>,
     pub references: Vec<std::sync::Arc<Reference>>,
     pub reference: Option<usize>,
     pub note: String,
@@ -108,7 +140,7 @@ impl Default for Document {
     fn default() -> Self {
         Self {
             version: 1,
-            title: "Untitled study".into(),
+            title: "Untitled project".into(),
             width: 2400,
             height: 1800,
             layers: vec![Layer {
@@ -119,6 +151,9 @@ impl Default for Document {
                 image: None,
             }],
             active_layer: 0,
+            canvas_id: 0,
+            canvas_created: false,
+            canvases: vec![],
             references: vec![],
             reference: None,
             note: String::new(),
@@ -128,6 +163,50 @@ impl Default for Document {
     }
 }
 impl Document {
+    pub fn current_canvas(&self) -> CanvasArtboard {
+        CanvasArtboard {
+            id: self.canvas_id,
+            width: self.width,
+            height: self.height,
+            layers: self.layers.clone(),
+            active_layer: self.active_layer,
+        }
+    }
+
+    pub fn set_current_canvas(&mut self, canvas: CanvasArtboard) {
+        self.canvas_id = canvas.id;
+        self.width = canvas.width;
+        self.height = canvas.height;
+        self.layers = canvas.layers;
+        self.active_layer = canvas.active_layer;
+        self.canvas_created = true;
+    }
+
+    pub fn create_canvas(&mut self) -> Result<()> {
+        let has_artwork = self
+            .layers
+            .iter()
+            .any(|layer| !layer.strokes.is_empty() || layer.image.is_some());
+        let next_id = self
+            .canvases
+            .iter()
+            .map(|canvas| canvas.id)
+            .chain(std::iter::once(self.canvas_id))
+            .max()
+            .unwrap_or_default()
+            .checked_add(1)
+            .context("Canvas ID limit reached")?;
+        if self.canvas_created || has_artwork {
+            ensure!(self.canvases.len() < 24, "Maximum 25 canvases per project");
+            self.canvases.push(self.current_canvas());
+            self.set_current_canvas(CanvasArtboard::blank(next_id, self.width, self.height));
+        } else {
+            self.canvas_id = next_id;
+            self.canvas_created = true;
+        }
+        Ok(())
+    }
+
     pub fn embedded_image_bytes(&self) -> usize {
         self.references.iter().map(|r| r.image.len()).sum::<usize>()
             + self
@@ -135,6 +214,13 @@ impl Document {
                 .iter()
                 .filter_map(|l| l.image.as_ref())
                 .map(|i| i.reference.image.len())
+                .sum::<usize>()
+            + self
+                .canvases
+                .iter()
+                .flat_map(|canvas| &canvas.layers)
+                .filter_map(|layer| layer.image.as_ref())
+                .map(|image| image.reference.image.len())
                 .sum::<usize>()
     }
     pub fn reposition_image_layer(&mut self, dx: f32, dy: f32, scale: f32) -> Result<()> {
@@ -186,6 +272,18 @@ impl Document {
                 && self.active_layer < self.layers.len(),
             "Invalid layers"
         );
+        ensure!(self.canvases.len() <= 24, "Too many canvases");
+        let mut canvas_ids = std::collections::HashSet::from([self.canvas_id]);
+        for canvas in &self.canvases {
+            validate_size(canvas.width, canvas.height)?;
+            ensure!(
+                !canvas.layers.is_empty()
+                    && canvas.layers.len() <= 24
+                    && canvas.active_layer < canvas.layers.len()
+                    && canvas_ids.insert(canvas.id),
+                "Invalid canvas artboard"
+            );
+        }
         ensure!(
             self.references.len() <= 128
                 && self.reference.is_none_or(|i| i < self.references.len()),
@@ -196,7 +294,11 @@ impl Document {
             "Embedded references exceed 64 MB"
         );
         let mut points = 0;
-        for layer in &self.layers {
+        for layer in self
+            .layers
+            .iter()
+            .chain(self.canvases.iter().flat_map(|canvas| &canvas.layers))
+        {
             if let Some(image) = &layer.image {
                 ensure!(
                     image
@@ -478,14 +580,24 @@ pub fn decode_reference(reference: &Reference) -> Result<DynamicImage> {
     Ok(image)
 }
 pub fn raster(doc: &Document, max_edge: u32, transparent: bool) -> Result<RgbaImage> {
-    let scale = (max_edge as f32 / doc.width.max(doc.height) as f32).min(1.);
-    let w = (doc.width as f32 * scale).round().max(1.) as u32;
-    let h = (doc.height as f32 * scale).round().max(1.) as u32;
+    raster_layers(doc.width, doc.height, &doc.layers, max_edge, transparent)
+}
+
+pub fn raster_layers(
+    width: u32,
+    height: u32,
+    layers: &[Layer],
+    max_edge: u32,
+    transparent: bool,
+) -> Result<RgbaImage> {
+    let scale = (max_edge as f32 / width.max(height) as f32).min(1.);
+    let w = (width as f32 * scale).round().max(1.) as u32;
+    let h = (height as f32 * scale).round().max(1.) as u32;
     let mut output = tiny_skia::Pixmap::new(w, h).context("Could not allocate canvas")?;
     if !transparent {
         output.fill(tiny_skia::Color::from_rgba8(255, 253, 248, 255));
     }
-    for layer in doc.layers.iter().filter(|l| l.visible && l.opacity > 0.) {
+    for layer in layers.iter().filter(|l| l.visible && l.opacity > 0.) {
         let mut pixels = image_layer_pixels(layer, w, h, scale)?;
         for stroke in &layer.strokes {
             if stroke.points.is_empty() {
