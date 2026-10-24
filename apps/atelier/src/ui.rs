@@ -30,6 +30,7 @@ const SURFACE: u32 = 0xf7f6f8;
 pub(crate) enum PromptComposerMode {
     Artboards,
     Drawing,
+    Image,
 }
 
 fn prompt_composer_frame(
@@ -239,8 +240,8 @@ impl DrawingApp {
                                     .ghost()
                                     .small()
                                     .label("Open project")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.open_project(path.clone(), cx);
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_project(path.clone(), window, cx);
                                         cx.notify();
                                     })),
                             ),
@@ -316,6 +317,7 @@ impl DrawingApp {
             Panel::Settings => Some(self.provider_settings(cx)),
             Panel::Help => Some(self.help(cx)),
             Panel::Queue => Some(self.queue_panel(cx)),
+            Panel::References => Some(self.reference_picker(cx)),
             Panel::None => None,
         };
         div()
@@ -350,6 +352,7 @@ impl DrawingApp {
                 cx.stop_propagation();
             }))
             .child(self.header(cx))
+            .child(self.project_tab_bar(cx))
             .child(
                 div()
                     .flex_1()
@@ -492,6 +495,35 @@ impl DrawingApp {
                 header.child(div().w(px(8.))).child(self.queue_button(cx))
             })
     }
+    fn project_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut tabs: Vec<_> = self
+            .project_tabs
+            .iter()
+            .map(|tab| (tab.epoch, tab.doc.title.clone(), tab.dirty))
+            .collect();
+        tabs.push((self.epoch, self.doc.title.clone(), self.dirty));
+        tabs.sort_by_key(|tab| tab.0);
+        div()
+            .id("project-tabs")
+            .overflow_x_scroll()
+            .flex()
+            .gap_1()
+            .px_4()
+            .py_1()
+            .children(tabs.into_iter().map(|(epoch, title, dirty)| {
+                Button::new(format!("project-tab-{epoch}"))
+                    .ghost()
+                    .small()
+                    .label(format!("{title}{}", if dirty { " •" } else { "" }))
+                    .atelier_selected(
+                        epoch == self.epoch && !matches!(self.page, Page::Library | Page::Projects),
+                        cx,
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.activate_project_tab(epoch, window, cx)
+                    }))
+            }))
+    }
     /// The header's queue control: an icon with a count badge while requests are
     /// outstanding, opening the queue panel.
     fn queue_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -559,7 +591,9 @@ impl DrawingApp {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.finish_stroke();
                         this.tool = tool;
+                        this.moving_image = false;
                         this.page = Page::Draw;
+                        this.restore_prompt(window, cx);
                         window.focus(&this.focus, cx);
                         cx.notify();
                     })),
@@ -667,7 +701,7 @@ impl DrawingApp {
                 tool_button(
                     "generate-from-drawing",
                     "sparkle",
-                    "Prompt from drawing · ⌘P",
+                    "Create / image prompt · ⌘P",
                 )
                 .atelier_selected(self.show_drawing_composer, cx)
                 .on_click(cx.listener(|this, _, window, cx| {
@@ -754,6 +788,9 @@ impl DrawingApp {
         let tool = self.tool;
         let guides = self.guides;
         let region = self.generation_region;
+        let gizmo = (self.moving_image && self.tool == Tool::Hand)
+            .then(|| self.doc.layer_bounds())
+            .flatten();
 
         div()
             .id("canvas-viewport")
@@ -773,17 +810,19 @@ impl DrawingApp {
             .on_mouse_move(cx.listener(|this, event, _, cx| this.pointer_move(event, cx)))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
+                cx.listener(|this, _, window, cx| {
                     this.finish_stroke();
                     this.finish_drawing_region(cx);
+                    this.restore_prompt(window, cx);
                     cx.notify();
                 }),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
+                cx.listener(|this, _, window, cx| {
                     this.finish_stroke();
                     this.finish_drawing_region(cx);
+                    this.restore_prompt(window, cx);
                     cx.notify();
                 }),
             )
@@ -923,6 +962,36 @@ impl DrawingApp {
                                 window.paint_path(border, rgb(WINE));
                             }
                         }
+                        if let Some((x, y, r, b)) = gizmo {
+                            let convert = |x, y| {
+                                let p = view.to_view(
+                                    crate::document::Point { x, y },
+                                    w as f32,
+                                    h as f32,
+                                );
+                                point(
+                                    paper.origin.x + px(p.x * scale),
+                                    paper.origin.y + px(p.y * scale),
+                                )
+                            };
+                            let mut path = PathBuilder::stroke(px(1.5));
+                            path.move_to(convert(x, y));
+                            path.line_to(convert(r, y));
+                            path.line_to(convert(r, b));
+                            path.line_to(convert(x, b));
+                            path.close();
+                            if let Ok(path) = path.build() {
+                                window.paint_path(path, rgb(WINE));
+                            }
+                            let handle = convert(r, b);
+                            window.paint_quad(fill(
+                                Bounds::new(
+                                    point(handle.x - px(6.), handle.y - px(6.)),
+                                    size(px(12.), px(12.)),
+                                ),
+                                rgb(WINE),
+                            ));
+                        }
                         if tool != Tool::Hand {
                             if let Some(p) = hover.filter(|p| paper.contains(p)) {
                                 let radius = (brush * scale / 2.).max(2.);
@@ -1034,13 +1103,40 @@ impl DrawingApp {
             .border_l_1()
             .border_color(rgb(BORDER));
         let mut reference = panel().p_3().flex().flex_col().gap_2().child(
-            row().child(div().flex_1().child("Reference")).child(
-                tool_button("reference-import", "plus", "Import references").on_click(
-                    cx.listener(|this, _, window, cx| this.pick(Picker::Import, window, cx)),
+            row()
+                .child(div().flex_1().child("References"))
+                .child(
+                    tool_button(
+                        "references-visible",
+                        if self.doc.references_visible {
+                            "eye"
+                        } else {
+                            "eye-off"
+                        },
+                        "Show or hide references",
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.doc.references_visible = !this.doc.references_visible;
+                        this.tracing = false;
+                        this.changed();
+                        cx.notify();
+                    })),
+                )
+                .child(
+                    tool_button("reference-import", "plus", "Choose references").on_click(
+                        cx.listener(|this, _, _, cx| {
+                            this.panel = Panel::References;
+                            this.refresh_library();
+                            cx.notify();
+                        }),
+                    ),
                 ),
-            ),
         );
-        if let Some(i) = self.doc.reference.filter(|i| *i < self.references.len()) {
+        if let Some(i) = self
+            .doc
+            .reference
+            .filter(|i| self.doc.references_visible && *i < self.references.len())
+        {
             let image = self.references[i].clone();
             let grid = self.grid;
             let grayscale = self.grayscale;
@@ -1211,12 +1307,44 @@ impl DrawingApp {
                             .ghost()
                             .label("Choose reference")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.page = Page::Library;
+                                this.panel = Panel::References;
+                                this.refresh_library();
                                 cx.notify();
                             })),
                     ),
             );
         }
+        if self.doc.references_visible {
+            for id in &self.doc.artboard_references {
+                if let Some(i) = self
+                    .doc
+                    .references
+                    .iter()
+                    .position(|r| crate::library::id(r) == *id)
+                {
+                    reference = reference.child(
+                        Button::new(format!("show-reference-{i}"))
+                            .ghost()
+                            .small()
+                            .label(self.doc.references[i].name.clone())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.select_reference(i, window, cx)
+                            })),
+                    );
+                }
+            }
+        }
+        reference = reference.child(
+            Button::new("reference-remove-project")
+                .ghost()
+                .small()
+                .label("Remove selected reference")
+                .disabled(self.doc.reference.is_none())
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.remove_reference(window, cx);
+                    cx.notify();
+                })),
+        );
         dock = dock.child(reference);
         let mut layers = panel().p_3().flex().flex_col().gap_2().child(
             row().child(div().flex_1().child("Layers")).child(
@@ -1250,11 +1378,16 @@ impl DrawingApp {
                         Button::new(format!("layer-{i}"))
                             .ghost()
                             .small()
-                            .label(layer.name.clone())
+                            .label(if layer.candidate {
+                                format!("Review · {}", layer.name)
+                            } else {
+                                layer.name.clone()
+                            })
                             .atelier_selected(i == self.doc.active_layer, cx)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.finish_stroke();
                                 this.doc.active_layer = i;
+                                this.sync_layer_controls(window, cx);
                                 this.layer_name.update(cx, |s, cx| {
                                     s.set_value(this.doc.layers[i].name.clone(), window, cx)
                                 });
@@ -1312,14 +1445,110 @@ impl DrawingApp {
                         })),
                 ),
         );
-        if self.doc.layers[self.doc.active_layer].image.is_some() {
-            layers = layers.child(label("Image layer · move, scale, draw or erase"))
+        if self.doc.layers[self.doc.active_layer].candidate {
+            layers = layers
+                .child(label(
+                    "Pending candidate · excluded from export until accepted",
+                ))
+                .child(
+                    Button::new("candidate-hide")
+                        .ghost()
+                        .small()
+                        .label(if self.doc.layers[self.doc.active_layer].visible {
+                            "Hide candidate"
+                        } else {
+                            "Show candidate"
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.checkpoint();
+                            let layer = &mut this.doc.layers[this.doc.active_layer];
+                            layer.visible = !layer.visible;
+                            this.changed();
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    row().flex_wrap().children(
+                        [
+                            (
+                                "candidate-accept",
+                                "Accept",
+                                crate::workflow::Review::Accept,
+                            ),
+                            (
+                                "candidate-reference",
+                                "Save as reference",
+                                crate::workflow::Review::Reference,
+                            ),
+                            (
+                                "candidate-discard",
+                                "Discard",
+                                crate::workflow::Review::Discard,
+                            ),
+                        ]
+                        .into_iter()
+                        .map(|(id, name, action)| {
+                            Button::new(id).small().label(name).on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.review_candidate(action, window, cx)
+                                },
+                            ))
+                        }),
+                    ),
+                );
+        }
+        layers = layers
+            .child(
+                row()
+                    .child(field("Move X (px)", &self.layer_dx).flex_1())
+                    .child(field("Move Y (px)", &self.layer_dy).flex_1()),
+            )
+            .child(
+                row()
+                    .child(field("Scale (%)", &self.layer_scale).flex_1())
+                    .child(field("Opacity (%)", &self.layer_opacity).flex_1()),
+            )
+            .child(
+                Button::new("apply-layer-values")
+                    .small()
+                    .label("Apply layer values")
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.apply_layer_controls(window, cx)),
+                    ),
+            );
+        if self.doc.layer_bounds().is_some() {
+            layers = layers.child(label("Selected layer · move, scale, draw or erase"))
                 .child(row().flex_wrap()
                     .child(Button::new("move-image-layer").ghost().small().label("Move layer").atelier_selected(self.moving_image && self.tool == Tool::Hand,cx)
                         .on_click(cx.listener(|this,_,_,cx| { this.finish_stroke(); this.moving_image = !this.moving_image; this.tool = Tool::Hand; cx.notify(); })))
                     .children([("smaller-image-layer","Smaller",0.8),("larger-image-layer","Larger",1.25)].into_iter().map(|(id,label,scale)| Button::new(id).small().label(label)
                         .on_click(cx.listener(move |this,_,_,cx| { this.checkpoint(); match this.doc.reposition_image_layer(0.,0.,scale) { Ok(()) => this.changed(), Err(error) => this.message(error.to_string(),true) } cx.notify(); })))))
-                .child(label("Move layer: drag on the canvas. Scale keeps painted marks aligned. Undo restores the previous placement."));
+                .child(label("Drag inside the layer to move; drag its corner handle to scale. Painting stays aligned. Changes are undoable."));
+        }
+        if let Some(reference) = self.doc.layers[self.doc.active_layer]
+            .image
+            .as_ref()
+            .map(|image| image.reference.clone())
+        {
+            layers = layers.child(
+                Button::new("inspect-layer-image")
+                    .ghost()
+                    .small()
+                    .label("Inspect image and versions")
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.open_image(reference.clone(), cx)),
+                    ),
+            );
+        }
+        if self.doc.layers[self.doc.active_layer].image.is_some()
+            && !self.doc.layers[self.doc.active_layer].candidate
+        {
+            layers = layers.child(
+                Button::new("layer-variation")
+                    .small()
+                    .label("Start variation as new artboard")
+                    .on_click(cx.listener(|this, _, window, cx| this.layer_variation(window, cx))),
+            );
         }
         dock.child(layers).child(self.practice(cx))
     }
@@ -1439,250 +1668,157 @@ impl DrawingApp {
                 "Local project"
             })
     }
-    fn library_navigation(&self, cx: &mut Context<Self>) -> Div {
-        row()
-            .child(
-                Button::new("library-shared")
-                    .ghost()
-                    .small()
-                    .label("All projects")
-                    .atelier_selected(self.shared_library, cx)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.shared_library = true;
-                        this.refresh_library();
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("library-references")
-                    .ghost()
-                    .small()
-                    .label("This project")
-                    .atelier_selected(!self.shared_library, cx)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.shared_library = false;
-                        cx.notify();
-                    })),
-            )
-    }
     fn library(&self, cx: &mut Context<Self>) -> Div {
+        column()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .p_6()
+            .child(
+                row()
+                    .child(div().flex_1().text_xl().child("Reference library"))
+                    .child(
+                        Button::new("library-import")
+                            .small()
+                            .label("Import images")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.pick(Picker::Import, window, cx)
+                            })),
+                    ),
+            )
+            .child(label(
+                "Shared across all projects · originals remain independent of artwork layers",
+            ))
+            .child(
+                Button::new("library-favorites")
+                    .ghost()
+                    .small()
+                    .label("Favorites")
+                    .atelier_selected(self.favorite_filter, cx)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.favorite_filter = !this.favorite_filter;
+                        cx.notify();
+                    })),
+            )
+            .child(Input::new(&self.search))
+            .child(self.reference_cards(false, cx))
+    }
+
+    fn reference_cards(&self, picker: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let query = self.search.read(cx).value().to_lowercase();
+        let mut items = self.library.clone();
+        if picker {
+            for (reference, image) in self
+                .doc
+                .references
+                .iter()
+                .cloned()
+                .zip(self.references.iter().cloned())
+            {
+                if !items.iter().any(|(r, _)| r.image == reference.image) {
+                    items.push((reference, image));
+                }
+            }
+        }
         let mut cards = div()
-            .id("reference-cards")
+            .id(if picker {
+                "picker-cards"
+            } else {
+                "library-cards"
+            })
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
             .flex()
             .flex_wrap()
             .content_start()
-            .gap_4();
-        let items: Vec<_> = if self.shared_library {
-            self.library
-                .iter()
-                .map(|(reference, image)| (reference.clone(), image.clone()))
-                .collect()
-        } else {
-            self.doc
-                .references
-                .iter()
-                .cloned()
-                .zip(self.references.iter().cloned())
-                .collect()
-        };
-        for (i, (reference, image)) in items.iter().enumerate().filter(|(_, (r, _))| {
-            (!self.favorite_filter || r.favorite)
-                && format!("{} {}", r.name, r.tags)
-                    .to_lowercase()
-                    .contains(&query)
-        }) {
-            {
-                let open = reference.clone();
-                cards = cards.child(
-                    panel()
-                        .w(px(218.))
-                        .overflow_hidden()
-                        .when(!self.shared_library && self.doc.reference == Some(i), |p| {
-                            p.border_color(rgb(WINE))
-                        })
-                        .child(
-                            div()
-                                .id(format!("reference-image-{i}"))
-                                .h(px(190.))
-                                .w_full()
-                                .overflow_hidden()
-                                .cursor_pointer()
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    if !this.shared_library {
-                                        this.select_reference(i, window, cx);
-                                    }
-                                    this.open_image(open.clone(), cx);
-                                    cx.notify();
-                                }))
-                                .child(
-                                    img(image.clone())
-                                        .size_full()
-                                        .object_fit(ObjectFit::Contain),
-                                ),
-                        )
-                        .child(
-                            column()
-                                .gap_1()
-                                .child(
-                                    row()
-                                        .px_2()
-                                        .py_2()
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .overflow_hidden()
-                                                .child(reference.name.clone()),
-                                        )
-                                        .child(
-                                            tool_button(
-                                                format!("favorite-{i}"),
-                                                "heart",
-                                                "Favorite image",
-                                            )
-                                            .atelier_selected(reference.favorite, cx)
-                                            .on_click(
-                                                cx.listener(move |this, _, _, cx| {
-                                                    if this.shared_library {
-                                                        this.toggle_library_favorite(i);
-                                                    } else {
-                                                        this.toggle_favorite(i);
-                                                    }
-                                                    cx.notify();
-                                                }),
-                                            ),
-                                        ),
-                                )
-                                .child(
-                                    row()
-                                        .px_2()
-                                        .pb_2()
-                                        .child(
-                                            Button::new(format!("open-image-{i}"))
-                                                .ghost()
-                                                .small()
-                                                .icon(icon("open"))
-                                                .label("Open")
-                                                .accessibility_label("Open image")
-                                                .tooltip("Open image")
-                                                .on_click(cx.listener({
-                                                    let reference = reference.clone();
-                                                    move |this, _, _, cx| {
-                                                        this.open_image(reference.clone(), cx)
-                                                    }
-                                                })),
-                                        )
-                                        .child(
-                                            Button::new(format!("input-reference-{i}"))
-                                                .ghost()
-                                                .small()
-                                                .icon(icon("reference"))
-                                                .label("Reference")
-                                                .accessibility_label("Add as an AI reference")
-                                                .tooltip("Add as an AI reference")
-                                                .on_click(cx.listener({
-                                                    let reference = reference.clone();
-                                                    move |this, _, _, cx| {
-                                                        this.add_input_reference(reference.clone());
-                                                        cx.notify();
-                                                    }
-                                                })),
-                                        )
-                                        .when(self.shared_library, |row| {
-                                            row.child(
-                                                Button::new(format!("use-library-{i}"))
-                                                    .ghost()
-                                                    .small()
-                                                    .icon(icon("plus"))
-                                                    .label("Use")
-                                                    .accessibility_label("Use in this project")
-                                                    .tooltip("Use in this project")
-                                                    .on_click(cx.listener(
-                                                        move |this, _, window, cx| {
-                                                            this.use_library_image(i, window, cx);
-                                                            cx.notify();
-                                                        },
-                                                    )),
-                                            )
-                                        }),
-                                ),
-                        ),
-                );
-            }
-        }
-        if items.is_empty() && !self.library_loading {
+            .gap_3();
+        for (i, (reference, image)) in items
+            .into_iter()
+            .filter(|(r, _)| {
+                (!self.favorite_filter || r.favorite)
+                    && format!("{} {}", r.name, r.tags)
+                        .to_lowercase()
+                        .contains(&query)
+            })
+            .enumerate()
+        {
+            let select = reference.clone();
+            let open = reference.clone();
+            let favorite = reference.clone();
             cards = cards.child(
-                column()
-                    .w_full()
-                    .items_center()
-                    .justify_center()
-                    .h(px(300.))
-                    .child(icon("image"))
-                    .child("Your reference collection starts here")
-                    .child(Button::new("empty-import").label("Import images").on_click(
-                        cx.listener(|this, _, window, cx| this.pick(Picker::Import, window, cx)),
-                    )),
+                panel()
+                    .w(px(if picker { 190. } else { 218. }))
+                    .p_2()
+                    .child(
+                        img(image)
+                            .w_full()
+                            .h(px(130.))
+                            .object_fit(ObjectFit::Contain),
+                    )
+                    .child(label(reference.name.clone()).truncate())
+                    .child(
+                        tool_button(
+                            format!("library-favorite-{i}"),
+                            "heart",
+                            "Favorite reference",
+                        )
+                        .atelier_selected(reference.favorite, cx)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(index) = this
+                                .doc
+                                .references
+                                .iter()
+                                .position(|r| r.image == favorite.image)
+                            {
+                                this.toggle_favorite(index);
+                            } else {
+                                let mut reference = (*favorite).clone();
+                                reference.favorite = !reference.favorite;
+                                let _ = this.workers.storage.send(
+                                    crate::worker::Storage::LibraryUpdate(
+                                        this.data_dir.join("library"),
+                                        std::sync::Arc::new(reference),
+                                        crate::library::Update::Favorite,
+                                    ),
+                                );
+                            }
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        Button::new(format!("reference-select-{i}"))
+                            .small()
+                            .label(if picker { "Select reference" } else { "Open" })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if picker {
+                                    this.choose_reference(select.clone(), window, cx);
+                                } else {
+                                    this.open_image(open.clone(), cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
             );
         }
-        row()
-            .items_start()
-            .gap_0()
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .child(
-                column()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .p_6()
-                    .child(
-                        row()
-                            .child(
-                                div()
-                                    .text_xl()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Image library"),
-                            )
-                            .child(div().flex_1())
-                            .child(
-                                tool_button("favorites-filter", "heart", "Show favorites")
-                                    .atelier_selected(self.favorite_filter, cx)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.favorite_filter = !this.favorite_filter;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(tool_button("import", "plus", "Import images").on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    this.pick(Picker::Import, window, cx)
-                                }),
-                            )),
-                    )
-                    .child(self.library_navigation(cx))
-                    .child(Input::new(&self.search))
-                    .when(self.library_loading, |p| p.child(label("Loading library…")))
-                    .when_some(self.library_error.as_ref(), |p, error| {
-                        p.child(label(error.clone()).text_color(rgb(WINE)))
-                    })
-                    .when(self.library_error.is_some(), |p| {
-                        p.child(
-                            Button::new("library-retry")
-                                .small()
-                                .label("Retry library")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.refresh_library();
-                                    cx.notify();
-                                })),
-                        )
-                    })
-                    .child(cards)
-                    .child(label(format!("{} images", items.len()))),
-            )
-            .child(self.generate_panel(cx))
+        cards
+            .when(self.library_loading, |c| c.child(label("Loading library…")))
+            .when_some(self.library_error.as_ref(), |c, error| {
+                c.child(label(error.clone()).text_color(rgb(WINE)))
+            })
+    }
+
+    fn reference_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+        let limit = crate::providers::reference_limit(&self.settings).map(|count| format!("{}: {count} image input(s) including the source · references are checked before queueing",self.settings.provider.name()))
+            .unwrap_or_else(|error|format!("Choose an editing model: {error}"));
+        let content = column().h(px(500.))
+            .child(label(limit))
+            .child(label("Project references and the shared library · selecting a reference never adds artwork"))
+            .child(Input::new(&self.search))
+            .child(Button::new("picker-import").small().label("Import into library and select…")
+                .on_click(cx.listener(|this,_,window,cx| this.pick(Picker::Import,window,cx))))
+            .child(self.reference_cards(true,cx));
+        self.overlay("References", content, cx)
     }
     fn provider_choices(&self, settings: bool) -> Div {
         let state = if settings {
@@ -1706,455 +1842,273 @@ impl DrawingApp {
         mode: PromptComposerMode,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let prompt = match mode {
-            PromptComposerMode::Artboards => &self.prompt,
-            PromptComposerMode::Drawing => &self.from_drawing_prompt,
-        };
-        prompt_composer_frame(
-            prompt,
-            row()
-                .pt_1()
-                .items_center()
-                .gap_2()
-                .when(mode == PromptComposerMode::Drawing, |row| {
-                    row.child(
-                        Button::new("drawing-area")
-                            .ghost()
-                            .small()
-                            .icon(icon("mask-rect"))
-                            .label(if self.selecting_generation_region {
-                                "Area"
-                            } else {
-                                "Full"
-                            })
-                            .tooltip("Drag on the canvas to select an area")
-                            .atelier_selected(self.selecting_generation_region, cx)
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_box_select(cx))),
-                    )
-                })
-                .child(
-                    div()
-                        .w(px(if mode == PromptComposerMode::Drawing {
-                            130.
-                        } else {
-                            155.
-                        }))
-                        .flex_shrink_0()
+        let drawing = mode == PromptComposerMode::Drawing;
+        let selection = drawing && self.region_bounds().is_some();
+        let separate = selection && self.selection_mode == crate::workflow::SelectionMode::Separate;
+        let mut controls = column()
+            .gap_2()
+            .child(label(if drawing {
+                if separate {
+                    "Create separate image · selection as input · new artboard"
+                } else if selection {
+                    "Blend into artboard · surrounding artwork as context · review candidate"
+                } else {
+                    "Edit full artboard · review candidate · original preserved"
+                }
+            } else if mode == PromptComposerMode::Image {
+                "Create variation from this image · new artboard"
+            } else {
+                "Create a new composition · new artboard"
+            }))
+            .child(
+                row()
+                    .flex_wrap()
+                    .when(drawing, |r| {
+                        r.child(
+                            Button::new("drawing-area")
+                                .ghost()
+                                .small()
+                                .label(if self.selecting_generation_region {
+                                    "Area selected"
+                                } else {
+                                    "Select area"
+                                })
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.toggle_box_select(cx);
+                                    this.restore_prompt(window, cx);
+                                })),
+                        )
                         .child(
+                            Button::new("drawing-full")
+                                .ghost()
+                                .small()
+                                .label("Full artboard")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.use_full_canvas(cx);
+                                    this.restore_prompt(window, cx);
+                                })),
+                        )
+                    })
+                    .when(selection, |r| {
+                        r.children(
+                            [
+                                (
+                                    "blend-selection",
+                                    "Blend into artboard",
+                                    crate::workflow::SelectionMode::Blend,
+                                ),
+                                (
+                                    "separate-selection",
+                                    "Create separate image",
+                                    crate::workflow::SelectionMode::Separate,
+                                ),
+                            ]
+                            .into_iter()
+                            .map(|(id, name, choice)| {
+                                Button::new(id)
+                                    .ghost()
+                                    .small()
+                                    .label(name)
+                                    .atelier_selected(self.selection_mode == choice, cx)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.selection_mode = choice;
+                                        this.restore_prompt(window, cx);
+                                        cx.notify();
+                                    }))
+                            }),
+                        )
+                    }),
+            )
+            .child(
+                row()
+                    .flex_wrap()
+                    .child(
+                        div().w(px(132.)).child(
                             Select::new(&self.generation_provider_select)
                                 .small()
                                 .accessibility_label("Image provider")
                                 .cleanable(false)
                                 .w_full(),
                         ),
-                )
-                .child(
-                    div()
-                        .w(px(if mode == PromptComposerMode::Drawing {
-                            145.
-                        } else {
-                            160.
-                        }))
-                        .flex_shrink_0()
+                    )
+                    .when(!drawing || separate, |r| {
+                        r.child(
+                            div().w(px(120.)).child(
+                                Select::new(&self.artboard_aspect_select)
+                                    .small()
+                                    .accessibility_label("Aspect ratio")
+                                    .cleanable(false)
+                                    .w_full(),
+                            ),
+                        )
                         .child(
-                            Select::new(&self.artboard_aspect_select)
-                                .small()
-                                .accessibility_label("Aspect ratio")
-                                .cleanable(false)
-                                .w_full(),
-                        ),
-                )
-                .child(
-                    div()
-                        .w(px(if mode == PromptComposerMode::Drawing {
-                            130.
-                        } else {
-                            145.
-                        }))
-                        .flex_shrink_0()
-                        .child(
-                            Select::new(&self.artboard_size_select)
-                                .small()
-                                .accessibility_label("Resolution")
-                                .cleanable(false)
-                                .w_full(),
-                        ),
-                )
-                .when(
-                    self.settings.provider.native_architecture().is_some(),
-                    |row| {
-                        row.child(
-                            div()
-                                .w(px(if mode == PromptComposerMode::Drawing {
-                                    95.
-                                } else {
-                                    125.
-                                }))
-                                .flex_shrink_0()
-                                .child(
+                            div().w(px(120.)).child(
+                                Select::new(&self.artboard_size_select)
+                                    .small()
+                                    .accessibility_label("Resolution")
+                                    .cleanable(false)
+                                    .w_full(),
+                            ),
+                        )
+                    })
+                    .when(
+                        self.settings.provider.native_architecture().is_some(),
+                        |r| {
+                            r.child(
+                                div().w(px(120.)).child(
                                     Select::new(&self.artboard_steps_select)
                                         .small()
                                         .accessibility_label("Sampling steps")
                                         .cleanable(false)
                                         .w_full(),
                                 ),
-                        )
-                    },
-                )
-                .child(div().flex_1())
-                .child(
-                    Button::new(match mode {
-                        PromptComposerMode::Artboards => "artboards-create-image",
-                        PromptComposerMode::Drawing => "from-drawing-generate",
-                    })
-                    .primary()
-                    .icon(icon("sparkle"))
-                    .accessibility_label(match mode {
-                        PromptComposerMode::Artboards => "Create image",
-                        PromptComposerMode::Drawing => "Create from drawing",
-                    })
-                    .tooltip(match mode {
-                        PromptComposerMode::Artboards => "Create image",
-                        PromptComposerMode::Drawing => "Create from drawing",
-                    })
-                    .disabled(
-                        mode == PromptComposerMode::Drawing
-                            && !self.settings.provider.supports_edit(),
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| match mode {
-                        PromptComposerMode::Artboards => {
-                            this.editing_image = false;
-                            this.enqueue_generation(window, cx);
-                        }
-                        PromptComposerMode::Drawing => this.generate_from_drawing(window, cx),
-                    })),
-                ),
-            if mode == PromptComposerMode::Artboards {
-                self.generation_error.as_ref()
-            } else {
-                None
-            },
-        )
-    }
-
-    pub(crate) fn generate_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let can_edit = self.settings.provider.supports_edit()
-            && self.edit_source().is_some()
-            && (self.settings.provider.native_architecture().is_some()
-                || !self.edit_model.read(cx).value().trim().is_empty());
-        let mut content = column()
-            .id("generate-panel")
-            .w(px(320.))
-            .flex_shrink_0()
-            .h_full()
-            .overflow_y_scroll()
-            .p_3()
-            .bg(rgb(0xffffff))
-            .border_l_1()
-            .border_color(rgb(BORDER))
-            .child(
-                row()
-                    .child(self.provider_choices(false).flex_1().min_w_0())
-                    .child(label("Generation")),
-            )
-            .child(
-                row()
-                    .child(label("Prompt").flex_1())
-                    .when_some(
-                        self.edit_source().filter(|_| self.editing_image),
-                        |row, reference| {
-                            row.child(
-                                tool_button("reuse-prompt", "undo", "Reuse this version's prompt")
-                                    .disabled(reference.prompt.is_empty())
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.prompt.update(cx, |s, cx| {
-                                            s.set_value(reference.prompt.clone(), window, cx)
-                                        });
-                                        this.prompt.update(cx, |s, cx| s.focus(window, cx));
-                                        cx.notify();
-                                    })),
                             )
                         },
                     )
                     .child(
-                        Button::new("create-image")
+                        Button::new("composer-references")
                             .ghost()
                             .small()
-                            .icon(icon("image"))
-                            .label("Create")
-                            .accessibility_label("Create a new image")
-                            .tooltip("Create a new image")
-                            .atelier_selected(!self.editing_image, cx)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.editing_image = false;
-                                this.restore_prompt(window, cx);
-                                this.prompt.update(cx, |s, cx| s.focus(window, cx));
+                            .icon(icon("reference"))
+                            .label(format!("{}", self.input_references().len()))
+                            .tooltip("Choose references")
+                            .accessibility_label("Choose references")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.panel = Panel::References;
+                                this.refresh_library();
                                 cx.notify();
                             })),
                     )
                     .child(
-                        Button::new("edit-selected-image")
+                        Button::new("composer-settings")
                             .ghost()
                             .small()
-                            .icon(icon("pencil"))
-                            .label("Edit")
-                            .accessibility_label("Edit selected image")
-                            .tooltip(if can_edit {
-                                "Edit selected image"
-                            } else {
-                                "Select an image and editing provider first"
-                            })
-                            .atelier_selected(self.editing_image, cx)
-                            .disabled(!can_edit)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if this.page == Page::Image {
-                                    this.edit_opened_image(window, cx);
-                                } else {
-                                    this.editing_image = true;
-                                    this.restore_prompt(window, cx);
-                                    this.prompt.update(cx, |s, cx| s.focus(window, cx));
-                                }
+                            .icon(icon("settings"))
+                            .tooltip("Image settings")
+                            .accessibility_label("Image settings")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.panel = Panel::Settings;
                                 cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("composer-options")
+                            .ghost()
+                            .small()
+                            .label("Options")
+                            .atelier_selected(self.show_prompt_details, cx)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.show_prompt_details = !this.show_prompt_details;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("composer-submit")
+                            .primary()
+                            .label(if drawing && !separate {
+                                "Queue edit"
+                            } else {
+                                "Create"
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if drawing {
+                                    this.generate_from_drawing(window, cx);
+                                } else {
+                                    this.editing_image = mode == PromptComposerMode::Image;
+                                    this.enqueue_generation(window, cx);
+                                }
                             })),
                     ),
             )
-            .when(!self.editing_image, |panel| {
-                panel
-                    .child(label("Start with a game-art brief"))
-                    .child(row().children([
-                        creation_recipe_button(
-                            "recipe-character",
-                            "Character",
-                            "Full-body character design for a visual novel: [describe the character, outfit, personality, and palette]. Clear readable silhouette, expressive face, neutral studio background, no text.",
-                            1024,
-                            1536,
-                            cx,
-                        ),
-                        creation_recipe_button(
-                            "recipe-object",
-                            "Object",
-                            "Game prop concept for [describe the object and its story role]. Single object, clear silhouette, three-quarter view, restrained backdrop, finely rendered materials, no text.",
-                            1024,
-                            1024,
-                            cx,
-                        ),
-                    ]))
-                    .child(row().children([
-                        creation_recipe_button(
-                            "recipe-background",
-                            "Background",
-                            "Visual novel background of [describe the place, time, and mood]. Wide establishing composition, inviting depth, clear area for character dialogue, no people, no text.",
-                            1536,
-                            1024,
-                            cx,
-                        ),
-                        creation_recipe_button(
-                            "recipe-key-art",
-                            "Illustration",
-                            "Narrative game illustration of [describe the moment, characters, and emotion]. Strong focal point, cinematic composition, deliberate color palette, no lettering.",
-                            1024,
-                            1536,
-                            cx,
-                        ),
-                    ]))
-            })
-            .child(Textarea::new(&self.prompt).h(px(180.)))
-            .when(self.settings.provider.hosted().is_some(), |p| {
-                p.child(
-                    label("Hosted generation may incur provider charges.").text_color(rgb(AMBER)),
-                )
-            })
+            .child(label(self.provider_readiness.clone()))
             .when(
                 self.settings.provider.native_architecture().is_some(),
-                |p| {
-                    p.child(
+                |c| c.child(label(server_status_label(self.server_status.as_ref()))),
+            )
+            .when(
+                self.show_prompt_details || self.provider_readiness.starts_with("Setup needed"),
+                |controls| {
+                    controls.child(
                         row()
-                            .child(label(server_status_label(self.server_status.as_ref())).flex_1())
                             .child(
-                                tool_button(
-                                    "refresh-server-status",
-                                    "undo",
-                                    "Check the local server",
-                                )
-                                .on_click(cx.listener(
-                                    |this, _, _, cx| {
-                                        this.refresh_server_status();
+                                Button::new("composer-clipforge")
+                                    .ghost()
+                                    .small()
+                                    .label("Open Clipforge")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.open_clipforge();
                                         cx.notify();
-                                    },
-                                )),
+                                    })),
+                            )
+                            .child(
+                                Button::new("composer-refresh")
+                                    .ghost()
+                                    .small()
+                                    .label("Refresh readiness")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.reload_clipforge(window, cx);
+                                    })),
                             ),
                     )
                 },
-            )
-            .child(
-                row().children(
-                    [
-                        ("1:1", 1024, 1024),
-                        ("3:2", 1536, 1024),
-                        ("2:3", 1024, 1536),
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, (name, w, h))| {
-                        Button::new(format!("aspect-{i}"))
-                            .ghost()
-                            .small()
-                            .label(name)
-                            .atelier_selected(
-                                self.settings.width == w && self.settings.height == h,
-                                cx,
-                            )
-                            .disabled(self.editing_image && self.use_mask)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.generation_width
-                                    .update(cx, |s, cx| s.set_value(w.to_string(), window, cx));
-                                this.generation_height
-                                    .update(cx, |s, cx| s.set_value(h.to_string(), window, cx));
-                                this.settings.width = w;
-                                this.settings.height = h;
-                                this.sync_artboard_selects(window, cx);
-                                cx.notify();
-                            }))
-                    }),
-                ),
-            )
-            .child(separator())
-            .child(label("Output size"))
-            .child(
+            );
+        if drawing && !separate {
+            let (_, _, w, h) =
+                self.region_bounds()
+                    .unwrap_or((0, 0, self.doc.width, self.doc.height));
+            controls = controls.child(label(format!(
+                "Result placement: {w} × {h} px · source: {} × {} px",
+                self.doc.width, self.doc.height
+            )));
+        } else if separate || self.show_prompt_details {
+            controls = controls.child(
                 row()
-                    .child(number_field("Width", &self.generation_width).flex_1())
-                    .child(number_field("Height", &self.generation_height).flex_1()),
-            )
-            .when(
-                self.settings.provider.native_architecture().is_some(),
-                |p| {
-                    p.child(number_field("Steps", &self.steps))
-                        .child(self.lora_editor(cx))
-                },
-            )
-            .child(
-                row()
-                    .child(
-                        Button::new("enqueue-generation")
-                            .primary()
-                            .icon(icon("sparkle"))
-                            .label(if self.editing_image {
-                                "Queue edit"
-                            } else {
-                                "Queue image"
-                            })
-                            .tooltip(if self.settings.provider.hosted().is_none() {
-                                "Queue an image with the settings above"
-                            } else {
-                                "Queue an image · API charges apply"
-                            })
-                            .disabled(self.editing_image && !can_edit)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.enqueue_generation(window, cx);
-                            })),
+                    .child(number_field("Output width", &self.generation_width).flex_1())
+                    .child(number_field("Output height", &self.generation_height).flex_1()),
+            );
+        }
+        if self.show_prompt_details && !drawing && mode != PromptComposerMode::Image {
+            controls = controls.child(row().children([
+                ("recipe-character","Character","Full-body character design: [describe character, outfit, personality and palette]. Clear silhouette, expressive face, neutral background, no text.",1024,1536),
+                ("recipe-object","Object","Prop concept: [describe object and story role]. Single object, three-quarter view, clear silhouette, no text.",1024,1024),
+                ("recipe-background","Background","Illustrated environment: [describe place, mood, lighting and composition]. No text.",1536,1024),
+                ("recipe-illustration","Illustration","Illustration: [describe subject, medium, mood and composition]. No text.",1536,1024)
+            ].into_iter().map(|(id,name,prompt,w,h)| creation_recipe_button(id,name,prompt,w,h,cx))));
+        }
+        for (i, reference) in self.input_references().iter().enumerate() {
+            controls = controls.child(
+                row().child(label(reference.name.clone()).flex_1()).child(
+                    tool_button(
+                        format!("composer-remove-ref-{i}"),
+                        "close",
+                        "Remove generation reference",
                     )
-                    .child(div().flex_1())
-                    .when(self.generation.is_some(), |p| {
-                        p.child(
-                            tool_button("cancel-generation", "close", "Stop the running image")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.cancel_generation();
-                                    cx.notify();
-                                })),
-                        )
-                    }),
-            )
-            .when(!self.queue.is_empty(), |p| {
-                p.child(
-                    Button::new("queue-summary")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.checkpoint();
+                        this.doc.artboard_references.remove(i);
+                        this.changed();
+                        cx.notify();
+                    })),
+                ),
+            );
+        }
+        if mode == PromptComposerMode::Image {
+            if let Some(source) = self.edit_source().filter(|r| !r.prompt.is_empty()) {
+                controls = controls.child(
+                    Button::new("reuse-source-prompt")
                         .ghost()
                         .small()
-                        .w_full()
-                        .icon(icon("layers"))
-                        .label(format!(
-                            "{} waiting · {} finished",
-                            self.queue.pending(),
-                            self.queue.finished()
-                        ))
-                        .tooltip("Open the generation queue")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.panel = Panel::Queue;
+                        .label("Reuse source prompt")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.prompt
+                                .update(cx, |s, cx| s.set_value(source.prompt.clone(), window, cx));
+                            this.prompt.update(cx, |s, cx| s.focus(window, cx));
                             cx.notify();
                         })),
-                )
-            })
-            .when_some(self.generation_error.as_ref(), |p, error| {
-                p.child(label(error.clone()).text_color(rgb(WINE)))
-            })
-            .when(self.generation.is_some(), |p| {
-                p.child(label(self.status.clone()))
-            });
-        if !self.input_references.is_empty() {
-            content = content.child(separator());
-            for (i, reference) in self.input_references.iter().enumerate() {
-                content = content.child(
-                    row()
-                        .child(label(format!("{} · {}", i + 2, reference.name)).flex_1())
-                        .child(
-                            tool_button(
-                                format!("remove-input-{i}"),
-                                "close",
-                                "Remove AI reference",
-                            )
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    this.input_references.remove(i);
-                                    cx.notify();
-                                },
-                            )),
-                        ),
                 );
             }
         }
-        if let Some(reference) = self.edit_source() {
-            content = content
-                .child(separator())
-                .child(
-                    row()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(reference.name.clone()),
-                        )
-                        .when(self.page != Page::Image, |p| {
-                            p.child(
-                                tool_button("open-selected-image", "open", "Open selected image")
-                                    .on_click(cx.listener({
-                                        let reference = reference.clone();
-                                        move |this, _, _, cx| this.open_image(reference.clone(), cx)
-                                    })),
-                            )
-                            .child(
-                                tool_button("use-reference", "brush", "Draw this reference")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.page = Page::Draw;
-                                        this.dock = true;
-                                        window.focus(&this.focus, cx);
-                                        cx.notify();
-                                    })),
-                            )
-                        })
-                        .child(
-                            tool_button("image-details", "info", "Image details")
-                                .atelier_selected(self.image_details_open, cx)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.image_details_open = !this.image_details_open;
-                                    cx.notify();
-                                })),
-                        ),
-                )
-                .when(self.image_details_open, |p| {
-                    p.child(self.reference_details(cx))
-                });
-        }
-        content
+        prompt_composer_frame(&self.prompt, controls, self.generation_error.as_ref())
     }
     /// The queue panel, opened from the header badge or the generation rail.
     fn queue_panel(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2319,7 +2273,8 @@ impl DrawingApp {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(self.prompt_composer(PromptComposerMode::Drawing, cx))
     }
-    fn reference_details(&self, cx: &mut Context<Self>) -> Div {
+
+    pub(crate) fn reference_details(&self, cx: &mut Context<Self>) -> Div {
         let mut details = column()
             .child(field("Name", &self.ref_name))
             .child(field("Tags", &self.ref_tags))
@@ -2365,7 +2320,9 @@ impl DrawingApp {
             .when(rail_settings, |p| p.top(px(64.)).bottom(px(80.)))
             .when(rail_help, |p| p.bottom(px(40.)))
             .when(!rail_popup, |p| p.top(px(64.)))
-            .w(px(if settings {
+            .w(px(if title == "References" {
+                470.
+            } else if settings {
                 360.
             } else if title == "Generation queue" {
                 336.
@@ -2789,29 +2746,8 @@ impl DrawingApp {
                 .child(label(
                     "Leave editing model blank for models that only create images.",
                 ));
-            if provider == Provider::Alibaba {
-                content = content
-                    .child(separator())
-                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Connection"))
-                    .child(field("Regional API base URL", &self.endpoint))
-                    .child(label("Use your workspace's regional URL ending in /compatible-mode/v1. The key and models must belong to that region."));
-            }
-            content = content
-                .child(separator())
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("Credentials"),
-                )
-                .child(label(format!(
-                    "Stored in the shared clipforge.toml provider entry; set {} only if you prefer an environment credential.",
-                    provider.key_env()
-                )))
-                .child(field("API key", &self.key))
-                .child(label(
-                    "Save updates Clipforge's shared provider registry. Leave blank to keep the existing shared key.",
-                ));
+            content = content.child(separator())
+                .child(label("Provider connections, credentials and secrets are managed in Clipforge. Request model presets stay here."));
         } else {
             content = content
                 .child(separator())
@@ -2846,6 +2782,19 @@ impl DrawingApp {
                 ));
         }
         let content = content
+            .when(
+                self.settings.provider.native_architecture().is_some(),
+                |p| p.child(self.lora_editor(cx)),
+            )
+            .child(
+                Button::new("settings-clipforge")
+                    .small()
+                    .label("Manage providers in Clipforge")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.open_clipforge();
+                        cx.notify();
+                    })),
+            )
             .child(separator())
             .child(
                 div()

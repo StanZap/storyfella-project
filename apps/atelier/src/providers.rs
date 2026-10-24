@@ -279,55 +279,11 @@ fn shared_provider(
         .map(|(_, configured)| configured)
 }
 
-fn shared_provider_id(
-    registry: &clipforge_inference::Providers,
+pub fn shared_endpoint(
     provider: Provider,
-) -> Option<&str> {
-    let selected = shared_provider(registry, provider)?;
-    registry
-        .list()
-        .find(|(_, configured)| std::ptr::eq(*configured, selected))
-        .map(|(id, _)| id)
-}
-
-pub(crate) fn write_shared_api_key(settings: &Settings, api_key: &str) -> Result<()> {
-    let provider = settings.provider;
-    let path = clipforge_inference::config::default_config_path()
-        .context("Clipforge has no shared configuration path")?;
-    let registry = if path.exists() {
-        clipforge_inference::Providers::load(&path)
-            .context("Could not load the shared Clipforge provider registry")?
-    } else {
-        let hosted = provider
-            .hosted()
-            .context("Only hosted providers have shared API keys")?;
-        let id = provider.account();
-        let kind = match hosted {
-            clipforge_inference::images::HostedProvider::Fal => "fal",
-            clipforge_inference::images::HostedProvider::Replicate => "replicate",
-            clipforge_inference::images::HostedProvider::Alibaba => "alibaba",
-            clipforge_inference::images::HostedProvider::GptImage => "gptimage",
-        };
-        let quote = |value: &str| format!("\"{}\"", value.replace('"', "\\\""));
-        let config = format!(
-            "[defaults]\nt2i = {id}\nedit = {id}\n\n[providers.{id}]\nkind = {kind}\ncapabilities = [\"t2i\", \"edit\"]\nbase_url = {}\nmodel = {}\n",
-            quote(&settings.endpoint),
-            quote(&settings.model),
-            id = quote(id),
-            kind = quote(kind),
-        );
-        clipforge_inference::Providers::from_toml(
-            &config,
-            path.parent().unwrap_or(std::path::Path::new(".")),
-        )
-        .context("Could not initialize the shared Clipforge provider registry")?
-    };
-    let id = shared_provider_id(&registry, provider)
-        .context("No matching hosted provider is configured in clipforge.toml")?;
-    registry
-        .write_api_key(&path, id, api_key)
-        .map_err(anyhow::Error::from)
-        .context("Could not save the shared Clipforge API key")
+    registry: &clipforge_inference::Providers,
+) -> Option<String> {
+    shared_provider(registry, provider).map(|p| p.base_url.clone())
 }
 
 pub(crate) fn api_key(provider: Provider) -> Result<String> {
@@ -371,6 +327,79 @@ pub fn generate(request: Request) -> Result<Reference> {
         "ComfyUI editing is not configured; choose a hosted provider"
     );
     comfy(&client, request)
+}
+
+pub fn reference_limit(settings: &Settings) -> Result<usize> {
+    if let Some(provider) = settings.provider.hosted() {
+        Ok(
+            clipforge_inference::images::HostedDeployment::new(provider, &settings.edit_model)?
+                .max_reference_images(),
+        )
+    } else {
+        Ok(usize::from(settings.provider.supports_edit()))
+    }
+}
+
+/// Validate capabilities and configuration before a request enters the queue.
+pub fn validate_inputs(
+    settings: &Settings,
+    editing: bool,
+    additional: usize,
+    mask: bool,
+) -> Result<()> {
+    ensure!(
+        !editing || settings.provider.supports_edit(),
+        "This provider creates new images only; choose an editing provider"
+    );
+    if let Some(provider) = settings.provider.hosted() {
+        let model = if editing {
+            &settings.edit_model
+        } else {
+            &settings.model
+        };
+        let deployment = clipforge_inference::images::HostedDeployment::new(provider, model)?;
+        ensure!(
+            deployment.supports(if editing {
+                clipforge_inference::Capability::Edit
+            } else {
+                clipforge_inference::Capability::T2i
+            }),
+            "This model does not support the selected action; choose an appropriate model preset"
+        );
+        if provider == clipforge_inference::images::HostedProvider::Replicate
+            && !deployment.supports_mask()
+        {
+            let (w, h) = (u64::from(settings.width), u64::from(settings.height));
+            ensure!(w == h || w*2 == h*3 || w*3 == h*2,
+                "This Replicate route supports 1:1, 3:2 or 2:3 output; resize the artboard or choose a supported output shape");
+        }
+        ensure!(additional + usize::from(editing) <= deployment.max_reference_images(),
+            "{} accepts {} input image(s), including the source; remove references or choose a multi-image edit model", model, deployment.max_reference_images());
+        ensure!(
+            !mask || deployment.supports_mask(),
+            "This model does not support masks; turn off the mask or choose FLUX Fill"
+        );
+        ensure!(!deployment.supports_mask() || mask, "FLUX Fill requires a painted mask; choose an instruction-edit model for artboard edits");
+        api_key(settings.provider)
+            .context("Set up this provider in Clipforge, then refresh readiness")?;
+    } else if settings.provider.native_architecture().is_some() {
+        ensure!(
+            additional == 0 && !mask,
+            "Local models accept one source image and no additional references or mask"
+        );
+        let registry = clipforge_inference::config::user_or_built_in()?;
+        crate::native_images::deployment(settings, &registry, editing)?;
+    } else {
+        ensure!(
+            !editing && additional == 0 && !mask,
+            "ComfyUI supports new-image generation only"
+        );
+        ensure!(
+            !settings.workflow.is_null(),
+            "Load a ComfyUI API workflow in Settings"
+        );
+    }
+    Ok(())
 }
 pub fn prepare_workflow(
     settings: &Settings,

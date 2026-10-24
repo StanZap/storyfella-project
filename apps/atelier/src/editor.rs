@@ -2,11 +2,97 @@
 use crate::{
     app::{DrawingApp, Page},
     document::{self, Brush, Layer, Point as DocPoint, Stroke, Tool},
-    worker::Storage,
+    worker::{self, Storage},
 };
 use gpui_kit::*;
 use std::sync::Arc;
 impl DrawingApp {
+    pub fn review_candidate(
+        &mut self,
+        action: crate::workflow::Review,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let layer = &self.doc.layers[self.doc.active_layer];
+        if !layer.candidate {
+            return;
+        }
+        let reference = layer.image.as_ref().map(|i| i.reference.clone());
+        if matches!(action, crate::workflow::Review::Reference) && self.doc.references.len() >= 128
+        {
+            self.message("Maximum 128 references", true);
+            return;
+        }
+        self.checkpoint();
+        match action {
+            crate::workflow::Review::Accept => {
+                self.doc.layers[self.doc.active_layer].candidate = false
+            }
+            crate::workflow::Review::Reference => {
+                if let Some(reference) = reference {
+                    if !self
+                        .doc
+                        .references
+                        .iter()
+                        .any(|r| r.image == reference.image)
+                    {
+                        if let Ok(decoded) = document::decode_reference(&reference) {
+                            let preview =
+                                worker::render_image(document::thumbnail(decoded, 800).to_rgba8());
+                            self.references.push(preview.clone());
+                            self.reference_cache.push((reference.clone(), preview));
+                            self.doc.references.push(reference.clone());
+                        }
+                    }
+                    let _ = self.workers.storage.send(Storage::LibraryAdd(
+                        self.data_dir.join("library"),
+                        vec![reference],
+                    ));
+                }
+                self.doc.layers.remove(self.doc.active_layer);
+                self.doc.active_layer = self.doc.active_layer.min(self.doc.layers.len() - 1);
+            }
+            crate::workflow::Review::Discard => {
+                self.doc.layers.remove(self.doc.active_layer);
+                self.doc.active_layer = self.doc.active_layer.min(self.doc.layers.len() - 1);
+            }
+        }
+        self.changed();
+        self.sync_layer_controls(window, cx);
+        cx.notify();
+    }
+
+    pub fn layer_variation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.capture_prompt(cx);
+        let Some(reference) = self.doc.layers[self.doc.active_layer]
+            .image
+            .as_ref()
+            .map(|i| i.reference.clone())
+        else {
+            return;
+        };
+        let previous = self.doc.clone();
+        match self
+            .doc
+            .attach_result(reference, crate::workflow::Destination::NewArtboard)
+        {
+            Ok(()) => {
+                self.history.checkpoint(&previous);
+                self.changed();
+                let newest = self
+                    .doc
+                    .canvases
+                    .iter()
+                    .map(|c| c.id)
+                    .chain([self.doc.canvas_id])
+                    .max()
+                    .unwrap_or(self.doc.canvas_id);
+                self.open_canvas_artboard(newest, window, cx);
+            }
+            Err(error) => self.message(error.to_string(), true),
+        }
+        cx.notify();
+    }
     pub fn edit_source(&self) -> Option<Arc<document::Reference>> {
         if self.page == Page::Image {
             if self.opening_image.is_some() {
@@ -38,26 +124,69 @@ impl DrawingApp {
             self.library_error = Some("Library worker stopped. Restart Atelier to retry.".into());
         }
     }
-    pub fn add_input_reference(&mut self, reference: Arc<document::Reference>) {
-        if self
-            .input_references
+    pub fn input_references(&self) -> Vec<Arc<document::Reference>> {
+        self.doc
+            .artboard_references
             .iter()
-            .any(|r| r.image == reference.image)
-        {
-            return;
+            .filter_map(|id| {
+                self.doc
+                    .references
+                    .iter()
+                    .find(|r| crate::library::id(r) == *id)
+                    .cloned()
+            })
+            .collect()
+    }
+
+    pub fn choose_reference(
+        &mut self,
+        reference: Arc<document::Reference>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = crate::library::id(&reference);
+        if !self.doc.artboard_references.contains(&id) {
+            if self.doc.artboard_references.len() >= 2 {
+                self.message(
+                    "At most two additional references; remove one in the composer first",
+                    true,
+                );
+                return;
+            }
+            self.checkpoint();
+            let index = if let Some(i) = self
+                .doc
+                .references
+                .iter()
+                .position(|r| r.image == reference.image)
+            {
+                i
+            } else {
+                if self.doc.references.len() >= 128
+                    || self.doc.embedded_image_bytes() + reference.image.len() > 64 * 1024 * 1024
+                {
+                    self.message("Project reference limit reached", true);
+                    return;
+                }
+                let Ok(decoded) = document::decode_reference(&reference) else {
+                    return;
+                };
+                let preview = worker::render_image(document::thumbnail(decoded, 800).to_rgba8());
+                self.doc.references.push(reference.clone());
+                self.references.push(preview.clone());
+                self.reference_cache.push((reference.clone(), preview));
+                self.doc.references.len() - 1
+            };
+            self.doc.artboard_references.push(id);
+            self.doc.reference = Some(index);
+            self.doc.references_visible = true;
+            self.changed();
+            self.sync_ref_inputs(window, cx);
         }
-        if self.input_references.len() >= 2 {
-            self.message(
-                "Choose at most two additional references (three images including the source)",
-                true,
-            );
-            return;
-        }
-        self.input_references.push(reference);
-        self.message(
-            "Reference added · select a source image and describe how to combine them",
-            false,
-        );
+        self.panel = crate::app::Panel::None;
+        self.dock = true;
+        self.message("Reference selected · excluded from artwork exports", false);
+        cx.notify();
     }
     pub fn toggle_comparison(&mut self) {
         self.finish_mask();
@@ -231,34 +360,7 @@ impl DrawingApp {
             self.save_mask();
         }
     }
-    pub fn use_library_image(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((reference, preview)) = self.library.get(index).cloned() else {
-            return;
-        };
-        if let Some(index) = self
-            .doc
-            .references
-            .iter()
-            .position(|r| r.image == reference.image)
-        {
-            self.select_reference(index, window, cx);
-            self.message("Image selected in this project", false);
-            return;
-        }
-        if self.doc.references.len() >= 128
-            || self.doc.embedded_image_bytes() + reference.image.len() > 64 * 1024 * 1024
-        {
-            self.message("Project reference limit reached (128 images / 64 MB)", true);
-            return;
-        }
-        self.checkpoint();
-        self.reference_cache.push((reference.clone(), preview));
-        self.doc.references.push(reference);
-        self.doc.reference = Some(self.doc.references.len() - 1);
-        self.changed();
-        self.sync_ref_inputs(window, cx);
-        self.message("Image added to this project", false);
-    }
+
     pub fn open_image(&mut self, reference: Arc<document::Reference>, cx: &mut Context<Self>) {
         self.finish_mask();
         if self.mask_save_error.is_some() {
@@ -276,7 +378,6 @@ impl DrawingApp {
         self.editing_image = self.settings.provider.supports_edit();
         self.comparing = false;
         self.comparison_requested = None;
-        self.input_references.retain(|r| r.image != reference.image);
         self.mask_tool = Tool::Hand;
         self.image_zoom = 1.;
         self.image_auto_fit = true;
@@ -348,6 +449,7 @@ impl DrawingApp {
             name: reference.name.clone(),
             visible: true,
             opacity: 1.,
+            candidate: false,
             strokes: vec![],
             image: Some(document::ImageLayer {
                 reference,
@@ -369,53 +471,5 @@ impl DrawingApp {
         window.focus(&self.focus, cx);
         self.message("Image layer added · draw or erase on this layer", false);
         cx.notify();
-    }
-
-    /// Places a generated result over the canvas rectangle that produced it.
-    pub fn add_generated_image_layer(
-        &mut self,
-        reference: Arc<document::Reference>,
-        width: u32,
-        height: u32,
-        placement: (u32, u32, u32, u32),
-    ) -> anyhow::Result<()> {
-        anyhow::ensure!(width > 0 && height > 0, "Generated image has no size");
-        anyhow::ensure!(self.doc.layers.len() < 24, "Maximum 24 layers");
-        anyhow::ensure!(
-            self.doc.embedded_image_bytes() + reference.image.len().saturating_mul(2)
-                <= 64 * 1024 * 1024,
-            "Project images exceed 64 MB"
-        );
-        let (x, y, target_width, target_height) = placement;
-        anyhow::ensure!(
-            target_width > 0
-                && target_height > 0
-                && x.saturating_add(target_width) <= self.doc.width
-                && y.saturating_add(target_height) <= self.doc.height,
-            "Generated image placement is outside the canvas"
-        );
-        self.doc.layers.push(Layer {
-            name: format!("Generated · {}", reference.name),
-            visible: true,
-            opacity: 1.,
-            strokes: vec![],
-            image: Some(document::ImageLayer {
-                reference,
-                transform: [
-                    target_width as f32 / width as f32,
-                    0.,
-                    0.,
-                    target_height as f32 / height as f32,
-                    x as f32,
-                    y as f32,
-                ],
-            }),
-        });
-        self.doc.active_layer = self.doc.layers.len() - 1;
-        self.changed();
-        self.page = Page::Draw;
-        self.dock = true;
-        self.tool = Tool::Pencil;
-        Ok(())
     }
 }

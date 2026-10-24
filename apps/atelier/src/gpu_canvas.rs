@@ -392,6 +392,8 @@ impl Renderer {
         result
     }
     pub fn export(&mut self, doc: &Document, transparent: bool) -> Result<image::RgbaImage> {
+        let artwork = doc.artwork();
+        let doc = &artwork;
         self.render(doc, Viewport::default(), false)?;
         let mut output = image::RgbaImage::new(doc.width, doc.height);
         if !transparent {
@@ -769,6 +771,7 @@ mod tests {
                 doc.layers[0].strokes.push(line(490., 200., brush));
             }
             doc.layers.push(crate::document::Layer {
+                candidate: false,
                 name: "Top".into(),
                 visible: true,
                 opacity: 0.5,
@@ -1124,6 +1127,7 @@ mod tests {
             for layer in 0..2 {
                 if layer > 0 {
                     doc.layers.push(crate::document::Layer {
+                        candidate: false,
                         name: "Shading".into(),
                         visible: true,
                         opacity: 0.7,

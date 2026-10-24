@@ -20,6 +20,8 @@ pub struct ProjectPreview {
     pub note: String,
 }
 pub enum Event {
+    WorkspaceSaved(Result<()>),
+    ClipforgeOpened(Result<()>),
     Library(Result<Vec<(Reference, RgbaImage)>>),
     OpenedImage(String, Result<(RgbaImage, crate::edit::MaskDraft)>),
     ComparedImage(String, Result<RgbaImage>),
@@ -46,6 +48,7 @@ pub enum Event {
     ServerStatus(crate::native_images::ServerStatus),
 }
 pub enum Storage {
+    WorkspaceRecovery(PathBuf, Vec<(crate::project_tabs::RecoveryTab, Document)>),
     Artwork(Arc<Reference>, PathBuf),
     CanvasArtwork(Document, PathBuf, bool),
     /// Loads the shared reference library (read-only).
@@ -75,7 +78,8 @@ pub enum Storage {
     Import(u64, Vec<PathBuf>, PathBuf, bool),
     Workflow(PathBuf),
     Settings(providers::Settings, PathBuf),
-    ApplySettings(providers::Settings, PathBuf, String),
+    ApplySettings(providers::Settings, PathBuf),
+    OpenClipforge,
     Barrier(Sender<()>),
 }
 pub struct Workers {
@@ -110,6 +114,9 @@ pub fn start() -> Workers {
     std::thread::spawn(move || {
         while let Ok(command) = queue.recv() {
             let event = match command {
+                Storage::WorkspaceRecovery(directory, projects) => {
+                    Event::WorkspaceSaved(crate::project_tabs::save_session(&directory, projects))
+                }
                 Storage::Artwork(reference, path) => Event::Exported((|| {
                     storyfella_studio_core::artwork::ApprovedArtwork {
                         version: 1,
@@ -122,6 +129,7 @@ pub fn start() -> Workers {
                     Ok(path)
                 })()),
                 Storage::CanvasArtwork(doc, path, transparent) => Event::Exported((|| {
+                    let (prompt, provenance) = doc.artwork_metadata();
                     #[cfg(target_os = "macos")]
                     let image = objc2::rc::autoreleasepool(|_| {
                         crate::gpu_canvas::Renderer::new()?.export(&doc, transparent)
@@ -130,16 +138,13 @@ pub fn start() -> Workers {
                     let image = document::raster(&doc, doc.width.max(doc.height), transparent)?;
                     let mut bytes = std::io::Cursor::new(Vec::new());
                     image.write_to(&mut bytes, image::ImageFormat::Png)?;
-                    let reference = document::reference_from_bytes(
-                        doc.title,
-                        &bytes.into_inner(),
-                        "Approved Atelier canvas · image layers and painted artwork".into(),
-                    )?;
+                    let reference =
+                        document::reference_from_bytes(doc.title, &bytes.into_inner(), provenance)?;
                     storyfella_studio_core::artwork::ApprovedArtwork {
                         version: 1,
                         name: reference.name,
                         image: reference.image,
-                        prompt: doc.note,
+                        prompt,
                         provenance: reference.provenance,
                     }
                     .save(&path)?;
@@ -328,11 +333,9 @@ pub fn start() -> Workers {
                             );
                         }
                         for (reference, _) in &refs {
-                            // An import into the shared collection becomes a global
-                            // reference; an import into a project stays project-local.
-                            if !into_project {
-                                crate::library::store(&directory, reference)?;
-                            }
+                            // The picker imports to the shared collection before
+                            // embedding the chosen image in its project.
+                            crate::library::store(&directory, reference)?;
                         }
                         Ok(refs)
                     })(),
@@ -354,9 +357,10 @@ pub fn start() -> Workers {
                         .map_err(anyhow::Error::from)
                         .and_then(|bytes| document::atomic_write(&path, &bytes)),
                 ),
-                Storage::ApplySettings(settings, path, key) => {
-                    Event::SettingsApplied(apply_settings(&settings, &path, &key))
+                Storage::ApplySettings(settings, path) => {
+                    Event::SettingsApplied(apply_settings(&settings, &path))
                 }
+                Storage::OpenClipforge => Event::ClipforgeOpened(open_clipforge()),
                 Storage::Barrier(ack) => {
                     let _ = ack.send(());
                     continue;
@@ -418,15 +422,7 @@ pub fn start() -> Workers {
         sender,
     }
 }
-pub(crate) fn apply_settings(
-    settings: &providers::Settings,
-    path: &std::path::Path,
-    api_key: &str,
-) -> Result<()> {
-    if !api_key.trim().is_empty() {
-        providers::write_shared_api_key(settings, api_key)
-            .context("Shared Clipforge API key was not saved")?;
-    }
+pub(crate) fn apply_settings(settings: &providers::Settings, path: &std::path::Path) -> Result<()> {
     let bytes = serde_json::to_vec(settings)?;
     document::atomic_write(path, &bytes).context("Settings file was not saved")
 }
@@ -479,6 +475,29 @@ pub fn render_image(mut image: RgbaImage) -> Arc<gpui_kit::RenderImage> {
         pixel.swap(0, 2);
     }
     Arc::new(gpui_kit::RenderImage::new(vec![image::Frame::new(image)]))
+}
+
+fn open_clipforge() -> Result<()> {
+    // Clipforge has a desktop identity but no setup deep-link contract.
+    #[cfg(target_os = "macos")]
+    {
+        let status = std::process::Command::new("open")
+            .args(["-b", "com.clipforge.desktop"])
+            .status()?;
+        anyhow::ensure!(
+            status.success(),
+            "Could not open Clipforge. Install its desktop app, then retry."
+        );
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        #[cfg(target_os = "windows")]
+        let executable = "clipforge-desktop.exe";
+        #[cfg(not(target_os = "windows"))]
+        let executable = "clipforge-desktop";
+        std::process::Command::new(executable).spawn()?;
+    }
+    Ok(())
 }
 
 pub fn projects(directory: PathBuf, sender: Sender<Event>) {

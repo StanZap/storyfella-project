@@ -4,11 +4,404 @@ use crate::{
     viewport::Viewport,
     worker::{self, Event, Storage},
 };
+use image::GenericImageView;
 use std::{
     io::{Read, Write},
     sync::{atomic::AtomicBool, Arc},
     time::Duration,
 };
+
+#[test]
+fn generated_compositions_and_candidates_keep_distinct_roles_through_save_and_history() {
+    use crate::workflow::Destination;
+    let mut project = doc();
+    let original = Arc::new(colored_reference("Original", [20, 30, 40, 255], 128, 96));
+    project
+        .attach_result(original.clone(), Destination::NewArtboard)
+        .unwrap();
+    let original_id = project.canvas_id;
+    let mut candidate = colored_reference("Candidate", [220, 0, 0, 255], 32, 24);
+    candidate.parent = Some(crate::library::id(&original));
+    candidate.prompt = "Change the selected object".into();
+    project.prompt_drafts.insert(
+        format!("canvas:{original_id}:full"),
+        "unsent full edit".into(),
+    );
+    project.prompt_drafts.insert(
+        format!("canvas:{original_id}:Separate:8:8:32:24"),
+        "unsent close-up".into(),
+    );
+    project.references.push(original.clone());
+    project
+        .artboard_references
+        .push(crate::library::id(&original));
+    project.references_visible = false;
+    project
+        .attach_result(
+            Arc::new(candidate),
+            Destination::Candidate {
+                artboard: original_id,
+                rect: (8, 8, 32, 24),
+            },
+        )
+        .unwrap();
+    assert!(project.layers[1].candidate);
+    assert_eq!(
+        document::raster(&project, 128, true)
+            .unwrap()
+            .get_pixel(10, 10)
+            .0,
+        [220, 0, 0, 255]
+    );
+    assert_eq!(
+        document::raster(&project.artwork(), 128, true)
+            .unwrap()
+            .get_pixel(10, 10)
+            .0,
+        [20, 30, 40, 255]
+    );
+    let mut history = History::new();
+    history.checkpoint(&project);
+    project.layers[1].candidate = false;
+    project.reposition_image_layer(3., 4., 1.5).unwrap();
+    project.layers[1].opacity = 0.4;
+    project.layers[1].visible = false;
+    assert!(history.undo(&mut project));
+    assert!(project.layers[1].candidate);
+    assert!(history.redo(&mut project));
+    assert_eq!(project.layers[1].opacity, 0.4);
+    assert!(!project.layers[1].candidate);
+    assert!(!project.layers[1].visible);
+    let directory = temporary("candidate-project");
+    let path = directory.join("candidate.atelier");
+    document::save(&path, &project).unwrap();
+    let restored = document::load(&path).unwrap();
+    assert_eq!(
+        restored.layers[1].image.as_ref().unwrap().reference.parent,
+        Some(crate::library::id(&original))
+    );
+    assert_eq!(restored.prompt_drafts, project.prompt_drafts);
+    assert_eq!(restored.artboard_references, project.artboard_references);
+    assert!(!restored.references_visible);
+    assert_eq!(
+        restored.layers[1].image.as_ref().unwrap().transform,
+        project.layers[1].image.as_ref().unwrap().transform
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn queued_candidates_attach_to_the_captured_artboard_and_failed_attachments_are_atomic() {
+    use crate::workflow::Destination;
+    let mut project = doc();
+    let original = Arc::new(colored_reference("Original", [20, 30, 40, 255], 128, 96));
+    project
+        .attach_result(original.clone(), Destination::NewArtboard)
+        .unwrap();
+    let source = project.canvas_id;
+    project.create_canvas().unwrap();
+    let active = project.canvas_id;
+    project
+        .attach_result(
+            original.clone(),
+            Destination::Candidate {
+                artboard: source,
+                rect: (8, 8, 32, 24),
+            },
+        )
+        .unwrap();
+    assert_eq!(project.canvas_id, active);
+    assert_eq!(project.layers.len(), 1);
+    assert!(
+        project
+            .canvases
+            .iter()
+            .find(|c| c.id == source)
+            .unwrap()
+            .layers[1]
+            .candidate
+    );
+    let before = serde_json::to_vec(&project).unwrap();
+    assert!(project
+        .attach_result(
+            original,
+            Destination::Candidate {
+                artboard: source,
+                rect: (120, 90, 32, 24)
+            }
+        )
+        .is_err());
+    assert_eq!(before, serde_json::to_vec(&project).unwrap());
+}
+
+#[test]
+fn background_new_compositions_preserve_the_artboard_being_edited() {
+    use crate::workflow::Destination;
+    let mut project = doc();
+    project.layers[0].strokes.push(stroke(Tool::Pencil, 48.));
+    let source_id = project.canvas_id;
+    let before = serde_json::to_vec(&project.current_canvas()).unwrap();
+    project
+        .attach_result(
+            Arc::new(colored_reference(
+                "Separate close-up",
+                [120, 80, 40, 255],
+                256,
+                512,
+            )),
+            Destination::NewArtboard,
+        )
+        .unwrap();
+    assert_eq!(project.canvas_id, source_id);
+    assert_eq!(
+        serde_json::to_vec(&project.current_canvas()).unwrap(),
+        before
+    );
+    assert_eq!(project.canvases.len(), 1);
+    assert_eq!(
+        (project.canvases[0].width, project.canvases[0].height),
+        (256, 512)
+    );
+}
+
+#[test]
+fn approved_artboard_metadata_preserves_visible_image_provenance_and_omits_candidates() {
+    use crate::workflow::Destination;
+    let mut project = doc();
+    let mut original = colored_reference("Accepted", [20, 30, 40, 255], 128, 96);
+    original.prompt = "Accepted generation instruction".into();
+    original.provenance = "Provider · original model · job 123".into();
+    project
+        .attach_result(Arc::new(original), Destination::NewArtboard)
+        .unwrap();
+    let mut pending = colored_reference("Candidate", [200, 30, 40, 255], 128, 96);
+    pending.provenance = "Unaccepted job 456".into();
+    project
+        .attach_result(
+            Arc::new(pending),
+            Destination::Candidate {
+                artboard: project.canvas_id,
+                rect: (0, 0, 128, 96),
+            },
+        )
+        .unwrap();
+    let (prompt, provenance) = project.artwork_metadata();
+    assert_eq!(prompt, "Accepted generation instruction");
+    assert!(provenance.contains("original model · job 123"));
+    assert!(!provenance.contains("Unaccepted job 456"));
+    project.layers[0].visible = false;
+    assert!(!project.artwork_metadata().1.contains("job 123"));
+}
+
+#[test]
+fn artboard_source_snapshots_preserve_the_accepted_parent_without_creating_self_cycles() {
+    let mut project = doc();
+    let mut original = colored_reference("Accepted", [20, 30, 40, 255], 128, 96);
+    original.parent = Some("0".repeat(64));
+    let original = Arc::new(original);
+    project
+        .attach_result(original.clone(), crate::workflow::Destination::NewArtboard)
+        .unwrap();
+    let source = project.generation_source(None).unwrap();
+    let original_id = crate::library::id(&original);
+    if crate::library::id(&source) == original_id {
+        assert_eq!(source.parent, original.parent);
+    } else {
+        assert_eq!(source.parent, Some(original_id.clone()));
+    }
+    project.layers[0].strokes.push(stroke(Tool::Pencil, 48.));
+    let source = project.generation_source(None).unwrap();
+    assert_eq!(source.parent, Some(original_id.clone()));
+    let close_up = project.generation_source(Some((16, 16, 32, 24))).unwrap();
+    assert_eq!(
+        document::decode_reference(&close_up).unwrap().dimensions(),
+        (32, 24)
+    );
+    assert_eq!(close_up.parent, Some(original_id));
+    assert!(project.generation_source(Some((120, 90, 32, 24))).is_err());
+}
+
+#[test]
+fn selection_blend_crops_full_context_and_never_exports_a_pending_result() {
+    use crate::workflow::Destination;
+    let mut project = doc();
+    project
+        .attach_result(
+            Arc::new(colored_reference("Base", [0, 0, 255, 255], 128, 96)),
+            Destination::NewArtboard,
+        )
+        .unwrap();
+    let output = colored_reference("Provider full result", [255, 0, 0, 255], 256, 192);
+    let crop = crate::workflow::crop_blend(&output, (128, 96), (16, 24, 32, 24)).unwrap();
+    assert_eq!(
+        document::decode_reference(&crop).unwrap().dimensions(),
+        (32, 24)
+    );
+    project
+        .attach_result(
+            Arc::new(crop),
+            Destination::Candidate {
+                artboard: project.canvas_id,
+                rect: (16, 24, 32, 24),
+            },
+        )
+        .unwrap();
+    let preview = document::raster(&project, 128, true).unwrap();
+    assert_eq!(preview.get_pixel(20, 30).0, [255, 0, 0, 255]);
+    assert_eq!(preview.get_pixel(4, 4).0, [0, 0, 255, 255]);
+    let directory = temporary("candidate-export");
+    let path = directory.join("artwork.png");
+    document::export(&path, &project, true, 90).unwrap();
+    assert_eq!(
+        image::open(&path).unwrap().to_rgba8().get_pixel(20, 30).0,
+        [0, 0, 255, 255]
+    );
+    project.layers[1].candidate = false;
+    document::export(&path, &project, true, 90).unwrap();
+    assert_eq!(
+        image::open(path).unwrap().to_rgba8().get_pixel(20, 30).0,
+        [255, 0, 0, 255]
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn legacy_generated_images_upgrade_once_without_turning_imported_references_into_artwork() {
+    let mut project = doc();
+    project.version = 1;
+    project.layers[0].strokes.push(stroke(Tool::Pencil, 48.));
+    let mut generated = colored_reference("Generated", [255, 0, 0, 255], 128, 96);
+    generated.prompt = "A character".into();
+    generated.parent = Some("parent-identity".into());
+    project.references = vec![
+        Arc::new(generated),
+        Arc::new(colored_reference("Imported", [0, 255, 0, 255], 128, 96)),
+    ];
+    let directory = temporary("artboard-migration");
+    let path = directory.join("legacy.atelier");
+    document::atomic_write(&path, &serde_json::to_vec(&project).unwrap()).unwrap();
+    let upgraded = document::load(&path).unwrap();
+    assert_eq!(upgraded.version, 2);
+    assert_eq!(upgraded.canvases.len(), 1);
+    assert_eq!(upgraded.layers[0].strokes.len(), 1);
+    assert_eq!(upgraded.references.len(), 1);
+    let image = upgraded.canvases[0].layers[0].image.as_ref().unwrap();
+    assert_eq!(image.reference.parent.as_deref(), Some("parent-identity"));
+    assert!(!image.reference.fingerprint.is_empty());
+    document::save(&path, &upgraded).unwrap();
+    assert_eq!(document::load(&path).unwrap().canvases.len(), 1);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn open_project_recovery_keeps_each_document_path_dirty_state_and_drafts() {
+    use crate::project_tabs::{self, RecoveryTab};
+    let directory = temporary("open-project-tabs");
+    let mut first = doc();
+    first.title = "Character".into();
+    first
+        .prompt_drafts
+        .insert("new".into(), "first draft".into());
+    let mut second = doc();
+    second.title = "Outfit".into();
+    second
+        .prompt_drafts
+        .insert("new".into(), "second draft".into());
+    project_tabs::save_session(
+        &directory.join("open-projects"),
+        vec![
+            (
+                RecoveryTab {
+                    epoch: 3,
+                    path: Some(directory.join("first.atelier")),
+                    dirty: true,
+                },
+                first,
+            ),
+            (
+                RecoveryTab {
+                    epoch: 7,
+                    path: Some(directory.join("second.atelier")),
+                    dirty: false,
+                },
+                second,
+            ),
+        ],
+    )
+    .unwrap();
+    let (tabs, active) = project_tabs::recover(&directory).unwrap();
+    assert_eq!(active.doc.title, "Outfit");
+    assert!(!active.dirty);
+    assert_eq!(active.doc.prompt_drafts["new"], "second draft");
+    assert_eq!(tabs[0].epoch, 3);
+    assert!(tabs[0].dirty);
+    assert_eq!(tabs[0].doc.prompt_drafts["new"], "first draft");
+    assert_eq!(tabs[0].path, Some(directory.join("first.atelier")));
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn unsupported_reference_combinations_fail_before_credentials_or_provider_execution() {
+    for (provider, model, extra, mask) in [
+        (Provider::QwenNative, "", 1, false),
+        (Provider::KreaNative, "", 0, false),
+        (Provider::Comfy, "", 0, false),
+        (Provider::Fal, "alibaba/qwen-image-3/edit", 3, false),
+        (Provider::Fal, "alibaba/qwen-image-3/edit", 0, true),
+    ] {
+        let settings = Settings {
+            provider,
+            edit_model: model.into(),
+            ..Settings::default()
+        };
+        let error = providers::validate_inputs(&settings, true, extra, mask)
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("credential"), "{error}");
+        assert!(!error.contains("Set up"), "{error}");
+    }
+}
+
+#[test]
+#[ignore = "Writes deterministic native-UI fixtures under .svs-e2e"]
+fn prepare_creation_workflow_fixture() {
+    use crate::workflow::Destination;
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.svs-e2e/atelier-creation-fixture");
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut project = doc();
+    project.title = "Candidate review fixture".into();
+    let original = Arc::new(colored_reference(
+        "Accepted blue artwork",
+        [30, 80, 180, 255],
+        512,
+        384,
+    ));
+    project
+        .attach_result(original.clone(), Destination::NewArtboard)
+        .unwrap();
+    project.references.push(original.clone());
+    let mut candidate = colored_reference("Red selection candidate", [210, 40, 50, 255], 128, 96);
+    candidate.parent = Some(crate::library::id(&original));
+    candidate.prompt = "Local review fixture; no provider used".into();
+    project
+        .attach_result(
+            Arc::new(candidate),
+            Destination::Candidate {
+                artboard: project.canvas_id,
+                rect: (64, 64, 128, 96),
+            },
+        )
+        .unwrap();
+    project.prompt_drafts.insert(
+        format!("canvas:{}:full", project.canvas_id),
+        "Full artboard draft".into(),
+    );
+    let reference = colored_reference("Green study reference", [40, 170, 80, 255], 512, 384);
+    let decoded = document::decode_reference(&reference).unwrap();
+    decoded.save(directory.join("study-reference.png")).unwrap();
+    document::save(&directory.join("review.atelier"), &project).unwrap();
+}
 #[test]
 fn provider_profiles_and_legacy_settings_round_trip() {
     let mut settings: Settings = serde_json::from_value(
@@ -641,6 +1034,7 @@ fn eraser_removes_only_active_layer_and_reveals_lower_layer() {
     let mut doc = doc();
     doc.layers[0].strokes.push(stroke(Tool::Pencil, 48.));
     doc.layers.push(Layer {
+        candidate: false,
         name: "Top".into(),
         visible: true,
         opacity: 1.,
@@ -809,7 +1203,7 @@ fn settings_save_reports_failures_without_claiming_success() {
     let directory = temporary("settings-save-errors");
     let path = directory.join("settings.json");
     std::fs::write(&path, "previous settings").unwrap();
-    let error = worker::apply_settings(&Settings::default(), &directory, "").unwrap_err();
+    let error = worker::apply_settings(&Settings::default(), &directory).unwrap_err();
     assert!(format!("{error:#}").contains("Settings file was not saved"));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "previous settings");
     std::fs::remove_dir_all(directory).unwrap();

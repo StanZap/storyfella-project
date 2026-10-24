@@ -1,5 +1,50 @@
 # Storyfella Studio design standard and UX audit
 
+### Atelier creation workflow · 2026-10-24 (current)
+
+Projects contain real artboards with artwork layers and separate reference
+associations. New compositions create image-backed artboards. Full-artboard edits
+and selection blends arrive as pending layers with Accept, Hide/Show, Save as
+reference and Discard controls. Pending candidates and references are excluded
+from artwork exports. Layer movement, scaling, opacity and visibility remain
+undoable; Move layer reveals an outline and corner handle, with precise numeric
+values in the layer dock. B/E/H and bounds/scale canvas resizing are preserved.
+
+The existing floating prompt is now one implementation for new compositions,
+full-artboard edits, selection blends, separate images and inspected-image
+variations. The mode states the destination before submission. Selection blend
+sends the full accepted artwork as context and crops only the chosen rectangle
+into a candidate; separate-image mode sends the crop and exposes output size.
+This does not establish seam quality or identity fidelity. Unsent drafts retain
+their project, artboard/source, coordinates and mode through saves and recovery.
+Options disclose precise output size and creation briefs; routine controls stay
+compact. Provider setup errors and a Clipforge handoff remain visible.
+
+Library is app-wide. A separate picker combines project references with shared
+originals and supports import-and-select. Reference visibility and associations
+belong to their artboard. Project tabs retain independent documents, history,
+drafts and dirty state; session recovery restores open documents. Clipforge owns
+provider connections and secrets; Atelier offers Open Clipforge and Refresh
+readiness, request model choices and ComfyUI mappings. Direct setup navigation
+awaits a Clipforge deep-link contract. Tab closing/reordering remains future work.
+
+The [audit and acceptance record](docs/atelier-creation-workflow.md) documents the
+version-2 upgrade, reused behavior, captured queue destinations and remaining
+native/provider coverage. Source migration, geometry, candidate export exclusion,
+history, multi-project recovery and preflight regressions pass. The workspace
+check/test/format gates and strict Atelier Clippy pass (Atelier: 57 passed,
+12 device/fixture tests ignored). Native macOS packaging and its packaging checks
+also pass. Existing vendored GPUI
+deprecation warnings remain unchanged.
+
+Live macOS checks in a uniquely identified isolated bundle verified project
+creation, draft restoration across tabs and quit/restart, drawing composer access,
+a local stroke and gizmo display. This is partial acceptance: real-provider
+selection requests, candidate review and reference import through the native UI,
+failure injection, first-time-user, VoiceOver and Linux/Windows passes remain.
+Older Atelier entries below describe implementation history and are superseded
+where the workflow changed.
+
 ### Atelier project-first handoff · 2026-10-16
 
 Atelier opens to Projects. New projects open to Artboards with a centered blank

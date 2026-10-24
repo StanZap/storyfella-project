@@ -49,14 +49,23 @@ bundle at `dist/atelier/Atelier.app`). Preserve its Atelier data directory,
 FineWineTTS review app still uses GPUI, so that repository retains its patch.
 Atelier's hosted API wire code and model presets live in
 `clipforge-inference::images`. The GPUI worker owns a Tokio runtime and adapts
-raw output bytes to its document references; Atelier saves hosted API keys into
-the shared `clipforge.toml` through `clipforge_inference::Providers`, while
+raw output bytes to artboard layers/candidates or references; Clipforge owns
+provider setup and hosted keys in the shared `clipforge.toml`, while
 ComfyUI workflow execution stays app-owned. Studio's creative runtime still uses the native
 `sd` API; hosted-provider UI integration remains separate. See `docs/atelier.md`.
 Atelier's shared library stores immutable full-resolution originals plus global
 metadata and mask drafts under `data_dir/library`; `.atelier` projects embed
 their own references/image layers. `editor.rs`/`editor_ui.rs` own the large-image
-workflow; `edit.rs` owns mask encoding and protected-pixel compositing. The mask editor offers paint, erase and a rectangle **box selection** (a `Tool::Rect` stroke the raster fills); **Generate from drawing** rasterizes the canvas into a reference opened as the edit source; the generation rail sets the output size with aspect presets and reports the shared server's status, and local Settings carry the sampling **steps** and **width**/**height** plus **LoRA adapters** (a searchable picker with per-adapter weights) — the sampling options ride the shared `clipforge_inference::images::Request`'s native `steps`/`loras`. Provider
+workflow; `edit.rs` owns mask encoding and protected-pixel compositing. The mask
+editor offers paint, erase and a rectangle **box selection** (`Tool::Rect`).
+Atelier's floating **Create / image prompt** composer handles new artboards,
+full-artboard candidate edits, selection blends and separate images. Selection
+blend sends full accepted artwork as context and crops the returned rectangle;
+separate mode sends the selection crop to a new artboard. Request sizes and
+sampling ride the shared `clipforge_inference::images::Request`; Settings retains
+model presets, LoRA request choices and ComfyUI mappings. `workflow.rs` owns
+artboard attachment/schema upgrades, and `project_tabs.rs` owns independent open
+documents and session recovery. Provider
 mask/reference capabilities and wire formats belong only in Clipforge. Approved
 `.sfart` exchange lives in GUI-free `studio-core::artwork`; Studio imports through
 `AppState::import_artwork` (completed revision, undo, normal persistence), never

@@ -545,10 +545,25 @@ plan to ship, with its status; update it when work lands.
 **Atelier relocation: implemented.** `apps/atelier` (`storyfella-atelier`, binary
 `atelier`) is the separate GPUI art app, moved from FineWineTTS with its current
 sources, project/data identity and macOS renderer patch. Studio remains Dioxus.
+**Atelier creation workflow (2026-10-24): implemented; broader acceptance pending.**
+Schema v2 gives generated compositions real artboards and keeps references
+separate. Full-artboard/selection edits create pending layers with review actions;
+separate-image selection generation creates a new artboard. The shared floating
+composer has durable source/mode drafts and captured artboard destinations.
+Layer gizmos and precise values extend existing undoable transforms. An app-wide
+Library and import-capable reference picker replace the project Library tab and
+generation rail. Open projects retain independent tab state and recover after
+restart. Clipforge owns provider/credential setup, with launch and readiness
+refresh in Atelier; a setup deep link remains a Clipforge dependency. Tab closing
+and reordering, actual-provider selection quality and complete native/first-user
+acceptance remain. Workspace checks/tests/format and strict Atelier Clippy pass;
+partial isolated macOS checks are recorded in
+[creation workflow](atelier-creation-workflow.md). This entry supersedes the
+older Atelier surface descriptions below.
 **Shared hosted image execution: implemented in Atelier.** Clipforge owns the
 async adapters for Replicate, fal.ai, Alibaba and GPT Image, shared presets,
-job polling/cancellation and result metadata. Atelier retains its credential
-and document boundaries. **Art editing and reuse: implemented.** Full-resolution
+job polling/cancellation and result metadata. Atelier retains its document
+boundary and reads shared credentials. **Art editing and reuse: implemented.** Full-resolution
 originals, a cross-project library, zoomable inspection, version branches,
 before/after, editable image layers with placement, durable masks and supported
 multi-reference editing are available in Atelier. Approved originals and painted
@@ -559,7 +574,7 @@ remain **planned**; see [Atelier](atelier.md) for limits and verification.
 **Compact Atelier workspace and shared provider credentials: implemented.**
 Named icon actions and optional image details follow DESIGN.md. Hosted provider
 keys persist in the shared `clipforge.toml` through Clipforge's atomic,
-owner-only config writer. Atelier's Settings field masks stored keys.
+owner-only config writer. Credential editing now lives in Clipforge.
 **Game-art creation briefs: implemented.** The new-image composer offers
 editable starting points for characters, objects, backgrounds and narrative
 illustrations, with canvas shapes matched to each asset.

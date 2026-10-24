@@ -20,7 +20,9 @@ pub struct QueuedRequest {
     pub mask: Option<MaskDraft>,
     pub editing: bool,
     /// A drawing selection to receive the generated image, in canvas pixels.
-    pub placement: Option<(u32, u32, u32, u32)>,
+    pub destination: crate::workflow::Destination,
+    /// Full-source output cropped locally for selection blend.
+    pub blend: Option<crate::workflow::BlendCrop>,
 }
 
 impl QueuedRequest {
@@ -82,12 +84,10 @@ pub struct QueueItem {
     pub state: JobState,
     /// The generated reference, when a completed request was added to a project.
     pub result_id: Option<String>,
+    pub result: Option<Arc<Reference>>,
     /// The project epoch when the request was queued; a result only changes the
     /// project it was queued for.
     pub epoch: u64,
-    /// The image on screen when it was queued, so a result can replace it when
-    /// that image is still open.
-    pub view_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -98,7 +98,7 @@ pub struct Queue {
 }
 
 impl Queue {
-    pub fn enqueue(&mut self, request: QueuedRequest, epoch: u64, view_id: Option<String>) -> u64 {
+    pub fn enqueue(&mut self, request: QueuedRequest, epoch: u64) -> u64 {
         self.next_id += 1;
         let id = self.next_id;
         self.items.push(QueueItem {
@@ -106,8 +106,8 @@ impl Queue {
             request,
             state: JobState::Queued,
             result_id: None,
+            result: None,
             epoch,
-            view_id,
         });
         id
     }
@@ -205,15 +205,16 @@ mod tests {
             references: vec![],
             mask: None,
             editing: false,
-            placement: None,
+            destination: crate::workflow::Destination::NewArtboard,
+            blend: None,
         }
     }
 
     #[test]
     fn requests_run_in_the_order_they_were_added() {
         let mut queue = Queue::default();
-        let first = queue.enqueue(request("a"), 0, None);
-        let second = queue.enqueue(request("b"), 0, None);
+        let first = queue.enqueue(request("a"), 0);
+        let second = queue.enqueue(request("b"), 0);
         assert_eq!(queue.next_queued(), Some(first));
         queue.get_mut(first).unwrap().state = JobState::Done;
         assert_eq!(queue.next_queued(), Some(second));
@@ -224,7 +225,7 @@ mod tests {
     #[test]
     fn pause_stops_dispatch_but_keeps_the_order() {
         let mut queue = Queue::default();
-        queue.enqueue(request("a"), 0, None);
+        queue.enqueue(request("a"), 0);
         assert!(!queue.is_paused());
         assert!(queue.toggle_paused());
         assert!(queue.is_paused());
@@ -237,9 +238,9 @@ mod tests {
     #[test]
     fn clearing_finished_history_keeps_queued_and_running_work() {
         let mut queue = Queue::default();
-        let running = queue.enqueue(request("running"), 0, None);
-        let queued = queue.enqueue(request("queued"), 0, None);
-        let done = queue.enqueue(request("done"), 0, None);
+        let running = queue.enqueue(request("running"), 0);
+        let queued = queue.enqueue(request("queued"), 0);
+        let done = queue.enqueue(request("done"), 0);
         queue.get_mut(running).unwrap().state = JobState::Running {
             progress: String::new(),
         };
@@ -254,12 +255,12 @@ mod tests {
     #[test]
     fn only_queued_requests_can_be_removed() {
         let mut queue = Queue::default();
-        let id = queue.enqueue(request("a"), 0, None);
+        let id = queue.enqueue(request("a"), 0);
         queue.get_mut(id).unwrap().state = JobState::Done;
         queue.remove(id);
         assert!(queue.get(id).is_some(), "a finished request is history");
 
-        let id = queue.enqueue(request("b"), 0, None);
+        let id = queue.enqueue(request("b"), 0);
         queue.remove(id);
         assert!(queue.get(id).is_none(), "a queued request can be removed");
     }

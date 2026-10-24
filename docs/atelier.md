@@ -20,72 +20,38 @@ The root Cargo patch and vendored GPUI Metal renderer remain in this workspace.
 FineWineTTS retains its separate GPUI renderer patch for its review application.
 The macOS development bundle uses ad hoc signing without certificate setup.
 Provider keys resolve from environment variables first, then the matching hosted
-provider entry in the shared `clipforge.toml`. Atelier's Credentials section can
-update that shared provider entry directly; it does not maintain a second
-credential store. Keys stay out of projects and exports.
+provider entry in the shared `clipforge.toml`. Provider connections, credentials
+and secrets are managed in Clipforge. Keys stay out of projects and exports.
 
 ## Image workflow
 
-**Library → All projects** is the **shared reference collection** — images
-explicitly added for reuse: imports into that tab and any project image promoted
-with **Add to reference library** (the toolbar action in the image workspace).
-**This project** shows the project's own images. **Use** copies a shared
-reference into the project. Generated images, edits and imports made elsewhere
-stay in their project and never enter the shared collection on their own, so the
-collection is not a dumping ground of every image ever made; renaming or
-favoriting a project-only image applies to that project, not the collection.
-Saved projects retain their own copies and do not depend on library paths. Search
-matches names/tags; favorites filter the collection.
+A project contains drawing/image artboards; each artboard owns artwork layers,
+reference associations and pending AI candidates. **Artboards → Create** creates
+a new composition. Open an artboard to draw or edit; **Create / image prompt**
+(**⌘P**) opens the same floating composer with full-artboard, selection **Blend
+into artboard**, and selection **Create separate image** contexts. Local edits
+are candidates to review, accept, hide, discard or save as references. Separate
+images become new artboards. Accepted artwork remains intact until review.
 
-Imported and generated originals retain their full dimensions and original
-bytes. Display thumbnails are separate. Old projects that already contain a
-1600 px normalized reference retain those pixels; importing the original file
-again is necessary to recover detail that was previously discarded.
+The app-wide **Library** holds explicitly shared originals. The composer/drawing
+reference picker searches shared and project images, supports importing into the
+library, and embeds selected references in the project. References can be hidden
+while working and are excluded from artwork exports. New compositions may use
+selected references as image input without changing their new-artboard destination.
 
-**Open** enters the large image workspace: fit, 100%, scroll zoom, pan,
-full-resolution PNG export, versions and a labeled before/after comparison.
-Editing an earlier version creates a branch; the source is kept. Parent identity,
-prompt and provider/model/job provenance are stored alongside library originals.
-Browsing another image while a job runs does not redirect that job or force the
-completed version over the image being inspected.
+Multiple projects stay open in tabs with independent documents, dirty state,
+history and drafts. Project/recovery saves retain artboards, candidates, reference
+associations, provenance, source/mode-bound drafts and last selection contexts.
+Schema version 1 upgrades on load without discarding originals.
 
-The **Projects** page is the top-level entry point for saved `.atelier` projects.
-Creating or opening a project shows **Artboards**. A new project shows a blank
-canvas artboard and a compact image prompt below the artboards. The prompt is
-always available there, with dropdowns for provider, aspect ratio, resolution,
-and sampling steps when the local provider supports them. Select the canvas to
-draw, or an image to open it in the full-height editor. Generated images appear
-in the artboard sequence; the blank canvas placeholder disappears when the
-first image is generated. A canvas with drawing remains in the sequence.
-Artboards and their history belong to the open project. The blank canvas is the
-focal point of a tinted Artboards stage only while the project is empty. In Draw,
-the narrow left rail stacks the brush preset, size step actions, size tag,
-opacity, and smoothing controls on one centerline; brush presets and other rail
-popovers open beside their triggers.
-The Artboards stage centers a single artboard at a larger size and preserves its
-aspect ratio. The prompt stays compact at the bottom of the same workspace;
-it is visible by default and toggles with **⌘P** or the header sparkle action.
-Routine save state appears only in the header.
-A faint plus slot follows existing artboards and adds a blank drawing canvas.
-Select the new canvas to draw; earlier canvases remain editable. The slot does
-not count as an artboard or change the centering of existing artwork.
-New projects receive a local `.atelier` file when created; switching projects
-saves the current project's latest canvas and prompt drafts first.
+Provider setup and credentials belong in **Clipforge**. Use **Open Clipforge**,
+then return and **Refresh readiness**. Atelier retains per-request model presets,
+size, steps, adapters and ComfyUI workflow mappings. Readiness distinguishes
+configuration from a successful remote request.
 
-The image workspace keeps the artwork as its primary surface. **⌘P** or the
-sparkle action toggles the floating edit composer; it summarizes the prompt
-that produced the current artboard and accepts the next variation request. Sending
-the request opens **Artboards**, a horizontal artboard sequence with the pending
-result visible while it runs. Artboard activity is available from its ellipsis as
-a short vertical list; selecting an artboard returns to the full image editor.
-
-Unsent prompts belong to their source image; New image has a separate draft.
-Navigation restores the relevant draft. Project and recovery saves retain the
-active source and drafts, including on quit. Canvas undo does not undo prompt
-typing. The prompt-reuse icon loads the inspected version's original prompt.
-Version chips use saved names; their tooltips identify the parent branch.
-Save/Open/Save as shortcuts work while typing a prompt as well as on the canvas;
-native text fields keep their own editing and undo behavior.
+See [creation workflow](atelier-creation-workflow.md) for the audit, exact
+migration, input limits, queue/selection semantics, project recovery, the missing
+Clipforge setup deep-link contract and remaining native/provider acceptance.
 
 ## Local Qwen and Krea on Linux with CUDA
 
@@ -125,8 +91,8 @@ in the rail opens the **Image
 settings** window with the sampling **steps** (blank uses the model's default —
 25 for Qwen, 8 for Krea), the output **width**/**height**, and the **LoRA
 adapters** added from a searchable picker (each applied adapter carries its own
-weight, default 1.0), all as per-request controls. **Settings** keeps the
-provider, model, endpoint and credentials. The sampling options ride the shared
+weight, default 1.0), all as per-request controls. **Settings** keeps request
+model presets and ComfyUI workflow mappings; Clipforge manages connections and credentials. The sampling options ride the shared
 image request's native fields (`clipforge_inference::images::Request`); hosted
 providers ignore them and use the preset aspect sizes.
 
@@ -139,7 +105,7 @@ shared server. **Pause** holds dispatch (a running image always finishes),
 **Clear finished** drops completed history. Each queue entry keeps the values it
 was created with, so editing the live controls afterwards never changes work
 already queued. The queue has its own panel, opened from the header badge (which
-counts outstanding requests) or the rail's summary; it lists each request with
+counts outstanding requests); it lists each request with
 its state (Queued, Running with its progress, Done, Failed, Cancelled) and
 carries Pause/Stop/Clear.
 
@@ -162,18 +128,12 @@ back into a successful result. A masked result must retain source dimensions.
 Failures preserve the draft and expose **Retry mask save**. Window close waits
 for the latest draft and recovery save; errors keep the app open.
 
-Use card **Reference** actions to add up to two additional inputs. The selected
-source is Image 1; additional references are Images 2 and 3. New-image generation
-does not use the editing basket. Unsupported mask/multi-reference combinations
-fail before credentials are requested or a paid job is submitted.
-
-The Draw workspace's sparkle action or **⌘P** toggles the same compact prompt used
-on Artboards, floating over the bottom of the canvas. It retains the provider,
-aspect, resolution, and local steps controls, with a Full/Area control beside
-them. Area lets a canvas drag select a region; clicking it again returns to the full
-canvas. Submitting uses the drawing as the source, rasterizes any selected area,
-and queues an image layer over the drawing. It needs a provider that supports
-editing.
+Use the composer's **References** picker to select up to two additional inputs.
+The selected source is Image 1; additional references are Images 2 and 3.
+New compositions use the first selected reference as their primary image input.
+Unsupported combinations fail before queueing. Full-artboard edits and selection
+blends arrive as pending layers, while separate-image requests create artboards.
+See [creation workflow](atelier-creation-workflow.md) for context and placement.
 
 | Editing route | Ordered images | Mask |
 | --- | --- | --- |

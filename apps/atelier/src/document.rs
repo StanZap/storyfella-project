@@ -64,6 +64,9 @@ pub struct Layer {
     pub name: String,
     pub visible: bool,
     pub opacity: f32,
+    /// Pending AI results can be previewed but never enter artwork exports.
+    #[serde(default)]
+    pub candidate: bool,
     pub strokes: Vec<Stroke>,
     #[serde(default)]
     pub image: Option<ImageLayer>,
@@ -95,6 +98,10 @@ pub struct CanvasArtboard {
     pub height: u32,
     pub layers: Vec<Layer>,
     pub active_layer: usize,
+    #[serde(default)]
+    pub references: Vec<String>,
+    #[serde(default = "show_references")]
+    pub references_visible: bool,
 }
 
 impl CanvasArtboard {
@@ -107,10 +114,13 @@ impl CanvasArtboard {
                 name: "Sketch".into(),
                 visible: true,
                 opacity: 1.,
+                candidate: false,
                 strokes: vec![],
                 image: None,
             }],
             active_layer: 0,
+            references: vec![],
+            references_visible: true,
         }
     }
 }
@@ -135,11 +145,20 @@ pub struct Document {
     pub prompt_drafts: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub active_prompt_target: Option<String>,
+    #[serde(default)]
+    pub artboard_references: Vec<String>,
+    #[serde(default = "show_references")]
+    pub references_visible: bool,
+    #[serde(default)]
+    pub artboard_prompt_targets: std::collections::BTreeMap<u32, String>,
+}
+fn show_references() -> bool {
+    true
 }
 impl Default for Document {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: 2,
             title: "Untitled project".into(),
             width: 2400,
             height: 1800,
@@ -147,6 +166,7 @@ impl Default for Document {
                 name: "Sketch".into(),
                 visible: true,
                 opacity: 1.,
+                candidate: false,
                 strokes: vec![],
                 image: None,
             }],
@@ -159,6 +179,9 @@ impl Default for Document {
             note: String::new(),
             prompt_drafts: Default::default(),
             active_prompt_target: None,
+            artboard_references: vec![],
+            references_visible: true,
+            artboard_prompt_targets: Default::default(),
         }
     }
 }
@@ -170,6 +193,8 @@ impl Document {
             height: self.height,
             layers: self.layers.clone(),
             active_layer: self.active_layer,
+            references: self.artboard_references.clone(),
+            references_visible: self.references_visible,
         }
     }
 
@@ -179,6 +204,8 @@ impl Document {
         self.height = canvas.height;
         self.layers = canvas.layers;
         self.active_layer = canvas.active_layer;
+        self.artboard_references = canvas.references;
+        self.references_visible = canvas.references_visible;
         self.canvas_created = true;
     }
 
@@ -229,23 +256,21 @@ impl Document {
             "Invalid layer movement"
         );
         let mut layer = self.layers[self.active_layer].clone();
-        let image = layer
-            .image
-            .as_mut()
-            .context("Select an image layer first")?;
         let cx = self.width as f32 / 2.;
         let cy = self.height as f32 / 2.;
-        let t = &mut image.transform;
-        for value in &mut t[..4] {
-            *value *= scale;
+        if let Some(image) = &mut layer.image {
+            let t = &mut image.transform;
+            for value in &mut t[..4] {
+                *value *= scale;
+            }
+            t[4] = (t[4] - cx) * scale + cx + dx;
+            t[5] = (t[5] - cy) * scale + cy + dy;
+            ensure!(
+                t.iter().all(|v| v.is_finite() && v.abs() < 1_000_000.)
+                    && (t[0] * t[3] - t[1] * t[2]).abs() > 0.000001,
+                "Image scale or position limit reached"
+            );
         }
-        t[4] = (t[4] - cx) * scale + cx + dx;
-        t[5] = (t[5] - cy) * scale + cy + dy;
-        ensure!(
-            t.iter().all(|v| v.is_finite() && v.abs() < 1_000_000.)
-                && (t[0] * t[3] - t[1] * t[2]).abs() > 0.000001,
-            "Image scale or position limit reached"
-        );
         for stroke in &mut layer.strokes {
             stroke.size = (stroke.size * scale).clamp(0.1, 512.);
             for point in std::sync::Arc::make_mut(&mut stroke.points) {
@@ -264,7 +289,7 @@ impl Document {
         Ok(())
     }
     pub fn validate(&self) -> Result<()> {
-        ensure!(self.version == 1, "Unsupported project version");
+        ensure!(self.version == 2, "Unsupported project version");
         validate_size(self.width, self.height)?;
         ensure!(
             !self.layers.is_empty()
@@ -469,6 +494,10 @@ impl History {
             &mut current.active_prompt_target,
             &mut replacement.active_prompt_target,
         );
+        std::mem::swap(
+            &mut current.artboard_prompt_targets,
+            &mut replacement.artboard_prompt_targets,
+        );
     }
 }
 pub fn load(path: &Path) -> Result<Document> {
@@ -478,12 +507,17 @@ pub fn load(path: &Path) -> Result<Document> {
     );
     let mut doc: Document =
         serde_json::from_slice(&fs::read(path)?).context("Not an Atelier project")?;
+    doc.migrate()?;
     doc.validate()?;
     for reference in &mut doc.references {
         let reference = std::sync::Arc::make_mut(reference);
         reference.fingerprint = crate::library::fingerprint(&reference.image);
     }
-    for layer in &mut doc.layers {
+    for layer in doc
+        .layers
+        .iter_mut()
+        .chain(doc.canvases.iter_mut().flat_map(|c| &mut c.layers))
+    {
         if let Some(image) = &mut layer.image {
             let reference = std::sync::Arc::make_mut(&mut image.reference);
             reference.fingerprint = crate::library::fingerprint(&reference.image);
@@ -714,10 +748,11 @@ pub fn image_layer_pixels(
 }
 #[cfg(any(test, not(target_os = "macos")))]
 pub fn export(path: &Path, doc: &Document, transparent: bool, quality: u8) -> Result<()> {
+    let doc = doc.artwork();
     let jpeg = path
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg"));
-    export_image(path, raster(doc, MAX_EDGE, transparent && !jpeg)?, quality)
+    export_image(path, raster(&doc, MAX_EDGE, transparent && !jpeg)?, quality)
 }
 pub fn export_image(path: &Path, image: RgbaImage, quality: u8) -> Result<()> {
     let extension = path

@@ -44,6 +44,7 @@ pub enum Page {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
+    References,
     None,
     Canvas,
     Settings,
@@ -168,8 +169,9 @@ pub struct CanvasTile {
     pub image: CanvasImage,
 }
 pub struct DrawingApp {
+    pub project_tabs: Vec<crate::project_tabs::ProjectTab>,
+    pub next_project_epoch: u64,
     pub library: Vec<(Arc<document::Reference>, Arc<RenderImage>)>,
-    pub shared_library: bool,
     pub library_loading: bool,
     pub library_error: Option<String>,
     pub opened_image: Option<(Arc<document::Reference>, Arc<RenderImage>, u32, u32)>,
@@ -192,13 +194,9 @@ pub struct DrawingApp {
     pub mask_save_error: Option<String>,
     pub mask_redo: Vec<Stroke>,
     pub use_mask: bool,
-    pub input_references: Vec<Arc<document::Reference>>,
-    pub generation_view_id: Option<String>,
-    pub iteration_source_id: Option<String>,
-    pub iteration_job_id: Option<u64>,
-    pub interaction_open_for: Option<String>,
     pub show_edit_composer: bool,
     pub show_artboards_composer: bool,
+    pub show_prompt_details: bool,
     pub projects: Vec<ProjectCard>,
     pub projects_loading: bool,
     pub doc: Document,
@@ -219,6 +217,7 @@ pub struct DrawingApp {
     pub last_pan: Option<gpui_kit::Point<Pixels>>,
     pub moving_image: bool,
     pub last_image_point: Option<DocPoint>,
+    pub scaling_layer: bool,
     pub hover: Option<gpui_kit::Point<Pixels>>,
     pub bounds: Rc<Cell<Bounds<Pixels>>>,
     pub tiles: std::collections::HashMap<crate::canvas_renderer::TileKey, CanvasTile>,
@@ -274,7 +273,8 @@ pub struct DrawingApp {
     pub lora_weights: std::collections::BTreeMap<String, Entity<InputState>>,
     /// The last probed state of the machine's shared local image server.
     pub server_status: Option<ServerStatus>,
-    pub settings_save: Option<(Settings, String)>,
+    pub provider_readiness: String,
+    pub settings_save: Option<Settings>,
     pub settings_save_error: Option<String>,
     pub generation: Option<Arc<AtomicBool>>,
     pub generation_error: Option<String>,
@@ -287,7 +287,7 @@ pub struct DrawingApp {
     /// The drag anchor while a region is being selected on the canvas.
     pub(crate) region_drag: Option<DocPoint>,
     /// The prompt used by the floating drawing composer.
-    pub from_drawing_prompt: Entity<TextareaState>,
+    pub selection_mode: crate::workflow::SelectionMode,
     pub job_id: u64,
     pub job_epoch: u64,
     pub timer_seconds: u32,
@@ -297,6 +297,10 @@ pub struct DrawingApp {
     pub exercise: usize,
     pub title: Entity<InputState>,
     pub layer_name: Entity<InputState>,
+    pub layer_dx: Entity<InputState>,
+    pub layer_dy: Entity<InputState>,
+    pub layer_scale: Entity<InputState>,
+    pub layer_opacity: Entity<InputState>,
     pub width: Entity<InputState>,
     pub height: Entity<InputState>,
     pub prompt: Entity<TextareaState>,
@@ -305,7 +309,6 @@ pub struct DrawingApp {
     pub endpoint: Entity<InputState>,
     pub model: Entity<InputState>,
     pub edit_model: Entity<InputState>,
-    pub key: Entity<InputState>,
     pub positive_node: Entity<InputState>,
     pub latent_node: Entity<InputState>,
     pub seed_node: Entity<InputState>,
@@ -324,7 +327,7 @@ pub struct DrawingApp {
 impl DrawingApp {
     pub fn new(data_dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let recovered = document::load(&data_dir.join("recovery.atelier"));
-        let (doc, status, error) = match recovered {
+        let (doc, mut status, mut error) = match recovered {
             Ok(doc) => (doc, "Recovered your last session".into(), false),
             Err(e) if data_dir.join("recovery.atelier").exists() => (
                 Document::default(),
@@ -333,6 +336,38 @@ impl DrawingApp {
             ),
             Err(_) => (Document::default(), String::new(), false),
         };
+        let (project_tabs, doc, initial_epoch, initial_path, initial_dirty) =
+            match crate::project_tabs::recover(&data_dir) {
+                Ok((tabs, active)) => (tabs, active.doc, active.epoch, active.path, active.dirty),
+                Err(recovery_error) => {
+                    let snapshots = data_dir.join("open-projects");
+                    if snapshots.join("session.json").exists() {
+                        status = format!("Open-project recovery failed: {recovery_error}. Snapshots remain in {}",snapshots.display());
+                        error = true;
+                    }
+                    let epoch = std::fs::read_dir(&snapshots)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|entry| {
+                            entry.ok().and_then(|e| {
+                                e.path()
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .and_then(|s| s.parse::<u64>().ok())
+                            })
+                        })
+                        .max()
+                        .unwrap_or_default()
+                        .saturating_add(1);
+                    (vec![], doc, epoch, None, false)
+                }
+            };
+        let next_project_epoch = project_tabs
+            .iter()
+            .map(|tab| tab.epoch)
+            .chain([initial_epoch])
+            .max()
+            .unwrap_or(1);
         let settings: Settings = std::fs::read(data_dir.join("settings.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
@@ -382,6 +417,14 @@ impl DrawingApp {
         });
         let title = input(doc.title.clone(), window, cx);
         let layer_name = input(doc.layers[doc.active_layer].name.clone(), window, cx);
+        let layer_dx = input("0".into(), window, cx);
+        let layer_dy = input("0".into(), window, cx);
+        let layer_scale = input("100".into(), window, cx);
+        let layer_opacity = input(
+            format!("{}", doc.layers[doc.active_layer].opacity * 100.),
+            window,
+            cx,
+        );
         let width = input(doc.width.to_string(), window, cx);
         let height = input(doc.height.to_string(), window, cx);
         let prompt_target = doc
@@ -403,15 +446,7 @@ impl DrawingApp {
         let endpoint = input(settings.endpoint.clone(), window, cx);
         let model = input(settings.model.clone(), window, cx);
         let edit_model = input(settings.edit_model.clone(), window, cx);
-        let key_value = clipforge_inference::config::user_or_built_in()
-            .ok()
-            .and_then(|registry| providers::shared_stored_api_key(settings.provider, &registry))
-            .unwrap_or_default();
-        let key = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value(key_value)
-                .masked(true)
-        });
+
         let positive_node = input(settings.positive_node.clone(), window, cx);
         let latent_node = input(settings.latent_node.clone(), window, cx);
         let seed_node = input(settings.seed_node.clone(), window, cx);
@@ -461,9 +496,6 @@ impl DrawingApp {
                 .min(256.0)
                 .max(2048.0)
         });
-        let from_drawing_prompt = cx.new(|cx| {
-            TextareaState::new(window, cx).placeholder("Describe your image or changes…")
-        });
         let note = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder("What did you notice?")
@@ -484,8 +516,9 @@ impl DrawingApp {
             .zip(references.iter().cloned())
             .collect();
         let mut app = Self {
+            project_tabs,
+            next_project_epoch,
             library: vec![],
-            shared_library: true,
             library_loading: false,
             library_error: None,
             opened_image: None,
@@ -508,13 +541,9 @@ impl DrawingApp {
             mask_save_error: None,
             mask_redo: vec![],
             use_mask: false,
-            input_references: vec![],
-            generation_view_id: None,
-            iteration_source_id: None,
-            iteration_job_id: None,
-            interaction_open_for: None,
             show_edit_composer: false,
             show_artboards_composer: true,
+            show_prompt_details: false,
             show_drawing_composer: false,
             projects: vec![],
             projects_loading: false,
@@ -569,6 +598,7 @@ impl DrawingApp {
             last_pan: None,
             moving_image: false,
             last_image_point: None,
+            scaling_layer: false,
             hover: None,
             bounds: Rc::new(Cell::new(Bounds::default())),
             tiles: std::collections::HashMap::new(),
@@ -589,13 +619,13 @@ impl DrawingApp {
             transparent: false,
             jpeg: false,
             jpeg_quality: 90,
-            path: None,
+            path: initial_path,
             data_dir,
-            dirty: false,
+            dirty: initial_dirty,
             switching: false,
             closing: false,
             revision: 1,
-            epoch: 1,
+            epoch: initial_epoch,
             visual_revision: 1,
             rendered_revision: 0,
             render_pending: false,
@@ -615,6 +645,7 @@ impl DrawingApp {
             lora_select,
             lora_weights,
             server_status: None,
+            provider_readiness: "Checking provider…".into(),
             settings_save: None,
             settings_save_error: None,
             generation: None,
@@ -623,7 +654,7 @@ impl DrawingApp {
             generation_region: None,
             selecting_generation_region: false,
             region_drag: None,
-            from_drawing_prompt,
+            selection_mode: crate::workflow::SelectionMode::Blend,
             job_id: 0,
             job_epoch: 0,
             timer_seconds: 300,
@@ -633,6 +664,10 @@ impl DrawingApp {
             exercise: 0,
             title,
             layer_name,
+            layer_dx,
+            layer_dy,
+            layer_scale,
+            layer_opacity,
             width,
             height,
             prompt,
@@ -641,7 +676,6 @@ impl DrawingApp {
             endpoint,
             model,
             edit_model,
-            key,
             positive_node,
             latent_node,
             seed_node,
@@ -660,7 +694,7 @@ impl DrawingApp {
         app.sync_ref_inputs(window, cx);
         app.refresh_library();
         app.refresh_projects();
-        app.refresh_server_status();
+        app.reload_clipforge(window, cx);
         app.subscriptions
             .push(cx.observe(&app.prompt, |this, _, cx| {
                 this.capture_prompt(cx);
@@ -786,6 +820,7 @@ impl DrawingApp {
             this.capture_prompt(cx);
             this.finish_stroke();
             this.finish_mask();
+            this.persist_open_projects();
             let path = this.data_dir.join("recovery.atelier");
             let (ack, rx) = mpsc::channel();
             let _ = this.workers.storage.send(Storage::Save {
@@ -820,6 +855,7 @@ impl DrawingApp {
             self.closing = true;
             self.finish_stroke();
             self.finish_mask();
+            self.persist_open_projects();
             if self.mask_dirty {
                 self.save_mask();
             }
@@ -831,7 +867,7 @@ impl DrawingApp {
         self.status = message.into();
         self.error = error;
     }
-    fn capture_prompt(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn capture_prompt(&mut self, cx: &mut Context<Self>) {
         let value = self.prompt.read(cx).value().to_string();
         if self.doc.active_prompt_target.as_deref() != Some(&self.prompt_target)
             || self
@@ -846,6 +882,16 @@ impl DrawingApp {
                 .prompt_drafts
                 .insert(self.prompt_target.clone(), value);
             self.doc.active_prompt_target = Some(self.prompt_target.clone());
+            if let Some(id) = self
+                .prompt_target
+                .strip_prefix("canvas:")
+                .and_then(|s| s.split(':').next())
+                .and_then(|id| id.parse().ok())
+            {
+                self.doc
+                    .artboard_prompt_targets
+                    .insert(id, self.prompt_target.clone());
+            }
             self.revision += 1;
             self.dirty = true;
             self.last_edit = Instant::now();
@@ -853,7 +899,15 @@ impl DrawingApp {
         }
     }
     pub fn restore_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let target = if self.editing_image {
+        let target = if self.page == Page::Draw {
+            match self.region_bounds() {
+                Some((x, y, w, h)) => format!(
+                    "canvas:{}:{:?}:{x}:{y}:{w}:{h}",
+                    self.doc.canvas_id, self.selection_mode
+                ),
+                None => format!("canvas:{}:full", self.doc.canvas_id),
+            }
+        } else if self.editing_image {
             self.edit_source()
                 .map(|r| crate::library::id(&r))
                 .unwrap_or_else(|| "new".into())
@@ -881,6 +935,9 @@ impl DrawingApp {
         self.dirty = true;
         self.last_edit = Instant::now();
     }
+    pub fn reset_recovery_clock(&mut self) {
+        self.autosaved_revision = 0;
+    }
     pub fn view_changed(&mut self) {
         self.finish_stroke();
         self.visual_revision += 1;
@@ -893,6 +950,7 @@ impl DrawingApp {
         self.active_stroke = false;
         self.last_pan = None;
         self.last_image_point = None;
+        self.scaling_layer = false;
     }
     pub fn size(&self) -> f32 {
         if self.tool == Tool::Eraser {
@@ -922,13 +980,15 @@ impl DrawingApp {
             self.sync_inputs(window, cx);
         }
     }
-    fn sync_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn sync_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_layer_controls(window, cx);
         self.prompt_target = self
             .doc
             .active_prompt_target
             .clone()
             .unwrap_or_else(|| "new".into());
-        self.editing_image = self.prompt_target != "new";
+        self.editing_image =
+            self.prompt_target != "new" && !self.prompt_target.starts_with("canvas:");
         let draft = self
             .doc
             .prompt_drafts
@@ -1013,6 +1073,16 @@ impl DrawingApp {
             .references
             .iter()
             .any(|reference| crate::library::id(reference) == target)
+            || self
+                .doc
+                .layers
+                .iter()
+                .chain(self.doc.canvases.iter().flat_map(|c| &c.layers))
+                .any(|l| {
+                    l.image
+                        .as_ref()
+                        .is_some_and(|i| crate::library::id(&i.reference) == target)
+                })
         {
             self.checkpoint();
         }
@@ -1036,6 +1106,25 @@ impl DrawingApp {
             }
             self.changed();
         }
+        let mut artwork_changed = false;
+        for layer in self
+            .doc
+            .layers
+            .iter_mut()
+            .chain(self.doc.canvases.iter_mut().flat_map(|c| &mut c.layers))
+        {
+            if let Some(image) = &mut layer.image {
+                if crate::library::id(&image.reference) == target {
+                    let reference = Arc::make_mut(&mut image.reference);
+                    reference.name = name.clone();
+                    reference.tags = tags.clone();
+                    artwork_changed = true;
+                }
+            }
+        }
+        if artwork_changed {
+            self.changed();
+        }
         if let Some((reference, _, _, _)) = &mut self.opened_image {
             if crate::library::id(reference) == target {
                 let reference = Arc::make_mut(reference);
@@ -1044,9 +1133,15 @@ impl DrawingApp {
             }
         }
         if let Some(reference) = self
-            .all_references()
-            .into_iter()
-            .find(|reference| crate::library::id(reference) == target)
+            .opened_image
+            .as_ref()
+            .filter(|(reference, _, _, _)| crate::library::id(reference) == target)
+            .map(|(reference, _, _, _)| reference.clone())
+            .or_else(|| {
+                self.all_references()
+                    .into_iter()
+                    .find(|reference| crate::library::id(reference) == target)
+            })
         {
             let _ = self.workers.storage.send(Storage::LibraryUpdate(
                 self.data_dir.join("library"),
@@ -1073,20 +1168,15 @@ impl DrawingApp {
         ));
         self.changed();
     }
-    pub fn toggle_library_favorite(&mut self, index: usize) {
-        if let Some((reference, _)) = self.library.get_mut(index) {
-            let updated = Arc::make_mut(reference);
-            updated.favorite = !updated.favorite;
-            let _ = self.workers.storage.send(Storage::LibraryUpdate(
-                self.data_dir.join("library"),
-                reference.clone(),
-                crate::library::Update::Favorite,
-            ));
-        }
-    }
+
     pub fn remove_reference(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(i) = self.doc.reference {
             self.checkpoint();
+            let id = crate::library::id(&self.doc.references[i]);
+            self.doc.artboard_references.retain(|r| *r != id);
+            for canvas in &mut self.doc.canvases {
+                canvas.references.retain(|r| *r != id);
+            }
             self.doc.references.remove(i);
             self.references.remove(i);
             self.doc.reference = if self.doc.references.is_empty() {
@@ -1128,6 +1218,10 @@ impl DrawingApp {
         }
     }
     pub fn new_document(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        if self.project_tabs.len() >= 31 {
+            self.message("Maximum 32 open projects", true);
+            return;
+        }
         self.capture_prompt(cx);
         if !self.prepare_project_switch() {
             return;
@@ -1167,7 +1261,30 @@ impl DrawingApp {
             worker::projects(self.data_dir.clone(), self.workers.sender.clone());
         }
     }
-    pub fn open_project(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+    pub fn open_project(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let normalized = path.canonicalize().unwrap_or(path.clone());
+        let same_path = |candidate: &Option<PathBuf>| {
+            candidate
+                .as_ref()
+                .is_some_and(|p| p.canonicalize().unwrap_or(p.clone()) == normalized)
+        };
+        if same_path(&self.path) {
+            self.activate_project_tab(self.epoch, window, cx);
+            return;
+        }
+        if let Some(epoch) = self
+            .project_tabs
+            .iter()
+            .find(|tab| same_path(&tab.path))
+            .map(|tab| tab.epoch)
+        {
+            self.activate_project_tab(epoch, window, cx);
+            return;
+        }
+        if self.project_tabs.len() >= 31 {
+            self.message("Maximum 32 open projects", true);
+            return;
+        }
         self.capture_prompt(cx);
         if !self.prepare_project_switch() {
             return;
@@ -1195,7 +1312,7 @@ impl DrawingApp {
             self.message("Storage worker stopped", true);
         }
     }
-    fn prepare_project_switch(&mut self) -> bool {
+    pub(crate) fn prepare_project_switch(&mut self) -> bool {
         if self.switching {
             return false;
         }
@@ -1220,11 +1337,61 @@ impl DrawingApp {
             name: format!("Layer {}", self.doc.layers.len() + 1),
             visible: true,
             opacity: 1.,
+            candidate: false,
             strokes: vec![],
             image: None,
         });
         self.doc.active_layer = self.doc.layers.len() - 1;
         self.changed();
+    }
+
+    pub fn sync_layer_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for (input, value) in [
+            (&self.layer_dx, "0".into()),
+            (&self.layer_dy, "0".into()),
+            (&self.layer_scale, "100".into()),
+            (
+                &self.layer_opacity,
+                format!("{}", self.doc.layers[self.doc.active_layer].opacity * 100.),
+            ),
+        ] {
+            input.update(cx, |s, cx| s.set_value(value, window, cx));
+        }
+    }
+
+    pub fn apply_layer_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let values: Option<Vec<f32>> = [
+            &self.layer_dx,
+            &self.layer_dy,
+            &self.layer_scale,
+            &self.layer_opacity,
+        ]
+        .iter()
+        .map(|input| input.read(cx).value().parse().ok())
+        .collect();
+        let Some(values) = values.filter(|v| {
+            v.iter().all(|x| x.is_finite()) && v[2] > 0. && (0. ..=100.).contains(&v[3])
+        }) else {
+            self.message(
+                "Enter finite movement, positive scale and opacity from 0 to 100",
+                true,
+            );
+            return;
+        };
+        let previous = self.doc.clone();
+        match self
+            .doc
+            .reposition_image_layer(values[0], values[1], values[2] / 100.)
+        {
+            Ok(()) => {
+                self.history.checkpoint(&previous);
+                self.doc.layers[self.doc.active_layer].opacity = values[3] / 100.;
+                self.changed();
+                self.sync_layer_controls(window, cx);
+            }
+            Err(error) => self.message(error.to_string(), true),
+        }
+        cx.notify();
     }
     pub fn delete_layer(&mut self) {
         if self.doc.layers.len() > 1 {
@@ -1326,13 +1493,20 @@ impl DrawingApp {
             }
             return;
         }
-        if self.tool == Tool::Hand
-            && self.moving_image
-            && event.button == MouseButton::Left
-            && self.doc.layers[self.doc.active_layer].image.is_some()
-        {
+        if self.tool == Tool::Hand && self.moving_image && event.button == MouseButton::Left {
             if let Some(point) = self.doc_point(event.position) {
                 self.history.checkpoint(&self.doc);
+                self.scaling_layer = self.doc.layer_bounds().is_some_and(|(_, _, x, y)| {
+                    (point.x - x).hypot(point.y - y)
+                        * self.view.scale(
+                            (
+                                self.bounds.get().size.width.into(),
+                                self.bounds.get().size.height.into(),
+                            ),
+                            (self.doc.width, self.doc.height),
+                        )
+                        < 16.
+                });
                 self.last_image_point = Some(point);
             }
             return;
@@ -1395,10 +1569,20 @@ impl DrawingApp {
         if let Some(last) = self.last_image_point {
             if event.dragging() {
                 if let Some(point) = self.doc_point(event.position) {
-                    match self
-                        .doc
-                        .reposition_image_layer(point.x - last.x, point.y - last.y, 1.)
-                    {
+                    let (dx, dy, scale) = if self.scaling_layer {
+                        let (x, y, _, _) = self.doc.layer_bounds().unwrap_or((0., 0., 1., 1.));
+                        let factor = ((point.x - x).hypot(point.y - y)
+                            / (last.x - x).hypot(last.y - y).max(1.))
+                        .clamp(0.5, 2.);
+                        (
+                            (x - self.doc.width as f32 / 2.) * (1. - factor),
+                            (y - self.doc.height as f32 / 2.) * (1. - factor),
+                            factor,
+                        )
+                    } else {
+                        (point.x - last.x, point.y - last.y, 1.)
+                    };
+                    match self.doc.reposition_image_layer(dx, dy, scale) {
                         Ok(()) => {
                             self.last_image_point = Some(point);
                             self.changed();
@@ -1611,11 +1795,49 @@ impl DrawingApp {
 
     /// Re-probes the machine's shared local image server in the background.
     pub fn refresh_server_status(&mut self) {
+        self.provider_readiness = match providers::validate_inputs(&self.settings, false, 0, false)
+        {
+            Ok(()) => format!(
+                "{} configured · {} · {}",
+                self.settings.provider.name(),
+                if self.settings.provider.supports_edit() {
+                    "create and edit"
+                } else {
+                    "create only"
+                },
+                if self.settings.provider.native_architecture().is_some() {
+                    "one source · starts on demand"
+                } else {
+                    "account readiness checked on submission"
+                }
+            ),
+            Err(error) => format!("Setup needed: {error}"),
+        };
         if self.settings.provider.native_architecture().is_none() {
             self.server_status = None;
             return;
         }
         let _ = self.workers.probe.send(self.settings.clone());
+    }
+
+    pub fn open_clipforge(&mut self) {
+        if self.workers.storage.send(Storage::OpenClipforge).is_err() {
+            self.message("Storage worker stopped", true);
+        }
+    }
+
+    pub fn reload_clipforge(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Ok(registry) = clipforge_inference::config::user_or_built_in() {
+            if let Some(endpoint) = providers::shared_endpoint(self.settings.provider, &registry) {
+                self.settings.endpoint = endpoint.clone();
+                self.endpoint
+                    .update(cx, |s, cx| s.set_value(endpoint, window, cx));
+            }
+        }
+        self.refresh_lora_select(window, cx);
+        self.refresh_server_status();
+        self.generation_error = None;
+        cx.notify();
     }
     pub fn select_provider(
         &mut self,
@@ -1644,11 +1866,6 @@ impl DrawingApp {
         self.endpoint.update(cx, |s, cx| {
             s.set_value(self.settings.endpoint.clone(), window, cx)
         });
-        let key = clipforge_inference::config::user_or_built_in()
-            .ok()
-            .and_then(|registry| providers::shared_stored_api_key(provider, &registry))
-            .unwrap_or_default();
-        self.key.update(cx, |s, cx| s.set_value(key, window, cx));
         if !provider.supports_edit() {
             self.editing_image = false;
         }
@@ -1695,7 +1912,6 @@ impl DrawingApp {
         }
         self.settings_from_inputs(cx);
         self.settings.remember_provider();
-        let key = self.key.read(cx).value().trim().to_owned();
         self.settings_save_error = None;
         if self
             .workers
@@ -1703,7 +1919,6 @@ impl DrawingApp {
             .send(Storage::ApplySettings(
                 self.settings.clone(),
                 self.data_dir.join("settings.json"),
-                key.clone(),
             ))
             .is_err()
         {
@@ -1711,7 +1926,7 @@ impl DrawingApp {
                 Some("Storage worker stopped. Try restarting Atelier.".into());
             self.message("Storage worker stopped", true);
         } else {
-            self.settings_save = Some((self.settings.clone(), key));
+            self.settings_save = Some(self.settings.clone());
         }
     }
 
@@ -1744,12 +1959,46 @@ impl DrawingApp {
     }
 
     pub fn open_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.capture_prompt(cx);
         self.page = Page::Draw;
         self.show_drawing_composer = false;
         self.generation_region = None;
         self.selecting_generation_region = false;
+        self.restore_drawing_context();
+        self.restore_prompt(window, cx);
         window.focus(&self.focus, cx);
         cx.notify();
+    }
+
+    pub fn restore_drawing_context(&mut self) {
+        let Some(target) = self.doc.artboard_prompt_targets.get(&self.doc.canvas_id) else {
+            return;
+        };
+        let parts: Vec<_> = target.split(':').collect();
+        if parts.len() == 7 {
+            let coords: Option<Vec<u32>> = parts[3..].iter().map(|s| s.parse().ok()).collect();
+            if let Some(rect) = coords.filter(|r| {
+                r[0].saturating_add(r[2]) <= self.doc.width
+                    && r[1].saturating_add(r[3]) <= self.doc.height
+            }) {
+                self.selection_mode = if parts[2] == "Separate" {
+                    crate::workflow::SelectionMode::Separate
+                } else {
+                    crate::workflow::SelectionMode::Blend
+                };
+                self.generation_region = Some((
+                    DocPoint {
+                        x: rect[0] as f32,
+                        y: rect[1] as f32,
+                    },
+                    DocPoint {
+                        x: (rect[0] + rect[2]) as f32,
+                        y: (rect[1] + rect[3]) as f32,
+                    },
+                ));
+                self.selecting_generation_region = true;
+            }
+        }
     }
 
     pub fn create_canvas_artboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1776,6 +2025,7 @@ impl DrawingApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.capture_prompt(cx);
         if canvas_id != self.doc.canvas_id {
             let Some(index) = self
                 .doc
@@ -1789,6 +2039,12 @@ impl DrawingApp {
             let current = self.doc.current_canvas();
             let selected = std::mem::replace(&mut self.doc.canvases[index], current);
             self.doc.set_current_canvas(selected);
+            self.doc.reference = self.doc.artboard_references.first().and_then(|id| {
+                self.doc
+                    .references
+                    .iter()
+                    .position(|r| crate::library::id(r) == *id)
+            });
             self.changed();
             self.view = Viewport::default();
             self.panel = Panel::None;
@@ -1816,16 +2072,15 @@ impl DrawingApp {
                 }
             }
         } else {
-            None
+            self.input_references().first().cloned()
         };
-        let references: Vec<_> = if self.editing_image {
-            self.input_references
+        let editing = source.is_some();
+        let references: Vec<_> = {
+            self.input_references()
                 .iter()
                 .filter(|r| source.as_ref().is_none_or(|source| r.image != source.image))
                 .cloned()
                 .collect()
-        } else {
-            vec![]
         };
         let mask = if self.editing_image && self.use_mask {
             match (&source, &self.opened_image, &self.mask) {
@@ -1845,36 +2100,11 @@ impl DrawingApp {
         } else {
             None
         };
-        if let Some(provider) = self.settings.provider.hosted() {
-            let model = if self.editing_image {
-                &self.settings.edit_model
-            } else {
-                &self.settings.model
-            };
-            match clipforge_inference::images::HostedDeployment::new(provider, model) {
-                Ok(deployment) => {
-                    if references.len() + usize::from(source.is_some())
-                        > deployment.max_reference_images()
-                    {
-                        self.generation_error = Some("This model accepts only one input image. Choose Qwen Edit 2511 for multiple references, or remove the extra references.".into());
-                        return;
-                    }
-                    if mask.is_some() && !deployment.supports_mask() {
-                        self.generation_error = Some("This model does not accept masks. Choose FLUX Fill in Settings, or turn off Use mask.".into());
-                        return;
-                    }
-                    if deployment.supports_mask()
-                        && mask.as_ref().is_none_or(|mask| mask.strokes.is_empty())
-                    {
-                        self.generation_error = Some("FLUX Fill needs an editing mask. Open the image and paint the area to change.".into());
-                        return;
-                    }
-                }
-                Err(error) => {
-                    self.generation_error = Some(error.to_string());
-                    return;
-                }
-            }
+        if let Err(error) =
+            providers::validate_inputs(&self.settings, editing, references.len(), mask.is_some())
+        {
+            self.generation_error = Some(error.to_string());
+            return;
         }
         let prompt = self.prompt.read(cx).value().to_string();
         if prompt.trim().is_empty() {
@@ -1889,30 +2119,20 @@ impl DrawingApp {
             return;
         }
         self.generation_error = None;
-        let view_id = self
-            .opened_image
-            .as_ref()
-            .filter(|_| self.page == Page::Image)
-            .map(|(r, _, _, _)| crate::library::id(r));
-        let iteration_source_id = source
-            .as_ref()
-            .map(|reference| crate::library::id(reference));
-        let queue_id = self.queue.enqueue(
+
+        self.queue.enqueue(
             QueuedRequest {
                 settings: self.settings.clone(),
                 prompt,
                 source,
                 references,
                 mask,
-                editing: self.editing_image,
-                placement: None,
+                editing,
+                destination: crate::workflow::Destination::NewArtboard,
+                blend: None,
             },
             self.epoch,
-            view_id,
         );
-        self.iteration_source_id = iteration_source_id;
-        self.iteration_job_id = Some(queue_id);
-        self.interaction_open_for = None;
         self.show_edit_composer = false;
         self.page = Page::Artboards;
         self.editing_image = false;
@@ -1930,19 +2150,18 @@ impl DrawingApp {
         let Some(id) = self.queue.next_queued() else {
             return;
         };
-        let (epoch, view_id, request) = {
+        let (epoch, request) = {
             let Some(item) = self.queue.get_mut(id) else {
                 return;
             };
             item.state = JobState::Running {
                 progress: String::new(),
             };
-            (item.epoch, item.view_id.clone(), item.request.clone())
+            (item.epoch, item.request.clone())
         };
         let cancel = Arc::new(AtomicBool::new(false));
         self.job_id = id;
         self.job_epoch = epoch;
-        self.generation_view_id = view_id;
         let size = request.size();
         worker::generate(
             providers::Request {
@@ -2004,8 +2223,7 @@ impl DrawingApp {
         };
         let request = item.request.clone();
         let epoch = item.epoch;
-        let view_id = item.view_id.clone();
-        self.queue.enqueue(request, epoch, view_id);
+        self.queue.enqueue(request, epoch);
         self.message("Request re-queued", false);
         self.pump_queue();
         cx.notify();
@@ -2013,15 +2231,7 @@ impl DrawingApp {
 
     /// Opens the generated reference associated with a completed queue item.
     pub fn open_queue_result(&mut self, id: u64, cx: &mut Context<Self>) {
-        let Some(result_id) = self.queue.get(id).and_then(|item| item.result_id.clone()) else {
-            return;
-        };
-        let Some(reference) = self
-            .all_references()
-            .into_iter()
-            .find(|reference| crate::library::id(reference) == result_id)
-        else {
-            self.message("The generated image is no longer available", true);
+        let Some(reference) = self.queue.get(id).and_then(|item| item.result.clone()) else {
             return;
         };
         self.open_image(reference, cx);
@@ -2036,6 +2246,13 @@ impl DrawingApp {
             .references
             .iter()
             .cloned()
+            .chain(
+                self.doc
+                    .layers
+                    .iter()
+                    .chain(self.doc.canvases.iter().flat_map(|c| &c.layers))
+                    .filter_map(|l| l.image.as_ref().map(|i| i.reference.clone())),
+            )
             .chain(self.library.iter().map(|(reference, _)| reference.clone()))
             .filter(|reference| seen.insert(crate::library::id(reference)))
             .collect()
@@ -2101,8 +2318,7 @@ impl DrawingApp {
         self.show_drawing_composer = !self.show_drawing_composer;
         self.region_drag = None;
         if self.show_drawing_composer {
-            self.from_drawing_prompt
-                .update(cx, |state, cx| state.focus(window, cx));
+            self.prompt.update(cx, |state, cx| state.focus(window, cx));
         } else {
             window.focus(&self.focus, cx);
         }
@@ -2158,120 +2374,93 @@ impl DrawingApp {
         cx.notify();
     }
 
-    /// Rasterizes the drawing (cropped to the selected region when one is set),
-    /// opens it as the editing source and queues a generation with the panel's
-    /// prompt.
+    /// Capture accepted artwork and a destination before queueing. A later UI
+    /// selection, resize or artboard switch cannot redirect this request.
     pub fn generate_from_drawing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.settings.provider.supports_edit() {
-            self.message(
-                "Choose an editing provider — Qwen (local) or a hosted edit model — to generate from a drawing",
-                true,
-            );
-            return;
-        }
-        self.finish_stroke();
-        let prompt = self.from_drawing_prompt.read(cx).value().trim().to_owned();
-        if prompt.is_empty() {
-            self.message("Describe the image to generate from your drawing", true);
-            return;
-        }
-        if self.selecting_generation_region && self.region_bounds().is_none() {
-            self.message("Drag on the canvas to select an area", true);
-            return;
-        }
-        let raster = match document::raster(&self.doc, document::MAX_EDGE, true) {
-            Ok(raster) => raster,
-            Err(error) => {
-                self.message(format!("Could not read the drawing: {error}"), true);
-                return;
-            }
-        };
-        let region = self.region_bounds();
-        let image = match region {
-            Some((x, y, w, h)) => image::imageops::crop_imm(&raster, x, y, w, h).to_image(),
-            None => raster,
-        };
-        let label = match region {
-            Some((_, _, w, h)) => format!("{} region {w}×{h}", self.doc.title),
-            None => format!("{} drawing", self.doc.title),
-        };
-        let bytes = match (|| -> anyhow::Result<Vec<u8>> {
-            let mut cursor = std::io::Cursor::new(Vec::new());
-            image.write_to(&mut cursor, image::ImageFormat::Png)?;
-            Ok(cursor.into_inner())
-        })() {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                self.message(format!("Could not use the drawing: {error}"), true);
-                return;
-            }
-        };
-        let reference = match document::reference_from_bytes(
-            label,
-            &bytes,
-            "Atelier drawing · used as a generation reference".into(),
-        ) {
-            Ok(reference) => Arc::new(reference),
-            Err(error) => {
-                self.message(format!("Could not use the drawing: {error}"), true);
-                return;
-            }
-        };
-        let preview = match document::decode_reference(&reference) {
-            Ok(decoded) => worker::render_image(document::thumbnail(decoded, 800).to_rgba8()),
-            Err(error) => {
-                self.message(format!("Could not use the drawing: {error}"), true);
-                return;
-            }
-        };
-        self.checkpoint();
-        self.reference_cache
-            .push((reference.clone(), preview.clone()));
-        self.doc.references.push(reference.clone());
-        self.references.push(preview);
-        self.doc.reference = Some(self.doc.references.len() - 1);
-        self.changed();
-        self.panel = Panel::None;
-        self.show_drawing_composer = false;
-        self.selecting_generation_region = false;
-        self.use_mask = false;
-        self.editing_image = false;
-        // Seed the composer prompt for this new source so the request carries it.
+        self.restore_prompt(window, cx);
+        self.capture_prompt(cx);
         self.settings_from_inputs(cx);
-        let target = crate::library::id(&reference);
-        self.prompt_target = target.clone();
-        self.doc.active_prompt_target = Some(target.clone());
-        self.doc
-            .prompt_drafts
-            .insert(target.clone(), prompt.clone());
-        self.prompt
-            .update(cx, |state, cx| state.set_value(prompt.clone(), window, cx));
-        let queue_id = self.queue.enqueue(
-            QueuedRequest {
-                settings: self.settings.clone(),
-                prompt,
-                source: Some(reference),
-                references: vec![],
+        self.finish_stroke();
+        let prompt = self.prompt.read(cx).value().trim().to_owned();
+        let result = (|| -> anyhow::Result<QueuedRequest> {
+            anyhow::ensure!(!prompt.is_empty(), "Describe the image or change you want");
+            let region = self.region_bounds();
+            anyhow::ensure!(
+                !self.selecting_generation_region || region.is_some(),
+                "Drag on the artboard to select an area"
+            );
+            let separate =
+                region.is_some() && self.selection_mode == crate::workflow::SelectionMode::Separate;
+            let source =
+                Arc::new(
+                    self.doc
+                        .generation_source(if separate { region } else { None })?,
+                );
+            let references = self.input_references();
+            let mut settings = self.settings.clone();
+            if !separate {
+                settings.width = self.doc.width;
+                settings.height = self.doc.height;
+            }
+            crate::providers::validate_inputs(&settings, true, references.len(), false)?;
+            let rect = region.unwrap_or((0, 0, self.doc.width, self.doc.height));
+            // Keep the accepted source embedded for durable parent/version resolution.
+            let extra = if self.doc.references.iter().any(|r| r.image == source.image) {
+                0
+            } else {
+                source.image.len()
+            };
+            anyhow::ensure!(
+                self.doc.references.len() < 128
+                    && self.doc.embedded_image_bytes() + extra <= 64 * 1024 * 1024,
+                "Project reference limit reached"
+            );
+            if extra > 0 {
+                self.doc.references.push(source.clone());
+                let preview = worker::render_image(
+                    document::thumbnail(document::decode_reference(&source)?, 800).to_rgba8(),
+                );
+                self.references.push(preview.clone());
+                self.reference_cache.push((source.clone(), preview));
+            }
+            Ok(QueuedRequest {
+                settings,
+                prompt: prompt.clone(),
+                source: Some(source),
+                references,
                 mask: None,
                 editing: true,
-                placement: region,
-            },
-            self.epoch,
-            Some(target.clone()),
-        );
-        self.iteration_source_id = Some(target);
-        self.iteration_job_id = Some(queue_id);
-        self.page = Page::Artboards;
-        self.restore_prompt(window, cx);
-        self.pump_queue();
-        self.message(
-            if region.is_some() {
-                "Queued from the selected region"
-            } else {
-                "Queued from the drawing"
-            },
-            false,
-        );
+                destination: if separate {
+                    crate::workflow::Destination::NewArtboard
+                } else {
+                    crate::workflow::Destination::Candidate {
+                        artboard: self.doc.canvas_id,
+                        rect,
+                    }
+                },
+                blend: if !separate {
+                    region.map(|r| ((self.doc.width, self.doc.height), r))
+                } else {
+                    None
+                },
+            })
+        })();
+        match result {
+            Ok(request) => {
+                self.changed();
+                self.queue.enqueue(request, self.epoch);
+                self.generation_error = None;
+                self.pump_queue();
+                self.message(
+                    "Queued · original artwork preserved; edits arrive as candidates",
+                    false,
+                );
+            }
+            Err(error) => {
+                self.generation_error = Some(error.to_string());
+                self.message(error.to_string(), true);
+            }
+        }
         cx.notify();
     }
 
@@ -2302,6 +2491,9 @@ impl DrawingApp {
         self.pick(Picker::Save, window, cx);
     }
     fn queue_save(&mut self, path: PathBuf, automatic: bool) {
+        if automatic && path == self.data_dir.join("recovery.atelier") {
+            self.persist_open_projects();
+        }
         if automatic {
             self.save_pending = true;
         } else {
@@ -2327,7 +2519,7 @@ impl DrawingApp {
     pub fn pick(&mut self, picker: Picker, window: &mut Window, cx: &mut Context<Self>) {
         self.finish_stroke();
         let epoch = self.epoch;
-        let import_into_project = self.page != Page::Library || !self.shared_library;
+        let import_into_project = self.panel == Panel::References;
         let export_image = self.opened_image.as_ref().map(|(r, _, _, _)| r.clone());
         let export_canvas =
             (self.page != Page::Image).then(|| (self.doc.clone(), self.transparent));
@@ -2440,14 +2632,14 @@ impl DrawingApp {
                 window
                     .spawn(cx, async move |cx| {
                         let result = receiver.await;
-                        let _ = entity.update_in(cx, |this, _, cx| {
+                        let _ = entity.update_in(cx, |this, window, cx| {
                             if epoch != this.epoch && import_into_project {
                                 return;
                             }
                             match result {
                                 Ok(Ok(Some(paths))) if !paths.is_empty() => match picker {
                                     Picker::Open => {
-                                        this.open_project(paths[0].clone(), cx);
+                                        this.open_project(paths[0].clone(), window, cx);
                                     }
                                     Picker::Import => {
                                         if import_into_project
@@ -2504,6 +2696,7 @@ impl DrawingApp {
         if self.page != Page::Projects
             && self.page != Page::Artboards
             && self.opening_image.is_none()
+            && self.region_drag.is_none()
         {
             self.restore_prompt(window, cx);
         }
@@ -2518,6 +2711,14 @@ impl DrawingApp {
         while let Ok(event) = self.workers.events.try_recv() {
             refresh = true;
             match event {
+                Event::WorkspaceSaved(result) => if let Err(error) = result {
+                    self.closing = false;
+                    self.message(format!("Open-project recovery save failed: {error}"),true);
+                },
+                Event::ClipforgeOpened(result) => match result {
+                    Ok(()) => self.message("Clipforge opened · manage providers there, then return and Refresh readiness",false),
+                    Err(error) => self.message(format!("Clipforge: {error}"),true),
+                },
                 Event::Settings(result) => match result {
                     Ok(()) => self.message("Settings saved", false),
                     Err(e) => self.message(format!("Settings: {e}"), true),
@@ -2526,7 +2727,7 @@ impl DrawingApp {
                     let pending = self.settings_save.take();
                     match result {
                         Ok(()) => {
-                            if let Some((saved, _)) = pending {
+                            if let Some(saved) = pending {
                                 self.settings_from_inputs(cx);
                                 self.settings.remember_provider();
                                 if self.panel == Panel::Settings && self.settings == saved {
@@ -2672,8 +2873,14 @@ impl DrawingApp {
                     match result {
                         Ok((doc, images, path)) => {
                             self.finish_stroke();
+                            let keep_previous = self.path.is_some() || !self.doc.references.is_empty()
+                                || self.doc.layers.iter().any(|l|l.image.is_some() || !l.strokes.is_empty())
+                                || self.doc.prompt_drafts.values().any(|draft| !draft.trim().is_empty());
+                            let previous = self.park_project();
+                            if keep_previous { self.project_tabs.push(previous); }
                             self.doc = doc;
-                            self.epoch += 1;
+                            self.next_project_epoch += 1;
+                            self.epoch = self.next_project_epoch;
                             self.revision += 1;
                             self.visual_revision += 1;
                             self.dirty = path.is_none();
@@ -2691,15 +2898,13 @@ impl DrawingApp {
                                 .collect();
                             self.page = Page::Artboards;
                             self.show_artboards_composer = true;
-                            self.iteration_source_id = None;
-                            self.iteration_job_id = None;
-                            self.interaction_open_for = None;
                             self.show_edit_composer = false;
                             self.sync_inputs(window, cx);
                             self.editing_image = false;
                             self.restore_prompt(window, cx);
                             self.sync_artboard_selects(window, cx);
                             self.message("Project ready", false);
+                            self.persist_open_projects();
                             if self.path.is_none() {
                                 let filename = format!(
                                     "project-{}-{}.atelier",
@@ -2892,6 +3097,11 @@ impl DrawingApp {
                             self.doc.reference = Some(self.doc.references.len() - 1);
                             self.changed();
                             self.sync_ref_inputs(window, cx);
+                            if self.panel == Panel::References {
+                                if let Some(reference) = self.doc.references.last().cloned() {
+                                    self.choose_reference(reference, window, cx);
+                                }
+                            }
                             self.message("References imported", false);
                         }
                         Err(e) => self.message(format!("Import failed: {e}"), true),
@@ -2917,76 +3127,47 @@ impl DrawingApp {
                             match result {
                                 Ok((reference, image)) => {
                                     let result_id = crate::library::id(&reference);
-                                    let placement =
-                                        self.queue.get(id).and_then(|item| item.request.placement);
-                                    if self.job_epoch == self.epoch
-                                        && self.doc.references.len() < 128
-                                        && self.doc.embedded_image_bytes() + reference.image.len()
-                                            <= 64 * 1024 * 1024
-                                    {
-                                        let reference = Arc::new(reference);
-                                        if let Some(placement) = placement {
-                                            self.checkpoint();
-                                            match document::decode_reference(&reference) {
-                                                Ok(decoded) => {
-                                                    if let Err(error) = self
-                                                        .add_generated_image_layer(
-                                                            reference.clone(),
-                                                            decoded.width(),
-                                                            decoded.height(),
-                                                            placement,
-                                                        )
-                                                    {
-                                                        self.message(
-                                                            format!(
-                                                                "Could not place generated image: {error}"
-                                                            ),
-                                                            true,
-                                                        );
+                                    let request = self.queue.get(id).map(|item| item.request.clone());
+                                    let reference = Arc::new(reference);
+                                    // Keep every result recoverable in the queue, including attachment failures.
+                                    if let Some(item) = self.queue.get_mut(id) {
+                                        item.result = Some(reference.clone());
+                                    }
+                                    if self.job_epoch == self.epoch {
+                                        if let Some(request) = request {
+                                            let attached = request.blend.map(|(size, rect)|
+                                                crate::workflow::crop_blend(&reference, size, rect).map(Arc::new))
+                                                .unwrap_or_else(|| Ok(reference.clone()));
+                                            match attached.and_then(|r| {
+                                                self.checkpoint();
+                                                self.doc.attach_result(r, request.destination)
+                                            }) {
+                                                Ok(()) => {
+                                                    self.changed();
+                                                    self.sync_inputs(window, cx);
+                                                    if matches!(request.destination, crate::workflow::Destination::Candidate { .. }) {
+                                                        self.message("Candidate ready · accept, hide or discard in Layers", false);
+                                                        self.dock = true;
+                                                    } else {
+                                                        self.message("New artboard ready", false);
                                                     }
                                                 }
-                                                Err(error) => self.message(
-                                                    format!(
-                                                        "Could not read generated image dimensions: {error}"
-                                                    ),
-                                                    true,
-                                                ),
+                                                Err(error) => self.message(format!("Image saved; could not attach: {error}"), true),
                                             }
-                                        } else {
-                                            self.checkpoint();
                                         }
-                                        let image = worker::render_image(image);
-                                        self.reference_cache
-                                            .push((reference.clone(), image.clone()));
-                                        self.doc.references.push(reference.clone());
-                                        self.references.push(image);
-                                        self.doc.reference = Some(self.doc.references.len() - 1);
-                                        if self.iteration_job_id == Some(id)
-                                            && self.iteration_source_id.is_none()
-                                        {
-                                            self.iteration_source_id = Some(result_id.clone());
+                                    } else if let Some(tab) = self.project_tabs.iter_mut().find(|tab|tab.epoch == self.job_epoch) {
+                                        if let Some(request) = request {
+                                            let attached = request.blend.map(|(size,rect)| crate::workflow::crop_blend(&reference,size,rect).map(Arc::new))
+                                                .unwrap_or_else(||Ok(reference.clone()));
+                                            let previous = tab.doc.clone();
+                                            match attached.and_then(|r|tab.doc.attach_result(r,request.destination)) {
+                                                Ok(()) => { tab.history.checkpoint(&previous); tab.revision += 1; tab.dirty = true; }
+                                                Err(error) => self.message(format!("Image saved in queue; attachment failed: {error}"),true),
+                                            }
+                                            self.persist_open_projects();
                                         }
-                                        self.changed();
-                                        self.sync_ref_inputs(window, cx);
-                                        if placement.is_some() {
-                                            self.generation_region = None;
-                                            self.selecting_generation_region = false;
-                                            self.region_drag = None;
-                                        }
-                                        if self.page == Page::Image
-                                            && self.opened_image.as_ref().is_some_and(
-                                                |(r, _, _, _)| {
-                                                    self.generation_view_id.as_ref()
-                                                        == Some(&crate::library::id(r))
-                                                },
-                                            )
-                                        {
-                                            self.open_image(reference, cx);
-                                        }
-                                        self.message("Image ready · original and new version saved to library", false);
-                                    } else {
-                                        self.message("Image saved to the shared library; this project was not changed",false);
                                     }
+                                    let _ = image;
                                     if let Some(item) = self.queue.get_mut(id) {
                                         item.state = JobState::Done;
                                         item.result_id = Some(result_id);
@@ -3144,6 +3325,7 @@ impl DrawingApp {
                 }
                 "h" => {
                     self.finish_stroke();
+                    self.moving_image = false;
                     self.tool = Tool::Hand
                 }
                 "[" => self.brush_size(0.8),

@@ -78,9 +78,9 @@ pub fn generate(request: Request) -> Result<Reference> {
         .unwrap_or_default();
     document::reference_from_bytes(
         if editing {
-            "Edited reference"
+            "Edited artwork"
         } else {
-            "Generated reference"
+            "Generated artwork"
         }
         .into(),
         &output.bytes,

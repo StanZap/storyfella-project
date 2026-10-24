@@ -47,28 +47,33 @@ The macOS development bundle uses ad hoc signing and needs no certificate setup.
 - A generation queue with its own panel, reached from a header badge that counts outstanding requests: pause, stop the running request, remove queued requests and clear finished history. Each request keeps its own prompt, size, steps and LoRA adapters.
 - Shared icon controls, surface panels and selection styles, accessible icon labels, gentle panel reveal and a reduced-motion setting.
 
-The **All projects** library is the **shared reference collection**: images
-explicitly added for cross-project reuse — imports into that tab and project
-images promoted with **Add to reference library**. **Use** embeds a portable
-reference in the current project. Generated images and project imports stay in
-their project and never enter the shared collection on their own. Open any image
-for zoom/pan, versions, before/after, masks, editable library details and original
-export. **Add to canvas** makes an editable image layer with paint/erase, move,
-scale, opacity and undo. Generated images also retain PNG/metadata copies in
-`generated`. Projects allow 128 references and 24 layers with a combined embedded
-image budget of 64 MB. Originals allow 20 MB, 8192 px per edge and 32 megapixels;
-the shared library currently has a 512 MB encoded in-memory loading budget.
-Canvas limits are 64–8192 px per edge and 32 megapixels.
+The **Library** is the app-wide shared reference collection. The floating
+composers and drawing dock open a picker that searches shared and project
+references, imports files into the collection, and embeds selected originals
+in the project. Artboards own their reference associations and visibility.
+References enter artwork only through explicit layer placement.
+
+Projects can stay open in separate tabs with their own document, dirty state,
+history and prompt drafts. Version-2 saves distinguish artboard layers, pending
+AI candidates and references; existing projects upgrade on load. See the
+[audit and creation workflow](../../docs/atelier-creation-workflow.md) for exact
+migration/recovery behavior and remaining acceptance work.
 
 ## Generation setup
 
-Choose a provider in the Library's **Create & edit** panel, then open its Settings.
-Each provider remembers independent generation/editing models and its address.
-Choose a model preset or enter its model IDs. Hosted credentials resolve from the
-environment first, then the matching hosted provider in the shared
-`clipforge.toml`. The Credentials section can update that shared provider entry
-directly; Atelier does not maintain a second credential store. The panel closes
-after a successful settings save; errors retain your input.
+Use **Create / image prompt** (**⌘P**) in the workspace. Artboards creates a new
+composition; Draw edits the full artboard or a selected area. **Blend into
+artboard** uses surrounding artwork as context and returns a placed candidate.
+**Create separate image** uses the crop and user-selected output size for a new
+artboard. Candidates can be accepted, hidden/shown, discarded or saved as
+references; exports exclude unaccepted candidates. The same composer serves
+image inspection; no generation side panel is required.
+
+Provider connections, credentials and secrets belong in Clipforge. **Open
+Clipforge** launches its desktop app; return and **Refresh readiness** to reread
+shared setup. Atelier retains request model presets, sampling, LoRA choices and
+ComfyUI workflow mappings. Environment credentials still take precedence over
+the matching shared provider entry.
 
 | Provider | Credential | Default generation / editing models |
 | --- | --- | --- |
@@ -90,31 +95,18 @@ model IDs use `owner/model` and must support its official-model predictions API.
 Custom model IDs must accept the same inputs as their adapter's presets; this is
 not a universal mapper for arbitrary model schemas.
 
-**New image** creates from your description. **Edit selected** sends the currently
-selected reference plus your instruction to the editing model. Every edit adds
-a new reference and keeps the original; select any earlier image to branch from
-it. Outputs are saved locally with provider, model, prompt, source name and hosted
-job ID where available. Full-resolution originals remain in the shared library.
-For a new image, start from a **Character**, **Object**, **Background**, or
-**Illustration** brief; Atelier sets a fitting canvas shape and leaves the prompt
-open for your details before queueing.
-Square, landscape and portrait output use the existing size controls. Actions
-use your provider account and may incur charges.
+**Create** captures the prompt, requested size, source/reference images, sampling
+and destination in the generation queue. The header queue badge exposes
+Pause/Stop/remove/retry/history controls. One request runs at a time.
+Unsent drafts remain bound to their project, artboard/source and selection mode.
+Full-artboard edits and blends preserve accepted originals and arrive as
+candidate layers; separate compositions become artboards. Failed requests retain
+the source and draft. Every result retains parent, prompt and provider provenance.
 
-**Add to queue** captures the prompt, width, height, sampling steps and the
-applied LoRA adapters (set inline in the generation panel) and runs the request after those
-already waiting — one at a time. The queue has its own panel, opened from the
-header badge (which counts outstanding requests) or the rail: **Pause** holds
-dispatch without interrupting a running image, **Stop** cancels the running
-request, a queued request can be removed, and **Clear finished** drops completed
-history. Each entry keeps the values it was created with.
-
-**Generate from drawing** (the canvas toolbar) opens a compact panel. Drag on the
-canvas to select a **box select** area — the panel switches to it automatically
-and shows the size — or use the box-select toggle to switch back to the **full
-canvas**. Review the prompt and the inline output size, steps and adapter controls,
-then **Generate**. The result is added as a new image layer directly over the
-selected area; full-canvas generation adds the layer over the drawing.
+Layers support visibility, ordering, opacity, painting and undo/redo. **Move
+layer** displays an outline and a corner scale handle; numeric offsets, relative
+scale and opacity support exact adjustments. **Start variation as new artboard**
+creates a separate composition from an accepted image layer.
 
 fal's Qwen Image 3 accepts only opaque editing inputs, so that adapter composites
 transparent references onto white before upload. Other adapters retain source
