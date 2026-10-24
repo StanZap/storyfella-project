@@ -103,10 +103,12 @@ Full-artboard edits and blends preserve accepted originals and arrive as
 candidate layers; separate compositions become artboards. Failed requests retain
 the source and draft. Every result retains parent, prompt and provider provenance.
 
-Layers support visibility, ordering, opacity, painting and undo/redo. **Move
-layer** displays an outline and a corner scale handle; numeric offsets, relative
-scale and opacity support exact adjustments. **Start variation as new artboard**
-creates a separate composition from an accepted image layer.
+Layers lead the compact drawing inspector. **Move** displays an outline and a
+corner scale handle; **Layer properties** discloses numeric offsets, relative
+scale, opacity, ordering and image actions. **New variation artboard** creates a
+separate composition from an accepted image layer. Reference aids and study
+tools stay in their contextual options/Practice panel. The floating composer's
+**Image options** discloses precise output sizes, settings and creation briefs.
 
 fal's Qwen Image 3 accepts only opaque editing inputs, so that adapter composites
 transparent references onto white before upload. Other adapters retain source

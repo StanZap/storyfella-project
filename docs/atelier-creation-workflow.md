@@ -90,7 +90,10 @@ The reference picker combines shared-library and project originals with search.
 Import adds files to the library and selects the last imported image without
 leaving the picker flow. Selected artboard references are portable project data.
 The drawing dock lets users select between them and hide/show the reference
-surface. The Library itself is app-wide and has no project-scoped tab or
+surface. Hidden and empty references do not reserve preview space. Layers lead
+the inspector; precise values and extra image actions live under Layer properties,
+while reference aids disclose from Reference options. Study controls live in the
+Practice panel instead of the default inspector. The Library itself is app-wide and has no project-scoped tab or
 generation side panel.
 
 Route limits come from `HostedDeployment`: Qwen Image 3 fal and Qwen Edit 2511
@@ -99,11 +102,11 @@ allow fewer. Local models allow one source without extras or mask; Krea and
 ComfyUI create only. Model capabilities, reference counts, masks, credential
 availability, native configuration and Replicate output aspect constraints are
 checked before queueing. Backend input-size and account restrictions still apply.
-Exact dimensions and creation briefs are disclosed under **Options**; selection
+Exact dimensions and creation briefs are disclosed under **Image options**; selection
 separate-image dimensions are shown directly. LoRA request choices remain in
 image Settings and are captured by the queue.
 
-Layers retain painting/erasing, ordering, visibility and opacity. **Move layer**
+Layers retain painting/erasing, ordering, visibility and opacity. **Move**
 shows a bounding outline and corner handle for moving and uniform scaling;
 stroke marks move with image content. Numeric move offsets, relative scale and
 opacity support precise adjustment. H remains canvas pan. Canvas/project settings
@@ -151,7 +154,10 @@ performed. Existing vendored GPUI deprecation warnings remain.
 
 The isolated macOS build uses a unique test bundle identity. Live checks exercised
 project creation, project-tab switching and quit/restart with draft restoration,
-the drawing composer, a local stroke and the transform gizmo. An earlier app-name binding
+the drawing composer, a local stroke and the transform gizmo. A subsequent
+**Atelier Minimal UI** fixture pass verified reference collapse, candidate
+hide/show, acceptance/undo, precise opacity/undo and prompt/options disclosure.
+An earlier app-name binding
 resolved to an old registered bundle; none of that UI state counts as evidence
 for this implementation.
 
@@ -163,8 +169,8 @@ pass, but path navigation did not complete reliably under automation; that does
 not establish an application file-loading failure.
 
 Still required: first-time-user acceptance of the complete character loop,
-real-provider full/selection/separate requests and error recovery, generated
-candidate accept/hide/discard through the native UI, imported-reference picker
+real-provider full/selection/separate requests and error recovery, candidate
+discard/save-as-reference through the native UI, imported-reference picker
 acceptance, multi-tab failure injection through native controls,
 keyboard-only/VoiceOver testing and Linux/Windows interaction. Successful mock
 responses and correct placement metadata establish no artistic quality or

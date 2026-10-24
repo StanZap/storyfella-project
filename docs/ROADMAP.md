@@ -560,6 +560,14 @@ acceptance remain. Workspace checks/tests/format and strict Atelier Clippy pass;
 partial isolated macOS checks are recorded in
 [creation workflow](atelier-creation-workflow.md). This entry supersedes the
 older Atelier surface descriptions below.
+**Atelier visual refinement (2026-10-24): implemented; partial native acceptance.**
+The drawing dock prioritizes layers with compact contextual controls and disclosed
+precise properties. References collapse without empty preview space; their extra
+tools and study controls stay off the default drawing surface. The composer uses
+one options disclosure, concise source/destination metadata and ordered reference
+chips. Isolated native checks verified review/undo, opacity and collapsed states;
+workspace checks/tests/format, strict Clippy and packaging pass. Broader resize,
+accessibility and first-time-user acceptance remain. See `DESIGN.md`.
 **Shared hosted image execution: implemented in Atelier.** Clipforge owns the
 async adapters for Replicate, fal.ai, Alibaba and GPT Image, shared presets,
 job polling/cancellation and result metadata. Atelier retains its document

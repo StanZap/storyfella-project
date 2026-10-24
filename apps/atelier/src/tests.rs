@@ -400,6 +400,12 @@ fn prepare_creation_workflow_fixture() {
     let reference = colored_reference("Green study reference", [40, 170, 80, 255], 512, 384);
     let decoded = document::decode_reference(&reference).unwrap();
     decoded.save(directory.join("study-reference.png")).unwrap();
+    crate::library::store(&directory.join("library"), &reference).unwrap();
+    project
+        .artboard_references
+        .push(crate::library::id(&reference));
+    project.references.push(Arc::new(reference));
+    project.reference = Some(project.references.len() - 1);
     document::save(&directory.join("review.atelier"), &project).unwrap();
 }
 #[test]

@@ -113,8 +113,9 @@ Configuration and shared loopback tests pass on this Mac; actual Linux CUDA
 inference and Linux native interaction still require verification on that machine.
 
 **Add to canvas** creates an image-backed layer. Draw and erase on that layer,
-change opacity/visibility/order, move it by dragging with **Move layer**, or scale
-it with **Smaller/Larger**. Painted marks move with the image. Placement, deletion
+change opacity/visibility/order, move it by dragging with **Move**, or scale it
+with its corner handle. **Layer properties** discloses precise offsets, relative
+scale, opacity and image/version actions. Painted marks move with the image. Placement, deletion
 and painting are undoable. Images participate in full-resolution CPU/Metal
 exports, project saves and artwork rotation/flip/resize.
 

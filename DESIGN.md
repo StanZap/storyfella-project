@@ -1,5 +1,38 @@
 # Storyfella Studio design standard and UX audit
 
+### Atelier visual refinement · 2026-10-24 (current)
+
+Atelier's UI should be modern and minimal, with composition and hierarchy decided
+before adding controls. Keep artwork primary, use the shared spacing and control
+vocabulary, and disclose secondary tools at the point of use. A working feature
+is not visually accepted merely because its controls fit somewhere.
+
+The drawing inspector now uses one neutral surface with Layers first and a
+separate References section. Layer selection exposes compact Move and opacity
+controls. Layer properties discloses precise offsets, relative scale, opacity,
+ordering, deletion and image/version actions. Candidate review retains a clear
+Accept action and named reference, hide/show and discard alternatives. Reference
+tools disclose beside their preview; hiding references collapses the preview.
+An empty reference section offers one Add reference action without reserved
+image space or disabled removal controls. Study controls live in Practice,
+reached from the timer/help rail, with remaining time visible while running.
+
+The shared prompt keeps source/destination and dimensions together, followed by
+compact request controls and one primary submission action. Image options
+discloses exact sizes, model settings, briefs and readiness details. Chosen
+references are ordered compact chips. Missing provider setup gets a short,
+actionable row. The composer itself blocks canvas input; its surrounding stage
+remains usable. Avoid parallel Settings/Options control stacks and repeated
+explanatory paragraphs in the default workspace.
+
+Native checks in the uniquely identified **Atelier Minimal UI** fixture build
+verified the compact inspector, reference collapse, candidate hide/show,
+accept/undo, precise opacity application/undo and prompt/options disclosure.
+These checks used solid-color fixtures without a provider request. Workspace
+check/test/format, strict Atelier Clippy and native packaging pass; Atelier has
+57 passing tests and 12 ignored device/fixture tests. Smaller-window, keyboard-only,
+VoiceOver and first-time-user acceptance remain open.
+
 ### Atelier creation workflow · 2026-10-24 (current)
 
 Projects contain real artboards with artwork layers and separate reference

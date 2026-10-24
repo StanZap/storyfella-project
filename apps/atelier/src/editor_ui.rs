@@ -496,7 +496,6 @@ impl DrawingApp {
             .right(px(0.))
             .flex()
             .justify_center()
-            .occlude()
             .child(self.prompt_composer(PromptComposerMode::Image, cx))
     }
 
