@@ -1519,6 +1519,145 @@ fn comfy_generation_roundtrip_with_local_mock_server() {
     server.join().unwrap();
 }
 #[test]
+#[ignore = "Runs a local rate-limit UI fixture server under .svs-e2e until stop-server exists"]
+fn serve_activity_ui_fixture() {
+    use crate::project_tabs::{self, RecoveryTab};
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/atelier-activity-ui");
+    std::fs::create_dir_all(&directory).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let settings = Settings {
+        provider: Provider::Comfy,
+        endpoint: endpoint.clone(),
+        workflow: workflow(),
+        ..Settings::default()
+    };
+    document::atomic_write(
+        &directory.join("settings.json"),
+        &serde_json::to_vec(&settings).unwrap(),
+    )
+    .unwrap();
+    let mut projects = vec![];
+    for (epoch, title, prompt) in [
+        (3, "Character", "Make the jacket a deeper blue."),
+        (7, "Outfit", "A separate outfit study."),
+    ] {
+        let mut project = doc();
+        project.title = title.into();
+        project.active_prompt_target = Some("new".into());
+        project.prompt_drafts.insert("new".into(), prompt.into());
+        let path = directory.join(format!("project-{epoch}.atelier"));
+        if epoch == 3 {
+            std::fs::create_dir_all(&path).unwrap();
+        } else {
+            document::save(&path, &project).unwrap();
+        }
+        projects.push((
+            RecoveryTab {
+                epoch,
+                path: Some(path),
+                dirty: true,
+                active: epoch == 3,
+            },
+            project,
+        ));
+    }
+    project_tabs::save_session(&directory.join("open-projects"), projects).unwrap();
+    println!(
+        "Activity fixture ready: {} at {endpoint}",
+        directory.display()
+    );
+    let mut image = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(32, 32)
+        .write_to(&mut image, image::ImageFormat::Png)
+        .unwrap();
+    let png = image.into_inner();
+    let started = std::time::Instant::now();
+    while started.elapsed() < Duration::from_secs(30 * 60)
+        && !directory.join("stop-server").exists()
+    {
+        let (mut stream, _) = match listener.accept() {
+            Ok(connection) => connection,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            Err(error) => panic!("Fixture accept: {error}"),
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0; 4096];
+        let header_end = loop {
+            let n = stream.read(&mut buffer).unwrap();
+            if n == 0 {
+                break None;
+            }
+            request.extend_from_slice(&buffer[..n]);
+            assert!(request.len() < 2 * 1024 * 1024);
+            if let Some(position) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                break Some(position + 4);
+            }
+        };
+        let Some(header_end) = header_end else {
+            continue;
+        };
+        let headers = String::from_utf8_lossy(&request[..header_end]).to_string();
+        let size = headers
+            .lines()
+            .find_map(|line| {
+                line.to_lowercase()
+                    .strip_prefix("content-length:")
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+            })
+            .unwrap_or(0);
+        while request.len() < header_end + size {
+            let n = stream.read(&mut buffer).unwrap();
+            if n == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..n]);
+            assert!(request.len() < 2 * 1024 * 1024);
+        }
+        let (status, body) = if headers.starts_with("POST /prompt ") {
+            let request: serde_json::Value =
+                serde_json::from_slice(&request[header_end..]).unwrap();
+            let mut log = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(directory.join("requests.jsonl"))
+                .unwrap();
+            writeln!(log, "{request}").unwrap();
+            if directory.join("allow-success").exists() {
+                ("200 OK", br#"{"prompt_id":"activity-result"}"#.to_vec())
+            } else {
+                let message = format!("Request was throttled. Your rate limit is reduced while account credit is low. {}", "Additional provider diagnostic context. ".repeat(30));
+                (
+                    "429 Too Many Requests",
+                    serde_json::to_vec(&serde_json::json!({"error":{"message":message}})).unwrap(),
+                )
+            }
+        } else if headers.starts_with("GET /history/") {
+            ("200 OK", br#"{"activity-result":{"status":{"completed":true,"status_str":"success"},"outputs":{"9":{"images":[{"filename":"output.png","subfolder":"","type":"output"}]}}}}"#.to_vec())
+        } else if headers.starts_with("GET /view?") {
+            ("200 OK", png.clone())
+        } else {
+            ("200 OK", b"{}".to_vec())
+        };
+        write!(
+            stream,
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .unwrap();
+        stream.write_all(&body).unwrap();
+    }
+}
+
+#[test]
 fn generation_cancellation_prevents_network_submission() {
     let result = providers::generate(providers::Request {
         native: Arc::new(Default::default()),
@@ -1642,14 +1781,22 @@ fn metal_canvas_artwork_package_contains_image_paint_and_erase() {
     let workers = worker::start();
     workers
         .storage
-        .send(Storage::CanvasArtwork(painting, path.clone(), true))
+        .send(Storage::CanvasArtwork(
+            painting,
+            path.clone(),
+            true,
+            crate::activity::Scope::Project(1),
+        ))
         .unwrap();
     match workers
         .events
         .recv_timeout(Duration::from_secs(15))
         .unwrap()
     {
-        Event::Exported(result) => assert_eq!(result.unwrap(), path),
+        Event::Exported(scope, result) => {
+            assert_eq!(scope, crate::activity::Scope::Project(1));
+            assert_eq!(result.unwrap(), path);
+        }
         _ => panic!("Unexpected event"),
     }
     let artwork = storyfella_studio_core::artwork::ApprovedArtwork::load(&path).unwrap();

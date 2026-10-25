@@ -583,6 +583,16 @@ persists an empty session. Library stays available without project controls.
 Native checks verified reordering, close/failure retention, prompt reopening,
 last-tab close and ordered restart recovery. Workspace checks/tests/format,
 strict Atelier Clippy and macOS packaging checks pass (60 passed, 13 ignored).
+**Atelier Activity (2026-10-25): implemented; native fixture acceptance.**
+One app-wide Activity panel replaces the queue-only panel and raw footer errors.
+Short contextual hints open scoped reports with recovery actions, optional
+read-only diagnostics and verified copying. Drawing uses one right inspector at
+a time. Repeated attempts group; request retries retain their original project,
+source and settings. Save failures remain actionable until successful recovery.
+Native checks cover mocked 429s, save failures, details/copy/Escape and cross-tab
+retry/recovery. Reports and queue history remain session-only. Workspace gates,
+strict Atelier Clippy and packaging pass (63 passed, 14 ignored); real-provider,
+VoiceOver and other-platform acceptance remain.
 **Shared hosted image execution: implemented in Atelier.** Clipforge owns the
 async adapters for Replicate, fal.ai, Alibaba and GPT Image, shared presets,
 job polling/cancellation and result metadata. Atelier retains its document

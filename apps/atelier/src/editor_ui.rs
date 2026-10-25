@@ -108,13 +108,23 @@ impl DrawingApp {
         if self.image_details_open {
             workspace = workspace.child(self.reference_details(cx));
         }
-        if let Some(error) = &self.mask_save_error {
+        if self.mask_save_error.is_some() {
             workspace = workspace.child(
                 row()
                     .px_4()
                     .py_2()
                     .flex_wrap()
-                    .child(label(error.clone()))
+                    .when_some(
+                        self.opened_image.as_ref().and_then(|(reference, _, _, _)| {
+                            self.activity.for_task(
+                                &crate::activity::Scope::Library,
+                                &crate::activity::Task::Mask(crate::library::id(reference)),
+                            )
+                        }),
+                        |row, report| {
+                            row.child(self.report_hint(report.id, "Mask not saved · View", cx))
+                        },
+                    )
                     .child(
                         Button::new("mask-retry-save")
                             .small()

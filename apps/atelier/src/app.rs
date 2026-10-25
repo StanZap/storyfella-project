@@ -50,7 +50,7 @@ pub enum Panel {
     Settings,
     Help,
     Brushes,
-    Queue,
+    Activity,
 }
 
 fn aspect_index(width: u32, height: u32) -> usize {
@@ -175,7 +175,6 @@ pub struct DrawingApp {
     pub next_project_epoch: u64,
     pub library: Vec<(Arc<document::Reference>, Arc<RenderImage>)>,
     pub library_loading: bool,
-    pub library_error: Option<String>,
     pub opened_image: Option<(Arc<document::Reference>, Arc<RenderImage>, u32, u32)>,
     pub opening_image: Option<Arc<document::Reference>>,
     pub image_zoom: f32,
@@ -264,7 +263,11 @@ pub struct DrawingApp {
     last_edit: Instant,
     autosave_retry_after: Instant,
     pub status: String,
-    pub error: bool,
+    pub activity: crate::activity::Activity,
+    pub activity_selection: Option<u64>,
+    pub activity_details: bool,
+    pub activity_text: Entity<TextareaState>,
+    pub activity_copy: Option<&'static str>,
     pub settings: Settings,
     pub generation_provider_select: Entity<SelectState<Vec<String>>>,
     pub settings_provider_select: Entity<SelectState<Vec<String>>>,
@@ -279,9 +282,8 @@ pub struct DrawingApp {
     pub server_status: Option<ServerStatus>,
     pub provider_readiness: String,
     pub settings_save: Option<Settings>,
-    pub settings_save_error: Option<String>,
     pub generation: Option<Arc<AtomicBool>>,
-    pub generation_error: Option<String>,
+    pub prompt_validation: Option<crate::activity::PromptValidation>,
     /// The queued and recently completed image requests, oldest first.
     pub queue: Queue,
     /// The canvas region (document coordinates) selected for "Generate from
@@ -308,7 +310,7 @@ pub struct DrawingApp {
     pub width: Entity<InputState>,
     pub height: Entity<InputState>,
     pub prompt: Entity<TextareaState>,
-    prompt_target: String,
+    pub(crate) prompt_target: String,
     pub search: Entity<InputState>,
     pub endpoint: Entity<InputState>,
     pub model: Entity<InputState>,
@@ -550,7 +552,6 @@ impl DrawingApp {
             next_project_epoch,
             library: vec![],
             library_loading: false,
-            library_error: None,
             opened_image: None,
             opening_image: None,
             image_zoom: 1.,
@@ -667,7 +668,11 @@ impl DrawingApp {
             last_edit: Instant::now(),
             autosave_retry_after: Instant::now(),
             status,
-            error,
+            activity: crate::activity::Activity::default(),
+            activity_selection: None,
+            activity_details: false,
+            activity_text: cx.new(|cx| TextareaState::new(window, cx)),
+            activity_copy: None,
             settings,
             generation_provider_select,
             settings_provider_select,
@@ -679,9 +684,8 @@ impl DrawingApp {
             server_status: None,
             provider_readiness: "Checking provider…".into(),
             settings_save: None,
-            settings_save_error: None,
             generation: None,
-            generation_error: None,
+            prompt_validation: None,
             queue: Queue::default(),
             generation_region: None,
             selecting_generation_region: false,
@@ -723,6 +727,14 @@ impl DrawingApp {
             workers: worker::start(),
             subscriptions: vec![],
         };
+        if error {
+            app.report_error(
+                crate::activity::Scope::App,
+                crate::activity::Task::Other,
+                app.status.clone(),
+            );
+            app.status.clear();
+        }
         app.sync_ref_inputs(window, cx);
         app.refresh_library();
         app.refresh_projects();
@@ -896,8 +908,21 @@ impl DrawingApp {
         }
     }
     pub fn message(&mut self, message: impl Into<String>, error: bool) {
-        self.status = message.into();
-        self.error = error;
+        let message = message.into();
+        if error {
+            let scope = if self.page == Page::Library
+                || (self.page == Page::Image && self.image_return_page == Page::Library)
+            {
+                crate::activity::Scope::Library
+            } else if self.project_tab_order.is_empty() {
+                crate::activity::Scope::App
+            } else {
+                crate::activity::Scope::Project(self.epoch)
+            };
+            self.report_error(scope, crate::activity::Task::Other, message);
+        } else {
+            self.status = message;
+        }
     }
     pub(crate) fn capture_prompt(&mut self, cx: &mut Context<Self>) {
         if self.project_tab_order.is_empty() {
@@ -962,7 +987,7 @@ impl DrawingApp {
             .unwrap_or_default();
         self.prompt
             .update(cx, |s, cx| s.set_value(value, window, cx));
-        self.generation_error = None;
+        self.prompt_validation = None;
     }
     pub fn changed(&mut self) {
         self.ensure_project_tab();
@@ -1872,7 +1897,7 @@ impl DrawingApp {
         }
         self.refresh_lora_select(window, cx);
         self.refresh_server_status();
-        self.generation_error = None;
+        self.prompt_validation = None;
         cx.notify();
     }
     pub fn select_provider(
@@ -1883,7 +1908,7 @@ impl DrawingApp {
     ) {
         self.settings_from_inputs(cx);
         self.settings.select_provider(provider);
-        self.generation_error = None;
+        self.prompt_validation = None;
         for select in [
             &self.generation_provider_select,
             &self.settings_provider_select,
@@ -1948,7 +1973,6 @@ impl DrawingApp {
         }
         self.settings_from_inputs(cx);
         self.settings.remember_provider();
-        self.settings_save_error = None;
         if self
             .workers
             .storage
@@ -1958,9 +1982,11 @@ impl DrawingApp {
             ))
             .is_err()
         {
-            self.settings_save_error =
-                Some("Storage worker stopped. Try restarting Atelier.".into());
-            self.message("Storage worker stopped", true);
+            self.report_error(
+                crate::activity::Scope::App,
+                crate::activity::Task::Settings,
+                "Storage worker stopped".into(),
+            );
         } else {
             self.settings_save = Some(self.settings.clone());
         }
@@ -1989,7 +2015,7 @@ impl DrawingApp {
         self.settings.width = width;
         self.settings.height = height;
         self.sync_artboard_selects(window, cx);
-        self.generation_error = None;
+        self.prompt_validation = None;
         self.capture_prompt(cx);
         cx.notify();
     }
@@ -2101,13 +2127,13 @@ impl DrawingApp {
         self.settings_from_inputs(cx);
         let source = if self.editing_image {
             if !self.settings.provider.supports_edit() {
-                self.message("Choose a hosted provider to edit an image", true);
+                self.prompt_issue("Choose a hosted provider to edit an image");
                 return;
             }
             match self.edit_source() {
                 Some(source) => Some(source),
                 None => {
-                    self.message("Select an image from your collection to edit", true);
+                    self.prompt_issue("Select an image from your collection to edit");
                     return;
                 }
             }
@@ -2130,9 +2156,8 @@ impl DrawingApp {
                     Some(mask.clone())
                 }
                 _ => {
-                    self.generation_error = Some(
-                        "Open the selected image to paint its editing mask, or turn off Use mask."
-                            .into(),
+                    self.prompt_issue(
+                        "Open the selected image to paint its editing mask, or turn off Use mask.",
                     );
                     return;
                 }
@@ -2143,24 +2168,21 @@ impl DrawingApp {
         if let Err(error) =
             providers::validate_inputs(&self.settings, editing, references.len(), mask.is_some())
         {
-            self.generation_error = Some(error.to_string());
+            self.prompt_issue(error.to_string());
             return;
         }
         let prompt = self.prompt.read(cx).value().to_string();
         if prompt.trim().is_empty() {
-            self.message(
-                if self.editing_image {
-                    "Describe what you want to change"
-                } else {
-                    "Describe the image you want"
-                },
-                true,
-            );
+            self.prompt_issue(if self.editing_image {
+                "Describe what you want to change"
+            } else {
+                "Describe the image you want"
+            });
             return;
         }
-        self.generation_error = None;
+        self.prompt_validation = None;
 
-        self.queue.enqueue(
+        let queued = self.queue.enqueue(
             QueuedRequest {
                 settings: self.settings.clone(),
                 prompt,
@@ -2173,6 +2195,10 @@ impl DrawingApp {
             },
             self.epoch,
         );
+        self.queue
+            .get_mut(queued)
+            .expect("New request exists")
+            .context = Some(self.prompt_target.clone());
         self.show_edit_composer = false;
         self.page = Page::Artboards;
         self.editing_image = false;
@@ -2243,7 +2269,13 @@ impl DrawingApp {
     }
     /// Drops finished history, keeping queued and running work.
     pub fn queue_clear_finished(&mut self, cx: &mut Context<Self>) {
-        self.queue.clear_finished();
+        let activity = &self.activity;
+        self.queue.clear_finished(|id| {
+            activity
+                .get(id)
+                .is_some_and(|report| report.needs_attention())
+        });
+        self.activity.clear_completed(self.activity_selection);
         self.message("Cleared finished requests", false);
         cx.notify();
     }
@@ -2258,12 +2290,25 @@ impl DrawingApp {
         let Some(item) = self.queue.get(id) else {
             return;
         };
-        let JobState::Failed(_) = item.state else {
+        let JobState::Failed(report_id) = item.state else {
             return;
         };
+        if !self.project_tab_order.contains(&item.epoch)
+            || self
+                .queue
+                .items()
+                .iter()
+                .any(|item| item.retry_of == Some(report_id) && !item.state.is_finished())
+        {
+            return;
+        }
         let request = item.request.clone();
         let epoch = item.epoch;
-        self.queue.enqueue(request, epoch);
+        let context = item.context.clone();
+        let next = self.queue.enqueue(request, epoch);
+        let item = self.queue.get_mut(next).expect("New retry exists");
+        item.retry_of = Some(report_id);
+        item.context = context;
         self.message("Request re-queued", false);
         self.pump_queue();
         cx.notify();
@@ -2488,8 +2533,10 @@ impl DrawingApp {
         match result {
             Ok(request) => {
                 self.changed();
-                self.queue.enqueue(request, self.epoch);
-                self.generation_error = None;
+                let id = self.queue.enqueue(request, self.epoch);
+                self.queue.get_mut(id).expect("New request exists").context =
+                    Some(self.prompt_target.clone());
+                self.prompt_validation = None;
                 self.pump_queue();
                 self.message(
                     "Queued · original artwork preserved; edits arrive as candidates",
@@ -2497,8 +2544,7 @@ impl DrawingApp {
                 );
             }
             Err(error) => {
-                self.generation_error = Some(error.to_string());
-                self.message(error.to_string(), true);
+                self.prompt_issue(error.to_string());
             }
         }
         cx.notify();
@@ -2537,7 +2583,12 @@ impl DrawingApp {
         }
         self.pick(Picker::Save, window, cx);
     }
-    fn queue_save(&mut self, path: PathBuf, automatic: bool) {
+    pub(crate) fn queue_save(&mut self, path: PathBuf, automatic: bool) {
+        let failure_task = if automatic {
+            crate::activity::Task::Recovery
+        } else {
+            crate::activity::Task::Save(path.clone())
+        };
         if automatic && path == self.data_dir.join("recovery.atelier") {
             self.persist_open_projects();
         }
@@ -2558,7 +2609,11 @@ impl DrawingApp {
             })
             .is_err()
         {
-            self.message("Storage worker stopped", true);
+            self.report_error(
+                crate::activity::Scope::Project(self.epoch),
+                failure_task,
+                "Storage worker stopped".into(),
+            );
             self.save_pending = false;
             self.manual_pending = false;
         }
@@ -2566,6 +2621,13 @@ impl DrawingApp {
     pub fn pick(&mut self, picker: Picker, window: &mut Window, cx: &mut Context<Self>) {
         self.finish_stroke();
         let epoch = self.epoch;
+        let export_scope = if self.page == Page::Library
+            || (self.page == Page::Image && self.image_return_page == Page::Library)
+        {
+            crate::activity::Scope::Library
+        } else {
+            crate::activity::Scope::Project(epoch)
+        };
         let import_into_project = self.panel == Panel::References;
         let export_image = self.opened_image.as_ref().map(|(r, _, _, _)| r.clone());
         let export_canvas =
@@ -2614,16 +2676,18 @@ impl DrawingApp {
                                                     doc.clone(),
                                                     path,
                                                     *transparent,
+                                                    export_scope.clone(),
                                                 ));
                                             this.message(
                                                 "Exporting approved canvas artwork…",
                                                 false,
                                             );
                                         } else if let Some(reference) = &export_image {
-                                            let _ = this
-                                                .workers
-                                                .storage
-                                                .send(Storage::Artwork(reference.clone(), path));
+                                            let _ = this.workers.storage.send(Storage::Artwork(
+                                                reference.clone(),
+                                                path,
+                                                export_scope.clone(),
+                                            ));
                                             this.message("Exporting approved artwork…", false);
                                         }
                                     } else if matches!(picker, Picker::Original) {
@@ -2631,10 +2695,11 @@ impl DrawingApp {
                                             path.set_extension("png");
                                         }
                                         if let Some(reference) = &export_image {
-                                            let _ = this
-                                                .workers
-                                                .storage
-                                                .send(Storage::Original(reference.clone(), path));
+                                            let _ = this.workers.storage.send(Storage::Original(
+                                                reference.clone(),
+                                                path,
+                                                export_scope.clone(),
+                                            ));
                                             this.message("Exporting original…", false);
                                         }
                                     } else {
@@ -2650,6 +2715,7 @@ impl DrawingApp {
                                             path,
                                             this.transparent,
                                             this.jpeg_quality,
+                                            export_scope.clone(),
                                         ));
                                         this.message("Exporting…", false);
                                     }
@@ -2760,16 +2826,16 @@ impl DrawingApp {
             match event {
                 Event::WorkspaceSaved(result) => if let Err(error) = result {
                     self.closing = false;
-                    self.message(format!("Open-project recovery save failed: {error}"),true);
-                },
+                    self.report_error(crate::activity::Scope::App, crate::activity::Task::Recovery, format!("Open-project recovery save failed: {error:#}"));
+                } else { self.activity.resolve(&crate::activity::Scope::App, &crate::activity::Task::Recovery); },
                 Event::ProjectClosed { epoch, revision, result } => self.finish_project_close(epoch, revision, result, window, cx),
                 Event::ClipforgeOpened(result) => match result {
                     Ok(()) => self.message("Clipforge opened · manage providers there, then return and Refresh readiness",false),
                     Err(error) => self.message(format!("Clipforge: {error}"),true),
                 },
                 Event::Settings(result) => match result {
-                    Ok(()) => self.message("Settings saved", false),
-                    Err(e) => self.message(format!("Settings: {e}"), true),
+                    Ok(()) => { self.activity.resolve(&crate::activity::Scope::App, &crate::activity::Task::Settings); self.message("Settings saved", false); },
+                    Err(e) => { self.report_error(crate::activity::Scope::App, crate::activity::Task::Settings, format!("Settings: {e:#}")); },
                 },
                 Event::SettingsApplied(result) => {
                     let pending = self.settings_save.take();
@@ -2783,12 +2849,12 @@ impl DrawingApp {
                                     window.focus(&self.focus, cx);
                                 }
                                 self.message("Settings saved", false);
+                                self.activity.resolve(&crate::activity::Scope::App, &crate::activity::Task::Settings);
                             }
                         }
                         Err(error) => {
                             let message = format!("Could not save settings: {error:#}");
-                            self.settings_save_error = Some(message.clone());
-                            self.message(message, true);
+                            self.report_error(crate::activity::Scope::App, crate::activity::Task::Settings, message);
                         }
                     }
                 }
@@ -2869,6 +2935,15 @@ impl DrawingApp {
                     }
                     match result {
                         Ok(()) => {
+                            let scope = crate::activity::Scope::Project(epoch);
+                            let task = if automatic { crate::activity::Task::Recovery } else { crate::activity::Task::Save(path.clone()) };
+                            self.activity.resolve(&scope, &task);
+                            if !automatic {
+                                if let Some(tab) = self.project_tabs.iter_mut().find(|tab| tab.epoch == epoch) {
+                                    tab.path = Some(path.clone());
+                                    if tab.revision == revision { tab.dirty = false; }
+                                }
+                            }
                             if epoch == self.epoch {
                                 if automatic && path == self.data_dir.join("recovery.atelier") {
                                     self.autosaved_revision = revision;
@@ -2893,19 +2968,20 @@ impl DrawingApp {
                         Err(e) => {
                             self.closing = false;
                             self.autosave_retry_after = Instant::now() + Duration::from_secs(5);
-                            self.message(format!("Save failed: {e}"), true)
+                            let task = if automatic { crate::activity::Task::Recovery } else { crate::activity::Task::Save(path) };
+                            self.report_error(crate::activity::Scope::Project(epoch), task, format!("Save failed: {e:#}"));
                         }
                     }
                 }
-                Event::Exported(result) => match result {
-                    Ok(path) => self.message(
+                Event::Exported(scope, result) => match result {
+                    Ok(path) => { self.activity.resolve(&scope, &crate::activity::Task::Export); self.message(
                         format!(
                             "Exported {}",
                             path.file_name().unwrap_or_default().to_string_lossy()
                         ),
                         false,
-                    ),
-                    Err(e) => self.message(format!("Export failed: {e}"), true),
+                    ); },
+                    Err(e) => { self.report_error(scope, crate::activity::Task::Export, format!("Export failed: {e:#}")); },
                 },
                 Event::Switched(epoch, result) => {
                     self.switching = false;
@@ -2920,6 +2996,7 @@ impl DrawingApp {
                     }
                     match result {
                         Ok((doc, images, path)) => {
+                            self.activity.resolve(&crate::activity::Scope::App, &crate::activity::Task::Open);
                             self.finish_stroke();
                             let keep_previous = !self.project_tab_order.is_empty() && (self.path.is_some() || !self.doc.references.is_empty()
                                 || self.doc.layers.iter().any(|l|l.image.is_some() || !l.strokes.is_empty())
@@ -2969,13 +3046,14 @@ impl DrawingApp {
                                 self.queue_save(path, false);
                             }
                         }
-                        Err(e) => self.message(format!("Could not open project: {e}"), true),
+                        Err(e) => { self.report_error(crate::activity::Scope::App, crate::activity::Task::Open, format!("Could not open project: {e:#}")); },
                     }
                 }
                 Event::Library(result) => {
                     self.library_loading = false;
                     match result {
                         Ok(items) => {
+                            self.activity.resolve(&crate::activity::Scope::Library, &crate::activity::Task::Library);
                             self.library = items
                                 .into_iter()
                                 .map(|(reference, image)| {
@@ -2984,16 +3062,15 @@ impl DrawingApp {
                                 .collect();
                         }
                         Err(error) => {
-                            self.library_error = Some(format!("Could not load library: {error:#}"))
+                            let message = format!("Could not load library: {error:#}");
+                            self.report_error(crate::activity::Scope::Library, crate::activity::Task::Library, message);
                         }
                     }
                 }
                 Event::LibraryUpdated(result) => match result {
                     Ok(()) => self.refresh_library(),
                     Err(error) => {
-                        self.library_error =
-                            Some(format!("Library details were not saved: {error:#}"));
-                        self.message(format!("Library details were not saved: {error:#}"), true);
+                        self.report_error(crate::activity::Scope::Library, crate::activity::Task::Other, format!("Library details were not saved: {error:#}"));
                     }
                 },
                 Event::OpenedImage(id, result) => {
@@ -3074,6 +3151,7 @@ impl DrawingApp {
                 }
                 Event::MaskSaved(id, revision, result) => match result {
                     Ok(()) => {
+                        self.activity.resolve(&crate::activity::Scope::Library, &crate::activity::Task::Mask(id.clone()));
                         if revision == self.mask_revision
                             && self
                                 .opened_image
@@ -3089,7 +3167,7 @@ impl DrawingApp {
                         self.mask_save_error = Some(message.clone());
                         self.closing = false;
                         self.opening_image = None;
-                        self.message(message, true);
+                        self.report_error(crate::activity::Scope::Library, crate::activity::Task::Mask(id), message);
                     }
                 },
                 Event::MaskPreview(revision, result) => {
@@ -3112,18 +3190,20 @@ impl DrawingApp {
                     if !into_project {
                         match result {
                             Ok(_) => {
+                                self.activity.resolve(&crate::activity::Scope::Library, &crate::activity::Task::Import);
                                 self.message("Images saved to the shared reference library", false)
                             }
-                            Err(error) => self.message(format!("Import failed: {error:#}"), true),
+                            Err(error) => { self.report_error(crate::activity::Scope::Library, crate::activity::Task::Import, format!("Import failed: {error:#}")); },
                         }
                         continue;
                     }
                     if epoch != self.epoch {
-                        self.message("Import discarded · the project changed", true);
+                        self.report_error(crate::activity::Scope::Project(epoch), crate::activity::Task::Import, "Imported originals are in Library; the destination project changed before they could be attached.".into());
                         continue;
                     }
                     match result {
                         Ok(refs) => {
+                            self.activity.resolve(&crate::activity::Scope::Project(epoch), &crate::activity::Task::Import);
                             let total = self.doc.embedded_image_bytes()
                                 + refs.iter().map(|(r, _)| r.image.len()).sum::<usize>();
                             if self.doc.references.len() + refs.len() > 128
@@ -3154,7 +3234,7 @@ impl DrawingApp {
                             }
                             self.message("References imported", false);
                         }
-                        Err(e) => self.message(format!("Import failed: {e}"), true),
+                        Err(e) => { self.report_error(crate::activity::Scope::Project(epoch), crate::activity::Task::Import, format!("Import failed: {e:#}")); },
                     }
                 }
                 Event::Generated(id, result) => {
@@ -3176,6 +3256,9 @@ impl DrawingApp {
                         } else {
                             match result {
                                 Ok((reference, image)) => {
+                                    if let Some(report_id) = self.queue.get(id).and_then(|item| item.retry_of) {
+                                        if let Some(report) = self.activity.get_mut(report_id) { report.resolved = true; }
+                                    }
                                     let result_id = crate::library::id(&reference);
                                     let request = self.queue.get(id).map(|item| item.request.clone());
                                     let reference = Arc::new(reference);
@@ -3224,12 +3307,7 @@ impl DrawingApp {
                                     }
                                 }
                                 Err(e) => {
-                                    let message = format!("Could not create image: {e:#}");
-                                    self.generation_error = Some(message.clone());
-                                    if let Some(item) = self.queue.get_mut(id) {
-                                        item.state = JobState::Failed(message.clone());
-                                    }
-                                    self.message(message, true);
+                                    self.generation_failed(id, format!("Could not create image: {e:#}"));
                                 }
                             }
                         }

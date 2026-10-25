@@ -155,6 +155,16 @@ installed-app discovery and those platform handoffs remain acceptance work.
 
 ## Verification and remaining acceptance
 
+Operational failures now live in app-wide Activity, alongside the existing
+generation queue. `activity.rs` owns report scope, causes, repeated attempts and
+resolution; `activity_ui.rs` owns the concise hint/report/detail/recovery UI.
+Queued failures reference their report and retries keep captured inputs. Save,
+import and export outcomes retain their originating scope; unrelated successes
+do not erase reports. Prompt validation stays local. Activity temporarily
+replaces the drawing inspector, and the footer never renders raw errors.
+Reports and queue history are session-only. `.atelier` data and prompt recovery
+retain their existing schema and behavior.
+
 Regression tests cover schema upgrade/idempotence and preserved lineage,
 captured-artboard attachment, atomic attachment failure, selection crop geometry,
 candidate exclusion from PNG export, layer acceptance/transform/history and
@@ -164,8 +174,8 @@ painting, mask, `.sfart` and Studio import tests remain active.
 
 Final checks: `cargo check --workspace --all-targets`, `cargo test --workspace`,
 `cargo fmt --all -- --check`, strict Atelier Clippy, `git diff --check`, native
-macOS packaging and the packaging regression script pass. Atelier has 60 passing
-tests and 13 ignored device/fixture tests; no Metal device acceptance run was
+macOS packaging and the packaging regression script pass. Atelier has 63 passing
+tests and 14 ignored device/fixture tests; no Metal device acceptance run was
 performed. Existing vendored GPUI deprecation warnings remain.
 
 The isolated macOS build uses a unique test bundle identity. Live checks exercised
@@ -186,6 +196,19 @@ are app-wide, and the Favorites filter fits beside search.
 Prepare its three-project/save-failure fixture with
 `cargo test -p storyfella-atelier prepare_project_tabs_fixture -- --ignored`;
 the files stay under `.svs-e2e/atelier-tabs-fixture`.
+
+Activity checks used an isolated ComfyUI-compatible loopback fixture, not a paid
+provider. Long 429 diagnostics stayed out of the footer and opened in bounded,
+read-only Details; copying and Escape worked. Separate save failures retained
+their own report; another project's composer stayed unaffected. Repeated retries
+grouped, used the original prompt while another project was active, and resolved
+after the mock returned an image. Save again recovered the original project's
+destination. The final layout was checked alongside drawing and at a narrower
+window size. Full VoiceOver, platform and real-provider acceptance remain open.
+Run `cargo test -p storyfella-atelier serve_activity_ui_fixture -- --ignored --nocapture`
+to prepare `.svs-e2e/atelier-activity-ui` and a local fixture server. Its marker
+files `allow-success` and `stop-server` control successful responses and shutdown;
+captured requests are logged in that fixture directory.
 
 Prepare local UI fixtures with
 `cargo test -p storyfella-atelier prepare_creation_workflow_fixture -- --ignored`.

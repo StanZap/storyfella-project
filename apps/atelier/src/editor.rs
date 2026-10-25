@@ -113,7 +113,6 @@ impl DrawingApp {
             return;
         }
         self.library_loading = true;
-        self.library_error = None;
         if self
             .workers
             .storage
@@ -121,7 +120,11 @@ impl DrawingApp {
             .is_err()
         {
             self.library_loading = false;
-            self.library_error = Some("Library worker stopped. Restart Atelier to retry.".into());
+            self.report_error(
+                crate::activity::Scope::Library,
+                crate::activity::Task::Library,
+                "Library worker stopped. Restart Atelier to retry.".into(),
+            );
         }
     }
     pub fn input_references(&self) -> Vec<Arc<document::Reference>> {
@@ -341,7 +344,11 @@ impl DrawingApp {
                 self.mask_save_error = Some(error.clone());
                 self.closing = false;
                 self.opening_image = None;
-                self.message(error, true);
+                self.report_error(
+                    crate::activity::Scope::Library,
+                    crate::activity::Task::Mask(crate::library::id(reference)),
+                    error,
+                );
             }
         }
     }

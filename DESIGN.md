@@ -1,5 +1,35 @@
 # Storyfella Studio design standard and UX audit
 
+### Atelier Activity and failure feedback · 2026-10-25 (current)
+
+Operational failures live in Activity, reached from a single header control on
+every page. The workspace shows short contextual hints, not provider responses
+or diagnostic paragraphs. Generation hints belong to their project and prompt
+source/mode. A failed save retains a Not saved hint at the project title.
+Prompt validation remains beside the composer input. The footer stays quiet.
+
+Activity reuses the image queue and its captured requests. A report shows one
+short explanation, an applicable recovery action, Details and dismissal. Details
+opens selectable, read-only diagnostics in a bounded field with verified Copy
+report. No timestamps, filters, routine-save feed, stacked cards or intermediate
+toasts. In drawing, Activity temporarily replaces Layers/References; closing it
+restores that inspector preference. Escape closes Activity from its report field.
+
+Reports retain operation/project ownership through navigation. Exact repeats and
+retried attempts group; unrelated successes do not clear failures. Dismissing a
+notification does not claim unsaved work is saved. Retry uses captured inputs,
+and a successful attempt resolves its report. Do not invent retry countdowns or
+automatically resubmit paid requests. Reports and queue history are session-only;
+documents, prompt drafts and originals keep their existing persistence.
+
+Native fixture checks verified long mocked 429 diagnostics, quiet footers,
+details/copy/read-only/Escape, separate save failures, project isolation, grouped
+retries and successful recovery using the originating request. The final layout
+was checked with the drawing workspace and a narrower window. Workspace
+checks/tests/format, strict Atelier Clippy and packaging pass (63 tests passed,
+14 device/fixture tests ignored). Real-provider, VoiceOver and other-platform
+acceptance remain open; the mock establishes no artistic quality.
+
 ### Atelier project tabs · 2026-10-25 (current)
 
 Project tabs keep their chosen order when activated. A compact close icon saves

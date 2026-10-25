@@ -36,7 +36,7 @@ pub(crate) enum PromptComposerMode {
 fn prompt_composer_frame(
     prompt: &Entity<TextareaState>,
     controls: impl IntoElement,
-    error: Option<&String>,
+    error: Option<&str>,
 ) -> impl IntoElement {
     panel()
         .occlude()
@@ -48,7 +48,7 @@ fn prompt_composer_frame(
         .child(Textarea::new(prompt).h(px(62.)))
         .child(controls)
         .when_some(error, |composer, error| {
-            composer.child(label(error.clone()).text_color(rgb(WINE)))
+            composer.child(label(error.to_owned()).text_color(rgb(WINE)))
         })
 }
 
@@ -141,6 +141,8 @@ pub(crate) fn icon(name: &str) -> Icon {
         "up"=>"<path d='m6 14 6-6 6 6'/>","down"=>"<path d='m6 10 6 6 6-6'/>",
         "check"=>"<path d='m4 12 5 5L20 6'/>","close"=>"<path d='m5 5 14 14M19 5 5 19'/>",
         "sparkle"=>"<path d='m12 3 3 6 6 3-6 3-3 6-3-6-6-3 6-3z'/>",
+        "alert"=>"<path d='m12 3 10 18H2z'/><path d='M12 9v5M12 17h.01'/>",
+        "activity"=>"<circle cx='12' cy='12' r='9'/><path d='M12 7v5l3 2'/>",
         "help"=>"<circle cx='12' cy='12' r='9'/><path d='M9 9a3 3 0 1 1 5 2c-2 1-2 1-2 3M12 17h.01'/>",
         _=>"<circle cx='12' cy='12' r='8'/>",
     };
@@ -318,7 +320,7 @@ impl DrawingApp {
             Panel::Canvas => Some(self.canvas_settings(cx)),
             Panel::Settings => Some(self.provider_settings(cx)),
             Panel::Help => Some(self.help(cx)),
-            Panel::Queue => Some(self.queue_panel(cx)),
+            Panel::Activity => None,
             Panel::References => Some(self.reference_picker(cx)),
             Panel::None => None,
         };
@@ -353,6 +355,14 @@ impl DrawingApp {
                 this.open_prompt(window, cx);
                 cx.stop_propagation();
             }))
+            .on_action(cx.listener(|this, _: &crate::CloseActivity, window, cx| {
+                if this.panel == Panel::Activity {
+                    this.panel = Panel::None;
+                    window.focus(&this.focus, cx);
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+            }))
             .on_action(cx.listener(|this, _: &crate::CloseProject, _, cx| {
                 this.close_project_tab(this.epoch, cx);
                 cx.stop_propagation();
@@ -375,7 +385,10 @@ impl DrawingApp {
                     .when(matches!(self.page, Page::Draw | Page::Image), |layout| {
                         layout.child(self.rail(cx))
                     })
-                    .child(main),
+                    .child(div().flex_1().min_w_0().h_full().flex().child(main))
+                    .when(self.panel == Panel::Activity, |layout| {
+                        layout.child(self.activity_panel(cx))
+                    }),
             )
             .child(self.status_bar())
             .when_some(overlay, |layout, overlay| layout.child(overlay))
@@ -476,7 +489,12 @@ impl DrawingApp {
                                 cx.notify();
                             })),
                     )
-                    .child(label(if self.dirty { "Edited" } else { "Saved" }))
+                    .when_some(self.activity.save_failure(self.epoch), |header, report| {
+                        header.child(self.report_hint(report.id, "Not saved · View", cx))
+                    })
+                    .when(self.activity.save_failure(self.epoch).is_none(), |header| {
+                        header.child(label(if self.dirty { "Edited" } else { "Saved" }))
+                    })
             })
             .child(div().flex_1())
             .child(
@@ -515,9 +533,8 @@ impl DrawingApp {
                         )),
                     )
             })
-            .when(self.page != Page::Projects, |header| {
-                header.child(div().w(px(8.))).child(self.queue_button(cx))
-            })
+            .child(div().w(px(8.)))
+            .child(self.queue_button(cx))
     }
     fn project_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let tabs = self.project_tab_order.iter().filter_map(|epoch| {
@@ -595,29 +612,56 @@ impl DrawingApp {
     /// outstanding, opening the queue panel.
     fn queue_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let outstanding = self.queue.outstanding();
+        let failures = self.activity.count();
+        let count = if failures > 0 { failures } else { outstanding };
         div()
             .relative()
             .child(
                 tool_button(
                     "open-queue",
-                    "layers",
-                    if outstanding == 0 {
-                        "Generation queue"
-                    } else {
-                        "Generation queue · requests waiting"
-                    },
+                    if failures > 0 { "alert" } else { "activity" },
+                    "Activity",
                 )
-                .atelier_selected(self.panel == Panel::Queue, cx)
+                .accessibility_label(if failures > 0 {
+                    format!(
+                        "Activity · {failures} {}",
+                        if failures == 1 { "issue" } else { "issues" }
+                    )
+                } else if outstanding > 0 {
+                    format!(
+                        "Activity · {outstanding} {} pending",
+                        if outstanding == 1 {
+                            "request"
+                        } else {
+                            "requests"
+                        }
+                    )
+                } else {
+                    "Activity".into()
+                })
+                .atelier_selected(self.panel == Panel::Activity, cx)
                 .on_click(cx.listener(|this, _, _, cx| {
-                    this.panel = if this.panel == Panel::Queue {
+                    this.panel = if this.panel == Panel::Activity {
                         Panel::None
                     } else {
-                        Panel::Queue
+                        if this.activity_selection.is_none_or(|id| {
+                            this.activity.get(id).is_none_or(|report| report.resolved)
+                        }) {
+                            this.activity_selection = this
+                                .activity
+                                .reports()
+                                .iter()
+                                .rev()
+                                .find(|report| report.needs_attention())
+                                .map(|report| report.id);
+                            this.activity_details = false;
+                        }
+                        Panel::Activity
                     };
                     cx.notify();
                 })),
             )
-            .when(outstanding > 0, |element| {
+            .when(count > 0, |element| {
                 element.child(
                     div()
                         .absolute()
@@ -633,7 +677,7 @@ impl DrawingApp {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(outstanding.to_string()),
+                        .child(count.to_string()),
                 )
             })
     }
@@ -735,7 +779,9 @@ impl DrawingApp {
                     .child(self.canvas_toolbar(cx))
                     .child(self.canvas(cx)),
             )
-            .when(self.dock, |layout| layout.child(self.dock_panel(cx)))
+            .when(self.dock && self.panel != Panel::Activity, |layout| {
+                layout.child(self.dock_panel(cx))
+            })
     }
     fn canvas_toolbar(&self, cx: &mut Context<Self>) -> Div {
         row()
@@ -836,12 +882,25 @@ impl DrawingApp {
                     })),
             )
             .child(
-                tool_button("dock", "panel", "Toggle panels")
-                    .atelier_selected(self.dock, cx)
-                    .on_click(cx.listener(|this, _, _, cx| {
+                tool_button(
+                    "dock",
+                    "panel",
+                    if self.panel == Panel::Activity {
+                        "Show Layers and References"
+                    } else {
+                        "Toggle panels"
+                    },
+                )
+                .atelier_selected(self.dock && self.panel != Panel::Activity, cx)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if this.panel == Panel::Activity {
+                        this.panel = Panel::None;
+                        this.dock = true;
+                    } else {
                         this.dock = !this.dock;
-                        cx.notify();
-                    })),
+                    }
+                    cx.notify();
+                })),
             )
     }
     fn canvas(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1771,27 +1830,11 @@ impl DrawingApp {
                 } else {
                     format!("{} shared images", self.library.len())
                 })
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_color(rgb(WINE))
-                        .when(self.error, |status| status.child(self.status.clone())),
-                )
+                .child(div().flex_1())
                 .child("Stored locally");
         }
         if self.page == Page::Artboards {
-            return if self.error {
-                row()
-                    .h(px(28.))
-                    .px_6()
-                    .text_xs()
-                    .text_color(rgb(WINE))
-                    .child(self.status.clone())
-            } else {
-                div()
-            };
+            return div();
         }
         row()
             .h(px(28.))
@@ -1815,7 +1858,7 @@ impl DrawingApp {
                     .flex_1()
                     .min_w_0()
                     .overflow_hidden()
-                    .text_color(rgb(if self.error { WINE } else { MUTED }))
+                    .truncate()
                     .child(self.status.clone()),
             )
             .child(if self.dirty {
@@ -1963,9 +2006,16 @@ impl DrawingApp {
         }
         cards
             .when(self.library_loading, |c| c.child(label("Loading library…")))
-            .when_some(self.library_error.as_ref(), |c, error| {
-                c.child(label(error.clone()).text_color(rgb(WINE)))
-            })
+            .when_some(
+                self.activity.latest(&crate::activity::Scope::Library, None),
+                |c, report| {
+                    c.child(row().child(self.report_hint(
+                        report.id,
+                        "Library needs attention · View",
+                        cx,
+                    )))
+                },
+            )
     }
 
     fn reference_picker(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2022,6 +2072,9 @@ impl DrawingApp {
 
         let context = row()
             .child(label(caption).flex_1())
+            .when_some(self.generation_report(), |row, report| {
+                row.child(self.report_hint(report.id, "Generation failed · View", cx))
+            })
             .when(drawing && !separate, |r| {
                 let (x, y, w, h) =
                     self.region_bounds()
@@ -2322,82 +2375,18 @@ impl DrawingApp {
                         ),
                 );
         }
-        prompt_composer_frame(&self.prompt, controls, self.generation_error.as_ref())
-    }
-    /// The queue panel, opened from the header badge or the generation rail.
-    fn queue_panel(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut content = column().child(
-            row()
-                .child(
-                    label(format!(
-                        "{} waiting · {} finished",
-                        self.queue.pending(),
-                        self.queue.finished()
-                    ))
-                    .flex_1(),
-                )
-                .when(!self.queue.is_empty(), |row| {
-                    let paused = self.queue.is_paused();
-                    row.child(
-                        Button::new("queue-pause")
-                            .ghost()
-                            .small()
-                            .icon(icon(if paused { "play" } else { "pause" }))
-                            .label(if paused { "Resume" } else { "Pause" })
-                            .accessibility_label(if paused {
-                                "Resume the queue"
-                            } else {
-                                "Pause the queue"
-                            })
-                            .tooltip(if paused {
-                                "Resume the queue"
-                            } else {
-                                "Pause the queue"
-                            })
-                            .atelier_selected(paused, cx)
-                            .on_click(cx.listener(|this, _, _, cx| this.queue_pause_toggle(cx))),
-                    )
-                })
-                .when(self.generation.is_some(), |row| {
-                    row.child(
-                        Button::new("cancel-generation")
-                            .ghost()
-                            .small()
-                            .icon(icon("close"))
-                            .label("Stop")
-                            .accessibility_label("Stop the running image")
-                            .tooltip("Stop the running image")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.cancel_generation();
-                                cx.notify();
-                            })),
-                    )
-                })
-                .when(self.queue.finished() > 0, |row| {
-                    row.child(
-                        Button::new("queue-clear")
-                            .ghost()
-                            .small()
-                            .icon(icon("trash"))
-                            .label("Clear finished")
-                            .accessibility_label("Clear finished requests")
-                            .tooltip("Clear finished requests")
-                            .on_click(cx.listener(|this, _, _, cx| this.queue_clear_finished(cx))),
-                    )
-                }),
-        );
-        if self.queue.is_empty() {
-            content = content.child(self.queue_empty_state());
-        } else {
-            for item in self.queue.items() {
-                content = content.child(self.queue_row(item, cx));
-            }
-        }
-        self.overlay("Generation queue", content, cx)
+        let validation = self.prompt_validation.as_ref().filter(|validation| {
+            validation.epoch == self.epoch && validation.target == self.prompt_target
+        });
+        prompt_composer_frame(
+            &self.prompt,
+            controls,
+            validation.map(|validation| validation.message.as_str()),
+        )
     }
     /// One queue entry, oldest first. A queued request can be removed; a running
     /// or finished one is left in place so its outcome stays visible.
-    fn queue_row(&self, item: &crate::queue::QueueItem, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn queue_row(&self, item: &crate::queue::QueueItem, cx: &mut Context<Self>) -> Div {
         use crate::queue::JobState;
         let id = item.id;
         let prompt = item
@@ -2417,9 +2406,6 @@ impl DrawingApp {
         match &item.state {
             JobState::Running { progress } if !progress.is_empty() => {
                 detail = detail.child(label(progress.clone()));
-            }
-            JobState::Failed(message) => {
-                detail = detail.child(label(message.clone()).text_color(rgb(WINE)));
             }
             _ => {}
         }
@@ -2444,15 +2430,6 @@ impl DrawingApp {
                     .on_click(cx.listener(move |this, _, _, cx| this.queue_remove(id, cx))),
             );
         }
-        if matches!(item.state, JobState::Failed(_)) {
-            entry = entry.child(
-                Button::new(format!("queue-retry-{id}"))
-                    .ghost()
-                    .small()
-                    .label("Retry")
-                    .on_click(cx.listener(move |this, _, _, cx| this.queue_retry(id, cx))),
-            );
-        }
         if matches!(item.state, JobState::Done) && item.result_id.is_some() {
             entry = entry.child(
                 Button::new(format!("queue-open-{id}"))
@@ -2464,15 +2441,12 @@ impl DrawingApp {
                     .on_click(cx.listener(move |this, _, _, cx| this.open_queue_result(id, cx))),
             );
         }
-        panel().w_full().p_3().child(entry)
-    }
-    fn queue_empty_state(&self) -> Div {
-        column().items_center().justify_center().py_8().child(
-            div()
-                .text_sm()
-                .text_color(rgb(MUTED))
-                .child("Nothing queued"),
-        )
+        div()
+            .w_full()
+            .py_3()
+            .border_b_1()
+            .border_color(rgb(BORDER))
+            .child(entry)
     }
     fn drawing_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -2536,8 +2510,6 @@ impl DrawingApp {
                 470.
             } else if settings {
                 360.
-            } else if title == "Generation queue" {
-                336.
             } else {
                 288.
             }))
@@ -2585,9 +2557,19 @@ impl DrawingApp {
                         .border_color(rgb(BORDER))
                         .mt_4()
                         .pt_4()
-                        .when_some(self.settings_save_error.as_ref(), |p, error| {
-                            p.child(label(error.clone()).text_color(rgb(WINE)).mb_2())
-                        })
+                        .when_some(
+                            self.activity.for_task(
+                                &crate::activity::Scope::App,
+                                &crate::activity::Task::Settings,
+                            ),
+                            |p, report| {
+                                p.child(row().mb_2().child(self.report_hint(
+                                    report.id,
+                                    "Settings not saved · View",
+                                    cx,
+                                )))
+                            },
+                        )
                         .child(
                             Button::new("save-settings")
                                 .primary()

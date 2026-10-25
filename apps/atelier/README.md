@@ -44,7 +44,7 @@ The macOS development bundle uses ad hoc signing and needs no certificate setup.
 - 30-second, 2-, 5- and 10-minute studies, pause/reset, practice prompts and project reflection notes.
 - Study gallery for the latest 48 archived sessions. New/Open archives the current study before switching; archive/open failures preserve the current document.
 - fal.ai, Replicate, Alibaba Model Studio and GPT Image generation/editing, plus local ComfyUI generation, with background jobs, errors and cancellation.
-- A generation queue with its own panel, reached from a header badge that counts outstanding requests: pause, stop the running request, remove queued requests and clear finished history. Each request keeps its own prompt, size, steps and LoRA adapters.
+- One app-wide Activity panel for failures and the generation queue: pause, stop, remove queued requests, retry captured inputs and clear completed history. Short hints replace diagnostic paragraphs in the workspace; full reports are selectable/copyable under Details. Each request keeps its own prompt, size, steps and LoRA adapters.
 - Shared icon controls, surface panels and selection styles, accessible icon labels, gentle panel reveal and a reduced-motion setting.
 
 The **Library** is the app-wide shared reference collection. The floating
@@ -100,8 +100,11 @@ Custom model IDs must accept the same inputs as their adapter's presets; this is
 not a universal mapper for arbitrary model schemas.
 
 **Create** captures the prompt, requested size, source/reference images, sampling
-and destination in the generation queue. The header queue badge exposes
-Pause/Stop/remove/retry/history controls. One request runs at a time.
+and destination in the generation queue. The header Activity control exposes
+Pause/Stop/remove/retry/history controls and operation failures. One request runs
+at a time. Repeated retries group in one report; a successful retry resolves it.
+The panel replaces the drawing inspector while open. Reports and queue history
+are session-only, while prompt drafts and project data retain their persistence.
 Unsent drafts remain bound to their project, artboard/source and selection mode.
 Full-artboard edits and blends preserve accepted originals and arrive as
 candidate layers; separate compositions become artboards. Failed requests retain

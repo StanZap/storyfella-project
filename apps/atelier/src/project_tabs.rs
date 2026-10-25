@@ -171,6 +171,8 @@ impl DrawingApp {
         if epoch == self.epoch {
             if self.page == Page::Library || self.page == Page::Projects {
                 self.page = Page::Artboards;
+                self.editing_image = false;
+                self.restore_prompt(window, cx);
             }
             cx.notify();
             return;
@@ -251,9 +253,9 @@ impl DrawingApp {
         {
             self.message(
                 "Wait for this project's image requests to finish, or cancel them in the queue",
-                true,
+                false,
             );
-            self.panel = Panel::Queue;
+            self.panel = Panel::Activity;
             cx.notify();
             return;
         }
@@ -273,6 +275,7 @@ impl DrawingApp {
             self.data_dir
                 .join(format!("project-closed-{epoch}.atelier"))
         });
+        let failure_path = path.clone();
         match self.workers.storage.send(Storage::CloseProject {
             doc,
             path,
@@ -283,7 +286,13 @@ impl DrawingApp {
                 self.closing_project = Some(epoch);
                 self.message("Saving project before closing…", false);
             }
-            Err(_) => self.message("Project stays open: storage worker stopped", true),
+            Err(_) => {
+                self.report_error(
+                    crate::activity::Scope::Project(epoch),
+                    crate::activity::Task::Save(failure_path),
+                    "Project stays open: storage worker stopped".into(),
+                );
+            }
         }
         cx.notify();
     }
@@ -305,14 +314,34 @@ impl DrawingApp {
         let path = match result {
             Ok(path) if self.mask_save_error.is_none() => path,
             Ok(_) => {
-                self.message("Project stays open: save the current mask first", true);
+                self.message("Project stays open: save the current mask first", false);
                 return;
             }
             Err(error) => {
-                self.message(format!("Project stays open: save failed: {error}"), true);
+                let path = if epoch == self.epoch {
+                    self.path.clone()
+                } else {
+                    self.project_tabs
+                        .iter()
+                        .find(|tab| tab.epoch == epoch)
+                        .and_then(|tab| tab.path.clone())
+                }
+                .unwrap_or_else(|| {
+                    self.data_dir
+                        .join(format!("project-closed-{epoch}.atelier"))
+                });
+                self.report_error(
+                    crate::activity::Scope::Project(epoch),
+                    crate::activity::Task::Save(path),
+                    format!("Project stays open: save failed: {error:#}"),
+                );
                 return;
             }
         };
+        self.activity.resolve(
+            &crate::activity::Scope::Project(epoch),
+            &crate::activity::Task::Save(path.clone()),
+        );
         let unchanged = if epoch == self.epoch {
             self.path = Some(path);
             self.revision == revision

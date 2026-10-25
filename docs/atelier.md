@@ -106,12 +106,19 @@ weights — and runs it after the requests already waiting, so several images ca
 be prepared before any finishes. Exactly one request runs at a time, on the same
 shared server. **Pause** holds dispatch (a running image always finishes),
 **Stop** cancels the running request, a queued request can be removed, and
-**Clear finished** drops completed history. Each queue entry keeps the values it
+**Clear completed** drops completed or dismissed history, preserving unresolved
+failures. Each queue entry keeps the values it
 was created with, so editing the live controls afterwards never changes work
-already queued. The queue has its own panel, opened from the header badge (which
-counts outstanding requests); it lists each request with
-its state (Queued, Running with its progress, Done, Failed, Cancelled) and
-carries Pause/Stop/Clear.
+already queued. The app-wide **Activity** control exposes failures and queue work,
+including Pause/Stop/remove/retry/result-opening actions. Failures have a concise
+explanation, recovery action and optional **Details** with a selectable read-only
+report and verified **Copy report**. Short contextual hints replace raw footer
+errors. Generation hints stay with their project and prompt context; save
+failures retain a Not saved hint. In drawing, Activity replaces Layers/References
+while open and restores that inspector when closed. Escape closes Activity.
+Reports/queue history last for this app session; project and draft recovery are
+unchanged. Retries preserve captured inputs and resolve their report on success;
+there is no automatic retry or guessed provider cooldown.
 
 Configuration and shared loopback tests pass on this Mac; actual Linux CUDA
 inference and Linux native interaction still require verification on that machine.

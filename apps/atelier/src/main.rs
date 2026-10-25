@@ -1,3 +1,5 @@
+mod activity;
+mod activity_ui;
 mod app;
 mod canvas_renderer;
 mod document;
@@ -33,6 +35,7 @@ gpui_kit::actions!(
         SaveProjectAs,
         OpenProject,
         OpenPrompt,
+        CloseActivity,
         CloseProject,
         MoveProjectLeft,
         MoveProjectRight
@@ -72,6 +75,7 @@ fn main() {
                 KeyBinding::new("cmd-shift-s", SaveProjectAs, None),
                 KeyBinding::new("cmd-o", OpenProject, None),
                 KeyBinding::new("cmd-p", OpenPrompt, None),
+                KeyBinding::new("escape", CloseActivity, Some("Activity")),
                 #[cfg(target_os = "macos")]
                 KeyBinding::new("cmd-w", CloseProject, None),
                 #[cfg(not(target_os = "macos"))]

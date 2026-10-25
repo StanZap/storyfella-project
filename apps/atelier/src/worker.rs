@@ -42,7 +42,7 @@ pub enum Event {
         automatic: bool,
         result: Result<()>,
     },
-    Exported(Result<PathBuf>),
+    Exported(crate::activity::Scope, Result<PathBuf>),
     Switched(u64, Result<(Document, Vec<RgbaImage>, Option<PathBuf>)>),
     Imported(u64, bool, Result<Vec<(Reference, RgbaImage)>>),
     Generated(u64, Result<(Reference, RgbaImage)>),
@@ -60,8 +60,8 @@ pub enum Storage {
         revision: u64,
     },
     WorkspaceRecovery(PathBuf, Vec<(crate::project_tabs::RecoveryTab, Document)>),
-    Artwork(Arc<Reference>, PathBuf),
-    CanvasArtwork(Document, PathBuf, bool),
+    Artwork(Arc<Reference>, PathBuf, crate::activity::Scope),
+    CanvasArtwork(Document, PathBuf, bool, crate::activity::Scope),
     /// Loads the shared reference library (read-only).
     Library(PathBuf),
     /// Adds originals to the shared reference library, then reloads it.
@@ -70,7 +70,7 @@ pub enum Storage {
     OpenImage(Arc<Reference>, PathBuf),
     CompareImage(Arc<Reference>),
     MaskDraft(PathBuf, String, u64, crate::edit::MaskDraft),
-    Original(Arc<Reference>, PathBuf),
+    Original(Arc<Reference>, PathBuf, crate::activity::Scope),
     Save {
         doc: Document,
         path: PathBuf,
@@ -78,7 +78,7 @@ pub enum Storage {
         epoch: u64,
         automatic: bool,
     },
-    Export(Document, PathBuf, bool, u8),
+    Export(Document, PathBuf, bool, u8, crate::activity::Scope),
     Switch {
         epoch: u64,
         previous: Document,
@@ -138,40 +138,48 @@ pub fn start() -> Workers {
                 Storage::WorkspaceRecovery(directory, projects) => {
                     Event::WorkspaceSaved(crate::project_tabs::save_session(&directory, projects))
                 }
-                Storage::Artwork(reference, path) => Event::Exported((|| {
-                    storyfella_studio_core::artwork::ApprovedArtwork {
-                        version: 1,
-                        name: reference.name.clone(),
-                        image: reference.image.clone(),
-                        prompt: reference.prompt.clone(),
-                        provenance: reference.provenance.clone(),
-                    }
-                    .save(&path)?;
-                    Ok(path)
-                })()),
-                Storage::CanvasArtwork(doc, path, transparent) => Event::Exported((|| {
-                    let (prompt, provenance) = doc.artwork_metadata();
-                    #[cfg(target_os = "macos")]
-                    let image = objc2::rc::autoreleasepool(|_| {
-                        crate::gpu_canvas::Renderer::new()?.export(&doc, transparent)
-                    })?;
-                    #[cfg(not(target_os = "macos"))]
-                    let image = document::raster(&doc, doc.width.max(doc.height), transparent)?;
-                    let mut bytes = std::io::Cursor::new(Vec::new());
-                    image.write_to(&mut bytes, image::ImageFormat::Png)?;
-                    let reference =
-                        document::reference_from_bytes(doc.title, &bytes.into_inner(), provenance)?;
-                    storyfella_studio_core::artwork::ApprovedArtwork {
-                        version: 1,
-                        name: reference.name,
-                        image: reference.image,
-                        prompt,
-                        provenance: reference.provenance,
-                    }
-                    .save(&path)?;
-                    Ok(path)
-                })(
-                )),
+                Storage::Artwork(reference, path, scope) => Event::Exported(
+                    scope,
+                    (|| {
+                        storyfella_studio_core::artwork::ApprovedArtwork {
+                            version: 1,
+                            name: reference.name.clone(),
+                            image: reference.image.clone(),
+                            prompt: reference.prompt.clone(),
+                            provenance: reference.provenance.clone(),
+                        }
+                        .save(&path)?;
+                        Ok(path)
+                    })(),
+                ),
+                Storage::CanvasArtwork(doc, path, transparent, scope) => Event::Exported(
+                    scope,
+                    (|| {
+                        let (prompt, provenance) = doc.artwork_metadata();
+                        #[cfg(target_os = "macos")]
+                        let image = objc2::rc::autoreleasepool(|_| {
+                            crate::gpu_canvas::Renderer::new()?.export(&doc, transparent)
+                        })?;
+                        #[cfg(not(target_os = "macos"))]
+                        let image = document::raster(&doc, doc.width.max(doc.height), transparent)?;
+                        let mut bytes = std::io::Cursor::new(Vec::new());
+                        image.write_to(&mut bytes, image::ImageFormat::Png)?;
+                        let reference = document::reference_from_bytes(
+                            doc.title,
+                            &bytes.into_inner(),
+                            provenance,
+                        )?;
+                        storyfella_studio_core::artwork::ApprovedArtwork {
+                            version: 1,
+                            name: reference.name,
+                            image: reference.image,
+                            prompt,
+                            provenance: reference.provenance,
+                        }
+                        .save(&path)?;
+                        Ok(path)
+                    })(),
+                ),
                 Storage::Library(directory) => Event::Library((|| {
                     crate::library::load(&directory)?
                         .into_iter()
@@ -248,14 +256,17 @@ pub fn start() -> Workers {
                         )
                     })(),
                 ),
-                Storage::Original(reference, path) => Event::Exported((|| {
-                    document::export_image(
-                        &path,
-                        document::decode_reference(&reference)?.to_rgba8(),
-                        95,
-                    )?;
-                    Ok(path)
-                })()),
+                Storage::Original(reference, path, scope) => Event::Exported(
+                    scope,
+                    (|| {
+                        document::export_image(
+                            &path,
+                            document::decode_reference(&reference)?.to_rgba8(),
+                            95,
+                        )?;
+                        Ok(path)
+                    })(),
+                ),
                 Storage::Save {
                     doc,
                     path,
@@ -269,7 +280,7 @@ pub fn start() -> Workers {
                     epoch,
                     automatic,
                 },
-                Storage::Export(doc, path, transparent, quality) => {
+                Storage::Export(doc, path, transparent, quality, scope) => {
                     #[cfg(target_os = "macos")]
                     let result = objc2::rc::autoreleasepool(|_| {
                         (|| {
@@ -283,7 +294,7 @@ pub fn start() -> Workers {
                     });
                     #[cfg(not(target_os = "macos"))]
                     let result = document::export(&path, &doc, transparent, quality);
-                    Event::Exported(result.map(|_| path))
+                    Event::Exported(scope, result.map(|_| path))
                 }
                 Storage::Switch {
                     epoch,

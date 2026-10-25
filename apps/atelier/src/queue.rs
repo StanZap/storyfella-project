@@ -57,7 +57,7 @@ pub enum JobState {
     Queued,
     Running { progress: String },
     Done,
-    Failed(String),
+    Failed(u64),
     Cancelled,
 }
 
@@ -79,6 +79,8 @@ impl JobState {
 }
 
 pub struct QueueItem {
+    pub context: Option<String>,
+    pub retry_of: Option<u64>,
     pub id: u64,
     pub request: QueuedRequest,
     pub state: JobState,
@@ -102,6 +104,8 @@ impl Queue {
         self.next_id += 1;
         let id = self.next_id;
         self.items.push(QueueItem {
+            context: None,
+            retry_of: None,
             id,
             request,
             state: JobState::Queued,
@@ -123,8 +127,11 @@ impl Queue {
     }
 
     /// Drops finished items, keeping queued and running work.
-    pub fn clear_finished(&mut self) {
-        self.items.retain(|item| !item.state.is_finished());
+    pub fn clear_finished(&mut self, keep_failure: impl Fn(u64) -> bool) {
+        self.items.retain(|item| {
+            !item.state.is_finished()
+                || matches!(item.state, JobState::Failed(id) if keep_failure(id))
+        });
     }
 
     pub fn is_paused(&self) -> bool {
@@ -164,23 +171,12 @@ impl Queue {
             .count()
     }
 
-    pub fn finished(&self) -> usize {
-        self.items
-            .iter()
-            .filter(|item| item.state.is_finished())
-            .count()
-    }
-
     /// Requests that still need attention: queued or running.
     pub fn outstanding(&self) -> usize {
         self.items
             .iter()
             .filter(|item| !item.state.is_finished())
             .count()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
     }
 }
 
@@ -219,7 +215,7 @@ mod tests {
         queue.get_mut(first).unwrap().state = JobState::Done;
         assert_eq!(queue.next_queued(), Some(second));
         assert_eq!(queue.pending(), 1);
-        assert_eq!(queue.finished(), 1);
+        assert_eq!(queue.get(first).unwrap().state, JobState::Done);
     }
 
     #[test]
@@ -244,8 +240,10 @@ mod tests {
         queue.get_mut(running).unwrap().state = JobState::Running {
             progress: String::new(),
         };
-        queue.get_mut(done).unwrap().state = JobState::Failed("boom".into());
-        queue.clear_finished();
+        queue.get_mut(done).unwrap().state = JobState::Failed(1);
+        queue.clear_finished(|id| id == 1);
+        assert!(queue.get(done).is_some());
+        queue.clear_finished(|_| false);
         assert_eq!(queue.items().len(), 2);
         assert!(queue.get(queued).is_some());
         assert!(queue.get(running).is_some());
