@@ -108,7 +108,9 @@ corner scale handle; **Layer properties** discloses numeric offsets, relative
 scale, opacity, ordering and image actions. **New variation artboard** creates a
 separate composition from an accepted image layer. Reference aids and study
 tools stay in their contextual options/Practice panel. The floating composer's
-**Image options** discloses precise output sizes, settings and creation briefs.
+**Image options** discloses compact pixel dimensions, resolution presets,
+sampling, a settings icon and creation briefs. Provider readiness appears once
+with Clipforge and refresh actions.
 
 fal's Qwen Image 3 accepts only opaque editing inputs, so that adapter composites
 transparent references onto white before upload. Other adapters retain source

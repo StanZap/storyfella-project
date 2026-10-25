@@ -1,5 +1,21 @@
 # Storyfella Studio design standard and UX audit
 
+### Atelier composer sizing · 2026-10-25 (current)
+
+The prompt and wine Create action lead the composer. Keep provider and aspect
+choices readable in the main row; put resolution and sampling in Image options.
+Expanded options align fixed-width pixel inputs, presets, sampling and a named
+settings icon in one wrapping row. Numeric fields must not stretch to consume
+unused space. Secondary actions fit their content; creation briefs form a quiet
+Start with row. One footer explains provider readiness and offers Clipforge and
+refresh, without repeating setup warnings or idle-server paragraphs.
+
+The uniquely identified Atelier Composer Final build was checked with hosted
+and local provider selections, expanded options and editable dimensions/prompt.
+No generation request was submitted. Workspace checks/tests/format, strict
+Atelier Clippy and macOS packaging checks pass. Smaller-window and accessibility
+acceptance remain open.
+
 ### Atelier visual refinement · 2026-10-24 (current)
 
 Atelier's UI should be modern and minimal, with composition and hierarchy decided

@@ -2022,7 +2022,7 @@ impl DrawingApp {
                 .flex_wrap()
                 .gap_1()
                 .child(
-                    div().w(px(132.)).child(
+                    div().w(px(164.)).child(
                         Select::new(&self.generation_provider_select)
                             .small()
                             .accessibility_label("Image provider")
@@ -2032,7 +2032,7 @@ impl DrawingApp {
                 )
                 .when(!drawing || separate, |r| {
                     r.child(
-                        div().w(px(110.)).child(
+                        div().w(px(144.)).child(
                             Select::new(&self.artboard_aspect_select)
                                 .small()
                                 .accessibility_label("Aspect ratio")
@@ -2040,30 +2040,7 @@ impl DrawingApp {
                                 .w_full(),
                         ),
                     )
-                    .child(
-                        div().w(px(110.)).child(
-                            Select::new(&self.artboard_size_select)
-                                .small()
-                                .accessibility_label("Resolution")
-                                .cleanable(false)
-                                .w_full(),
-                        ),
-                    )
                 })
-                .when(
-                    self.settings.provider.native_architecture().is_some(),
-                    |r| {
-                        r.child(
-                            div().w(px(86.)).child(
-                                Select::new(&self.artboard_steps_select)
-                                    .small()
-                                    .accessibility_label("Sampling steps")
-                                    .cleanable(false)
-                                    .w_full(),
-                            ),
-                        )
-                    },
-                )
                 .child(
                     Button::new("composer-references")
                         .ghost()
@@ -2106,53 +2083,6 @@ impl DrawingApp {
                         })),
                 ),
         );
-        if setup_needed || self.show_prompt_details {
-            controls =
-                controls.child(
-                    row()
-                        .child(
-                            label(if setup_needed {
-                                "Provider setup required"
-                            } else {
-                                "Provider configured"
-                            })
-                            .text_color(rgb(if setup_needed { WINE } else { MUTED }))
-                            .flex_1(),
-                        )
-                        .child(
-                            Button::new("composer-clipforge")
-                                .ghost()
-                                .small()
-                                .label("Open Clipforge")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.open_clipforge();
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            tool_button("composer-refresh", "undo", "Refresh provider readiness")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.reload_clipforge(window, cx)
-                                })),
-                        ),
-                );
-        }
-        if drawing && !separate && self.show_prompt_details {
-            let (x, y, w, h) =
-                self.region_bounds()
-                    .unwrap_or((0, 0, self.doc.width, self.doc.height));
-            controls = controls.child(label(if selection {
-                format!("{w} × {h} px at {x}, {y} · full artboard context")
-            } else {
-                format!("{w} × {h} px · original preserved")
-            }));
-        } else if separate || (!drawing && self.show_prompt_details) {
-            controls = controls.child(
-                row()
-                    .child(number_field("Output width", &self.generation_width).flex_1())
-                    .child(number_field("Output height", &self.generation_height).flex_1()),
-            );
-        }
         let mut references = row().flex_wrap().gap_1();
         for (i, reference) in self.input_references().iter().enumerate() {
             references = references.child(
@@ -2193,27 +2123,61 @@ impl DrawingApp {
         if !self.doc.artboard_references.is_empty() {
             controls = controls.child(references);
         }
-        if self.show_prompt_details {
-            controls = controls
-                .child(separator())
-                .child(label(self.provider_readiness.clone()))
+        if self.show_prompt_details || separate {
+            let options = row()
+                .items_end()
+                .flex_wrap()
+                .when(!drawing || separate, |r| {
+                    r.child(number_field("Width · px", &self.generation_width).w(px(112.)))
+                        .child(label("×").mb_1())
+                        .child(number_field("Height · px", &self.generation_height).w(px(112.)))
+                })
+                .when(self.show_prompt_details && (!drawing || separate), |r| {
+                    r.child(
+                        column()
+                            .gap_1()
+                            .w(px(136.))
+                            .child(label("Size preset"))
+                            .child(
+                                Select::new(&self.artboard_size_select)
+                                    .small()
+                                    .accessibility_label("Resolution")
+                                    .cleanable(false)
+                                    .w_full(),
+                            ),
+                    )
+                })
                 .when(
-                    self.settings.provider.native_architecture().is_some(),
-                    |c| c.child(label(server_status_label(self.server_status.as_ref()))),
+                    self.show_prompt_details
+                        && self.settings.provider.native_architecture().is_some(),
+                    |r| {
+                        r.child(
+                            column().gap_1().w(px(120.)).child(label("Sampling")).child(
+                                Select::new(&self.artboard_steps_select)
+                                    .small()
+                                    .accessibility_label("Sampling steps")
+                                    .cleanable(false)
+                                    .w_full(),
+                            ),
+                        )
+                    },
                 )
-                .child(
-                    Button::new("composer-settings")
-                        .ghost()
-                        .small()
-                        .icon(icon("settings"))
-                        .label("Image settings")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.panel = Panel::Settings;
-                            cx.notify();
-                        })),
-                );
+                .when(self.show_prompt_details, |r| {
+                    r.child(
+                        tool_button("composer-settings", "settings", "Image settings")
+                            .ghost()
+                            .small()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.panel = Panel::Settings;
+                                cx.notify();
+                            })),
+                    )
+                });
+            controls = controls.child(options);
+        }
+        if self.show_prompt_details {
             if !drawing && mode != PromptComposerMode::Image {
-                controls = controls.child(row().flex_wrap().children([
+                controls = controls.child(row().gap_1().flex_wrap().child(label("Start with").mr_1()).children([
                     ("recipe-character","Character","Full-body character design: [describe character, outfit, personality and palette]. Clear silhouette, expressive face, neutral background, no text.",1024,1536),
                     ("recipe-object","Object","Prop concept: [describe object and story role]. Single object, three-quarter view, clear silhouette, no text.",1024,1024),
                     ("recipe-background","Background","Illustrated environment: [describe place, mood, lighting and composition]. No text.",1536,1024),
@@ -2223,20 +2187,60 @@ impl DrawingApp {
             if mode == PromptComposerMode::Image {
                 if let Some(source) = self.edit_source().filter(|r| !r.prompt.is_empty()) {
                     controls = controls.child(
-                        Button::new("reuse-source-prompt")
-                            .ghost()
-                            .small()
-                            .label("Reuse source prompt")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.prompt.update(cx, |s, cx| {
-                                    s.set_value(source.prompt.clone(), window, cx)
-                                });
-                                this.prompt.update(cx, |s, cx| s.focus(window, cx));
-                                cx.notify();
-                            })),
+                        row().child(
+                            Button::new("reuse-source-prompt")
+                                .ghost()
+                                .small()
+                                .label("Reuse source prompt")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.prompt.update(cx, |s, cx| {
+                                        s.set_value(source.prompt.clone(), window, cx)
+                                    });
+                                    this.prompt.update(cx, |s, cx| s.focus(window, cx));
+                                    cx.notify();
+                                })),
+                        ),
                     );
                 }
             }
+        }
+        if setup_needed || self.show_prompt_details {
+            controls =
+                controls.child(
+                    row()
+                        .gap_1()
+                        .pt_2()
+                        .border_t_1()
+                        .border_color(rgb(BORDER))
+                        .child(
+                            label(
+                                self.provider_readiness
+                                    .strip_prefix("Setup needed: ")
+                                    .unwrap_or(&self.provider_readiness)
+                                    .to_owned(),
+                            )
+                            .text_color(rgb(if setup_needed { WINE } else { MUTED }))
+                            .min_w_0()
+                            .flex_1(),
+                        )
+                        .child(
+                            Button::new("composer-clipforge")
+                                .ghost()
+                                .small()
+                                .label("Open Clipforge")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.open_clipforge();
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            tool_button("composer-refresh", "undo", "Refresh provider readiness")
+                                .tooltip(server_status_label(self.server_status.as_ref()))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.reload_clipforge(window, cx)
+                                })),
+                        ),
+                );
         }
         prompt_composer_frame(&self.prompt, controls, self.generation_error.as_ref())
     }

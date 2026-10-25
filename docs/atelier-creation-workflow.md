@@ -102,8 +102,11 @@ allow fewer. Local models allow one source without extras or mask; Krea and
 ComfyUI create only. Model capabilities, reference counts, masks, credential
 availability, native configuration and Replicate output aspect constraints are
 checked before queueing. Backend input-size and account restrictions still apply.
-Exact dimensions and creation briefs are disclosed under **Image options**; selection
-separate-image dimensions are shown directly. LoRA request choices remain in
+Exact dimensions, resolution presets, sampling and creation briefs are disclosed
+under **Image options**; selection separate-image dimensions are shown directly.
+Dimensions use compact fixed-width inputs beside presets and sampling, with a
+named settings icon. One readiness footer provides the setup reason and
+Clipforge/refresh actions. LoRA request choices remain in
 image Settings and are captured by the queue.
 
 Layers retain painting/erasing, ordering, visibility and opacity. **Move**

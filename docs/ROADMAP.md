@@ -568,6 +568,13 @@ one options disclosure, concise source/destination metadata and ordered referenc
 chips. Isolated native checks verified review/undo, opacity and collapsed states;
 workspace checks/tests/format, strict Clippy and packaging pass. Broader resize,
 accessibility and first-time-user acceptance remain. See `DESIGN.md`.
+**Atelier composer sizing (2026-10-25): implemented; native layout checked.**
+Fixed-width dimensions share one wrapping options row with size/sampling and a
+settings icon. Routine controls have more room for readable provider/aspect
+choices; secondary actions fit their content and one readiness footer replaces
+duplicate warnings. The exact final test bundle was checked with hosted/local
+providers and numeric/prompt editing, without submitting generation. Workspace
+checks/tests/format, strict Atelier Clippy and macOS packaging checks pass.
 **Shared hosted image execution: implemented in Atelier.** Clipforge owns the
 async adapters for Replicate, fal.ai, Alibaba and GPT Image, shared presets,
 job polling/cancellation and result metadata. Atelier retains its document
