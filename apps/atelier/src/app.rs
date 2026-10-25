@@ -170,6 +170,8 @@ pub struct CanvasTile {
 }
 pub struct DrawingApp {
     pub project_tabs: Vec<crate::project_tabs::ProjectTab>,
+    pub project_tab_order: Vec<u64>,
+    pub closing_project: Option<u64>,
     pub next_project_epoch: u64,
     pub library: Vec<(Arc<document::Reference>, Arc<RenderImage>)>,
     pub library_loading: bool,
@@ -258,7 +260,7 @@ pub struct DrawingApp {
     render_pending: bool,
     autosaved_revision: u64,
     save_pending: bool,
-    manual_pending: bool,
+    pub(crate) manual_pending: bool,
     last_edit: Instant,
     autosave_retry_after: Instant,
     pub status: String,
@@ -338,30 +340,53 @@ impl DrawingApp {
             ),
             Err(_) => (Document::default(), String::new(), false),
         };
-        let (project_tabs, doc, initial_epoch, initial_path, initial_dirty) =
+        let snapshots = data_dir.join("open-projects");
+        let unused_epoch = std::fs::read_dir(&snapshots)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                entry.ok().and_then(|e| {
+                    e.path()
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .and_then(|s| s.parse::<u64>().ok())
+                })
+            })
+            .max()
+            .unwrap_or_default()
+            .saturating_add(1);
+        let (project_tabs, project_tab_order, doc, initial_epoch, initial_path, initial_dirty) =
             match crate::project_tabs::recover(&data_dir) {
-                Ok((tabs, active)) => (tabs, active.doc, active.epoch, active.path, active.dirty),
+                Ok(session) => match session.active {
+                    Some(active) => (
+                        session.tabs,
+                        session.order,
+                        active.doc,
+                        active.epoch,
+                        active.path,
+                        active.dirty,
+                    ),
+                    None => (
+                        vec![],
+                        vec![],
+                        Document::default(),
+                        unused_epoch,
+                        None,
+                        false,
+                    ),
+                },
                 Err(recovery_error) => {
                     let snapshots = data_dir.join("open-projects");
                     if snapshots.join("session.json").exists() {
                         status = format!("Open-project recovery failed: {recovery_error}. Snapshots remain in {}",snapshots.display());
                         error = true;
                     }
-                    let epoch = std::fs::read_dir(&snapshots)
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|entry| {
-                            entry.ok().and_then(|e| {
-                                e.path()
-                                    .file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .and_then(|s| s.parse::<u64>().ok())
-                            })
-                        })
-                        .max()
-                        .unwrap_or_default()
-                        .saturating_add(1);
-                    (vec![], doc, epoch, None, false)
+                    let order = if data_dir.join("recovery.atelier").exists() {
+                        vec![unused_epoch]
+                    } else {
+                        vec![]
+                    };
+                    (vec![], order, doc, unused_epoch, None, false)
                 }
             };
         let next_project_epoch = project_tabs
@@ -369,7 +394,8 @@ impl DrawingApp {
             .map(|tab| tab.epoch)
             .chain([initial_epoch])
             .max()
-            .unwrap_or(1);
+            .unwrap_or(1)
+            .max(unused_epoch);
         let settings: Settings = std::fs::read(data_dir.join("settings.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
@@ -519,6 +545,8 @@ impl DrawingApp {
             .collect();
         let mut app = Self {
             project_tabs,
+            project_tab_order,
+            closing_project: None,
             next_project_epoch,
             library: vec![],
             library_loading: false,
@@ -872,6 +900,9 @@ impl DrawingApp {
         self.error = error;
     }
     pub(crate) fn capture_prompt(&mut self, cx: &mut Context<Self>) {
+        if self.project_tab_order.is_empty() {
+            return;
+        }
         let value = self.prompt.read(cx).value().to_string();
         if self.doc.active_prompt_target.as_deref() != Some(&self.prompt_target)
             || self
@@ -934,6 +965,7 @@ impl DrawingApp {
         self.generation_error = None;
     }
     pub fn changed(&mut self) {
+        self.ensure_project_tab();
         self.revision += 1;
         self.visual_revision += 1;
         self.dirty = true;
@@ -1317,7 +1349,7 @@ impl DrawingApp {
         }
     }
     pub(crate) fn prepare_project_switch(&mut self) -> bool {
-        if self.switching {
+        if self.switching || self.closing_project.is_some() {
             return false;
         }
         self.finish_mask();
@@ -1483,7 +1515,7 @@ impl DrawingApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.closing || self.switching {
+        if self.closing || self.switching || self.closing_project.is_some() {
             return;
         }
         window.focus(&self.focus, cx);
@@ -2061,6 +2093,10 @@ impl DrawingApp {
     /// and starts it when the queue is idle. Validation stays here so a bad
     /// request never reaches the queue.
     pub fn enqueue_generation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closing || self.switching || self.closing_project.is_some() {
+            return;
+        }
+        self.ensure_project_tab();
         self.restore_prompt(window, cx);
         self.settings_from_inputs(cx);
         let source = if self.editing_image {
@@ -2481,6 +2517,13 @@ impl DrawingApp {
         }
     }
     pub fn save(&mut self, save_as: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closing_project.is_some() {
+            return;
+        }
+        if self.project_tab_order.is_empty() {
+            self.message("Open or create a project to save", false);
+            return;
+        }
         self.capture_prompt(cx);
         self.finish_stroke();
         if self.manual_pending {
@@ -2719,6 +2762,7 @@ impl DrawingApp {
                     self.closing = false;
                     self.message(format!("Open-project recovery save failed: {error}"),true);
                 },
+                Event::ProjectClosed { epoch, revision, result } => self.finish_project_close(epoch, revision, result, window, cx),
                 Event::ClipforgeOpened(result) => match result {
                     Ok(()) => self.message("Clipforge opened · manage providers there, then return and Refresh readiness",false),
                     Err(error) => self.message(format!("Clipforge: {error}"),true),
@@ -2877,14 +2921,16 @@ impl DrawingApp {
                     match result {
                         Ok((doc, images, path)) => {
                             self.finish_stroke();
-                            let keep_previous = self.path.is_some() || !self.doc.references.is_empty()
+                            let keep_previous = !self.project_tab_order.is_empty() && (self.path.is_some() || !self.doc.references.is_empty()
                                 || self.doc.layers.iter().any(|l|l.image.is_some() || !l.strokes.is_empty())
-                                || self.doc.prompt_drafts.values().any(|draft| !draft.trim().is_empty());
+                                || self.doc.prompt_drafts.values().any(|draft| !draft.trim().is_empty()));
                             let previous = self.park_project();
                             if keep_previous { self.project_tabs.push(previous); }
+                            else { self.project_tab_order.retain(|epoch| *epoch != self.epoch); }
                             self.doc = doc;
                             self.next_project_epoch += 1;
                             self.epoch = self.next_project_epoch;
+                            self.project_tab_order.push(self.epoch);
                             self.revision += 1;
                             self.visual_revision += 1;
                             self.dirty = path.is_none();
@@ -3266,7 +3312,11 @@ impl DrawingApp {
     }
     pub fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         // Canvas focus scopes shortcuts; text fields keep normal editing behavior.
-        if self.closing || self.switching || !self.focus.is_focused(window) {
+        if self.closing
+            || self.switching
+            || self.closing_project.is_some()
+            || !self.focus.is_focused(window)
+        {
             return;
         }
         let key = event.keystroke.key.as_str();

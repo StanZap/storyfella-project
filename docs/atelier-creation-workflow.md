@@ -123,7 +123,20 @@ an already-open path activates its tab. New/Open still save the previous project
 through the existing switch worker. Recovery snapshots and a session manifest
 restore open documents, paths and dirty flags after restart; undo history and
 viewport are session-only. Queue history/running jobs are not resumed on restart.
-Tab closing/reordering is not yet implemented.
+Tabs retain display order independently of the active project. Drag tabs to
+reorder them or use Ctrl+Shift+Page Up/Down (also available in File). The close
+icon or Cmd/Ctrl+W saves the project file, including unsent drafts, before
+removing the tab. A failed save or newer edit keeps it open. Projects with queued
+or running generation must finish or cancel those requests before closing.
+Closing the final tab returns to Projects; closed files remain available there
+or through Open. Library works without any project open and has no drawing rail
+or project title/save/export controls. Its Favorites filter fits beside search.
+
+The session manifest now records the active flag in display order. Existing
+manifests recover their last entry as active and preserve their previous display
+order; an empty manifest restores no open projects. Older recovery snapshots
+remain on disk but are not reopened unless listed in the manifest. New identities
+also account for those retained snapshots to avoid reusing a closed tab's ID.
 
 **Open Clipforge** launches the desktop app using its macOS bundle identity or
 `clipforge-desktop`/`clipforge-desktop.exe` on PATH elsewhere. Failures are visible.
@@ -151,8 +164,8 @@ painting, mask, `.sfart` and Studio import tests remain active.
 
 Final checks: `cargo check --workspace --all-targets`, `cargo test --workspace`,
 `cargo fmt --all -- --check`, strict Atelier Clippy, `git diff --check`, native
-macOS packaging and the packaging regression script pass. Atelier has 57 passing
-tests and 12 ignored device/fixture tests; no Metal device acceptance run was
+macOS packaging and the packaging regression script pass. Atelier has 60 passing
+tests and 13 ignored device/fixture tests; no Metal device acceptance run was
 performed. Existing vendored GPUI deprecation warnings remain.
 
 The isolated macOS build uses a unique test bundle identity. Live checks exercised
@@ -164,6 +177,16 @@ An earlier app-name binding
 resolved to an old registered bundle; none of that UI state counts as evidence
 for this implementation.
 
+The project-tab pass used uniquely identified Project Tabs builds. Native checks
+verified drag and keyboard reordering without changing the active draft,
+active/inactive save-and-close, retention after an injected directory-as-file
+save error, unsent prompt reopening, last-tab close and ordered quit/restart
+recovery. Library was checked without an open project. Its context and footer
+are app-wide, and the Favorites filter fits beside search.
+Prepare its three-project/save-failure fixture with
+`cargo test -p storyfella-atelier prepare_project_tabs_fixture -- --ignored`;
+the files stay under `.svs-e2e/atelier-tabs-fixture`.
+
 Prepare local UI fixtures with
 `cargo test -p storyfella-atelier prepare_creation_workflow_fixture -- --ignored`.
 The blue artwork/red candidate project and green reference PNG stay under
@@ -174,7 +197,7 @@ not establish an application file-loading failure.
 Still required: first-time-user acceptance of the complete character loop,
 real-provider full/selection/separate requests and error recovery, candidate
 discard/save-as-reference through the native UI, imported-reference picker
-acceptance, multi-tab failure injection through native controls,
+acceptance, broader multi-tab failure injection beyond the close-save error,
 keyboard-only/VoiceOver testing and Linux/Windows interaction. Successful mock
 responses and correct placement metadata establish no artistic quality or
 identity consistency. See `DESIGN.md` and roadmap §12 for current check results.

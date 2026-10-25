@@ -1,5 +1,26 @@
 # Storyfella Studio design standard and UX audit
 
+### Atelier project tabs · 2026-10-25 (current)
+
+Project tabs keep their chosen order when activated. A compact close icon saves
+the project before removing its tab; save failure or a newer edit keeps it open.
+Drag a tab to reorder it, or use Ctrl+Shift+Page Up/Down. Cmd/Ctrl+W saves and
+closes the active tab. These actions also have named File menu entries. Keep
+the strip quiet: no permanent reorder arrows or document-management panel.
+Closing the last tab returns to Projects. Library remains independent, with
+shared-image status, a compact Favorites filter beside search and no drawing
+rail or project title/save/export controls. Save errors remain visible from
+Projects and Library as well as the artboard workspace.
+
+Recovery stores display order separately from active identity, upgrades earlier
+sessions and preserves the empty session after all projects close. Native checks
+in uniquely identified Project Tabs builds verified drag/keyboard reordering,
+active/inactive close, failed-save retention, draft reopening, last-tab close,
+ordered restart recovery and Library access without a project. Workspace
+checks/tests/format, strict Atelier Clippy and macOS packaging checks pass
+(Atelier: 60 passed, 13 device/fixture tests ignored). Real-provider, full
+accessibility and other-platform acceptance remain open.
+
 ### Atelier composer sizing · 2026-10-25 (current)
 
 The prompt and wine Create action lead the composer. Keep provider and aspect
@@ -75,7 +96,8 @@ belong to their artboard. Project tabs retain independent documents, history,
 drafts and dirty state; session recovery restores open documents. Clipforge owns
 provider connections and secrets; Atelier offers Open Clipforge and Refresh
 readiness, request model choices and ComfyUI mappings. Direct setup navigation
-awaits a Clipforge deep-link contract. Tab closing/reordering remains future work.
+awaits a Clipforge deep-link contract. Tab closing/reordering now follows the
+project-tab behavior above.
 
 The [audit and acceptance record](docs/atelier-creation-workflow.md) documents the
 version-2 upgrade, reused behavior, captured queue destinations and remaining

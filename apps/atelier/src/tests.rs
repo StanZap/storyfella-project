@@ -315,6 +315,7 @@ fn open_project_recovery_keeps_each_document_path_dirty_state_and_drafts() {
                     epoch: 3,
                     path: Some(directory.join("first.atelier")),
                     dirty: true,
+                    active: false,
                 },
                 first,
             ),
@@ -323,13 +324,17 @@ fn open_project_recovery_keeps_each_document_path_dirty_state_and_drafts() {
                     epoch: 7,
                     path: Some(directory.join("second.atelier")),
                     dirty: false,
+                    active: true,
                 },
                 second,
             ),
         ],
     )
     .unwrap();
-    let (tabs, active) = project_tabs::recover(&directory).unwrap();
+    let session = project_tabs::recover(&directory).unwrap();
+    let tabs = session.tabs;
+    let active = session.active.unwrap();
+    assert_eq!(session.order, [3, 7]);
     assert_eq!(active.doc.title, "Outfit");
     assert!(!active.dirty);
     assert_eq!(active.doc.prompt_drafts["new"], "second draft");
@@ -338,6 +343,175 @@ fn open_project_recovery_keeps_each_document_path_dirty_state_and_drafts() {
     assert_eq!(tabs[0].doc.prompt_drafts["new"], "first draft");
     assert_eq!(tabs[0].path, Some(directory.join("first.atelier")));
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn reordered_project_recovery_keeps_active_identity_and_closed_tabs_out() {
+    use crate::project_tabs::{self, RecoveryTab};
+    let directory = temporary("ordered-tabs");
+    let mut order = vec![3, 7, 11];
+    assert!(project_tabs::reorder(&mut order, 11, 3));
+    assert_eq!(order, [11, 3, 7]);
+    assert!(!project_tabs::reorder(&mut order, 99, 3));
+    assert!(!project_tabs::reorder(&mut order, 3, 3));
+    assert!(project_tabs::reorder(&mut order, 11, 7));
+    assert_eq!(order, [3, 7, 11]);
+    assert!(project_tabs::reorder(&mut order, 7, 3));
+    let snapshot = |order: &[u64]| {
+        order
+            .iter()
+            .map(|epoch| {
+                let mut project = doc();
+                project.title = format!("Project {epoch}");
+                project
+                    .prompt_drafts
+                    .insert("new".into(), format!("draft {epoch}"));
+                (
+                    RecoveryTab {
+                        epoch: *epoch,
+                        path: Some(directory.join(format!("{epoch}.atelier"))),
+                        dirty: true,
+                        active: *epoch == 3,
+                    },
+                    project,
+                )
+            })
+            .collect()
+    };
+    let session_dir = directory.join("open-projects");
+    project_tabs::save_session(&session_dir, snapshot(&order)).unwrap();
+    let recovered = project_tabs::recover(&directory).unwrap();
+    assert_eq!(recovered.order, [7, 3, 11]);
+    assert_eq!(recovered.active.unwrap().epoch, 3);
+    assert_eq!(recovered.tabs[0].doc.prompt_drafts["new"], "draft 7");
+    order.retain(|epoch| *epoch != 11);
+    project_tabs::save_session(&session_dir, snapshot(&order)).unwrap();
+    assert!(session_dir.join("11.atelier").exists());
+    let recovered = project_tabs::recover(&directory).unwrap();
+    assert_eq!(recovered.order, [7, 3]);
+    assert_eq!(recovered.tabs.len(), 1);
+    project_tabs::save_session(&session_dir, vec![]).unwrap();
+    let recovered = project_tabs::recover(&directory).unwrap();
+    assert!(recovered.active.is_none());
+    assert!(recovered.order.is_empty());
+    assert!(recovered.tabs.is_empty());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn legacy_project_session_keeps_its_active_tab_and_upgrades_order() {
+    let directory = temporary("legacy-tabs");
+    let session = directory.join("open-projects");
+    document::save(&session.join("3.atelier"), &doc()).unwrap();
+    document::save(&session.join("7.atelier"), &doc()).unwrap();
+    document::atomic_write(
+        &session.join("session.json"),
+        br#"[{"epoch":7,"path":null,"dirty":true},{"epoch":3,"path":null,"dirty":false}]"#,
+    )
+    .unwrap();
+    let recovered = crate::project_tabs::recover(&directory).unwrap();
+    assert_eq!(recovered.order, [3, 7]);
+    assert_eq!(recovered.active.unwrap().epoch, 3);
+    document::atomic_write(&session.join("session.json"), br#"[{"epoch":7,"path":null,"dirty":true,"active":true},{"epoch":3,"path":null,"dirty":false,"active":true}]"#).unwrap();
+    assert!(crate::project_tabs::recover(&directory).is_err());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn closing_project_storage_saves_drafts_and_reports_failures_without_overwriting() {
+    let directory = temporary("close-project");
+    let workers = worker::start();
+    let path = directory.join("character.atelier");
+    let mut project = doc();
+    project.title = "Character with unsaved work".into();
+    project
+        .prompt_drafts
+        .insert("new".into(), "Keep this unsent prompt".into());
+    workers
+        .storage
+        .send(Storage::CloseProject {
+            doc: project.clone(),
+            path: path.clone(),
+            epoch: 3,
+            revision: 8,
+        })
+        .unwrap();
+    match workers.events.recv_timeout(Duration::from_secs(5)).unwrap() {
+        Event::ProjectClosed {
+            epoch,
+            revision,
+            result,
+        } => {
+            assert_eq!((epoch, revision), (3, 8));
+            assert_eq!(result.unwrap(), path);
+        }
+        _ => panic!("Expected close result"),
+    }
+    let saved = document::load(&path).unwrap();
+    assert_eq!(saved.prompt_drafts["new"], "Keep this unsent prompt");
+    assert_eq!(saved.title, project.title);
+    let invalid_path = directory.join("not-a-file.atelier");
+    std::fs::create_dir_all(&invalid_path).unwrap();
+    workers
+        .storage
+        .send(Storage::CloseProject {
+            doc: project,
+            path: invalid_path.clone(),
+            epoch: 7,
+            revision: 12,
+        })
+        .unwrap();
+    match workers.events.recv_timeout(Duration::from_secs(5)).unwrap() {
+        Event::ProjectClosed {
+            epoch,
+            revision,
+            result,
+        } => {
+            assert_eq!((epoch, revision), (7, 12));
+            assert!(result.is_err());
+        }
+        _ => panic!("Expected close failure"),
+    }
+    assert!(invalid_path.is_dir());
+    assert_eq!(document::load(&path).unwrap().title, saved.title);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[ignore = "Writes isolated native project-tab fixtures under .svs-e2e"]
+fn prepare_project_tabs_fixture() {
+    use crate::project_tabs::{self, RecoveryTab};
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.svs-e2e/atelier-tabs-fixture");
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut projects = Vec::new();
+    for (epoch, title, draft) in [
+        (3, "Character", "Character draft"),
+        (7, "Outfit", "Outfit draft"),
+        (11, "Save failure", "Keep me when saving fails"),
+    ] {
+        let mut project = doc();
+        project.title = title.into();
+        project.active_prompt_target = Some("new".into());
+        project.prompt_drafts.insert("new".into(), draft.into());
+        let path = directory.join(format!("project-{epoch}.atelier"));
+        if epoch == 11 {
+            std::fs::create_dir_all(&path).unwrap();
+        } else {
+            document::save(&path, &project).unwrap();
+        }
+        projects.push((
+            RecoveryTab {
+                epoch,
+                path: Some(path),
+                dirty: true,
+                active: epoch == 7,
+            },
+            project,
+        ));
+    }
+    project_tabs::save_session(&directory.join("open-projects"), projects).unwrap();
+    println!("Project-tab fixture: {}", directory.display());
 }
 
 #[test]

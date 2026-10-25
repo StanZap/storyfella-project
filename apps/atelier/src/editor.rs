@@ -420,6 +420,7 @@ impl DrawingApp {
         cx.notify();
     }
     pub fn edit_opened_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_project_tab();
         if self.edit_source().is_some() {
             self.editing_image = true;
             self.restore_prompt(window, cx);

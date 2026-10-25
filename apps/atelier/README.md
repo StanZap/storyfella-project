@@ -54,7 +54,11 @@ in the project. Artboards own their reference associations and visibility.
 References enter artwork only through explicit layer placement.
 
 Projects can stay open in separate tabs with their own document, dirty state,
-history and prompt drafts. Version-2 saves distinguish artboard layers, pending
+history and prompt drafts. Drag to reorder, or use Ctrl+Shift+Page Up/Down.
+The close icon and Cmd/Ctrl+W save before closing; failures keep the tab open.
+The File menu exposes those actions too. Closing all tabs returns to Projects;
+Library stays available without a project. Tab order survives restart.
+Version-2 saves distinguish artboard layers, pending
 AI candidates and references; existing projects upgrade on load. See the
 [audit and creation workflow](../../docs/atelier-creation-workflow.md) for exact
 migration/recovery behavior and remaining acceptance work.

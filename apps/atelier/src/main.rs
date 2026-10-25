@@ -27,7 +27,16 @@ use gpui_kit::*;
 use std::path::PathBuf;
 gpui_kit::actions!(
     atelier,
-    [Quit, SaveProject, SaveProjectAs, OpenProject, OpenPrompt]
+    [
+        Quit,
+        SaveProject,
+        SaveProjectAs,
+        OpenProject,
+        OpenPrompt,
+        CloseProject,
+        MoveProjectLeft,
+        MoveProjectRight
+    ]
 );
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -63,6 +72,12 @@ fn main() {
                 KeyBinding::new("cmd-shift-s", SaveProjectAs, None),
                 KeyBinding::new("cmd-o", OpenProject, None),
                 KeyBinding::new("cmd-p", OpenPrompt, None),
+                #[cfg(target_os = "macos")]
+                KeyBinding::new("cmd-w", CloseProject, None),
+                #[cfg(not(target_os = "macos"))]
+                KeyBinding::new("ctrl-w", CloseProject, None),
+                KeyBinding::new("ctrl-shift-pageup", MoveProjectLeft, None),
+                KeyBinding::new("ctrl-shift-pagedown", MoveProjectRight, None),
                 KeyBinding::new("ctrl-s", SaveProject, None),
                 KeyBinding::new("ctrl-shift-s", SaveProjectAs, None),
                 KeyBinding::new("ctrl-o", OpenProject, None),
@@ -74,6 +89,9 @@ fn main() {
                     MenuItem::action("Open project…", OpenProject),
                     MenuItem::action("Save project", SaveProject),
                     MenuItem::action("Save project as…", SaveProjectAs),
+                    MenuItem::action("Save and close project", CloseProject),
+                    MenuItem::action("Move project tab left", MoveProjectLeft),
+                    MenuItem::action("Move project tab right", MoveProjectRight),
                 ]),
             ]);
             gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Light, None, cx);

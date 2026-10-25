@@ -40,7 +40,11 @@ while working and are excluded from artwork exports. New compositions may use
 selected references as image input without changing their new-artboard destination.
 
 Multiple projects stay open in tabs with independent documents, dirty state,
-history and drafts. Project/recovery saves retain artboards, candidates, reference
+history and drafts. Drag to reorder, or use Ctrl+Shift+Page Up/Down. The close
+icon or Cmd/Ctrl+W saves before closing; a failed save keeps the tab open. Tab
+actions also live in File. Closing the final tab returns to Projects, and Library
+remains accessible without project controls. Tab order and active identity
+survive restart. Project/recovery saves retain artboards, candidates, reference
 associations, provenance, source/mode-bound drafts and last selection contexts.
 Schema version 1 upgrades on load without discarding originals.
 

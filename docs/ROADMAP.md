@@ -554,8 +554,8 @@ Layer gizmos and precise values extend existing undoable transforms. An app-wide
 Library and import-capable reference picker replace the project Library tab and
 generation rail. Open projects retain independent tab state and recover after
 restart. Clipforge owns provider/credential setup, with launch and readiness
-refresh in Atelier; a setup deep link remains a Clipforge dependency. Tab closing
-and reordering, actual-provider selection quality and complete native/first-user
+refresh in Atelier; a setup deep link remains a Clipforge dependency. Actual-provider
+selection quality and complete native/first-user
 acceptance remain. Workspace checks/tests/format and strict Atelier Clippy pass;
 partial isolated macOS checks are recorded in
 [creation workflow](atelier-creation-workflow.md). This entry supersedes the
@@ -575,6 +575,14 @@ choices; secondary actions fit their content and one readiness footer replaces
 duplicate warnings. The exact final test bundle was checked with hosted/local
 providers and numeric/prompt editing, without submitting generation. Workspace
 checks/tests/format, strict Atelier Clippy and macOS packaging checks pass.
+**Atelier project tabs (2026-10-25): implemented; native interactions checked.**
+Tabs support drag/keyboard reordering and save-before-close, including inactive
+tabs. Failed saves and newer edits keep tabs open; pending image jobs block close.
+Display order and active identity recover independently, and closing all tabs
+persists an empty session. Library stays available without project controls.
+Native checks verified reordering, close/failure retention, prompt reopening,
+last-tab close and ordered restart recovery. Workspace checks/tests/format,
+strict Atelier Clippy and macOS packaging checks pass (60 passed, 13 ignored).
 **Shared hosted image execution: implemented in Atelier.** Clipforge owns the
 async adapters for Replicate, fal.ai, Alibaba and GPT Image, shared presets,
 job polling/cancellation and result metadata. Atelier retains its document

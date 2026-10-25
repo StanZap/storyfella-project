@@ -20,6 +20,11 @@ pub struct ProjectPreview {
     pub note: String,
 }
 pub enum Event {
+    ProjectClosed {
+        epoch: u64,
+        revision: u64,
+        result: Result<PathBuf>,
+    },
     WorkspaceSaved(Result<()>),
     ClipforgeOpened(Result<()>),
     Library(Result<Vec<(Reference, RgbaImage)>>),
@@ -48,6 +53,12 @@ pub enum Event {
     ServerStatus(crate::native_images::ServerStatus),
 }
 pub enum Storage {
+    CloseProject {
+        doc: Document,
+        path: PathBuf,
+        epoch: u64,
+        revision: u64,
+    },
     WorkspaceRecovery(PathBuf, Vec<(crate::project_tabs::RecoveryTab, Document)>),
     Artwork(Arc<Reference>, PathBuf),
     CanvasArtwork(Document, PathBuf, bool),
@@ -114,6 +125,16 @@ pub fn start() -> Workers {
     std::thread::spawn(move || {
         while let Ok(command) = queue.recv() {
             let event = match command {
+                Storage::CloseProject {
+                    doc,
+                    path,
+                    epoch,
+                    revision,
+                } => Event::ProjectClosed {
+                    epoch,
+                    revision,
+                    result: document::save(&path, &doc).map(|_| path),
+                },
                 Storage::WorkspaceRecovery(directory, projects) => {
                     Event::WorkspaceSaved(crate::project_tabs::save_session(&directory, projects))
                 }

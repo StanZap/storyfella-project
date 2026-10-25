@@ -353,6 +353,18 @@ impl DrawingApp {
                 this.open_prompt(window, cx);
                 cx.stop_propagation();
             }))
+            .on_action(cx.listener(|this, _: &crate::CloseProject, _, cx| {
+                this.close_project_tab(this.epoch, cx);
+                cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|this, _: &crate::MoveProjectLeft, _, cx| {
+                this.move_project_tab(-1, cx);
+                cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|this, _: &crate::MoveProjectRight, _, cx| {
+                this.move_project_tab(1, cx);
+                cx.stop_propagation();
+            }))
             .child(self.header(cx))
             .child(self.project_tab_bar(cx))
             .child(
@@ -360,31 +372,41 @@ impl DrawingApp {
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .when(
-                        self.page != Page::Projects && self.page != Page::Artboards,
-                        |layout| layout.child(self.rail(cx)),
-                    )
+                    .when(matches!(self.page, Page::Draw | Page::Image), |layout| {
+                        layout.child(self.rail(cx))
+                    })
                     .child(main),
             )
             .child(self.status_bar())
             .when_some(overlay, |layout, overlay| layout.child(overlay))
-            .when(self.switching || self.closing, |layout| {
-                layout.child(
-                    div()
-                        .id("switching-shield")
-                        .absolute()
-                        .size_full()
-                        .bg(rgba(0xf7f6f8ee))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child("Opening project…")
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
-                )
-            })
+            .when(
+                self.switching || self.closing || self.closing_project.is_some(),
+                |layout| {
+                    layout.child(
+                        div()
+                            .id("switching-shield")
+                            .absolute()
+                            .size_full()
+                            .bg(rgba(0xf7f6f8ee))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(if self.closing_project.is_some() {
+                                "Saving project before closing…"
+                            } else if self.closing {
+                                "Saving session…"
+                            } else {
+                                "Opening project…"
+                            })
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
+                    )
+                },
+            )
             .into_any_element()
     }
     fn header(&self, cx: &mut Context<Self>) -> Div {
+        let project_context = !self.project_tab_order.is_empty()
+            && !matches!(self.page, Page::Projects | Page::Library);
         row()
             .h(px(44.))
             .px_4()
@@ -431,7 +453,7 @@ impl DrawingApp {
                     })),
             )
             .child(div().flex_1())
-            .when(self.page != Page::Projects, |header| {
+            .when(project_context, |header| {
                 header
                     .child(
                         Button::new("project-title")
@@ -470,7 +492,7 @@ impl DrawingApp {
                     cx.listener(|this, _, window, cx| this.pick(Picker::Open, window, cx)),
                 ),
             )
-            .when(self.page != Page::Projects, |header| {
+            .when(project_context, |header| {
                 header
                     .child(
                         tool_button("save", "save", "Save project · ⌘S").on_click(
@@ -498,32 +520,75 @@ impl DrawingApp {
             })
     }
     fn project_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut tabs: Vec<_> = self
-            .project_tabs
-            .iter()
-            .map(|tab| (tab.epoch, tab.doc.title.clone(), tab.dirty))
-            .collect();
-        tabs.push((self.epoch, self.doc.title.clone(), self.dirty));
-        tabs.sort_by_key(|tab| tab.0);
+        let tabs = self.project_tab_order.iter().filter_map(|epoch| {
+            if *epoch == self.epoch {
+                Some((*epoch, self.doc.title.clone(), self.dirty))
+            } else {
+                self.project_tabs
+                    .iter()
+                    .find(|tab| tab.epoch == *epoch)
+                    .map(|tab| (tab.epoch, tab.doc.title.clone(), tab.dirty))
+            }
+        });
         div()
             .id("project-tabs")
             .overflow_x_scroll()
             .flex()
             .gap_1()
             .px_4()
-            .py_1()
-            .children(tabs.into_iter().map(|(epoch, title, dirty)| {
-                Button::new(format!("project-tab-{epoch}"))
-                    .ghost()
-                    .small()
-                    .label(format!("{title}{}", if dirty { " •" } else { "" }))
-                    .atelier_selected(
-                        epoch == self.epoch && !matches!(self.page, Page::Library | Page::Projects),
-                        cx,
+            .when(!self.project_tab_order.is_empty(), |bar| bar.py_1())
+            .children(tabs.map(|(epoch, title, dirty)| {
+                row()
+                    .id(format!("project-tab-container-{epoch}"))
+                    .gap_0()
+                    .flex_shrink_0()
+                    .border_1()
+                    .border_color(gpui_kit::transparent_black())
+                    .rounded_md()
+                    .drag_over::<crate::project_tabs::DraggedProject>(|tab, _, _, _| {
+                        tab.border_color(rgb(WINE))
+                    })
+                    .on_drag(
+                        crate::project_tabs::DraggedProject {
+                            epoch,
+                            title: title.clone(),
+                        },
+                        |drag, _, _, cx| cx.new(|_| drag.clone()),
                     )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.activate_project_tab(epoch, window, cx)
-                    }))
+                    .on_drop(cx.listener(
+                        move |this, drag: &crate::project_tabs::DraggedProject, _, cx| {
+                            this.reorder_project_tab(drag.epoch, epoch, cx);
+                        },
+                    ))
+                    .child(
+                        Button::new(format!("project-tab-{epoch}"))
+                            .ghost()
+                            .small()
+                            .max_w(px(200.))
+                            .label(format!("{title}{}", if dirty { " •" } else { "" }))
+                            .tooltip(format!("{title} · drag to reorder"))
+                            .atelier_selected(
+                                epoch == self.epoch
+                                    && !matches!(self.page, Page::Library | Page::Projects),
+                                cx,
+                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.activate_project_tab(epoch, window, cx)
+                            })),
+                    )
+                    .child(
+                        tool_button(
+                            format!("close-project-{epoch}"),
+                            "close",
+                            "Save and close project",
+                        )
+                        .disabled(self.closing_project.is_some())
+                        .accessibility_label(format!("Save and close {title}"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.close_project_tab(epoch, cx);
+                            cx.stop_propagation();
+                        })),
+                    )
             }))
     }
     /// The header's queue control: an icon with a count badge while requests are
@@ -1693,7 +1758,7 @@ impl DrawingApp {
             )
     }
     fn status_bar(&self) -> Div {
-        if self.page == Page::Projects {
+        if matches!(self.page, Page::Projects | Page::Library) {
             return row()
                 .h(px(28.))
                 .px_4()
@@ -1701,8 +1766,19 @@ impl DrawingApp {
                 .border_color(rgb(BORDER))
                 .text_xs()
                 .text_color(rgb(MUTED))
-                .child(format!("{} projects", self.projects.len()))
-                .child(div().flex_1())
+                .child(if self.page == Page::Projects {
+                    format!("{} projects", self.projects.len())
+                } else {
+                    format!("{} shared images", self.library.len())
+                })
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(rgb(WINE))
+                        .when(self.error, |status| status.child(self.status.clone())),
+                )
                 .child("Stored locally");
         }
         if self.page == Page::Artboards {
@@ -1770,17 +1846,21 @@ impl DrawingApp {
                 "Shared across all projects · originals remain independent of artwork layers",
             ))
             .child(
-                Button::new("library-favorites")
-                    .ghost()
-                    .small()
-                    .label("Favorites")
-                    .atelier_selected(self.favorite_filter, cx)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.favorite_filter = !this.favorite_filter;
-                        cx.notify();
-                    })),
+                row()
+                    .child(div().flex_1().child(Input::new(&self.search)))
+                    .child(
+                        Button::new("library-favorites")
+                            .ghost()
+                            .small()
+                            .icon(icon("heart"))
+                            .label("Favorites")
+                            .atelier_selected(self.favorite_filter, cx)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.favorite_filter = !this.favorite_filter;
+                                cx.notify();
+                            })),
+                    ),
             )
-            .child(Input::new(&self.search))
             .child(self.reference_cards(false, cx))
     }
 
