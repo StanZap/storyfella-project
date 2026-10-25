@@ -1,11 +1,26 @@
 # Storyfella Studio design standard and UX audit
 
+### Atelier side panels · 2026-10-25 (current)
+
+Activity, Settings, Brushes, Canvas & project, Practice, References and the
+Layers/References inspector share one panel frame: 360px wide, docked at the
+right edge, white background, left divider, 16px padding, a fixed title/close
+header and a scrolling body. No floating offsets, rounded cards or drop shadows.
+Settings alone adds its pinned Save footer. Reference-picker thumbnails fit two
+columns within the shared width. Auxiliary panels replace the drawing inspector
+and restore its visibility preference when closed. Close returns focus to the
+workspace; Escape also closes a panel from its controls.
+
+Isolated native checks verified Settings, Activity, References, Brushes, Practice
+and the drawing inspector in the shared slot, including replacement and closing.
+Workspace checks/tests/format, strict Atelier Clippy and packaging pass.
+
 ### Atelier Activity and failure feedback · 2026-10-25 (current)
 
 Operational failures live in Activity, reached from a single header control on
 every page. The workspace shows short contextual hints, not provider responses
 or diagnostic paragraphs. Generation hints belong to their project and prompt
-source/mode. A failed save retains a Not saved hint at the project title.
+source/mode. A failed save retains a Not saved hint beside the project tabs.
 Prompt validation remains beside the composer input. The footer stays quiet.
 
 Activity reuses the image queue and its captured requests. A report shows one
@@ -14,6 +29,16 @@ opens selectable, read-only diagnostics in a bounded field with verified Copy
 report. No timestamps, filters, routine-save feed, stacked cards or intermediate
 toasts. In drawing, Activity temporarily replaces Layers/References; closing it
 restores that inspector preference. Escape closes Activity from its report field.
+
+Report titles use a compact, left-aligned semibold heading with a small status
+icon. Project ownership and attempt counts are secondary metadata. Recovery,
+Details and Copy share one wrapping action row. Expanded diagnostics use a short,
+neutral read-only surface without repeated report headings or project labels;
+Copy report retains the complete report. Clipforge launch failures are app-scoped
+with a specific title and Try again action, and resolve after a successful launch.
+Native checks verified the missing-app report, Details, copy and repeated launch
+attempts. Workspace checks/tests/format, strict Clippy and packaging pass (64
+Atelier tests passed; 14 device/fixture tests ignored).
 
 Reports retain operation/project ownership through navigation. Exact repeats and
 retried attempts group; unrelated successes do not clear failures. Dismissing a
@@ -31,6 +56,24 @@ checks/tests/format, strict Atelier Clippy and packaging pass (63 tests passed,
 acceptance remain open; the mock establishes no artistic quality.
 
 ### Atelier project tabs · 2026-10-25 (current)
+
+Project cards on Home are single actions: clicking the preview, title or padding
+opens the document. Each card is one keyboard-focusable button named for its
+project, with hover feedback and a focus ring. There is no nested Open project
+button.
+Native verification confirmed card activation opens the document and the gallery
+renders without the redundant button. Workspace checks/tests/format, strict
+Atelier Clippy and packaging pass; keyboard behavior uses the shared Button.
+
+The logo, project tabs and icon actions share one compact header row. Clicking
+Atelier returns to the Projects home page, where Library is available; separate
+Projects/Library header links and the repeated project title are removed. Each
+tab gives its title, edited dot and close icon one shared surface; close hover
+changes the icon color without a button background. Tabs scroll when space is
+limited. Workspace checks/tests/format and strict Atelier Clippy pass. An isolated
+native build rendered the combined header and home-page Library action; automated
+interaction checks were limited by intermittent native-window access. Close-hover
+and navigation acceptance remain pending.
 
 Project tabs keep their chosen order when activated. A compact close icon saves
 the project before removing its tab; save failure or a newer edit keeps it open.
@@ -55,11 +98,19 @@ accessibility and other-platform acceptance remain open.
 
 The prompt and wine Create action lead the composer. Keep provider and aspect
 choices readable in the main row; put resolution and sampling in Image options.
-Expanded options align fixed-width pixel inputs, presets, sampling and a named
-settings icon in one wrapping row. Numeric fields must not stretch to consume
+Expanded options align fixed-width pixel inputs, presets and sampling in one
+wrapping row. Numeric fields must not stretch to consume
 unused space. Secondary actions fit their content; creation briefs form a quiet
-Start with row. One footer explains provider readiness and offers Clipforge and
-refresh, without repeating setup warnings or idle-server paragraphs.
+Start with row. The ellipsis opens a dropdown with Image options and Provider
+settings. Image options toggles request controls; Provider settings opens the
+settings panel. Clipforge management and Reload providers live only in Settings.
+The composer has no setup action row, readiness footer or repeated setup-required
+callout. Submission validation remains beside the prompt. Image options appears
+only when the current mode/provider has request controls to show.
+
+Isolated native checks verified the dropdown, its Settings destination and the
+drawing composer without setup rows. Workspace checks/tests/format, strict Atelier
+Clippy and packaging pass. No provider requests were submitted.
 
 The uniquely identified Atelier Composer Final build was checked with hosted
 and local provider selections, expanded options and editable dimensions/prompt.
@@ -86,9 +137,10 @@ reached from the timer/help rail, with remaining time visible while running.
 
 The shared prompt keeps source/destination and dimensions together, followed by
 compact request controls and one primary submission action. Image options
-discloses exact sizes, model settings, briefs and readiness details. Chosen
-references are ordered compact chips. Missing provider setup gets a short,
-actionable row. The composer itself blocks canvas input; its surrounding stage
+discloses exact sizes, sampling and briefs. Provider setup lives in Settings,
+reached from the ellipsis menu. Chosen references are ordered compact chips.
+Missing provider setup appears as validation when a request is submitted.
+The composer itself blocks canvas input; its surrounding stage
 remains usable. Avoid parallel Settings/Options control stacks and repeated
 explanatory paragraphs in the default workspace.
 
@@ -118,7 +170,8 @@ into a candidate; separate-image mode sends the crop and exposes output size.
 This does not establish seam quality or identity fidelity. Unsent drafts retain
 their project, artboard/source, coordinates and mode through saves and recovery.
 Options disclose precise output size and creation briefs; routine controls stay
-compact. Provider setup errors and a Clipforge handoff remain visible.
+compact. Missing provider setup remains actionable; the Clipforge handoff lives
+in Settings.
 
 Library is app-wide. A separate picker combines project references with shared
 originals and supports import-and-select. Reference visibility and associations

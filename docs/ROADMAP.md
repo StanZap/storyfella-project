@@ -545,6 +545,15 @@ plan to ship, with its status; update it when work lands.
 **Atelier relocation: implemented.** `apps/atelier` (`storyfella-atelier`, binary
 `atelier`) is the separate GPUI art app, moved from FineWineTTS with its current
 sources, project/data identity and macOS renderer patch. Studio remains Dioxus.
+**Atelier navigation and panel refinement (2026-10-25): implemented.** Tabs and
+actions share one header; the logo opens Home, with whole-card project opening
+and Library access. Composer setup actions live in Settings, reached from its
+options menu. All inspectors use Activity's docked panel frame. Activity reports
+use compact diagnostics and specific app-scoped Clipforge launch failures.
+Workspace checks/tests/format, strict Atelier Clippy and packaging pass. Native
+checks cover card opening, composer navigation, shared panels and Activity report
+actions; broader accessibility, narrow-window and tab-hover acceptance remain.
+See `DESIGN.md` for the recorded checks.
 **Atelier creation workflow (2026-10-24): implemented; broader acceptance pending.**
 Schema v2 gives generated compositions real artboards and keeps references
 separate. Full-artboard/selection edits create pending layers with review actions;

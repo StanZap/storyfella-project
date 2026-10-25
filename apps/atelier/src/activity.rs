@@ -19,6 +19,7 @@ pub enum Task {
     Mask(String),
     Settings,
     Open,
+    Clipforge,
     Other,
 }
 
@@ -34,6 +35,7 @@ impl Task {
             Self::Mask(_) => "Mask not saved",
             Self::Settings => "Settings not saved",
             Self::Open => "Could not open project",
+            Self::Clipforge => "Could not open Clipforge",
             Self::Other => "Action needs attention",
         }
     }
@@ -121,6 +123,7 @@ impl Report {
             }
             Task::Settings => "The settings could not be saved. Review them and try again.",
             Task::Open => "The project could not be opened. Check the file and try again.",
+            Task::Clipforge => "Install the Clipforge desktop app, then try again.",
             Task::Other | Task::Generation(_) => "Review the details before trying again.",
         }
     }
@@ -337,6 +340,40 @@ mod tests {
         assert_eq!(report.cause, Cause::Connection);
         activity.get_mut(id).unwrap().resolved = true;
         assert_eq!(activity.count(), 0);
+    }
+
+    #[test]
+    fn clipforge_launch_failures_group_and_resolve_independently_of_project_reports() {
+        let mut activity = Activity::default();
+        let id = activity.record(
+            Scope::App,
+            Task::Clipforge,
+            None,
+            None,
+            "Desktop app missing".into(),
+        );
+        assert_eq!(
+            id,
+            activity.record(
+                Scope::App,
+                Task::Clipforge,
+                None,
+                None,
+                "Desktop app missing".into()
+            )
+        );
+        let save = activity.record(
+            Scope::Project(3),
+            Task::Save("study.atelier".into()),
+            None,
+            Some("Study".into()),
+            "No space left".into(),
+        );
+        assert_eq!(activity.get(id).unwrap().attempts, 2);
+        assert!(activity.get(id).unwrap().project_name.is_none());
+        activity.resolve(&Scope::App, &Task::Clipforge);
+        assert!(activity.get(id).unwrap().resolved);
+        assert!(activity.get(save).unwrap().needs_attention());
     }
 
     #[test]

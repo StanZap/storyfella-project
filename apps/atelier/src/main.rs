@@ -35,7 +35,7 @@ gpui_kit::actions!(
         SaveProjectAs,
         OpenProject,
         OpenPrompt,
-        CloseActivity,
+        ClosePanel,
         CloseProject,
         MoveProjectLeft,
         MoveProjectRight
@@ -75,7 +75,7 @@ fn main() {
                 KeyBinding::new("cmd-shift-s", SaveProjectAs, None),
                 KeyBinding::new("cmd-o", OpenProject, None),
                 KeyBinding::new("cmd-p", OpenPrompt, None),
-                KeyBinding::new("escape", CloseActivity, Some("Activity")),
+                KeyBinding::new("escape", ClosePanel, Some("SidePanel")),
                 #[cfg(target_os = "macos")]
                 KeyBinding::new("cmd-w", CloseProject, None),
                 #[cfg(not(target_os = "macos"))]

@@ -280,7 +280,6 @@ pub struct DrawingApp {
     pub lora_weights: std::collections::BTreeMap<String, Entity<InputState>>,
     /// The last probed state of the machine's shared local image server.
     pub server_status: Option<ServerStatus>,
-    pub provider_readiness: String,
     pub settings_save: Option<Settings>,
     pub generation: Option<Arc<AtomicBool>>,
     pub prompt_validation: Option<crate::activity::PromptValidation>,
@@ -682,7 +681,6 @@ impl DrawingApp {
             lora_select,
             lora_weights,
             server_status: None,
-            provider_readiness: "Checking provider…".into(),
             settings_save: None,
             generation: None,
             prompt_validation: None,
@@ -1856,24 +1854,6 @@ impl DrawingApp {
 
     /// Re-probes the machine's shared local image server in the background.
     pub fn refresh_server_status(&mut self) {
-        self.provider_readiness = match providers::validate_inputs(&self.settings, false, 0, false)
-        {
-            Ok(()) => format!(
-                "{} configured · {} · {}",
-                self.settings.provider.name(),
-                if self.settings.provider.supports_edit() {
-                    "create and edit"
-                } else {
-                    "create only"
-                },
-                if self.settings.provider.native_architecture().is_some() {
-                    "one source · starts on demand"
-                } else {
-                    "account readiness checked on submission"
-                }
-            ),
-            Err(error) => format!("Setup needed: {error}"),
-        };
         if self.settings.provider.native_architecture().is_none() {
             self.server_status = None;
             return;
@@ -2824,18 +2804,57 @@ impl DrawingApp {
         while let Ok(event) = self.workers.events.try_recv() {
             refresh = true;
             match event {
-                Event::WorkspaceSaved(result) => if let Err(error) = result {
-                    self.closing = false;
-                    self.report_error(crate::activity::Scope::App, crate::activity::Task::Recovery, format!("Open-project recovery save failed: {error:#}"));
-                } else { self.activity.resolve(&crate::activity::Scope::App, &crate::activity::Task::Recovery); },
-                Event::ProjectClosed { epoch, revision, result } => self.finish_project_close(epoch, revision, result, window, cx),
+                Event::WorkspaceSaved(result) => {
+                    if let Err(error) = result {
+                        self.closing = false;
+                        self.report_error(
+                            crate::activity::Scope::App,
+                            crate::activity::Task::Recovery,
+                            format!("Open-project recovery save failed: {error:#}"),
+                        );
+                    } else {
+                        self.activity.resolve(
+                            &crate::activity::Scope::App,
+                            &crate::activity::Task::Recovery,
+                        );
+                    }
+                }
+                Event::ProjectClosed {
+                    epoch,
+                    revision,
+                    result,
+                } => self.finish_project_close(epoch, revision, result, window, cx),
                 Event::ClipforgeOpened(result) => match result {
-                    Ok(()) => self.message("Clipforge opened · manage providers there, then return and Refresh readiness",false),
-                    Err(error) => self.message(format!("Clipforge: {error}"),true),
+                    Ok(()) => {
+                        self.activity.resolve(
+                            &crate::activity::Scope::App,
+                            &crate::activity::Task::Clipforge,
+                        );
+                        self.message("Clipforge opened · return to Settings and Reload providers when finished", false);
+                    }
+                    Err(error) => {
+                        self.report_error(
+                            crate::activity::Scope::App,
+                            crate::activity::Task::Clipforge,
+                            format!("Clipforge: {error:#}"),
+                        );
+                    }
                 },
                 Event::Settings(result) => match result {
-                    Ok(()) => { self.activity.resolve(&crate::activity::Scope::App, &crate::activity::Task::Settings); self.message("Settings saved", false); },
-                    Err(e) => { self.report_error(crate::activity::Scope::App, crate::activity::Task::Settings, format!("Settings: {e:#}")); },
+                    Ok(()) => {
+                        self.activity.resolve(
+                            &crate::activity::Scope::App,
+                            &crate::activity::Task::Settings,
+                        );
+                        self.message("Settings saved", false);
+                    }
+                    Err(e) => {
+                        self.report_error(
+                            crate::activity::Scope::App,
+                            crate::activity::Task::Settings,
+                            format!("Settings: {e:#}"),
+                        );
+                    }
                 },
                 Event::SettingsApplied(result) => {
                     let pending = self.settings_save.take();
@@ -2849,12 +2868,19 @@ impl DrawingApp {
                                     window.focus(&self.focus, cx);
                                 }
                                 self.message("Settings saved", false);
-                                self.activity.resolve(&crate::activity::Scope::App, &crate::activity::Task::Settings);
+                                self.activity.resolve(
+                                    &crate::activity::Scope::App,
+                                    &crate::activity::Task::Settings,
+                                );
                             }
                         }
                         Err(error) => {
                             let message = format!("Could not save settings: {error:#}");
-                            self.report_error(crate::activity::Scope::App, crate::activity::Task::Settings, message);
+                            self.report_error(
+                                crate::activity::Scope::App,
+                                crate::activity::Task::Settings,
+                                message,
+                            );
                         }
                     }
                 }
@@ -2936,12 +2962,20 @@ impl DrawingApp {
                     match result {
                         Ok(()) => {
                             let scope = crate::activity::Scope::Project(epoch);
-                            let task = if automatic { crate::activity::Task::Recovery } else { crate::activity::Task::Save(path.clone()) };
+                            let task = if automatic {
+                                crate::activity::Task::Recovery
+                            } else {
+                                crate::activity::Task::Save(path.clone())
+                            };
                             self.activity.resolve(&scope, &task);
                             if !automatic {
-                                if let Some(tab) = self.project_tabs.iter_mut().find(|tab| tab.epoch == epoch) {
+                                if let Some(tab) =
+                                    self.project_tabs.iter_mut().find(|tab| tab.epoch == epoch)
+                                {
                                     tab.path = Some(path.clone());
-                                    if tab.revision == revision { tab.dirty = false; }
+                                    if tab.revision == revision {
+                                        tab.dirty = false;
+                                    }
                                 }
                             }
                             if epoch == self.epoch {
@@ -2968,20 +3002,38 @@ impl DrawingApp {
                         Err(e) => {
                             self.closing = false;
                             self.autosave_retry_after = Instant::now() + Duration::from_secs(5);
-                            let task = if automatic { crate::activity::Task::Recovery } else { crate::activity::Task::Save(path) };
-                            self.report_error(crate::activity::Scope::Project(epoch), task, format!("Save failed: {e:#}"));
+                            let task = if automatic {
+                                crate::activity::Task::Recovery
+                            } else {
+                                crate::activity::Task::Save(path)
+                            };
+                            self.report_error(
+                                crate::activity::Scope::Project(epoch),
+                                task,
+                                format!("Save failed: {e:#}"),
+                            );
                         }
                     }
                 }
                 Event::Exported(scope, result) => match result {
-                    Ok(path) => { self.activity.resolve(&scope, &crate::activity::Task::Export); self.message(
-                        format!(
-                            "Exported {}",
-                            path.file_name().unwrap_or_default().to_string_lossy()
-                        ),
-                        false,
-                    ); },
-                    Err(e) => { self.report_error(scope, crate::activity::Task::Export, format!("Export failed: {e:#}")); },
+                    Ok(path) => {
+                        self.activity
+                            .resolve(&scope, &crate::activity::Task::Export);
+                        self.message(
+                            format!(
+                                "Exported {}",
+                                path.file_name().unwrap_or_default().to_string_lossy()
+                            ),
+                            false,
+                        );
+                    }
+                    Err(e) => {
+                        self.report_error(
+                            scope,
+                            crate::activity::Task::Export,
+                            format!("Export failed: {e:#}"),
+                        );
+                    }
                 },
                 Event::Switched(epoch, result) => {
                     self.switching = false;
@@ -2996,14 +3048,30 @@ impl DrawingApp {
                     }
                     match result {
                         Ok((doc, images, path)) => {
-                            self.activity.resolve(&crate::activity::Scope::App, &crate::activity::Task::Open);
+                            self.activity.resolve(
+                                &crate::activity::Scope::App,
+                                &crate::activity::Task::Open,
+                            );
                             self.finish_stroke();
-                            let keep_previous = !self.project_tab_order.is_empty() && (self.path.is_some() || !self.doc.references.is_empty()
-                                || self.doc.layers.iter().any(|l|l.image.is_some() || !l.strokes.is_empty())
-                                || self.doc.prompt_drafts.values().any(|draft| !draft.trim().is_empty()));
+                            let keep_previous = !self.project_tab_order.is_empty()
+                                && (self.path.is_some()
+                                    || !self.doc.references.is_empty()
+                                    || self
+                                        .doc
+                                        .layers
+                                        .iter()
+                                        .any(|l| l.image.is_some() || !l.strokes.is_empty())
+                                    || self
+                                        .doc
+                                        .prompt_drafts
+                                        .values()
+                                        .any(|draft| !draft.trim().is_empty()));
                             let previous = self.park_project();
-                            if keep_previous { self.project_tabs.push(previous); }
-                            else { self.project_tab_order.retain(|epoch| *epoch != self.epoch); }
+                            if keep_previous {
+                                self.project_tabs.push(previous);
+                            } else {
+                                self.project_tab_order.retain(|epoch| *epoch != self.epoch);
+                            }
                             self.doc = doc;
                             self.next_project_epoch += 1;
                             self.epoch = self.next_project_epoch;
@@ -3046,14 +3114,23 @@ impl DrawingApp {
                                 self.queue_save(path, false);
                             }
                         }
-                        Err(e) => { self.report_error(crate::activity::Scope::App, crate::activity::Task::Open, format!("Could not open project: {e:#}")); },
+                        Err(e) => {
+                            self.report_error(
+                                crate::activity::Scope::App,
+                                crate::activity::Task::Open,
+                                format!("Could not open project: {e:#}"),
+                            );
+                        }
                     }
                 }
                 Event::Library(result) => {
                     self.library_loading = false;
                     match result {
                         Ok(items) => {
-                            self.activity.resolve(&crate::activity::Scope::Library, &crate::activity::Task::Library);
+                            self.activity.resolve(
+                                &crate::activity::Scope::Library,
+                                &crate::activity::Task::Library,
+                            );
                             self.library = items
                                 .into_iter()
                                 .map(|(reference, image)| {
@@ -3063,14 +3140,22 @@ impl DrawingApp {
                         }
                         Err(error) => {
                             let message = format!("Could not load library: {error:#}");
-                            self.report_error(crate::activity::Scope::Library, crate::activity::Task::Library, message);
+                            self.report_error(
+                                crate::activity::Scope::Library,
+                                crate::activity::Task::Library,
+                                message,
+                            );
                         }
                     }
                 }
                 Event::LibraryUpdated(result) => match result {
                     Ok(()) => self.refresh_library(),
                     Err(error) => {
-                        self.report_error(crate::activity::Scope::Library, crate::activity::Task::Other, format!("Library details were not saved: {error:#}"));
+                        self.report_error(
+                            crate::activity::Scope::Library,
+                            crate::activity::Task::Other,
+                            format!("Library details were not saved: {error:#}"),
+                        );
                     }
                 },
                 Event::OpenedImage(id, result) => {
@@ -3151,7 +3236,10 @@ impl DrawingApp {
                 }
                 Event::MaskSaved(id, revision, result) => match result {
                     Ok(()) => {
-                        self.activity.resolve(&crate::activity::Scope::Library, &crate::activity::Task::Mask(id.clone()));
+                        self.activity.resolve(
+                            &crate::activity::Scope::Library,
+                            &crate::activity::Task::Mask(id.clone()),
+                        );
                         if revision == self.mask_revision
                             && self
                                 .opened_image
@@ -3167,7 +3255,11 @@ impl DrawingApp {
                         self.mask_save_error = Some(message.clone());
                         self.closing = false;
                         self.opening_image = None;
-                        self.report_error(crate::activity::Scope::Library, crate::activity::Task::Mask(id), message);
+                        self.report_error(
+                            crate::activity::Scope::Library,
+                            crate::activity::Task::Mask(id),
+                            message,
+                        );
                     }
                 },
                 Event::MaskPreview(revision, result) => {
@@ -3190,10 +3282,19 @@ impl DrawingApp {
                     if !into_project {
                         match result {
                             Ok(_) => {
-                                self.activity.resolve(&crate::activity::Scope::Library, &crate::activity::Task::Import);
+                                self.activity.resolve(
+                                    &crate::activity::Scope::Library,
+                                    &crate::activity::Task::Import,
+                                );
                                 self.message("Images saved to the shared reference library", false)
                             }
-                            Err(error) => { self.report_error(crate::activity::Scope::Library, crate::activity::Task::Import, format!("Import failed: {error:#}")); },
+                            Err(error) => {
+                                self.report_error(
+                                    crate::activity::Scope::Library,
+                                    crate::activity::Task::Import,
+                                    format!("Import failed: {error:#}"),
+                                );
+                            }
                         }
                         continue;
                     }
@@ -3203,7 +3304,10 @@ impl DrawingApp {
                     }
                     match result {
                         Ok(refs) => {
-                            self.activity.resolve(&crate::activity::Scope::Project(epoch), &crate::activity::Task::Import);
+                            self.activity.resolve(
+                                &crate::activity::Scope::Project(epoch),
+                                &crate::activity::Task::Import,
+                            );
                             let total = self.doc.embedded_image_bytes()
                                 + refs.iter().map(|(r, _)| r.image.len()).sum::<usize>();
                             if self.doc.references.len() + refs.len() > 128
@@ -3234,7 +3338,13 @@ impl DrawingApp {
                             }
                             self.message("References imported", false);
                         }
-                        Err(e) => { self.report_error(crate::activity::Scope::Project(epoch), crate::activity::Task::Import, format!("Import failed: {e:#}")); },
+                        Err(e) => {
+                            self.report_error(
+                                crate::activity::Scope::Project(epoch),
+                                crate::activity::Task::Import,
+                                format!("Import failed: {e:#}"),
+                            );
+                        }
                     }
                 }
                 Event::Generated(id, result) => {
@@ -3256,11 +3366,16 @@ impl DrawingApp {
                         } else {
                             match result {
                                 Ok((reference, image)) => {
-                                    if let Some(report_id) = self.queue.get(id).and_then(|item| item.retry_of) {
-                                        if let Some(report) = self.activity.get_mut(report_id) { report.resolved = true; }
+                                    if let Some(report_id) =
+                                        self.queue.get(id).and_then(|item| item.retry_of)
+                                    {
+                                        if let Some(report) = self.activity.get_mut(report_id) {
+                                            report.resolved = true;
+                                        }
                                     }
                                     let result_id = crate::library::id(&reference);
-                                    let request = self.queue.get(id).map(|item| item.request.clone());
+                                    let request =
+                                        self.queue.get(id).map(|item| item.request.clone());
                                     let reference = Arc::new(reference);
                                     // Keep every result recoverable in the queue, including attachment failures.
                                     if let Some(item) = self.queue.get_mut(id) {
@@ -3268,8 +3383,14 @@ impl DrawingApp {
                                     }
                                     if self.job_epoch == self.epoch {
                                         if let Some(request) = request {
-                                            let attached = request.blend.map(|(size, rect)|
-                                                crate::workflow::crop_blend(&reference, size, rect).map(Arc::new))
+                                            let attached = request
+                                                .blend
+                                                .map(|(size, rect)| {
+                                                    crate::workflow::crop_blend(
+                                                        &reference, size, rect,
+                                                    )
+                                                    .map(Arc::new)
+                                                })
                                                 .unwrap_or_else(|| Ok(reference.clone()));
                                             match attached.and_then(|r| {
                                                 self.checkpoint();
@@ -3278,20 +3399,39 @@ impl DrawingApp {
                                                 Ok(()) => {
                                                     self.changed();
                                                     self.sync_inputs(window, cx);
-                                                    if matches!(request.destination, crate::workflow::Destination::Candidate { .. }) {
+                                                    if matches!(
+                                                        request.destination,
+                                                        crate::workflow::Destination::Candidate { .. }
+                                                    ) {
                                                         self.message("Candidate ready · accept, hide or discard in Layers", false);
                                                         self.dock = true;
                                                     } else {
                                                         self.message("New artboard ready", false);
                                                     }
                                                 }
-                                                Err(error) => self.message(format!("Image saved; could not attach: {error}"), true),
+                                                Err(error) => self.message(
+                                                    format!(
+                                                        "Image saved; could not attach: {error}"
+                                                    ),
+                                                    true,
+                                                ),
                                             }
                                         }
-                                    } else if let Some(tab) = self.project_tabs.iter_mut().find(|tab|tab.epoch == self.job_epoch) {
+                                    } else if let Some(tab) = self
+                                        .project_tabs
+                                        .iter_mut()
+                                        .find(|tab| tab.epoch == self.job_epoch)
+                                    {
                                         if let Some(request) = request {
-                                            let attached = request.blend.map(|(size,rect)| crate::workflow::crop_blend(&reference,size,rect).map(Arc::new))
-                                                .unwrap_or_else(||Ok(reference.clone()));
+                                            let attached = request
+                                                .blend
+                                                .map(|(size, rect)| {
+                                                    crate::workflow::crop_blend(
+                                                        &reference, size, rect,
+                                                    )
+                                                    .map(Arc::new)
+                                                })
+                                                .unwrap_or_else(|| Ok(reference.clone()));
                                             let previous = tab.doc.clone();
                                             match attached.and_then(|r|tab.doc.attach_result(r,request.destination)) {
                                                 Ok(()) => { tab.history.checkpoint(&previous); tab.revision += 1; tab.dirty = true; }
@@ -3307,7 +3447,10 @@ impl DrawingApp {
                                     }
                                 }
                                 Err(e) => {
-                                    self.generation_failed(id, format!("Could not create image: {e:#}"));
+                                    self.generation_failed(
+                                        id,
+                                        format!("Could not create image: {e:#}"),
+                                    );
                                 }
                             }
                         }

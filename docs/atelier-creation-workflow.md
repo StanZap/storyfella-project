@@ -104,9 +104,11 @@ availability, native configuration and Replicate output aspect constraints are
 checked before queueing. Backend input-size and account restrictions still apply.
 Exact dimensions, resolution presets, sampling and creation briefs are disclosed
 under **Image options**; selection separate-image dimensions are shown directly.
-Dimensions use compact fixed-width inputs beside presets and sampling, with a
-named settings icon. One readiness footer provides the setup reason and
-Clipforge/refresh actions. LoRA request choices remain in
+Dimensions use compact fixed-width inputs beside presets and sampling.
+The ellipsis opens a dropdown with Image options and Provider settings. Clipforge
+management and Reload providers belong to Settings. There is no setup row,
+readiness footer or repeated setup-required callout in the composer; blocked
+submissions show prompt validation. LoRA request choices remain in
 image Settings and are captured by the queue.
 
 Layers retain painting/erasing, ordering, visibility and opacity. **Move**
@@ -138,10 +140,10 @@ order; an empty manifest restores no open projects. Older recovery snapshots
 remain on disk but are not reopened unless listed in the manifest. New identities
 also account for those retained snapshots to avoid reusing a closed tab's ID.
 
-**Open Clipforge** launches the desktop app using its macOS bundle identity or
+**Manage providers in Clipforge** in Settings launches the desktop app using its macOS bundle identity or
 `clipforge-desktop`/`clipforge-desktop.exe` on PATH elsewhere. Failures are visible.
 Provider connections, credentials and secrets are managed there; Atelier retains
-request model presets and ComfyUI workflow mappings. **Refresh readiness** rereads
+request model presets and ComfyUI workflow mappings. **Reload providers** rereads
 the shared endpoint/credentials and probes local service state. Configured means
 configuration is present, not that a remote account has been successfully charged
 or that model files have been verified. Nothing launches a paid request during a

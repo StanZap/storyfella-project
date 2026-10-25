@@ -2,7 +2,7 @@ use crate::{
     activity::{PromptValidation, Report, Scope, Task},
     app::{DrawingApp, Page, Panel, Picker},
     queue::JobState,
-    ui::{column, icon, label, row, tool_button, BORDER},
+    ui::{column, icon, label, row, tool_button, BORDER, WINE},
 };
 use gpui_kit::{
     component::{button::*, input::Textarea, *},
@@ -121,6 +121,7 @@ impl DrawingApp {
             Task::Library => Some(("Refresh", !self.library_loading)),
             Task::Settings => Some(("Review settings", true)),
             Task::Open => Some(("Open project", true)),
+            Task::Clipforge => Some(("Try again", true)),
             Task::Mask(id) => Some((
                 "Save mask",
                 self.opened_image
@@ -179,6 +180,7 @@ impl DrawingApp {
             Task::Library => self.refresh_library(),
             Task::Settings => self.panel = Panel::Settings,
             Task::Open => self.pick(Picker::Open, window, cx),
+            Task::Clipforge => self.open_clipforge(),
             Task::Mask(_) => self.save_mask(),
             Task::Other => {}
         }
@@ -199,15 +201,32 @@ impl DrawingApp {
                         Button::new(format!("activity-report-{id}"))
                             .ghost()
                             .small()
-                            .icon(icon("alert"))
-                            .label(if report.attempts > 1 {
-                                format!("{} · {} attempts", report.task.title(), report.attempts)
-                            } else {
-                                report.task.title().into()
-                            })
+                            .custom(ButtonCustomVariant::new(cx))
+                            .flex_1()
+                            .min_w_0()
+                            .h_auto()
+                            .p_0()
+                            .accessibility_label(report.task.title())
+                            .child(
+                                row()
+                                    .w_full()
+                                    .items_start()
+                                    .child(
+                                        icon(if report.resolved { "check" } else { "alert" })
+                                            .text_color(rgb(WINE)),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_left()
+                                            .whitespace_normal()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(report.task.title()),
+                                    ),
+                            )
                             .on_click(cx.listener(move |this, _, _, cx| this.open_report(id, cx))),
                     )
-                    .child(div().flex_1())
                     .child(
                         tool_button(
                             format!("dismiss-report-{id}"),
@@ -220,14 +239,31 @@ impl DrawingApp {
                             }
                             if this.activity_selection == Some(id) {
                                 this.activity_selection = None;
+                                this.activity_details = false;
                             }
                             cx.notify();
                         })),
                     ),
             )
-            .when_some(report.project_name.as_ref(), |row, name| {
-                row.child(label(name.clone()).truncate())
-            });
+            .when(
+                report.project_name.is_some() || report.attempts > 1,
+                |content| {
+                    content.child(
+                        row()
+                            .flex_wrap()
+                            .gap_1()
+                            .when_some(report.project_name.as_ref(), |meta, name| {
+                                meta.child(label(name.clone()).truncate())
+                            })
+                            .when(report.attempts > 1, |meta| {
+                                meta.when(report.project_name.is_some(), |meta| {
+                                    meta.child(label("·"))
+                                })
+                                .child(label(format!("{} attempts", report.attempts)))
+                            }),
+                    )
+                },
+            );
         if selected {
             content = content
                 .child(div().text_sm().child(if report.resolved {
@@ -237,6 +273,8 @@ impl DrawingApp {
                 }))
                 .child(
                     row()
+                        .flex_wrap()
+                        .gap_1()
                         .when(!report.resolved, |actions| {
                             if let Some((title, enabled)) = self.report_action(report) {
                                 actions.child(
@@ -267,7 +305,7 @@ impl DrawingApp {
                                     this.activity_copy = None;
                                     if this.activity_details {
                                         if let Some(report) = this.activity.get(id) {
-                                            let text = report.text();
+                                            let text = report.diagnostics.join("\n\n");
                                             this.activity_text.update(cx, |state, cx| {
                                                 state.set_value(text, window, cx)
                                             });
@@ -275,41 +313,51 @@ impl DrawingApp {
                                     }
                                     cx.notify();
                                 })),
-                        ),
+                        )
+                        .when(self.activity_details, |actions| {
+                            actions.child(
+                                Button::new(format!("copy-report-{id}"))
+                                    .ghost()
+                                    .small()
+                                    .icon(icon("copy"))
+                                    .label(self.activity_copy.unwrap_or("Copy report"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let Some(report) = this.activity.get(id) else {
+                                            return;
+                                        };
+                                        let text = report.text();
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            text.clone(),
+                                        ));
+                                        this.activity_copy = Some(
+                                            if cx
+                                                .read_from_clipboard()
+                                                .and_then(|item| item.text())
+                                                .as_deref()
+                                                == Some(&text)
+                                            {
+                                                "Copied"
+                                            } else {
+                                                "Copy failed · retry"
+                                            },
+                                        );
+                                        cx.notify();
+                                    })),
+                            )
+                        }),
                 );
             if self.activity_details {
-                content = content
-                    .child(
+                content = content.child(
+                    div().rounded_md().bg(rgb(0xf7f6f8)).p_2().child(
                         Textarea::new(&self.activity_text)
                             .readonly(true)
-                            .h(px(200.))
+                            .appearance(false)
+                            .bordered(false)
+                            .small()
+                            .h(px(112.))
                             .aria_label("Technical report"),
-                    )
-                    .child(
-                        row().child(
-                            Button::new(format!("copy-report-{id}"))
-                                .ghost()
-                                .small()
-                                .label(self.activity_copy.unwrap_or("Copy report"))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    let text = this.activity_text.read(cx).value().to_string();
-                                    cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-                                    this.activity_copy = Some(
-                                        if cx
-                                            .read_from_clipboard()
-                                            .and_then(|item| item.text())
-                                            .as_deref()
-                                            == Some(&text)
-                                        {
-                                            "Copied"
-                                        } else {
-                                            "Copy failed · retry"
-                                        },
-                                    );
-                                    cx.notify();
-                                })),
-                        ),
-                    );
+                    ),
+                );
             }
         }
         content
@@ -340,30 +388,8 @@ impl DrawingApp {
         if !has_content {
             body = body.child(label("Nothing needs attention").py_6());
         }
-        column()
-            .key_context("Activity")
-            .w(px(360.))
-            .flex_shrink_0()
-            .h_full()
+        let content = column()
             .gap_2()
-            .bg(rgb(0xffffff))
-            .border_l_1()
-            .border_color(rgb(BORDER))
-            .p_4()
-            .occlude()
-            .child(
-                row()
-                    .child(div().flex_1().text_lg().child("Activity"))
-                    .child(
-                        tool_button("close-activity", "close", "Close Activity").on_click(
-                            cx.listener(|this, _, window, cx| {
-                                this.panel = Panel::None;
-                                window.focus(&this.focus, cx);
-                                cx.notify();
-                            }),
-                        ),
-                    ),
-            )
             .child(
                 row()
                     .when(self.queue.outstanding() > 0, |row| {
@@ -415,13 +441,7 @@ impl DrawingApp {
                         },
                     ),
             )
-            .child(
-                div()
-                    .id("activity-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(body),
-            )
+            .child(body);
+        self.side_panel("Activity", content, cx)
     }
 }

@@ -39,8 +39,15 @@ library, and embeds selected references in the project. References can be hidden
 while working and are excluded from artwork exports. New compositions may use
 selected references as image input without changing their new-artboard destination.
 
+Click a project card anywhere on the Projects home page to open it. Cards also
+support keyboard focus and activation without a separate Open project button.
+
 Multiple projects stay open in tabs with independent documents, dirty state,
-history and drafts. Drag to reorder, or use Ctrl+Shift+Page Up/Down. The close
+history and drafts. Tabs share one header row with the project actions; each tab
+groups its title, edited dot and close icon on one surface. The close icon changes
+color on hover without a separate background. Click **Atelier** to return to the
+Projects home page, which also opens **Library**. Drag to reorder, or use
+Ctrl+Shift+Page Up/Down. The close
 icon or Cmd/Ctrl+W saves before closing; a failed save keeps the tab open. Tab
 actions also live in File. Closing the final tab returns to Projects, and Library
 remains accessible without project controls. Tab order and active identity
@@ -48,10 +55,13 @@ survive restart. Project/recovery saves retain artboards, candidates, reference
 associations, provenance, source/mode-bound drafts and last selection contexts.
 Schema version 1 upgrades on load without discarding originals.
 
-Provider setup and credentials belong in **Clipforge**. Use **Open Clipforge**,
-then return and **Refresh readiness**. Atelier retains per-request model presets,
-size, steps, adapters and ComfyUI workflow mappings. Readiness distinguishes
-configuration from a successful remote request.
+The composer's ellipsis opens a menu with **Image options** and **Provider
+settings**. Provider setup and credentials belong in **Clipforge**, reached from
+Settings through **Manage providers in Clipforge**. Return to Settings and use
+**Reload providers** after changes. Atelier retains per-request model presets,
+size, steps, adapters and ComfyUI workflow mappings. The composer has no provider
+setup row or routine setup subtext; blocked submissions show validation beside
+the prompt.
 
 See [creation workflow](atelier-creation-workflow.md) for the audit, exact
 migration, input limits, queue/selection semantics, project recovery, the missing
@@ -114,8 +124,11 @@ including Pause/Stop/remove/retry/result-opening actions. Failures have a concis
 explanation, recovery action and optional **Details** with a selectable read-only
 report and verified **Copy report**. Short contextual hints replace raw footer
 errors. Generation hints stay with their project and prompt context; save
-failures retain a Not saved hint. In drawing, Activity replaces Layers/References
-while open and restores that inspector when closed. Escape closes Activity.
+failures retain a Not saved hint. All side panels use Activity's full-height,
+360px-wide docked frame, with a shared title/close header and scrolling body.
+Settings retains a pinned Save footer. In drawing, auxiliary panels replace
+Layers/References and restore the inspector preference when closed. Escape
+closes a panel from its controls.
 Reports/queue history last for this app session; project and draft recovery are
 unchanged. Retries preserve captured inputs and resolve their report on success;
 there is no automatic retry or guessed provider cooldown.

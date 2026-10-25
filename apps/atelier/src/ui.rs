@@ -8,6 +8,7 @@ use gpui_kit::{
     component::{
         button::*,
         input::{Input, InputState, NumberInput, Textarea, TextareaState},
+        menu::{DropdownMenu, PopupMenuItem},
         select::Select,
         *,
     },
@@ -140,6 +141,7 @@ pub(crate) fn icon(name: &str) -> Icon {
         "trash"=>"<path d='M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7'/>",
         "up"=>"<path d='m6 14 6-6 6 6'/>","down"=>"<path d='m6 10 6 6 6-6'/>",
         "check"=>"<path d='m4 12 5 5L20 6'/>","close"=>"<path d='m5 5 14 14M19 5 5 19'/>",
+        "copy"=>"<rect x='8' y='8' width='13' height='13' rx='2'/><path d='M16 8V3H3v13h5'/>",
         "sparkle"=>"<path d='m12 3 3 6 6 3-6 3-3 6-3-6-6-3 6-3z'/>",
         "alert"=>"<path d='m12 3 10 18H2z'/><path d='M12 9v5M12 17h.01'/>",
         "activity"=>"<circle cx='12' cy='12' r='9'/><path d='M12 7v5l3 2'/>",
@@ -182,6 +184,35 @@ fn field(name: &'static str, input: &Entity<InputState>) -> Div {
     column().gap_1().child(label(name)).child(Input::new(input))
 }
 
+fn side_panel_frame(title: &'static str, content: Div, close: Button) -> Div {
+    column()
+        .key_context("SidePanel")
+        .w(px(360.))
+        .flex_shrink_0()
+        .h_full()
+        .min_h_0()
+        .gap_2()
+        .bg(rgb(0xffffff))
+        .border_l_1()
+        .border_color(rgb(BORDER))
+        .p_4()
+        .occlude()
+        .child(
+            row()
+                .flex_shrink_0()
+                .child(div().flex_1().text_lg().child(title))
+                .child(close),
+        )
+        .child(
+            div()
+                .id(format!("side-panel-scroll-{title}"))
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(content),
+        )
+}
+
 /// A labelled numeric stepper, the numeric counterpart to [`field`].
 fn number_field(name: &'static str, input: &Entity<InputState>) -> Div {
     column()
@@ -219,35 +250,52 @@ impl DrawingApp {
         for (i, project) in self.projects.iter().enumerate() {
             let path = project.path.clone();
             cards = cards.child(
-                panel()
-                    .w(px(240.))
-                    .overflow_hidden()
-                    .child(
-                        img(project.image.clone())
-                            .w_full()
-                            .h(px(180.))
-                            .object_fit(ObjectFit::Contain),
+                Button::new(format!("open-project-{i}"))
+                    .custom(
+                        ButtonCustomVariant::new(cx)
+                            .color(rgb(0xffffff).into())
+                            .foreground(rgb(INK).into())
+                            .hover(rgb(SURFACE).into())
+                            .active(rgb(0xf1e6eb).into()),
                     )
+                    .w(px(240.))
+                    .h_auto()
+                    .p_0()
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .rounded_lg()
+                    .overflow_hidden()
+                    .cursor_pointer()
+                    .accessibility_label(format!("Open {}", project.title))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_project(path.clone(), window, cx);
+                        cx.notify();
+                    }))
                     .child(
                         column()
-                            .gap_2()
-                            .p_3()
-                            .child(div().truncate().child(project.title.clone()))
-                            .when(!project.note.is_empty(), |p| {
-                                p.child(
-                                    label(project.note.chars().take(80).collect::<String>())
-                                        .truncate(),
-                                )
-                            })
+                            .gap_0()
+                            .w_full()
                             .child(
-                                Button::new(format!("open-project-{i}"))
-                                    .ghost()
-                                    .small()
-                                    .label("Open project")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_project(path.clone(), window, cx);
-                                        cx.notify();
-                                    })),
+                                img(project.image.clone())
+                                    .w_full()
+                                    .h(px(180.))
+                                    .object_fit(ObjectFit::Contain),
+                            )
+                            .child(
+                                column()
+                                    .gap_2()
+                                    .p_3()
+                                    .w_full()
+                                    .text_left()
+                                    .child(div().truncate().child(project.title.clone()))
+                                    .when(!project.note.is_empty(), |p| {
+                                        p.child(
+                                            label(
+                                                project.note.chars().take(80).collect::<String>(),
+                                            )
+                                            .truncate(),
+                                        )
+                                    }),
                             ),
                     ),
             );
@@ -293,6 +341,17 @@ impl DrawingApp {
                     )
                     .child(div().flex_1())
                     .child(
+                        Button::new("home-library")
+                            .ghost()
+                            .small()
+                            .icon(icon("image"))
+                            .label("Library")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.page = Page::Library;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
                         Button::new("refresh-projects")
                             .ghost()
                             .small()
@@ -315,12 +374,12 @@ impl DrawingApp {
             Page::Image => self.image_workspace(cx).into_any_element(),
             Page::Artboards => self.artboards_workspace(cx).into_any_element(),
         };
-        let overlay = match self.panel {
+        let side_panel = match self.panel {
             Panel::Brushes => Some(self.brush_settings(cx)),
             Panel::Canvas => Some(self.canvas_settings(cx)),
             Panel::Settings => Some(self.provider_settings(cx)),
             Panel::Help => Some(self.help(cx)),
-            Panel::Activity => None,
+            Panel::Activity => Some(self.activity_panel(cx).into_any_element()),
             Panel::References => Some(self.reference_picker(cx)),
             Panel::None => None,
         };
@@ -355,9 +414,14 @@ impl DrawingApp {
                 this.open_prompt(window, cx);
                 cx.stop_propagation();
             }))
-            .on_action(cx.listener(|this, _: &crate::CloseActivity, window, cx| {
-                if this.panel == Panel::Activity {
+            .on_action(cx.listener(|this, _: &crate::ClosePanel, window, cx| {
+                if this.panel != Panel::None {
                     this.panel = Panel::None;
+                    window.focus(&this.focus, cx);
+                    cx.notify();
+                    cx.stop_propagation();
+                } else if this.dock {
+                    this.dock = false;
                     window.focus(&this.focus, cx);
                     cx.notify();
                     cx.stop_propagation();
@@ -376,7 +440,6 @@ impl DrawingApp {
                 cx.stop_propagation();
             }))
             .child(self.header(cx))
-            .child(self.project_tab_bar(cx))
             .child(
                 div()
                     .flex_1()
@@ -386,12 +449,9 @@ impl DrawingApp {
                         layout.child(self.rail(cx))
                     })
                     .child(div().flex_1().min_w_0().h_full().flex().child(main))
-                    .when(self.panel == Panel::Activity, |layout| {
-                        layout.child(self.activity_panel(cx))
-                    }),
+                    .when_some(side_panel, |layout, panel| layout.child(panel)),
             )
             .child(self.status_bar())
-            .when_some(overlay, |layout, overlay| layout.child(overlay))
             .when(
                 self.switching || self.closing || self.closing_project.is_some(),
                 |layout| {
@@ -422,28 +482,19 @@ impl DrawingApp {
             && !matches!(self.page, Page::Projects | Page::Library);
         row()
             .h(px(44.))
+            .flex_shrink_0()
             .px_4()
             .border_b_1()
             .border_color(rgb(BORDER))
             .bg(rgb(0xffffff))
             .child(
-                div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(WINE))
-                    .child("Atelier"),
-            )
-            .child(div().w(px(24.)))
-            .child(
-                Button::new("projects")
+                Button::new("atelier-home")
                     .ghost()
                     .small()
-                    .label("Projects")
-                    .atelier_selected(
-                        matches!(self.page, Page::Projects | Page::Artboards | Page::Draw)
-                            || (self.page == Page::Image
-                                && self.image_return_page != Page::Library),
-                        cx,
-                    )
+                    .label("Atelier")
+                    .tooltip("Home · Projects and Library")
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(WINE))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.finish_stroke();
                         this.finish_mask();
@@ -452,51 +503,12 @@ impl DrawingApp {
                         cx.notify();
                     })),
             )
-            .child(
-                Button::new("library")
-                    .ghost()
-                    .small()
-                    .label("Library")
-                    .atelier_selected(self.page == Page::Library, cx)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.finish_stroke();
-                        this.finish_mask();
-                        this.page = Page::Library;
-                        cx.notify();
-                    })),
-            )
-            .child(div().flex_1())
+            .child(self.project_tab_bar(cx))
             .when(project_context, |header| {
-                header
-                    .child(
-                        Button::new("project-title")
-                            .ghost()
-                            .small()
-                            .label(self.doc.title.clone())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.layer_name.update(cx, |s, cx| {
-                                    s.set_value(
-                                        this.doc.layers[this.doc.active_layer].name.clone(),
-                                        window,
-                                        cx,
-                                    )
-                                });
-                                this.panel = if this.panel == Panel::Canvas {
-                                    Panel::None
-                                } else {
-                                    Panel::Canvas
-                                };
-                                cx.notify();
-                            })),
-                    )
-                    .when_some(self.activity.save_failure(self.epoch), |header, report| {
-                        header.child(self.report_hint(report.id, "Not saved · View", cx))
-                    })
-                    .when(self.activity.save_failure(self.epoch).is_none(), |header| {
-                        header.child(label(if self.dirty { "Edited" } else { "Saved" }))
-                    })
+                header.when_some(self.activity.save_failure(self.epoch), |header, report| {
+                    header.child(self.report_hint(report.id, "Not saved · View", cx))
+                })
             })
-            .child(div().flex_1())
             .child(
                 tool_button("new", "plus", "New project").on_click(cx.listener(
                     |this, _, window, cx| {
@@ -549,19 +561,31 @@ impl DrawingApp {
         });
         div()
             .id("project-tabs")
+            .flex_1()
+            .min_w_0()
             .overflow_x_scroll()
             .flex()
             .gap_1()
-            .px_4()
-            .when(!self.project_tab_order.is_empty(), |bar| bar.py_1())
             .children(tabs.map(|(epoch, title, dirty)| {
+                let active =
+                    epoch == self.epoch && !matches!(self.page, Page::Library | Page::Projects);
                 row()
                     .id(format!("project-tab-container-{epoch}"))
-                    .gap_0()
+                    .gap_1()
+                    .h(px(30.))
+                    .pl_3()
+                    .pr_1()
+                    .max_w(px(240.))
                     .flex_shrink_0()
                     .border_1()
                     .border_color(gpui_kit::transparent_black())
                     .rounded_md()
+                    .bg(rgb(if active { 0xf1e6eb } else { 0xffffff }))
+                    .text_color(rgb(if active { WINE } else { MUTED }))
+                    .hover(|style| style.bg(rgb(0xf1e6eb)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.activate_project_tab(epoch, window, cx)
+                    }))
                     .drag_over::<crate::project_tabs::DraggedProject>(|tab, _, _, _| {
                         tab.border_color(rgb(WINE))
                     })
@@ -579,32 +603,46 @@ impl DrawingApp {
                     ))
                     .child(
                         Button::new(format!("project-tab-{epoch}"))
-                            .ghost()
-                            .small()
-                            .max_w(px(200.))
-                            .label(format!("{title}{}", if dirty { " •" } else { "" }))
-                            .tooltip(format!("{title} · drag to reorder"))
-                            .atelier_selected(
-                                epoch == self.epoch
-                                    && !matches!(self.page, Page::Library | Page::Projects),
-                                cx,
+                            .custom(
+                                ButtonCustomVariant::new(cx)
+                                    .foreground(rgb(if active { WINE } else { MUTED }).into()),
                             )
+                            .small()
+                            .px_0()
+                            .min_w_0()
+                            .flex_1()
+                            .label(title.clone())
+                            .tooltip(format!("{title} · drag to reorder"))
+                            .selected(active)
+                            .toggled(active)
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.activate_project_tab(epoch, window, cx)
+                                this.activate_project_tab(epoch, window, cx);
+                                cx.stop_propagation();
                             })),
                     )
+                    .when(dirty, |tab| {
+                        tab.child(div().flex_shrink_0().text_xs().child("•"))
+                    })
                     .child(
-                        tool_button(
-                            format!("close-project-{epoch}"),
-                            "close",
-                            "Save and close project",
-                        )
-                        .disabled(self.closing_project.is_some())
-                        .accessibility_label(format!("Save and close {title}"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.close_project_tab(epoch, cx);
-                            cx.stop_propagation();
-                        })),
+                        Button::new(format!("close-project-{epoch}"))
+                            .custom(ButtonCustomVariant::new(cx).foreground(rgb(MUTED).into()))
+                            .small()
+                            .group("project-tab-close")
+                            .child(
+                                div()
+                                    .flex()
+                                    .group_hover("project-tab-close", |style| {
+                                        style.text_color(rgb(WINE))
+                                    })
+                                    .child(icon("close")),
+                            )
+                            .tooltip("Save and close project")
+                            .disabled(self.closing_project.is_some())
+                            .accessibility_label(format!("Save and close {title}"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.close_project_tab(epoch, cx);
+                                cx.stop_propagation();
+                            })),
                     )
             }))
     }
@@ -779,7 +817,7 @@ impl DrawingApp {
                     .child(self.canvas_toolbar(cx))
                     .child(self.canvas(cx)),
             )
-            .when(self.dock && self.panel != Panel::Activity, |layout| {
+            .when(self.dock && self.panel == Panel::None, |layout| {
                 layout.child(self.dock_panel(cx))
             })
     }
@@ -1223,20 +1261,22 @@ impl DrawingApp {
             )
     }
     fn dock_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        column()
-            .id("drawing-dock")
-            .w(px(256.))
-            .flex_shrink_0()
-            .h_full()
-            .overflow_y_scroll()
-            .bg(rgb(0xffffff))
-            .border_l_1()
-            .border_color(rgb(BORDER))
-            .p_4()
+        let content = column()
             .gap_4()
             .child(self.layer_panel(cx))
             .child(separator())
-            .child(self.reference_panel(cx))
+            .child(self.reference_panel(cx));
+        side_panel_frame(
+            "Layers & references",
+            content,
+            tool_button("close-inspector", "close", "Close panel").on_click(cx.listener(
+                |this, _, window, cx| {
+                    this.dock = false;
+                    window.focus(&this.focus, cx);
+                    cx.notify();
+                },
+            )),
+        )
     }
 
     fn reference_panel(&self, cx: &mut Context<Self>) -> Div {
@@ -1951,7 +1991,7 @@ impl DrawingApp {
             let favorite = reference.clone();
             cards = cards.child(
                 panel()
-                    .w(px(if picker { 190. } else { 218. }))
+                    .w(px(if picker { 154. } else { 218. }))
                     .p_2()
                     .child(
                         img(image)
@@ -2021,14 +2061,15 @@ impl DrawingApp {
     fn reference_picker(&self, cx: &mut Context<Self>) -> AnyElement {
         let limit = crate::providers::reference_limit(&self.settings).map(|count| format!("{}: {count} image input(s) including the source · references are checked before queueing",self.settings.provider.name()))
             .unwrap_or_else(|error|format!("Choose an editing model: {error}"));
-        let content = column().h(px(500.))
+        let content = column().h_full()
             .child(label(limit))
             .child(label("Project references and the shared library · selecting a reference never adds artwork"))
             .child(Input::new(&self.search))
             .child(Button::new("picker-import").small().label("Import into library and select…")
                 .on_click(cx.listener(|this,_,window,cx| this.pick(Picker::Import,window,cx))))
             .child(self.reference_cards(true,cx));
-        self.overlay("References", content, cx)
+        self.side_panel("References", content, cx)
+            .into_any_element()
     }
     fn provider_choices(&self, settings: bool) -> Div {
         let state = if settings {
@@ -2055,7 +2096,10 @@ impl DrawingApp {
         let drawing = mode == PromptComposerMode::Drawing;
         let selection = drawing && self.region_bounds().is_some();
         let separate = selection && self.selection_mode == crate::workflow::SelectionMode::Separate;
-        let setup_needed = self.provider_readiness.starts_with("Setup needed");
+        let has_image_options =
+            !drawing || separate || self.settings.provider.native_architecture().is_some();
+        let composer_app = cx.entity();
+        let show_details = self.show_prompt_details;
         let caption = if drawing {
             if separate {
                 "Separate image · new artboard"
@@ -2190,12 +2234,35 @@ impl DrawingApp {
                 )
                 .child(div().flex_1())
                 .child(
-                    tool_button("composer-options", "more", "Image options")
-                        .atelier_selected(self.show_prompt_details, cx)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.show_prompt_details = !this.show_prompt_details;
-                            cx.notify();
-                        })),
+                    tool_button("composer-options", "more", "More options").dropdown_menu(
+                        move |menu, _, _| {
+                            let image_app = composer_app.clone();
+                            let provider_app = composer_app.clone();
+                            menu.when(has_image_options, |menu| {
+                                menu.item(
+                                    PopupMenuItem::new("Image options")
+                                        .checked(show_details)
+                                        .on_click(move |_, _, cx| {
+                                            image_app.update(cx, |this, cx| {
+                                                this.show_prompt_details =
+                                                    !this.show_prompt_details;
+                                                cx.notify();
+                                            });
+                                        }),
+                                )
+                            })
+                            .item(
+                                PopupMenuItem::new("Provider settings").on_click(
+                                    move |_, _, cx| {
+                                        provider_app.update(cx, |this, cx| {
+                                            this.panel = Panel::Settings;
+                                            cx.notify();
+                                        });
+                                    },
+                                ),
+                            )
+                        },
+                    ),
                 )
                 .child(
                     Button::new("composer-submit")
@@ -2256,7 +2323,7 @@ impl DrawingApp {
         if !self.doc.artboard_references.is_empty() {
             controls = controls.child(references);
         }
-        if self.show_prompt_details || separate {
+        if (self.show_prompt_details && has_image_options) || separate {
             let options = row()
                 .items_end()
                 .flex_wrap()
@@ -2294,18 +2361,7 @@ impl DrawingApp {
                             ),
                         )
                     },
-                )
-                .when(self.show_prompt_details, |r| {
-                    r.child(
-                        tool_button("composer-settings", "settings", "Image settings")
-                            .ghost()
-                            .small()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.panel = Panel::Settings;
-                                cx.notify();
-                            })),
-                    )
-                });
+                );
             controls = controls.child(options);
         }
         if self.show_prompt_details {
@@ -2336,44 +2392,6 @@ impl DrawingApp {
                     );
                 }
             }
-        }
-        if setup_needed || self.show_prompt_details {
-            controls =
-                controls.child(
-                    row()
-                        .gap_1()
-                        .pt_2()
-                        .border_t_1()
-                        .border_color(rgb(BORDER))
-                        .child(
-                            label(
-                                self.provider_readiness
-                                    .strip_prefix("Setup needed: ")
-                                    .unwrap_or(&self.provider_readiness)
-                                    .to_owned(),
-                            )
-                            .text_color(rgb(if setup_needed { WINE } else { MUTED }))
-                            .min_w_0()
-                            .flex_1(),
-                        )
-                        .child(
-                            Button::new("composer-clipforge")
-                                .ghost()
-                                .small()
-                                .label("Open Clipforge")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.open_clipforge();
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            tool_button("composer-refresh", "undo", "Refresh provider readiness")
-                                .tooltip(server_status_label(self.server_status.as_ref()))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.reload_clipforge(window, cx)
-                                })),
-                        ),
-                );
         }
         let validation = self.prompt_validation.as_ref().filter(|validation| {
             validation.epoch == self.epoch && validation.target == self.prompt_target
@@ -2489,115 +2507,60 @@ impl DrawingApp {
         }
         details
     }
-    fn overlay(&self, title: &'static str, content: Div, cx: &mut Context<Self>) -> AnyElement {
-        let settings = title == "Settings";
-        let rail_brushes = title == "Brushes" && self.page == Page::Draw;
-        let rail_settings = settings && self.page == Page::Draw;
-        let rail_help = title == "Practice" && self.page == Page::Draw;
-        let rail_popup = rail_brushes || rail_settings || rail_help;
-        let panel = panel()
-            .id(format!("overlay-{title}"))
-            // Floating panels must block hitboxes underneath, including canvas focus.
-            .occlude()
-            .absolute()
-            .when(rail_popup, |p| p.left(px(64.)))
-            .when(!rail_popup, |p| p.right(px(16.)))
-            .when(rail_brushes, |p| p.top(px(170.)))
-            .when(rail_settings, |p| p.top(px(64.)).bottom(px(80.)))
-            .when(rail_help, |p| p.bottom(px(40.)))
-            .when(!rail_popup, |p| p.top(px(64.)))
-            .w(px(if title == "References" {
-                470.
-            } else if settings {
-                360.
-            } else {
-                288.
-            }))
-            .when(settings, |p| {
-                p.when(!rail_settings, |p| p.bottom(px(16.)))
-                    .flex()
-                    .flex_col()
-                    .overflow_hidden()
-            })
-            .when(!settings, |p| p.max_h(px(660.)).overflow_y_scroll())
-            .p_5()
-            .shadow_lg()
-            .child(
-                row()
-                    .flex_shrink_0()
-                    .mb_4()
-                    .child(div().flex_1().text_lg().child(title))
-                    .child(
-                        tool_button("close-overlay", "close", "Close panel").on_click(cx.listener(
-                            |this, _, window, cx| {
-                                this.panel = Panel::None;
-                                window.focus(&this.focus, cx);
-                                cx.notify();
-                            },
-                        )),
-                    ),
+    pub(crate) fn side_panel(
+        &self,
+        title: &'static str,
+        content: Div,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        side_panel_frame(
+            title,
+            content,
+            tool_button("close-side-panel", "close", "Close panel").on_click(cx.listener(
+                |this, _, window, cx| {
+                    this.panel = Panel::None;
+                    window.focus(&this.focus, cx);
+                    cx.notify();
+                },
+            )),
+        )
+    }
+
+    fn settings_footer(&self, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex_shrink_0()
+            .border_t_1()
+            .border_color(rgb(BORDER))
+            .mt_4()
+            .pt_4()
+            .when_some(
+                self.activity.for_task(
+                    &crate::activity::Scope::App,
+                    &crate::activity::Task::Settings,
+                ),
+                |p, report| {
+                    p.child(row().mb_2().child(self.report_hint(
+                        report.id,
+                        "Settings not saved · View",
+                        cx,
+                    )))
+                },
             )
-            .child(if settings {
-                div()
-                    .id("settings-scroll-body")
-                    .flex_1()
-                    .min_h(px(0.))
-                    .overflow_y_scroll()
-                    .pr_2()
-                    .child(content)
-                    .into_any_element()
-            } else {
-                content.into_any_element()
-            })
-            .when(settings, |p| {
-                p.child(
-                    div()
-                        .flex_shrink_0()
-                        .border_t_1()
-                        .border_color(rgb(BORDER))
-                        .mt_4()
-                        .pt_4()
-                        .when_some(
-                            self.activity.for_task(
-                                &crate::activity::Scope::App,
-                                &crate::activity::Task::Settings,
-                            ),
-                            |p, report| {
-                                p.child(row().mb_2().child(self.report_hint(
-                                    report.id,
-                                    "Settings not saved · View",
-                                    cx,
-                                )))
-                            },
-                        )
-                        .child(
-                            Button::new("save-settings")
-                                .primary()
-                                .w_full()
-                                .label(if self.settings_save.is_some() {
-                                    "Saving…"
-                                } else {
-                                    "Save settings"
-                                })
-                                .disabled(self.settings_save.is_some())
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.apply_settings(cx);
-                                    cx.notify();
-                                })),
-                        ),
-                )
-            });
-        if self.settings.reduced_motion {
-            panel.into_any_element()
-        } else {
-            panel
-                .with_animation(
-                    format!("reveal-{title}"),
-                    Animation::new(Duration::from_millis(150)),
-                    |panel, delta| panel.opacity(0.75 + delta * 0.25),
-                )
-                .into_any_element()
-        }
+            .child(
+                Button::new("save-settings")
+                    .primary()
+                    .w_full()
+                    .label(if self.settings_save.is_some() {
+                        "Saving…"
+                    } else {
+                        "Save settings"
+                    })
+                    .disabled(self.settings_save.is_some())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.apply_settings(cx);
+                        cx.notify();
+                    })),
+            )
     }
     fn brush_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut content = column();
@@ -2665,7 +2628,7 @@ impl DrawingApp {
             .child(label(
                 "Pressure controls width and pigment. Mouse uses full pressure.",
             ));
-        self.overlay("Brushes", content, cx)
+        self.side_panel("Brushes", content, cx).into_any_element()
     }
     fn canvas_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let content = column()
@@ -2849,7 +2812,8 @@ impl DrawingApp {
                         cx.reveal_path(&this.data_dir.join("sessions"));
                     })),
             );
-        self.overlay("Canvas & project", content, cx)
+        self.side_panel("Canvas & project", content, cx)
+            .into_any_element()
     }
     fn lora_editor(&self, cx: &mut Context<Self>) -> Div {
         let discovered = crate::native_images::available_loras(&self.settings);
@@ -2906,8 +2870,9 @@ impl DrawingApp {
                 } else {
                     "Generation only"
                 }))
+                .child(label(server_status_label(self.server_status.as_ref())))
                 .child(label(
-                    "Size, steps and LoRA adapters are set per request in the generation rail.",
+                    "Size and sampling are in Image options; LoRA adapters are set below.",
                 ));
         } else if provider != Provider::Comfy {
             content = content
@@ -2989,6 +2954,13 @@ impl DrawingApp {
                         cx.notify();
                     })),
             )
+            .child(
+                Button::new("settings-reload-providers")
+                    .ghost()
+                    .small()
+                    .label("Reload providers")
+                    .on_click(cx.listener(|this, _, window, cx| this.reload_clipforge(window, cx))),
+            )
             .child(separator())
             .child(
                 div()
@@ -3007,7 +2979,9 @@ impl DrawingApp {
                         cx.notify();
                     })),
             );
-        self.overlay("Settings", content, cx)
+        self.side_panel("Settings", content, cx)
+            .child(self.settings_footer(cx))
+            .into_any_element()
     }
     fn help(&self, cx: &mut Context<Self>) -> AnyElement {
         let exercises = [
@@ -3072,6 +3046,6 @@ impl DrawingApp {
                 ]
                 .map(label),
             );
-        self.overlay("Practice", content, cx)
+        self.side_panel("Practice", content, cx).into_any_element()
     }
 }
