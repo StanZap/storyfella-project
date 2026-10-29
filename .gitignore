@@ -8,6 +8,8 @@ models/*
 !models/.gitkeep
 .DS_Store
 
+.idea/
+.vscode/
 # Generated images imported by the app at runtime. This stays at the workspace
 # root on purpose: revisions record absolute asset paths, so moving it would
 # orphan every image an existing project database refers to.

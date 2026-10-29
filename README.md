@@ -45,7 +45,7 @@ See [the language contract](docs/language.md) and [compiler contract](docs/compi
 Asset linking and unsupported directions remain explicit readiness requirements;
 use `--require-ready` to make either command fail when they are unmet.
 
-Studio edits [authoritative `.sf` files](docs/story-files.md) beside each project
+Studio edits [authoritative `.sf` files](docs/data-model.md) beside each project
 database. Projects → Open accepts `.sf` or `.db`; Writer offers Save copy and
 Reload for resolving external edits.
 
@@ -57,7 +57,7 @@ cargo run -p storyfella-player -- .svs-e2e/inputs/playback/lantern.sf
 cargo xtask plan config/plans/playback.yaml --mode guide --log
 ```
 
-The fixture stays under `.svs-e2e/`. [Playback documentation](docs/playback.md)
+The fixture stays under `.svs-e2e/`. [Playback documentation](docs/runtime.md)
 defines open inputs, fixed snapshots, keyboard controls and save/restore.
 Voice, expressive media and portable packaging/export remain later work.
 
@@ -174,7 +174,7 @@ Configuration is split by concern. The app's own settings live in a single platf
 
 ## Documentation
 
-In-depth material lives in [`docs/`](docs/README.md): a system [architecture overview](docs/architecture.md) (including the Rust → `sd-server` `sdcpp` contract), the [developer guide](docs/development.md), the [runtime lifecycle](docs/runtime-lifecycle.md), and the [data model and persistence format](docs/data-model.md). Proof-of-concept notes are indexed in [`docs/poc/`](docs/poc/README.md).
+In-depth material lives in the [documentation index](docs/README.md): current architecture, development instructions, language/runtime contracts, persistence and Atelier behavior. Plans and agreed changes live in [ROADMAP.md](docs/ROADMAP.md).
 
 ## Prerequisites
 
@@ -244,7 +244,7 @@ configured asset directory (the platform data dir's `assets` by default; a
 `paths.asset_dir` override can point at `assets/generated/` for development).
 There is one generation profile — Qwen-Image-2.1 — so there is no profile
 switching. See
-[`docs/runtime-lifecycle.md`](docs/runtime-lifecycle.md) for the launch line
+[`docs/architecture.md`](docs/architecture.md) for the launch line
 and readiness rules.
 
 Only one model fits on a 24 GiB card: generation peaks at ≈23.4 GiB, so the
@@ -252,18 +252,15 @@ LLM planner must not be resident during a generation.
 
 ## Visual LLM probe
 
-The isolated proof of concept exercises vision-capable models through the LLM endpoint's OpenAI-compatible chat-completions API. It uses deterministic synthetic fixtures, structured JSON output, per-request latency and token capture, and machine-readable results. See [`docs/poc/vlm/README.md`](docs/poc/vlm/README.md) for commands and scoring limitations.
+The isolated proof of concept exercises vision-capable models through the LLM endpoint's OpenAI-compatible chat-completions API. It uses deterministic synthetic fixtures, structured JSON output, per-request latency and token capture, and machine-readable results. See [Vision probe output](docs/development.md#vision-probe-output) for commands and scoring limitations.
 
 ## Native generation
 
 The product-oriented native path serves Qwen-Image-2.1 (int8 convrot
 safetensors) through `stable-diffusion.cpp`, with explicit request-time LoRAs
 and asynchronous jobs — no ComfyUI, no Python adapter. See
-[`docs/architecture.md`](docs/architecture.md) and
-[`docs/runtime-lifecycle.md`](docs/runtime-lifecycle.md) for the `sdcpp`
-contract and the launch line; the earlier Krea 2 native validation is recorded
-(historically) in
-[`docs/poc/native-generation/README.md`](docs/poc/native-generation/README.md).
+[`docs/architecture.md`](docs/architecture.md) for the `sdcpp`
+contract and the launch line.
 
 ## Visual evaluation (`svs eval`)
 
@@ -294,15 +291,8 @@ reliably.
 
 ## Roadmap
 
-The ordered backlog with statuses lives in `docs/ROADMAP.md` §12
-(this is the tracker). Upcoming work in brief:
-
-1. Connect free-form Canvas messages to LLM proposals (the vocabulary
-   exists; `svs stack propose` is the contract test bed) and add
-   `c:` autocomplete.
-2. Add the interactive-first job scheduler and richer timeline/media composition.
-   Authored scene/beat order and basic preview/Player execution are implemented.
-3. Add versioned project persistence improvements, generated-asset indexing, and autosave polish.
-4. Wire model-download progress/cancellation, LoRA discovery, and runtime installation into Settings.
-5. Complete warm-latency and peak-memory gates for Qwen-Image-2.1 on the target hardware.
-6. Add evaluator metrics, API integration tests, and macOS/Linux platform CI coverage.
+Plans, TODOs and completion status live in the
+[central tracker](docs/ROADMAP.md#0-current-direction-and-actionable-backlog).
+The current planning focus is Studio for DSL writing, Atelier for visual creation,
+and a shared project workflow. Existing plans are linked there for reconciliation
+with that direction.

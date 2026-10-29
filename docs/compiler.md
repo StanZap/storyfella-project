@@ -98,8 +98,8 @@ labels, exact immutable bindings, blocked directions, determinism and JSON
 round-trip. CLI process tests check JSON/exit behavior and prove that model config
 and project databases are unnecessary.
 
-Studio [`.sf` persistence](story-files.md), registry synchronization and authoring
+Studio [`.sf` persistence](data-model.md), registry synchronization and authoring
 tools, shared headless runtime and basic visual preview/Player are implemented.
-Hosts validate exact image resources; see [playback.md](playback.md). Further
+Hosts validate exact image resources; see [runtime.md](runtime.md). Further
 media semantics, timing, save-state compatibility, expressions,
 imports and speech performance annotations require their own contracts.

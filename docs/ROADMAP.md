@@ -1,12 +1,414 @@
-# Artifact canvas — product design & roadmap
+# Storyfella — central plan and TODO tracker
 
-> **Status: design discussion notes with the API slice implemented.** Captures
-> the ongoing product-design conversation around the artifact registry, the
-> creation canvas, the typed operation set, and SQLite persistence. **§12 is
-> the feature/status tracker** — every planned feature with its status; update
-> it when work lands. The API slice (§12 items 1–2) is implemented — see
-> `docs/api-slice-1.md`; confirmed decisions and open questions are marked as
-> such.
+Start here for planned work. Keep new TODOs, priorities and completion status in
+this document; link other documents for specifications and acceptance evidence.
+When work lands, check its item and record the evidence here. Unchecked items
+describe planned work, not existing functionality.
+
+## 0. Current direction and actionable backlog
+
+### Priority foundation: consume Agentkit for intelligence · 2026-10-28
+
+Agentkit is the shared framework dependency for intelligence capabilities and
+agentic workflows. Storyfella consumes its public APIs as an external framework;
+application behavior stays in Storyfella. Extend Agentkit only for demonstrated
+framework defects or missing reusable capabilities. Docgraph's integration is a
+reference for application-owned workflows, tool adapters, run persistence and
+streaming presentation, not domain code to copy into Storyfella.
+
+- [ ] **SF-PLAN-27 — Consolidate reusable inference in Agentkit.** Coordinate the
+  migration of Clipforge's reusable inference layer into optional Agentkit
+  capabilities: model provisioning/verification, managed native server lifecycle,
+  deployment readiness and reuse, provider adapters and image generation/editing
+  contracts. Reuse Agentkit's existing chat-provider contracts for running
+  endpoints; managed local deployment is the additional lifecycle responsibility.
+  Update Clipforge, Studio and Atelier consumers through public APIs, preserve
+  existing configuration, credentials and model files, and remove superseded
+  provider/client/server-management implementations as callers migrate. Done when
+  consumers share one inference implementation, local Qwen/Krea and existing
+  hosted routes still work, and Storyfella needs no installed/running Clipforge
+  app for inference. Hosted-only consumers must not require local model setup.
+- [ ] **SF-PLAN-28 — Integrate Agentkit workflows as an application foundation.**
+  Depend on Agentkit's workflow/session APIs and supply Storyfella-owned context,
+  domain tools, model bindings, durable run storage and UI event handling. Build
+  Studio's rewrite/expand features (SF-PLAN-15–17) as workflows; make the same
+  framework available to Atelier for conversational edits and asset iteration.
+  Keep proposal application, source conflict checks, undo, canvas mutations and
+  project saving in their owning apps. Done when a Studio writing workflow and
+  an Atelier asset-iteration workflow run through public Agentkit contracts with
+  responsive feedback, cancellation and no duplicated framework execution loop.
+
+**Delivery order:** start SF-PLAN-27 early, before expanding the former Clipforge
+inference implementation. Establish the image contract in SF-PLAN-25 as part of
+that migration, then add MOSS (SF-PLAN-24) and expose the capabilities in Atelier
+(SF-PLAN-26). SF-PLAN-28 provides the foundation for writing/creative workflows.
+Shared-project and catalog design can proceed independently; ordinary saving,
+asset synchronization and authored playback remain normal application behavior.
+Task IDs remain stable and are not an execution sequence.
+
+| Owner | Target responsibility |
+| --- | --- |
+| Agentkit | Chat/vision/image capability contracts, provider adapters, optional native deployment management, workflow execution and reactive sessions. |
+| Clipforge | Application, CLI and MCP surfaces consuming Agentkit for model setup, server management and experimentation; its clipping/conversion utilities remain app-owned. |
+| Studio / Storyfella | Story context, DSL-aware tools, writing/narrative workflows, asset catalog and editor interactions. |
+| Atelier | Canvas tools and application-defined creative workflows using Agentkit; normal save updates shared project assets. |
+| Docgraph | Independent framework consumer able to adopt image capabilities for its own document features. |
+
+The shared foundation enables more than individual chat calls. Studio workflows
+can support character interviews, scene rehearsal, alternate-scene exploration
+and continuity assistance. Atelier workflows can support conversational image
+iteration, selected-area changes, reference-assisted edits, variation proposals
+and consistency comparisons. These are feature directions, not mandatory
+production stages or new image-approval/publishing gates. Storyfella characters,
+Atelier layers and Docgraph nodes remain application concepts, not framework types.
+
+**Future exploration — a living visual novel:** use Agentkit reactive sessions
+to generate dialogue and narrative events during play while reusing existing
+saved artwork. Begin with one location and two characters. Storyfella owns
+authoritative world facts, character-specific knowledge, validated consequences,
+output selection and staging; models propose events rather than directly
+rewriting world state. Save actual generated events for resume/replay. This mode
+requires runtime intelligence and latency investigation; ordinary authored
+playback stays independent of inference, and neither mode requires Atelier.
+Detailed scope and delivery priority remain to be decided after the foundation.
+
+Today inference is implemented in Clipforge and consumed by Storyfella. The
+ownership table above is the agreed target, not a claim that migration has landed.
+
+### Studio for writing, Atelier for visual creation · 2026-10-28
+
+The proposed direction is Studio for writing and previewing stories with the
+Storyfella DSL, and Atelier for creating illustrations, character designs, places
+and other visual assets. Writers can define story elements before artwork exists,
+then open Atelier from the relevant story context. Atelier can also create new
+characters, illustrations and variations independently; Studio can subsequently
+reference those shared items. Both apps understand one story project, organized
+as a folder of sources, metadata and assets.
+
+Today Studio uses one authoritative `.sf` file plus a companion SQLite database;
+images can live outside that pair. Atelier has separate `.atelier` projects and
+exchanges approved artwork through `.sfart`. The shared project folder, automatic
+handoff and multi-file DSL compilation are proposed work. Exact storage formats,
+folder layout and synchronization mechanisms remain to be designed.
+
+The following checklist describes the shared-project workstream. Multi-file
+language support can follow the initial shared-project workflow.
+
+- [ ] **SF-PLAN-01 — Define app responsibilities.** Inventory Studio's visual
+  creation, generation, editing and asset-management surfaces and assign their
+  destination in Atelier. Studio retains DSL authoring, story definitions,
+  references, lightweight asset previews, readiness and playback. Done when each
+  affected workflow has a destination and migration acceptance criteria.
+- [ ] **SF-PLAN-02 — Design a shared project folder.** Specify source files,
+  metadata, artwork, Atelier working documents, manifest and database ownership.
+  Use portable asset references and preserve existing source, revisions and
+  associations. Done when a populated project moves to another folder and opens
+  in both apps with its links intact.
+- [ ] **SF-PLAN-03 — Shared asset catalog.** Define stable project identities for
+  characters, places, props, illustrations and variations, independently of
+  artwork. DSL definitions create catalog items before images exist; Atelier
+  can create items independently and make them available for Studio references.
+  Preserve identity across rename, edits and later file moves. Distinguish story
+  requirements from visual working documents and saved artwork. Done when an
+  item created in either app appears in the other without manual duplication,
+  and later artwork remains attached to the original identity.
+- [ ] **SF-PLAN-04 — Synchronization and simultaneous use.** Synchronize catalog
+  items, requirements, work state and saved artwork in both directions. Assign
+  write ownership for story sources, visual documents and shared metadata;
+  choose change notification, conflict handling and refresh behavior. An
+  Atelier-created item becomes available in Studio without silently inserting or
+  rewriting authored DSL. Coordinate any requested source edit with Studio's
+  unsaved buffer. Done when creation from either app, renames, simultaneous edits,
+  save failures and reopening preserve identities and work without silent
+  overwrites or duplicate items.
+- [ ] **SF-PLAN-05 — Open Atelier from story context.** Carry the project, stable
+  element identity and relevant authored context from a character, place, prop
+  or scene in Studio. Reuse linked Atelier documents where appropriate. Done when
+  the intended work opens without manual export/import or repeated descriptions.
+- [ ] **SF-PLAN-06 — Refresh Studio from Atelier saves.** Saving an asset-linked
+  canvas persists its editable document and updates its image in the shared
+  project. Refresh Studio's asset previews and availability automatically, with
+  no export, import, approval or publishing step. Preserve exact saved revision
+  bindings for compiled story snapshots. Done when a save updates the intended
+  asset in Studio with both apps open and survives reopening.
+- [ ] **SF-PLAN-07 — Remove visual creation workflows from Studio.** Once the
+  shared workflow works, remove migrated controls and unused implementation.
+  Review shared core and CLI callers before removing operations. Done when
+  writing → Atelier → save → Studio preview works, existing project
+  data is preserved and no creation controls lead to missing functionality.
+- [ ] **SF-PLAN-08 — Support multiple DSL source files.** Specify the entry point,
+  modules/imports, shared definitions, resolution, ordering and cycle diagnostics
+  before implementing a project graph. Extend Studio, compiler, CLI and LSP
+  together. Done when chapters and shared definitions occupy separate files with
+  consistent diagnostics, navigation and identity-preserving rename.
+  SF-PLAN-12 covers the related workspace tooling.
+- [ ] **SF-PLAN-14 — Atelier production backlog.** Present the shared catalog as
+  actionable character, variation, place, prop and illustration work, including
+  items without images. Group variations under their character and show saved
+  artwork versus requirements, story context and canvases with unsaved work.
+  Derive basic availability from saved files; no mandatory approval statuses.
+  Offer all requirements, used-in-story and missing-artwork filters. Open
+  sketches, references, artboards and candidates without automatically generating
+  images. Done when a project with four characters, seven requested variations
+  each and eighteen illustrations exposes that work and its progress in Atelier,
+  while Studio shows previews, readiness and Open in Atelier.
+
+End-to-end acceptance: introduce a character while writing, open it in Atelier,
+create and save its artwork, see it in Studio and preview the story. Repeat
+with both apps open, unsaved story edits, a renamed element and a moved project.
+
+### Agreed catalog, backlog and synchronization behavior · 2026-10-28
+
+SF-PLAN-03, SF-PLAN-14 and SF-PLAN-04 form the shared-asset delivery group.
+Creation may begin in either Studio or Atelier; the catalog is shared project
+data, not an export of Studio's requirements. Catalog availability and use in the
+story are separate: creating a character or variation in Atelier does not require
+inserting it into a scene, and defining an unused character in Studio still makes
+it visible in Atelier.
+
+- Story requirements describe what is needed; Atelier owns drawing, generation,
+  image editing, polishing, extraction, production prompts and settings. Studio
+  can specify story-facing descriptions and variations but does not impose a
+  production method or rewrite model prompts.
+- Required variations are explicit. Two outfits and four expressions do not
+  automatically demand every combination. Atelier may hold extra variations and
+  experiments without turning them into required work.
+- Saved artwork is available for story use without a separate approval gate.
+  A changed story requirement does not delete or invalidate the current saved
+  image. The creator decides whether to revise it in Atelier.
+- Removing a story requirement preserves its catalog item and visual work;
+  Atelier distinguishes assets no longer requested by the story. Deleting an
+  asset is a separate explicit action. Renames retain working documents,
+  revisions and canvas associations.
+- Synchronization must protect incomplete drafts and unsaved work. It must not
+  interpret a temporary syntax error as a request to remove catalog items.
+
+Acceptance also runs in reverse: create a character, illustration or variation in
+Atelier, see it become available in Studio, reference it in the story and reopen
+both apps with the same identity and artwork links intact.
+
+### Agreed LLM writing assistance in Studio · 2026-10-28
+
+- [ ] **SF-PLAN-15 — Editor rewrite and expansion.** Offer Rewrite, Expand and
+  custom instructions over a selection, beat or scene. Provide preserve-facts
+  and allow-creative-changes choices. Review proposals beside the original with
+  accept, reject and request-another-version actions. Done when an accepted
+  proposal applies as one undoable source edit and rejected proposals leave the
+  story and asset catalog untouched. Use the Agentkit workflow integration in
+  SF-PLAN-28 for execution.
+- [ ] **SF-PLAN-16 — Relevant writing context.** Supply nearby passages, relevant
+  character descriptions, scene participants and project writing instructions.
+  Preserve DSL structure and resolved references, surface diagnostics on proposed
+  changes and make introduced characters or illustration requirements explicit.
+  Connect accepted new requirements to the shared catalog through normal source
+  reconciliation. Done when rewrites follow the selected scope and instructions,
+  and proposed asset requirements become production work only after acceptance.
+- [ ] **SF-PLAN-17 — Protect concurrent writing and proposal state.** Bind each
+  proposal to its original source snapshot and range. If the writer edits the
+  source while the model works, retain the proposal and report the mismatch
+  rather than overwriting newer text. Cancellation or provider failure preserves
+  the draft and request. Done when delayed responses, changed selections, source
+  edits and project switches cannot apply a proposal to the wrong text/project.
+
+The first delivery is a writing collaborator within the editor. Example requests:
+make a character's suspicion implicit; expand a passage into a tense conversation
+with a specified endpoint; or suggest choices and their narrative consequences.
+Branch suggestions are reviewed before becoming DSL structure. Expanding dialogue
+must not incidentally generate an entire branching story.
+
+Studio's writing assistant edits authored text and story-facing specifications.
+Visual model prompts, image editing and asset production remain Atelier-owned.
+Whole-story restructuring and autonomous writing are outside this first delivery.
+
+### Agreed character staging and independent playback · 2026-10-28
+
+- [ ] **SF-PLAN-18 — DSL staging and compiled scene plans.** Specify background
+  selection, character instances and variations, left/center/right groups,
+  alignment, front-to-back order, spacing/overlap and optional per-instance
+  position/scale adjustments. Validate references and lower staging into explicit
+  compiled instructions with pinned saved assets. Exact syntax remains to be
+  designed. Done when the same declarations produce a deterministic scene plan
+  with actionable diagnostics for invalid staging or unavailable assets.
+- [ ] **SF-PLAN-19 — Shared runtime staging and visual presentation.** Track the
+  current background, character instances, selected variations, groups, positions,
+  depth, visibility and scale in runtime state. Render that state in Player and
+  Studio preview using the same presentation behavior. Start with a fixed stage
+  and immediate changes. Preserve staging until explicitly changed; dialogue
+  does not automatically rearrange characters or enlarge the speaker. Done when
+  two characters (one left, one right), three (two left, one right) and five
+  (two left, three right) render with authored overlap and front-to-back order.
+- [ ] **SF-PLAN-20 — Variation consistency and author-controlled sizing.** Support
+  switching saved variations without changing the character instance's scene
+  placement or presentation scale. Use consistently prepared sprite images as
+  the initial asset contract, with matching canvas dimensions, apparent body
+  scale and framing within each compatible variation set. Character height
+  relationships and deliberate close/far/emphasis effects are authored scene
+  choices; do not normalize every character to the same visible height. Done
+  when an expression swap preserves framing and explicit scale adjustments affect
+  only the intended instance without modifying its source image.
+- [ ] **SF-PLAN-21 — Playback independent of Atelier.** Resolve all required
+  images, variations and presentation information from ordinary project assets
+  and the compiled story. Atelier is an artwork/sprite creation tool, not a
+  playback service or required asset resolver. Done when a prepared project plays
+  on a machine without Atelier installed, and Studio previews its existing
+  artwork without opening Atelier or invoking generation/editing providers.
+
+Scene alignment, grouping, overlap, depth, position and scale belong to the DSL,
+compiler, runtime and visual hosts. They are independent of the image-creation
+process. Atelier does not dictate stage positions or group layouts. It can help
+prepare consistent variation images, but playback must not depend on Atelier's
+working documents or private metadata. Begin with a consistent PNG sprite
+contract rather than requiring separate asset registration metadata.
+
+Groups may overlap their members and place characters behind one another. Do not
+force equal spacing, shrink the cast to reveal every complete sprite or require
+every member to be equally visible. Position and scale adjustments are explicit
+presentation choices, separate from visual edits to the assets. Animation and
+elaborate camera movement are outside this first staging delivery.
+
+Acceptance includes variation swaps within an overlapping group, authored
+differences in character height and scale, continued staging across dialogue,
+save/restore of scene state and matching Studio preview/Player output. Run the
+asset-only playback check independently of Atelier and all inference services.
+
+### Agreed asset-linked canvases and seamless saving · 2026-10-28
+
+- [ ] **SF-PLAN-22 — Associate existing canvases with project assets.** Link the
+  current Atelier canvas/artboard to a character, variation, illustration, place,
+  prop or other shared visual item. Open the associated work from the backlog or
+  Studio; allow an Atelier-created canvas to create or select a catalog item.
+  Retain the existing drawing, layer, generation and image-editing tools. Done
+  when the creator can freely work on an asset's canvas from either entry point
+  without duplicate documents or a required sequence of production stages.
+- [ ] **SF-PLAN-23 — Save editable work and its usable image together.** Extend
+  normal Atelier save to persist the linked editable document and materialize
+  the canvas image at its project asset location, including alpha when present.
+  Notify Studio to refresh that asset through SF-PLAN-04/06. Never expose a
+  partially written image; report failed saves and retain recoverable work rather
+  than claiming the asset updated. Done when drawing, editing or extracting a
+  sprite and saving updates Studio automatically, and reopening preserves both
+  the editable canvas and its usable project image.
+
+The canvas is the asset's working surface. There is no mandatory design approval,
+sprite approval, publishing, export or import step between Atelier and Studio.
+The backlog organizes work rather than prescribing a production process. Tools
+for transparency, extraction and consistent variation dimensions are available
+when useful; they are not required stages. Optional model candidate comparison
+does not introduce an asset-level approval gate.
+
+Saved images are ordinary shared-project files. Studio and Player consume those
+files and catalog references without opening Atelier or reading its private
+working documents. Atelier remains unnecessary after artwork has been saved.
+Acceptance covers saving a new character, revising an illustration and saving a
+transparent variation, observing each change in Studio without manual transfer,
+and continuing to use those assets with Atelier closed or uninstalled.
+
+### Agreed local models and Atelier capabilities · 2026-10-28
+
+- [ ] **SF-PLAN-24 — Add MOSS local image generation.** Integrate MOSS alongside
+  Krea 2 and Qwen Image 2.1 through Agentkit's migrated native inference support
+  (SF-PLAN-27), using the shared image contract in SF-PLAN-25.
+  Verify the pinned backend, add the model profile and provisioning for diffusion
+  weights, text encoder, VAE and tokenizer, and expose it in Atelier's model
+  selection. Keep generation/editing support explicit; benchmark the selected
+  checkpoint rather than assuming speed from the model name. Done when a creator
+  can select MOSS, generate into the current asset workflow and switch between
+  local models without changing the canvas or linked story asset.
+- [ ] **SF-PLAN-25 — Expand the shared image capability interface.** Establish
+  Agentkit image contracts during SF-PLAN-27 and represent capabilities and limits
+  per model/deployment: generation/editing,
+  ordered reference inputs, supported masks/local-edit mechanisms, alpha input
+  and output, dimensions and applicable sampling controls including seed, steps
+  and LoRAs. Remove universal restrictions where verified routes support more;
+  validate actual native/hosted wire behavior rather than assuming model-level
+  features are exposed by every provider. Done when callers use one capability
+  contract and supported references, alpha and controls reach the backend without
+  being silently dropped or flattened.
+- [ ] **SF-PLAN-26 — Connect capabilities to Atelier's existing tools.** Expose
+  supported reference inputs, selections/masks, transparent extraction and
+  applicable generation controls within the canvas workflow. Distinguish model
+  guidance from compositing that preserves protected pixels, and distinguish
+  replacing/extracting content from adding an overlay. Preserve transparency
+  through editing and normal project save. Done when a creator can combine
+  character/outfit/pose references on a supported route, edit a selected area,
+  extract a transparent sprite and save it for Studio without manual transfer.
+
+Krea 2 and MOSS serve local generation; Qwen Image 2.1 serves generation, editing
+and transparent extraction. The creator chooses the model in Atelier. Model
+switching retains the current canvas and asset association. Capability-dependent
+tools explain unsupported combinations before queueing; they do not impose a
+production sequence or move image operations into Studio. Additional provider
+models can expose the same tools when their adapters support the capabilities.
+
+### Existing plans to reconcile
+
+The language and prototype UI plans have been consolidated here. Review older
+Studio visual-creation proposals against SF-PLAN-01 before executing them.
+The broader product and UX assessments still need the review tracked below.
+
+- [ ] **SF-PLAN-09 — Reconcile the product backlog.** Review remaining work in
+  [§12](#12-suggested-implementation-order), including re-sync, distribution,
+  persistence, scheduling and generation validation. Move actionable remainders
+  into this checklist with owning apps and evidence; retire superseded proposals.
+- [ ] **SF-PLAN-10 — Design expressive performance and media.** Design speech
+  annotations using real authored scenes: speaker identity, voice version,
+  delivery scopes, timing, events and pronunciation must be typed and
+  source-mapped. Adapt selected performance to FineWineTTS without embedding its
+  backend syntax in the DSL. Define variants, composition, transitions and media
+  durations against the runtime plan. Done when authored intent and exact
+  bindings survive compilation and playback, with unsupported directions reported
+  as readiness blockers rather than silently replaced by neutral performance.
+- [ ] **SF-PLAN-11 — Reconcile UX and workflow follow-ups.** Review outstanding
+  acceptance in [DESIGN.md](../DESIGN.md#8-delivery-order-and-verification), the
+  [development and regression scenarios](development.md)
+  and the prototype acceptance notes below. Verify current behavior before
+  promoting findings into TODOs and assign visual creation work to Atelier.
+- [ ] **SF-PLAN-12 — Extend workspace language tooling.** Add workspace navigation
+  and concrete code actions once the multi-file contract in SF-PLAN-08 is defined.
+  Done when Studio and external editors agree on analysis, rename touches only
+  resolved references, formatting preserves prose/comments and cyclic imports or
+  invalid edits produce bounded, actionable diagnostics.
+- [ ] **SF-PLAN-13 — Specify further language semantics.** Design variables,
+  conditions, expressions and localization with explicit grammar, semantics and
+  fixtures before implementing them. These are not implied by the current DSL.
+  Done when each adopted feature has a documented contract and shared
+  language/compiler/runtime tests.
+
+### Consolidated language and UI implementation notes
+
+The shared lossless front end, recovering AST, UTF-16 positions, diagnostics,
+completion/navigation, single-document LSP, rename, formatting and semantic tokens
+are implemented. The compiler supplies deterministic versioned plans, source
+maps, explicit flow, immutable asset bindings and readiness. Studio persists
+authoritative `.sf` files with conflict handling and scene/beat artwork
+associations. The shared runtime, CLI trace, Studio preview and Player implement
+manual playback and verified save/restore. Current contracts and evidence live in
+[language.md](language.md), [compiler.md](compiler.md),
+[data-model.md](data-model.md) and [runtime.md](runtime.md).
+Project-relative asset paths belong to SF-PLAN-02;
+multi-file analysis belongs to SF-PLAN-08/12.
+
+The earlier UI prototype phases for completion, command entry, Canvas grid,
+detail/inspector and keyboard palette were implemented. Their formerly blocked
+Writer, pending references, origins/backlinks and run-mode work is also
+implemented as recorded in §12. The
+Writer and Canvas prototypes have been removed;
+[DESIGN.md](../DESIGN.md) governs current interactions. Retained principles:
+pending artwork is distinct from syntax failure; descriptions and visual settings
+use appropriate controls; revisions distinguish canon from experiments; commands
+and direct UI use shared operations; Enter submits and Tab completes. Prototype
+implementation instructions and line-number references are superseded.
+
+Acceptance follow-up under SF-PLAN-11: verify command entry, Canvas navigation,
+revision promotion and a complete keyboard-only workflow using the current
+`config/plans/` harness and native UI checks. For language changes, run focused
+language/LSP tests and the repository-required workspace checks; editor caret,
+highlighting and navigation behavior also need interactive verification.
+
+### Supporting design and implementation history
+
+Sections 1–13 preserve the earlier canvas design and feature status. The direction
+above governs new planning where it changes Studio and Atelier responsibilities.
 
 ## 1. Vision recap
 
@@ -376,7 +778,7 @@ Storyfella is a DSL and toolkit for interactive narrative experiences. It is
 not code to integrate. `storyfella-language` owns lexing, parsing, AST and shared
 analysis; `storyfella-lsp` exposes it to external editors. Compiler and runtime
 are independent crates. See [the language contract](language.md)
-and [execution plan](language-plan.md). The sequencer becomes the
+and [central backlog](#0-current-direction-and-actionable-backlog). The sequencer becomes the
 visual-authoring surface for `.sf` projects.
 Three surfaces share one artifact registry:
 
@@ -401,8 +803,8 @@ Decisions:
   error:** `character: mia` where `mia` does not exist is amber with a
   Create affordance, not red. Same information, opposite valence — the story
   reads as a work queue rather than a list of mistakes, and the canvas is
-  the fix surface. (Settled while building the writer; see
-  `docs/design/ui-plan.md` §3.)
+  the fix surface. (Settled while building the writer; see the consolidated UI
+  implementation notes in §0.)
 - **The writer reuses the tokenized-editor primitive** designed for the
   prompt bar (`/op` highlighting, `c:` chips) — one editor component, two
   uses.
@@ -536,11 +938,11 @@ is a visual Dioxus desktop host. Language, compiler,
 LSP and story runtime are implemented as defined in
 [`architecture.md`](architecture.md#storyfella-workspace-boundaries).
 Studio preview and Player share execution, resource checks and controls. Studio
-now edits authoritative `.sf` files; [the language execution plan](language-plan.md)
-tracks the remaining integration and execution work.
+now edits authoritative `.sf` files; §0 tracks remaining language, integration
+and execution work.
 
-**This section is the status tracker for planned work** — every feature we
-plan to ship, with its status; update it when work lands.
+**Existing feature status and implementation history.** Use §0 for new planning;
+SF-PLAN-09 tracks reconciliation of remaining work here with the current direction.
 
 **Atelier relocation: implemented.** `apps/atelier` (`storyfella-atelier`, binary
 `atelier`) is the separate GPUI art app, moved from FineWineTTS with its current
@@ -567,7 +969,7 @@ refresh in Atelier; a setup deep link remains a Clipforge dependency. Actual-pro
 selection quality and complete native/first-user
 acceptance remain. Workspace checks/tests/format and strict Atelier Clippy pass;
 partial isolated macOS checks are recorded in
-[creation workflow](atelier-creation-workflow.md). This entry supersedes the
+[creation workflow](atelier.md). This entry supersedes the
 older Atelier surface descriptions below.
 **Atelier visual refinement (2026-10-24): implemented; partial native acceptance.**
 The drawing dock prioritizes layers with compact contextual controls and disclosed
@@ -632,7 +1034,7 @@ provider, aspect ratio, resolution, and local sampling steps. Drawn and generate
 artboards appear together with compact per-artboard activity summaries. Local Qwen Image 2.1
 generation/editing and Krea 2 Turbo generation are connected through Clipforge;
 actual Linux CUDA inference requires a run on that machine.
-See [iteration acceptance](atelier-iteration-acceptance.md).
+See [iteration acceptance](atelier.md).
 
 **Generation queue: implemented.** The Atelier generation rail queues requests.
 **Add to queue** captures the provider, model, prompt, width, height, sampling
@@ -662,7 +1064,7 @@ collection images together. See [Atelier](atelier.md).
    vocabulary — `LoadImage`/`Checkpoint`/`Generate`/`Llm`; typed intermediates,
    static validation at `build()`, linear fail-fast stacks), and the
    slice-1 op compilers (create, variant, regenerate, compose, draft, modify).
-   — **✅ implemented** (`docs/api-slice-1.md`); the Qwen-Image-2.1 migration
+   — **✅ implemented** (`docs/development.md`); the Qwen-Image-2.1 migration
    removed the mask/inpaint path and made `modify` a reference + grounded
    instruction. Live validation of `modify`/`stack propose` on Linux/CUDA pending
 2. **The CLI (`svs`):** ops, `stack run`/`propose`, `--out` golden runs —
@@ -682,7 +1084,7 @@ collection images together. See [Atelier](atelier.md).
    undo/redo via registry snapshots. Revisions carry a `RevisionOrigin` so
    canon and experiment are distinguishable, and `Promote` (`/describe`) is
    what makes an experiment canonical. The kind-grouped sidebar it replaced
-   was deleted with it. See `docs/design/ui-plan.md`. Artifacts carry an optional default generation size
+   was deleted with it. See the consolidated UI notes in §0. Artifacts carry an optional default generation size
    (`/create … --size WxH`; per-kind defaults otherwise: character 512×768,
    object 768×768, environment/scene/beat 1024×576) that `regenerate`/
    `modify` honor. Visual `create`/`variant` generate the artifact's first
@@ -717,7 +1119,7 @@ collection images together. See [Atelier](atelier.md).
    profile per `sdcpp` provider (`resident` / `lowvram` = `--offload-to-cpu`),
    selectable in Settings → Services and validated at config load; the
    measured tradeoff (lowvram ≈9/16 GiB peak for +7%/+0.5% sampling; `--max-vram`
-   rejected as too costly for edits) is in `docs/runtime-lifecycle.md`. The native
+   rejected as too costly for edits) is in `docs/architecture.md`. The native
    server is owned by the machine's **shared lifecycle owner**
    (`clipforge_inference::control` over one shared state directory), the same one
    Atelier and the Clipforge apps drive, so Studio reuses a resident server rather
@@ -789,7 +1191,7 @@ collection images together. See [Atelier](atelier.md).
    Studio opens/saves authoritative `.sf` files beside project databases.
    Schema v9 exports existing Writer drafts before removing the source column;
    disk conflicts, copy/reload and project pair moves are covered. See
-   [story-files.md](story-files.md). Schema v10 persists source/registry associations.
+   [data-model.md](data-model.md). Schema v10 persists source/registry associations.
    The shared headless runtime and CLI trace are implemented: typed events,
    manual advance/choice/jump/end/pause/restart, bounded automatic transitions,
    imported-plan validation and exact-plan save/restore. See [runtime.md](runtime.md).
@@ -798,7 +1200,7 @@ collection images together. See [Atelier](atelier.md).
    source snapshots/Writer return. The 22-step fixture-backed desktop plan checks
    actual execution. Both hosts now use a minimal widescreen stage with
    location artwork, softly shaded text and choices, and secondary controls
-   in the options panel. See [playback.md](playback.md). Portable image paths,
+   in the options panel. See [runtime.md](runtime.md). Portable image paths,
    packaging/export and expressive media/voice remain planned.
 10. **LSP tooling:** `storyfella-lsp` exposes shared language analysis to
     external editors. — **🔧 single-document tooling implemented.** Stdio, full-document
@@ -867,7 +1269,7 @@ collection images together. See [Atelier](atelier.md).
 
 Design status: the canvas (roadmap item 4) replaced the legacy storyboard
 model — the GUI is the artifact registry; the `svs` CLI shares the same
-`ArtifactRegistry`/`ProjectDb` core (`docs/api-slice-1.md`). Work follows
+`ArtifactRegistry`/`ProjectDb` core (`docs/development.md`). Work follows
 §12 — items 5 (generation quality controls), 6 (LoRA registry), and 7
 (error codes + reporting) are implemented; Studio integration (item 8) was
 deferred by user reprioritization in favor of generation quality, the LoRA

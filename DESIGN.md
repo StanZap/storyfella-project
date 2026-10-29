@@ -182,7 +182,7 @@ readiness, request model choices and ComfyUI mappings. Direct setup navigation
 awaits a Clipforge deep-link contract. Tab closing/reordering now follows the
 project-tab behavior above.
 
-The [audit and acceptance record](docs/atelier-creation-workflow.md) documents the
+The [Atelier reference](docs/atelier.md) documents the
 version-2 upgrade, reused behavior, captured queue destinations and remaining
 native/provider coverage. Source migration, geometry, candidate export exclusion,
 history, multi-project recovery and preflight regressions pass. The workspace
@@ -267,8 +267,7 @@ Hosted provider keys save in the shared `clipforge.toml` through Clipforge's
 atomic, owner-only writer; Studio and Atelier read that shared provider config.
 Linux/Windows native interaction and assistive-technology checks remain unverified.
 
-The follow-up [iteration acceptance](docs/atelier-iteration-acceptance.md)
-completed two further real Replicate edits, including a branch from the original,
+Follow-up iteration acceptance completed two further real Replicate edits, including a branch from the original,
 comparison, naming, full-resolution export and a four-reference saved project.
 The follow-up fixes bind unsent prompts to each source and New image, save them
 in project/recovery files, and restore the active source after restart. Saved
@@ -286,14 +285,11 @@ the 2026-10-07 sweep. The remediation record in §9 describes the implementation
 and its verification through 2026-10-10; the original observations remain in §7.
 Requirements are ongoing review criteria, not a claim of accessibility certification.
 
-[ROADMAP §12](docs/ROADMAP.md#12-suggested-implementation-order) owns delivery
+[ROADMAP §0](docs/ROADMAP.md#0-current-direction-and-actionable-backlog) owns planned delivery
 status. This document owns interaction and presentation rules.
-[The walkthrough](docs/ux-walkthrough.md) supplies authoring scenarios;
-[the power-user guide](docs/studio-power-user-guide.md) documents current workflows
-and the 2026-10-10 follow-up assessment, including still-unimplemented improvements;
-[the earlier UI plan](docs/design/ui-plan.md) records prototype decisions and
-implementation history. If an earlier prototype conflicts with this standard,
-use this standard and update the affected documentation with the implementation.
+[Development](docs/development.md) documents the executable authoring scenarios,
+and [Atelier](docs/atelier.md) documents canvas behavior. Use this standard for
+interaction requirements and keep planned changes in the roadmap.
 
 ## 1. Product principles
 

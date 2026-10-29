@@ -5,7 +5,7 @@
 Studio, Studio core, CLI, the visual Player, xtask, shared playback UI,
 language, compiler, runtime and stdio LSP are workspace members. The Writer
 and LSP consume the same analysis. See [the language contract](language.md)
-and [execution plan](language-plan.md) for implemented scope and next milestones.
+and [central tracker](ROADMAP.md#0-current-direction-and-actionable-backlog) for implemented scope and next milestones.
 
 | Component | Responsibility | Dependency boundary |
 | --- | --- | --- |
@@ -109,7 +109,7 @@ and serves only on loopback; the image provider's `base_url` in the shared
 `clipforge.toml` names both the address the client calls and the port the
 runtime binds. It is started detached and recorded in the machine's shared
 state directory, so Studio, Atelier and the Clipforge apps reuse one server.
-See [`runtime-lifecycle.md`](runtime-lifecycle.md).
+Server lifecycle is described below.
 
 ### The shared inference runtime
 
@@ -274,8 +274,7 @@ look becomes its own artifact.
 
 Rust does not start `sd-server` at app launch; the shell reports it as idle
 until a generation request triggers `ensure_profile_ready` — or until it is
-started manually from the Settings **Services** page (see
-[`runtime-lifecycle.md`](runtime-lifecycle.md)).
+started manually from the Settings **Services** page (see the shared native server lifecycle below).
 
 Only one model can be resident: Qwen-Image-2.1 peaks at ≈23.4 GiB on a 24 GiB
 card, so the planner/LLM cannot run concurrently with a generation. Free VRAM
@@ -316,7 +315,7 @@ builds; Settings can save an absolute override. See
 
 - **The planner lives in `crates/studio-core/src/registry/`.** The typed operation set, the
   pipeline layer, the slash parser, and the `svs` CLI (see
-  `docs/api-slice-1.md`) are implemented; `crates/studio-core/src/llm/` is the client only,
+  `docs/development.md`) are implemented; `crates/studio-core/src/llm/` is the client only,
   driven through `CreativeBackend`. The Canvas free-form composer messages
   are proposed as operation stacks (LLM → closed-vocabulary JSON → approval
   modal → executed through the same worker machinery as slash commands).
@@ -330,3 +329,49 @@ builds; Settings can save an absolute override. See
   limited to `desktop`.
 
 See the [README roadmap](../README.md#roadmap) for the ordered backlog.
+
+## Shared native server lifecycle
+
+The current inference implementation lives in `clipforge-inference`; the planned
+Agentkit migration is SF-PLAN-27 in [the roadmap](ROADMAP.md). Model provisioning,
+process lifecycle and wire-format details remain owned by that dependency.
+
+`control::start` starts a detached process and records its PID in the shared
+state directory. Other front ends reuse it. `control::load` ensures the configured
+model is resident, replacing an owned server with a different model as needed;
+a foreign server is reported rather than silently terminated. `control::stop`
+stops the recorded process. Closing Studio does not stop this shared server.
+Settings → Services and `svs runtime stop` provide explicit control; `--force`
+also handles foreign servers matched by executable and listening port.
+
+`CreativeRuntime` adapts the shared owner, client, deployment and generated-asset
+directory. Readiness checks the capabilities endpoint and loaded profile before
+submission; job waiting reports failures instead of treating HTTP readiness as
+model readiness. `ModelStore` provisions resumable, checksum-verified artifacts;
+explicit weight overrides are respected. Profile residency and VAE tiling belong
+to the provider. Model memory requirements constrain whether image and chat
+servers can share hardware; they are not universal process restrictions.
+
+`paths::state_dir` and `paths::clipforge_config_path` resolve shared state and
+provider configuration. Plan runs isolate configuration, projects and state
+under `.svs-e2e/`; see [development](development.md).
+
+## Registry operations and pipelines
+
+Studio's current Canvas and the `svs` CLI consume the same typed operations from
+`crates/studio-core/src/registry/ops.rs`. The slash parser and completion services
+are views of that vocabulary; frontend code applies mutations through AppState.
+
+Visual create/variant operations generate their first image. Variants reference
+the base image. Modify loads the current image and applies a grounded instruction;
+its current Studio pipeline has no mask-compositing stage. Describe and revert
+change registry state without generation. Draft can propose text or accept manual
+text. Compose records beat artwork relationships rather than editing authored
+scene/beat order. Writer remains the structure editor.
+
+The pipeline builder validates parameter bounds and handle ordering. Execution is
+linear and fail-fast, retaining intermediates and recording failed/cancelled
+revisions. LLM grounding can fall back to a deterministic instruction; draft
+steps can fall back to manual input. Undo restores source/registry state rather
+than rerunning inference. The roadmap replaces Studio's visual creation tools and
+introduces Agentkit workflows; these are future changes, not current behavior.

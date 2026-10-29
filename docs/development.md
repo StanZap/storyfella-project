@@ -13,7 +13,7 @@ cargo run -p storyfella-player -- /absolute/project.sf
 
 Language/compiler/runtime/LSP responsibilities are documented in
 [`architecture.md`](architecture.md#storyfella-workspace-boundaries), and
-[playback.md](playback.md) documents preview, Player inputs and fixtures. Existing CLI and user-data identities
+[runtime.md](runtime.md) documents preview, Player inputs and fixtures. Existing CLI and user-data identities
 remain unchanged. CI checks formatting, all workspace targets and tests, builds
 CLI/Player, and builds and runs Studio's backend-free smoke plan through dx.
 Plan runs keep created projects, generated artwork and cache under `.svs-e2e/`,
@@ -214,7 +214,7 @@ example uses Linux's default). `--cuda-architectures` picks the compute capabili
 
 The launcher passes `--model-args qwen_image_2_1_prefix_cache_type=q8_0` and
 `--diffusion-fa`, and points `--diffusion-model`/`--llm`/`--vae` at the
-profile's three safetensors (see [`runtime-lifecycle.md`](runtime-lifecycle.md)).
+profile's three safetensors (see [`architecture.md`](architecture.md)).
 Provision those weights with `model_setup` (see the CLI tools table below).
 
 ## Run the desktop application
@@ -326,7 +326,7 @@ cargo run -p svs-cli --bin svs -- runtime serve --force   # Ctrl-C to stop
 `--force` kills stale `sd-server` processes from interrupted sessions that hold
 the configured port (7861 by default in the shared `clipforge.toml`). Only the
 `qwen-image-2.1` profile is served. See
-[`runtime-lifecycle.md`](runtime-lifecycle.md).
+[`architecture.md`](architecture.md).
 
 ## Tests
 
@@ -379,7 +379,7 @@ and revision history, and changes a character's settings and canon through
 the composer. Pause, resume, change speed, or stop from the assistant card.
 It ends in the Writer so you can try editing the story yourself.
 Pictures and revision history are fixtures; the render step is explicitly
-simulated. No inference backend is needed. See [ux-walkthrough.md](ux-walkthrough.md)
+simulated. No inference backend is needed. See [development.md](development.md)
 for the review goals and the next UX slices.
 
 | Plan | Needs a backend | Covers |
@@ -455,7 +455,7 @@ managed `llamacpp` provider serves `model_path`.
 | `cargo run -p svs-cli --bin vlm_probe -- --list-models` | List models visible through the LLM endpoint |
 | `cargo run -p svs-cli --bin vlm_probe -- --model <id>` | Run the visual-LLM probe against one model |
 | `cargo run -p svs-cli --example generate_vlm_fixtures` | Regenerate the deterministic probe fixtures |
-| `cargo run -p svs-cli --bin svs -- --help` | Operation CLI (typed ops, stacks, runtime serve, log, eval) — see [`api-slice-1.md`](api-slice-1.md) for the command reference and the light/LLM/generation session split |
+| `cargo run -p svs-cli --bin svs -- --help` | Operation CLI (typed ops, stacks, runtime serve, log, eval) — see [`development.md`](development.md) for the command reference and the light/LLM/generation session split |
 
 `model_setup` provisions into the image provider's model tree: the OS-local
 Storyfella models folder by default, or the explicit `model_dir` override
@@ -681,3 +681,59 @@ written) or remove one the shared file defines.
   matches its `/v1` endpoint (planning uses `text`, `svs eval` uses `vision`).
   A managed `llamacpp` provider must have `model_path` (and `mmproj` for vision)
   on disk.
+
+## Operation CLI reference
+
+The current Studio registry operations are also available through `svs`. Commands
+that generate images require a configured image deployment; source analysis and
+playback do not start inference. Consult `svs --help` and subcommand help for the
+complete current argument surface.
+
+```sh
+svs --project p.db project p.db                       # load or create (SQLite registry)
+svs --project p.db op create character "Mia, a lighthouse keeper" --name mia
+svs --project p.db op create scene "The kitchen at dusk" --name kitchen
+svs --project p.db op create object "an antique brass lantern" --name lantern --size 768x768
+svs --project p.db op compose c:<scene> "Mia lights the lantern" --background c:<env> --layer c:<char>
+svs --project p.db op variant c:<char> "in rain gear" --axis outfit
+svs --project p.db op regenerate c:<char> "make it warmer" --seed 42 --steps 25 --size 1024x1536 --out golden/
+svs --project p.db op draft c:<story> "write the opening"          # LLM + approval checkpoint
+svs --project p.db op draft c:<story> "write the opening" --text "…"   # manual, no checkpoint
+svs --project p.db op modify c:<char> "give her a short bob haircut"   # instruction edit
+svs --project p.db op describe c:<char> "Mia, a lighthouse keeper, short bob"  # make an edit canonical
+svs --project p.db op revert c:<char>                                # re-activate the previous image
+svs --project p.db stack run stack.json --approve auto             # the VLLM contract test bed
+svs --project p.db stack propose "Add a rainy variant of the kitchen scene"   # LLM → JSON
+svs --project p.db runtime serve --force                           # resident generation server
+svs eval -i image.png -p "answer YES or NO: …"                     # LLM vision judge
+svs --project p.db log [c:<ref>]
+```
+
+`create --size WxH` sets the artifact's default generation size (kind
+defaults otherwise: character 512×768, object 768×768, environment/scene/beat
+1024×576; the platform `studio.toml` is created with character at 1024×1536);
+`regenerate`/`modify` honor it, and `--size`/`--steps` on those
+commands override it per run. Variants inherit the base artifact's size.
+`create`/`variant` of visual kinds generate the first image at that size as
+part of the op (so they need the generation backend — see the table below);
+variants use the base's active image as the reference.
+
+`describe` rewrites an artifact's canonical description; `revert` re-activates
+its previous completed image (the newest revision made before the current one).
+Neither renders anything: both are registry mutations, so they need no
+backend. `revert` never deletes — the revision reverted from stays in the
+history and can be re-activated from the canvas.
+
+`--approve auto|interactive` (default interactive) resolves checkpoints;
+`--out <dir>` drops every intermediate image into a folder for human review —
+the manual golden-run tier. `stack run` persists already-applied ops even
+when a later op fails (fail-fast, intermediates kept).
+
+## Vision probe output
+
+`cargo run -p svs-cli --bin vlm_probe -- --help` lists model selection, endpoint,
+fixture and output options. Keep new results in `.svs-e2e/` by passing
+`--output .svs-e2e/vision-probe`; the current binary's default output location
+still points to the former proof-of-concept directory. Probe fixtures are under
+`apps/cli/tests/fixtures/vlm`. Results measure the selected models and fixtures,
+not general visual reasoning or artwork fidelity.

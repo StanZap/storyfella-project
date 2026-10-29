@@ -60,8 +60,8 @@ The File menu exposes those actions too. Closing all tabs returns to Projects;
 Library stays available without a project. Tab order survives restart.
 Version-2 saves distinguish artboard layers, pending
 AI candidates and references; existing projects upgrade on load. See the
-[audit and creation workflow](../../docs/atelier-creation-workflow.md) for exact
-migration/recovery behavior and remaining acceptance work.
+[Atelier reference](../../docs/atelier.md) for document storage, selection behavior
+and project recovery.
 
 ## Generation setup
 
