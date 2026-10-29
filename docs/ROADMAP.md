@@ -28,6 +28,42 @@ streaming presentation, not domain code to copy into Storyfella.
   consumers share one inference implementation, local Qwen/Krea and existing
   hosted routes still work, and Storyfella needs no installed/running Clipforge
   app for inference. Hosted-only consumers must not require local model setup.
+  - [x] Extract native Qwen/Krea profiles, sdcpp client, LoRA discovery,
+    verified model provisioning and process supervisor into optional
+    `agentkit-ai::native` (`native-inference` feature). Update Studio, Atelier,
+    CLI and Clipforge callers to use the public Agentkit types; remove the
+    superseded source from Clipforge.
+    Evidence (2026-10-29): Storyfella workspace tests and all-target checks;
+    Clipforge `cargo xtask check`; Agentkit AI native-feature tests and public
+    wire-contract test (source bytes, seed, steps, LoRAs, returned bytes); separate
+    hosted-only build with native inference disabled. Live model generation is
+    not verified by this extraction. The subsequent consolidation also fixes
+    the previously recorded Gemini/HTTP lint findings; strict Agentkit Clippy passes.
+    Logs: `.svs-e2e/migration/`.
+  - [x] Consolidate deployment resolution, shared process controls/markers,
+    llama lifecycle and hosted image adapters in Agentkit. Remove the
+    `clipforge-inference` crate and update every application consumer. Keep
+    config/state identities in the apps, preserving the existing TOML keys,
+    credentials and model files. Studio's planner and Clipforge text/vision
+    consumers reuse Agentkit's existing chat transport, including structured
+    generation controls and tool-message replay. Hosted image models also bind
+    through the existing ProviderFactory/ProviderRouter and credential resolver.
+    Clipforge's media analyzer also uses that transport; its obsolete blocking
+    HTTP client is removed. Atelier validates before server startup and loads
+    selected owned models while preserving foreign servers. Native job polling
+    respects its deadline even when a server accepts but never answers.
+    Evidence (2026-10-29): Storyfella workspace tests, planner-host wire test and
+    all-target checks; Clipforge `cargo xtask ci` including analyzer-host tests
+    and both MCP transports; Agentkit native/core tests, hosted-only tests,
+    strict Clippy and runtime/workflow/eval consumer checks. Shared HTTP tracing
+    excludes endpoint credentials, queries, fragments and raw transport errors.
+  - [ ] Complete live acceptance on a supported native inference machine and
+    configured hosted routes: Qwen generation/editing, Krea generation, model
+    switching/reuse, cancellation and saved output. Offline tests establish
+    protocol preservation and application binding, not generated-image quality.
+    Live evidence (2026-10-29, user-reported): Atelier image generation and
+    editing both work through Replicate; project persistence also works.
+    Native Qwen/Krea, model switching/reuse and cancellation remain unverified.
 - [ ] **SF-PLAN-28 — Integrate Agentkit workflows as an application foundation.**
   Depend on Agentkit's workflow/session APIs and supply Storyfella-owned context,
   domain tools, model bindings, durable run storage and UI event handling. Build
@@ -37,6 +73,25 @@ streaming presentation, not domain code to copy into Storyfella.
   project saving in their owning apps. Done when a Studio writing workflow and
   an Atelier asset-iteration workflow run through public Agentkit contracts with
   responsive feedback, cancellation and no duplicated framework execution loop.
+- [ ] **SF-PLAN-29 — Controlled model downloads through Agentkit.** Extend
+  Agentkit's model provisioning with typed download state, progress events and
+  explicit Pause, Resume and Cancel controls. Report current-file and aggregate
+  bytes, totals and verification state; expose transfer rate/ETA only when known.
+  Pausing releases the active network request and retains partial files; resuming
+  continues safely from disk, including after an app restart. Cancellation stops
+  transfer/verification promptly, retains partials by default and preserves
+  completed verified files. Discarding partial files is a separate explicit
+  action. Validate range responses and handle servers ignoring ranges,
+  already-complete partial files, checksum failures and disk/write errors without
+  accepting corrupt artifacts or silently appending incompatible data. Apps own
+  the controls and presentation and consume this one framework implementation.
+  Done when a real host shows progress and can pause/resume/cancel a model
+  download without exiting, restart and resume retained work, and recover from
+  failed transfers. Cover stalled connections, interruption, range handling,
+  verification and cancellation with offline protocol tests. Current provisioning
+  already reports per-file progress and can recover partial downloads on rerun;
+  it has no explicit pause/resume/cancel API. Starting Qwen generation in Atelier
+  does not automatically provision missing model weights.
 
 **Delivery order:** start SF-PLAN-27 early, before expanding the former Clipforge
 inference implementation. Establish the image contract in SF-PLAN-25 as part of
@@ -72,8 +127,9 @@ requires runtime intelligence and latency investigation; ordinary authored
 playback stays independent of inference, and neither mode requires Atelier.
 Detailed scope and delivery priority remain to be decided after the foundation.
 
-Today inference is implemented in Clipforge and consumed by Storyfella. The
-ownership table above is the agreed target, not a claim that migration has landed.
+Inference execution and deployment management now live in Agentkit. Application
+configuration, prompts, domain tools, result persistence and UI remain app-owned.
+SF-PLAN-27 records the implemented migration and remaining live acceptance.
 
 ### Studio for writing, Atelier for visual creation · 2026-10-28
 
@@ -324,6 +380,18 @@ and continuing to use those assets with Atelier closed or uninstalled.
   features are exposed by every provider. Done when callers use one capability
   contract and supported references, alpha and controls reach the backend without
   being silently dropped or flattened.
+  - [x] Add per-route operation, reference-count, mask, dimensions, sampling and
+    alpha metadata. Share queue preflight with execution; reject unsupported
+    seed, steps, LoRAs and alpha requirements before submission. Remove the
+    universal reference-count limit; each route supplies its verified limit.
+    Expose ImageModel and hosted image construction through Agentkit's normal
+    provider configuration and credential resolver. Native seed mapping is
+    retained; known hosted routes retain ordered references and mask pixels.
+  - [ ] Verify additional native reference/mask/alpha behavior against the
+    served backend before advertising it. Native alpha input and transparent
+    output remain explicitly unverified; the current native route accepts one
+    source and no mask. Hosted controls without verified wire mappings remain
+    unavailable. SF-PLAN-26 owns exposing additional controls in Atelier.
 - [ ] **SF-PLAN-26 — Connect capabilities to Atelier's existing tools.** Expose
   supported reference inputs, selections/masks, transparent extraction and
   applicable generation controls within the canvas workflow. Distinguish model

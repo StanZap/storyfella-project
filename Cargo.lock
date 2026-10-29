@@ -110,6 +110,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentkit-ai"
+version = "0.1.0"
+dependencies = [
+ "agentkit-core",
+ "async-trait",
+ "base64 0.23.0",
+ "futures-util",
+ "image",
+ "parking_lot",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "toml 1.1.4+spec-1.1.0",
+ "toml_edit 0.25.13+spec-1.1.0",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "agentkit-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1116,27 +1148,6 @@ name = "clap_lex"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
-
-[[package]]
-name = "clipforge-inference"
-version = "0.1.0"
-dependencies = [
- "base64 0.23.0",
- "directories",
- "futures-util",
- "image",
- "parking_lot",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "toml 1.1.4+spec-1.1.0",
- "toml_edit 0.25.13+spec-1.1.0",
- "url",
-]
 
 [[package]]
 name = "cmake"
@@ -3407,7 +3418,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.19",
- "windows 0.61.3",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -3869,7 +3880,7 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "sync_wrapper",
- "system-configuration 0.6.1",
+ "system-configuration",
  "tokio",
  "tokio-rustls",
  "tokio-socks",
@@ -4388,6 +4399,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -4408,11 +4420,9 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "socket2",
- "system-configuration 0.7.0",
  "tokio",
  "tower-service",
  "tracing",
- "windows-registry 0.6.1",
 ]
 
 [[package]]
@@ -4427,7 +4437,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.61.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -7565,17 +7575,15 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "reqwest"
-version = "0.13.5"
+version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
+checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
- "base64 0.23.0",
+ "base64 0.22.1",
  "bytes",
- "encoding_rs",
  "futures-channel",
  "futures-core",
  "futures-util",
- "h2",
  "http",
  "http-body",
  "http-body-util",
@@ -7584,7 +7592,49 @@ dependencies = [
  "hyper-util",
  "js-sys",
  "log",
- "mime",
+ "mime_guess",
+ "percent-encoding",
+ "pin-project-lite",
+ "quinn",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sync_wrapper",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "tower-service",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-streams 0.4.2",
+ "web-sys",
+ "webpki-roots",
+]
+
+[[package]]
+name = "reqwest"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
+dependencies = [
+ "base64 0.23.0",
+ "bytes",
+ "futures-channel",
+ "futures-core",
+ "futures-util",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "js-sys",
+ "log",
  "percent-encoding",
  "pin-project-lite",
  "quinn",
@@ -8637,10 +8687,10 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 name = "storyfella-atelier"
 version = "0.1.0"
 dependencies = [
+ "agentkit-ai",
  "anyhow",
  "base64 0.23.0",
  "block2 0.6.2",
- "clipforge-inference",
  "core-foundation 0.10.1",
  "core-video",
  "gpui-kit",
@@ -8649,7 +8699,7 @@ dependencies = [
  "metal",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
- "reqwest",
+ "reqwest 0.13.5",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -8726,8 +8776,8 @@ dependencies = [
 name = "storyfella-studio"
 version = "0.1.0"
 dependencies = [
+ "agentkit-ai",
  "anyhow",
- "clipforge-inference",
  "dioxus",
  "futures-util",
  "image",
@@ -8751,20 +8801,21 @@ dependencies = [
 name = "storyfella-studio-core"
 version = "0.1.0"
 dependencies = [
+ "agentkit-ai",
+ "agentkit-core",
  "anyhow",
  "base64 0.23.0",
- "clipforge-inference",
  "directories",
  "futures-util",
  "image",
  "parking_lot",
- "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
  "storyfella-compiler",
  "storyfella-language",
  "storyfella-runtime",
+ "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "toml 1.1.4+spec-1.1.0",
@@ -8982,10 +9033,10 @@ dependencies = [
 name = "svs-cli"
 version = "0.1.0"
 dependencies = [
+ "agentkit-ai",
  "anyhow",
  "base64 0.23.0",
  "clap",
- "clipforge-inference",
  "image",
  "serde",
  "serde_json",
@@ -9091,17 +9142,6 @@ name = "system-configuration"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c879d448e9d986b661742763247d3693ed13609438cf3d006f51f5368a5ba6b"
-dependencies = [
- "bitflags 2.13.1",
- "core-foundation 0.9.4",
- "system-configuration-sys",
-]
-
-[[package]]
-name = "system-configuration"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a13f3d0daba03132c0aa9767f98351b3488edc2c100cda2d2ec2b04f3d8d3c8b"
 dependencies = [
  "bitflags 2.13.1",
  "core-foundation 0.9.4",
@@ -9417,7 +9457,6 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",
@@ -10432,6 +10471,15 @@ name = "webpki-root-certs"
 version = "1.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b96554aa2acc8ccdb7e1c9a58a7a68dd5d13bccc69cd124cb09406db612a1c9b"
+dependencies = [
+ "rustls-pki-types",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "1.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5f280bbb2b287bc8e7de7e3852945a0ff50d1bbcb5ed42b6c7a568c546df171"
 dependencies = [
  "rustls-pki-types",
 ]

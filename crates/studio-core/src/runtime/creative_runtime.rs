@@ -1,8 +1,8 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use clipforge_inference::control::{self, ControlError, Managed, ServerState};
-use clipforge_inference::sd::{Client, ClientError, JobSubmission, Residency};
-use clipforge_inference::ImageDeployment;
+use agentkit_ai::deployments::ImageDeployment;
+use agentkit_ai::native::control::{self, ControlError, Managed, ServerState};
+use agentkit_ai::native::sd::{Client, ClientError, JobSubmission, Residency};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -19,12 +19,12 @@ const JOB_DEADLINE: Duration = Duration::from_secs(1200);
 /// images are stored in.
 ///
 /// The process itself is owned by the **shared lifecycle owner** — the
-/// `clipforge_inference::control` helpers over one shared state directory — not
+/// `agentkit_ai::native::control` helpers over one shared state directory — not
 /// by this object. Storyfella, Atelier and the Clipforge apps all drive that
 /// owner, so a server one front end started is reused by the others instead of
 /// a second process being launched on the same port. Starting a server
 /// therefore writes a marker this app can see from a later process (see
-/// [`clipforge_inference::servers`]), and it is detached: it outlives the app.
+/// [`agentkit_ai::native::servers`]), and it is detached: it outlives the app.
 #[derive(Clone)]
 pub struct CreativeRuntime {
     client: Client,

@@ -1171,7 +1171,7 @@ mod tests {
     impl crate::registry::pipeline::GenerationBackend for VisualBackend {
         fn generate(
             &self,
-            request: &clipforge_inference::sd::GenerateRequest,
+            request: &agentkit_ai::native::sd::GenerateRequest,
         ) -> futures_util::future::BoxFuture<
             '_,
             Result<
@@ -1215,8 +1215,8 @@ mod tests {
         let defaults = GenerationDefaults {
             sizes: Default::default(),
             steps: 25,
-            cfg_scale: clipforge_inference::sd::DEFAULT_CFG_SCALE,
-            sample_method: clipforge_inference::sd::DEFAULT_SAMPLE_METHOD.to_owned(),
+            cfg_scale: agentkit_ai::native::sd::DEFAULT_CFG_SCALE,
+            sample_method: agentkit_ai::native::sd::DEFAULT_SAMPLE_METHOD.to_owned(),
             loras: crate::registry::LoraBindings {
                 dir: lora_dir,
                 ..Default::default()

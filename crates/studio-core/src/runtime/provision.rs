@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use clipforge_inference::{DownloadProgress, ModelStore, ModelStoreError};
+use agentkit_ai::native::{DownloadProgress, ModelStore, ModelStoreError};
 
 use crate::config::AppConfig;
 

@@ -181,7 +181,7 @@ async fn main() -> Result<()> {
             &base_url,
             model,
             Duration::from_secs(args.timeout_seconds),
-        )?;
+        );
         for fixture in FIXTURES {
             println!("probing {model} with {}...", fixture.name);
             results.push(probe_fixture(&client, model, fixture, &args, &response_format).await);
@@ -210,7 +210,7 @@ async fn list_models(config: &AppConfig, base_url: &str, timeout_seconds: u64) -
         .context("no `text` provider is configured")?;
     deployment.base_url = base_url.to_owned();
     deployment.timeout = Duration::from_secs(timeout_seconds);
-    let mut ids = clipforge_inference::chat::Client::new(deployment)
+    let mut ids = agentkit_ai::deployments::chat::Client::new(deployment)
         .list_models()
         .await
         .context("list models from the endpoint")?;
@@ -221,19 +221,13 @@ async fn list_models(config: &AppConfig, base_url: &str, timeout_seconds: u64) -
     Ok(())
 }
 
-fn client_for(
-    config: &AppConfig,
-    base_url: &str,
-    model: &str,
-    timeout: Duration,
-) -> Result<LlmClient> {
+fn client_for(config: &AppConfig, base_url: &str, model: &str, timeout: Duration) -> LlmClient {
     LlmClient::new(LlmConfig {
         base_url: base_url.to_owned(),
         model: model.to_owned(),
         api_key: config.planner_config().and_then(|config| config.api_key),
         timeout,
     })
-    .context("construct the LLM client")
 }
 
 async fn probe_fixture(

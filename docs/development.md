@@ -86,13 +86,11 @@ Its Metal surface renderer uses the pinned patch in `vendor/gpui-pre-apple`;
 keep that source and its licenses with the workspace. See [Atelier](atelier.md).
 
 The native-inference runtime is **not** owned by this workspace: it is the
-sibling `clipforge` project's crate, package **`clipforge-inference`**, pulled in
-as a **path dependency** (`clipforge-inference = { path = "../clipforge/crates/inference" }`
-in the root `[workspace.dependencies]`). It owns the `sd-server` process,
-the `sdcpp` client, the served profile, and model provisioning. The sibling
-checkout must be present at `../clipforge/crates/inference` or the workspace will
-not build; the crate is not a member here, so `cargo test --workspace` does not
-run its tests.
+shared `agentkit-ai` crate at
+`../../zerune_labs/agentkit/crates/agentkit-ai`. Native profiles, provisioning,
+HTTP clients, provider resolution and lifecycle controls are exposed through
+its `native-inference` feature. That checkout must be present; no Clipforge
+crate or installed Clipforge application is required.
 
 `apps/vision` was the Python vision runtime; it was removed with the Krea/SAM
 migration — the project is pure Rust plus the native `sd-server`. `config/` — the
@@ -343,7 +341,7 @@ in the CLI binaries, and 1 in xtask (231 total). They cover state transitions
 (`crates/studio-core/src/llm/`). They do not require a running `sd-server` or an LLM
 endpoint.
 The `sdcpp` wire serialization tests (request body + job decoding) live in the
-shared `clipforge-inference` crate (`../clipforge/crates/inference/src/sd/`) and
+shared `agentkit-ai` crate (`native::sd`) and
 are not part of this workspace's run. `cargo xtask test` runs the same command.
 
 ### End-to-end: plans (the app's own regression suite)
@@ -495,7 +493,7 @@ to defaults. The keys below are app settings unless the note says otherwise.
 
 The **shared native-server state directory** (process markers and detached-server
 logs) is not a `paths.*` key: it always resolves to
-`clipforge_inference::config::default_state_dir()` (on Linux
+`storyfella_studio_core::ai_config::default_state_dir()` (on Linux
 `~/.local/share/clipforge`), overridable with `$SVS_STATE_DIR` for tests and
 hermetic `--plan` runs. It is the same directory Atelier and the Clipforge apps
 use, so one resident server is shared.
@@ -543,13 +541,13 @@ path.
 The **shared AI config** — the `[defaults]` capability map and the
 `[providers.<id>]` registry — lives in the machine's `clipforge.toml`, resolved by
 `storyfella_studio_core::paths::clipforge_config_path()` (via
-`clipforge_inference::config::default_config_path()`; Linux
+`storyfella_studio_core::ai_config::default_config_path()`; Linux
 `~/.config/clipforge/clipforge.toml`), overridable with `$SVS_AI_CONFIG`. It is the
 machine's single provider registry, shared verbatim by Storyfella Studio, Atelier
 and Clipforge, so a provider edit is visible to every front end. When the file is
 absent, `AppConfig::load()` creates it with Storyfella's defaults and never
 overwrites an existing one. `crates/studio-core/src/config.rs` validates it
-through the shared `clipforge_inference::Providers` registry: the image backend —
+through the shared `agentkit_ai::deployments::Providers` registry: the image backend —
 the `sd-server` executable, model tree, LoRA root, endpoint, and weights — is
 resolved to a provider and kept on `AppConfig::image`, and `text`/`vision` resolve
 to `AppConfig::text`/`vision`. The LoRA root shown in Settings is the provider's

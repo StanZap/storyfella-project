@@ -828,7 +828,7 @@ impl std::error::Error for ReportedError {}
 /// runtime adapter's, so a failure is coded identically whether it is wrapped in
 /// [`crate::runtime::CreativeRuntimeError`] or surfaced directly (the CLI's
 /// `runtime serve` path).
-impl CodedError for clipforge_inference::sd::RuntimeError {
+impl CodedError for agentkit_ai::native::sd::RuntimeError {
     fn code(&self) -> ErrorCode {
         match self {
             Self::AlreadyRunning => ErrorCode::RuntimeGenerationAlreadyRunning,
@@ -844,7 +844,7 @@ impl CodedError for clipforge_inference::sd::RuntimeError {
     }
 }
 
-impl CodedError for clipforge_inference::ModelStoreError {
+impl CodedError for agentkit_ai::native::ModelStoreError {
     fn code(&self) -> ErrorCode {
         match self {
             Self::CreateDirectory { .. } => ErrorCode::RuntimeModelCreateDirectory,
@@ -858,7 +858,7 @@ impl CodedError for clipforge_inference::ModelStoreError {
     }
 }
 
-impl CodedError for clipforge_inference::sd::ClientError {
+impl CodedError for agentkit_ai::native::sd::ClientError {
     fn code(&self) -> ErrorCode {
         match self {
             Self::Request(_) => ErrorCode::GenRequest,
@@ -870,31 +870,30 @@ impl CodedError for clipforge_inference::sd::ClientError {
     }
 }
 
-/// The shared chat client's errors (`clipforge_inference::chat`). The planner,
+/// The shared chat client's errors (`agentkit_ai::deployments::chat`). The planner,
 /// vision and model-list surfaces all reach the endpoint through this client, so
 /// their failures carry the same codes wherever they surface.
-impl CodedError for clipforge_inference::chat::ChatError {
+impl CodedError for agentkit_ai::deployments::chat::ChatError {
     fn code(&self) -> ErrorCode {
         match self {
-            Self::Request(_) | Self::Empty => ErrorCode::LlmRequest,
-            Self::Status { .. } => ErrorCode::LlmStatus,
+            Self::Framework(_) | Self::Empty => ErrorCode::LlmRequest,
         }
     }
 }
 
-/// The shared lifecycle owner's errors (`clipforge_inference::control`): a
+/// The shared lifecycle owner's errors (`agentkit_ai::native::control`): a
 /// managed image/chat server's start/stop failure, a marker write/kill, or a
 /// registry problem. Coded here so a start/stop surfaced through Studio carries
 /// the same code as one surfaced through the CLI.
-impl CodedError for clipforge_inference::control::ControlError {
+impl CodedError for agentkit_ai::native::control::ControlError {
     fn code(&self) -> ErrorCode {
         match self {
             Self::Image(error) => error.code(),
             Self::Chat(_) => ErrorCode::LlmServer,
-            Self::Marker(clipforge_inference::servers::MarkerError::Write { .. }) => {
+            Self::Marker(agentkit_ai::native::servers::MarkerError::Write { .. }) => {
                 ErrorCode::RuntimeGenerationStart
             }
-            Self::Marker(clipforge_inference::servers::MarkerError::Kill { .. }) => {
+            Self::Marker(agentkit_ai::native::servers::MarkerError::Kill { .. }) => {
                 ErrorCode::RuntimeGenerationStop
             }
             Self::Provider(_) => ErrorCode::ConfigProviders,
@@ -978,10 +977,10 @@ mod tests {
     }
 
     /// A native server that exits before it answers maps to its own code, not
-    /// the generic start/readiness ones — `clipforge-inference` grew the variant.
+    /// the generic start/readiness ones — Agentkit distinguishes startup exit.
     #[test]
     fn an_exited_generation_server_has_its_own_code() {
-        let error = clipforge_inference::sd::RuntimeError::Exited {
+        let error = agentkit_ai::native::sd::RuntimeError::Exited {
             reason: "sd-server exited before it became ready".to_owned(),
         };
         assert_eq!(error.report().code, ErrorCode::RuntimeServerExited);

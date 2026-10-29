@@ -109,7 +109,7 @@ pub fn project_dirs() -> Option<ProjectDirs> {
 
 /// The machine's shared AI configuration file — `clipforge.toml` at the
 /// platform location every front end resolves
-/// (`clipforge_inference::config::default_config_path()`; on Linux
+/// (`crate::ai_config::default_config_path()`; on Linux
 /// `~/.config/clipforge/clipforge.toml`). It is created with Storyfella's
 /// defaults on first load when absent (see `config::load`).
 ///
@@ -123,12 +123,12 @@ pub fn clipforge_config_path() -> Option<PathBuf> {
             return Some(path);
         }
     }
-    clipforge_inference::config::default_config_path()
+    crate::ai_config::default_config_path()
 }
 
 /// The shared native-server state directory — process markers and detached-server
 /// logs at the platform location every front end resolves
-/// (`clipforge_inference::config::default_state_dir()`; on Linux
+/// (`crate::ai_config::default_state_dir()`; on Linux
 /// `~/.local/share/clipforge`). One directory for the machine, so a server one
 /// front end started is found and reused by the others rather than a second one
 /// being launched.
@@ -143,7 +143,7 @@ pub fn state_dir() -> Option<PathBuf> {
             return Some(path);
         }
     }
-    clipforge_inference::config::default_state_dir()
+    crate::ai_config::default_state_dir()
 }
 
 /// Large model files belong in local application data, never roaming config,
@@ -256,10 +256,7 @@ mod tests {
             return; // an explicit override is the user's choice; nothing to assert
         }
         let path = clipforge_config_path().expect("the platform exposes a config directory");
-        assert_eq!(
-            path,
-            clipforge_inference::config::default_config_path().unwrap()
-        );
+        assert_eq!(path, crate::ai_config::default_config_path().unwrap());
         #[cfg(target_os = "linux")]
         assert!(path.ends_with("clipforge/clipforge.toml"), "{path:?}");
     }
@@ -270,10 +267,7 @@ mod tests {
             return; // an explicit override is the user's choice; nothing to assert
         }
         let path = state_dir().expect("the platform exposes a data directory");
-        assert_eq!(
-            path,
-            clipforge_inference::config::default_state_dir().unwrap()
-        );
+        assert_eq!(path, crate::ai_config::default_state_dir().unwrap());
         assert!(path.is_absolute(), "{path:?}");
     }
 }

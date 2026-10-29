@@ -1,6 +1,6 @@
+use agentkit_ai::native::ModelStore;
 use anyhow::{Context, Result};
 use clap::Parser;
-use clipforge_inference::ModelStore;
 use storyfella_studio_core::config::AppConfig;
 
 #[derive(Debug, Parser)]

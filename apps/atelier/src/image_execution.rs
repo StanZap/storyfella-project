@@ -3,9 +3,9 @@ use crate::{
     document::{self, Reference},
     providers::{self, Provider, Request},
 };
+use agentkit_ai::images::{ApiKey, Client, HostedDeployment, Request as ImageRequest};
 use anyhow::{ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use clipforge_inference::images::{ApiKey, Client, HostedDeployment, Request as ImageRequest};
 
 pub fn generate(request: Request) -> Result<Reference> {
     let provider = request.settings.provider;
@@ -46,19 +46,21 @@ pub fn generate(request: Request) -> Result<Reference> {
         .map(|r| STANDARD.decode(&r.image))
         .collect::<std::result::Result<Vec<_>, _>>()?;
     image_request.mask = request.mask.as_ref().map(|mask| mask.png()).transpose()?;
-    image_request.steps = request.settings.steps;
-    image_request.loras = request
-        .settings
-        .loras
-        .iter()
-        .map(|lora| clipforge_inference::sd::LoraSelection {
-            path: lora.name.clone(),
-            multiplier: lora.multiplier,
-        })
-        .collect();
+    if provider.native_architecture().is_some() {
+        image_request.steps = request.settings.steps;
+        image_request.loras = request
+            .settings
+            .loras
+            .iter()
+            .map(|lora| agentkit_ai::capabilities::images::LoraSelection {
+                path: lora.name.clone(),
+                multiplier: lora.multiplier,
+            })
+            .collect();
+    }
     image_request.cancel = request.cancel;
     image_request.progress = request.progress;
-    // The GPUI worker owns its runtime; Clipforge remains async and UI-independent.
+    // The GPUI worker owns its runtime; Agentkit remains async and UI-independent.
     let output = if let Some(deployment) = deployment {
         let key = ApiKey::new(providers::api_key(provider)?)?;
         let runtime = tokio::runtime::Builder::new_current_thread()

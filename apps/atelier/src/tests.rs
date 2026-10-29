@@ -661,7 +661,7 @@ fn source_bound_prompt_drafts_survive_project_and_recovery_writes() {
 #[test]
 fn native_profiles_resolve_paths_capabilities_and_reject_wrong_routes() {
     let directory = temporary("native-providers");
-    let providers = clipforge_inference::Providers::from_toml(
+    let providers = agentkit_ai::deployments::Providers::from_toml(
         r#"
 [providers.qwen]
 kind = "sdcpp"
@@ -693,7 +693,7 @@ executable = "runtime/sd-server"
         assert_eq!(deployment.executable, directory.join("runtime/sd-server"));
         assert_eq!(
             deployment.residency,
-            clipforge_inference::sd::Residency::LowVram
+            agentkit_ai::native::sd::Residency::LowVram
         );
     }
     settings.provider = Provider::KreaNative;
@@ -1390,7 +1390,7 @@ fn settings_save_reports_failures_without_claiming_success() {
 }
 #[test]
 fn shared_provider_config_supplies_hosted_image_credentials() {
-    let registry = clipforge_inference::Providers::from_toml(
+    let registry = agentkit_ai::deployments::Providers::from_toml(
         r#"
             [defaults]
             t2i = "replicate-image"
@@ -1416,7 +1416,7 @@ fn shared_provider_config_supplies_hosted_image_credentials() {
         Some("replicate-from-shared-config")
     );
 
-    let environment_registry = clipforge_inference::Providers::from_toml(
+    let environment_registry = agentkit_ai::deployments::Providers::from_toml(
         r#"
             [defaults]
             t2i = "replicate-image"

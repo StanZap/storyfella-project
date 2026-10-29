@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
-use clipforge_inference::sd::LoraSelection;
+use agentkit_ai::capabilities::images::LoraSelection;
 
 use crate::errors::{CodedError, ErrorCode, ReportedError};
 
@@ -1630,7 +1630,7 @@ mod tests {
 
     use super::*;
     use crate::registry::pipeline::Decision;
-    use clipforge_inference::sd::{DEFAULT_CFG_SCALE, DEFAULT_SAMPLE_METHOD};
+    use agentkit_ai::native::sd::{DEFAULT_CFG_SCALE, DEFAULT_SAMPLE_METHOD};
 
     /// A fresh temp folder for generated asset paths in tests (the pipeline
     /// checks reference images exist on disk).
@@ -3065,7 +3065,7 @@ mod tests {
     impl GenerationBackend for DraftBackend {
         fn generate(
             &self,
-            _request: &clipforge_inference::sd::GenerateRequest,
+            _request: &agentkit_ai::native::sd::GenerateRequest,
         ) -> futures_util::future::BoxFuture<
             '_,
             Result<crate::registry::pipeline::GenerateResponse, PipelineError>,
@@ -3084,7 +3084,7 @@ mod tests {
     /// image path for every generate call.
     struct VisualBackend {
         generated: PathBuf,
-        requests: Mutex<Vec<clipforge_inference::sd::GenerateRequest>>,
+        requests: Mutex<Vec<agentkit_ai::native::sd::GenerateRequest>>,
     }
 
     impl VisualBackend {
@@ -3095,7 +3095,7 @@ mod tests {
             }
         }
 
-        fn requests(&self) -> Vec<clipforge_inference::sd::GenerateRequest> {
+        fn requests(&self) -> Vec<agentkit_ai::native::sd::GenerateRequest> {
             self.requests.lock().unwrap().clone()
         }
     }
@@ -3103,7 +3103,7 @@ mod tests {
     impl GenerationBackend for VisualBackend {
         fn generate(
             &self,
-            request: &clipforge_inference::sd::GenerateRequest,
+            request: &agentkit_ai::native::sd::GenerateRequest,
         ) -> futures_util::future::BoxFuture<
             '_,
             Result<crate::registry::pipeline::GenerateResponse, PipelineError>,

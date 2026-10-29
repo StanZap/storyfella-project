@@ -1,8 +1,8 @@
 //! The runtime adapter over the shared native-inference crate.
 //!
 //! The served profile, the resident `sd-server` process, the model store, and
-//! the `sdcpp` HTTP client all live in `clipforge_inference` (shared with the
-//! sibling `clipforge` workspace). This module is the storyfella-specific
+//! the `sdcpp` HTTP client live in `agentkit_ai::native`. Shared provider
+//! resolution and controls also live in Agentkit. This module is the storyfella-specific
 //! layer over them: [`CreativeRuntime`] binds the shared runtime and client to
 //! the app's [`AppConfig`](crate::config::AppConfig) and hides the job
 //! bookkeeping (submitting, waiting, and storing the resulting PNG in the

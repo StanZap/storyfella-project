@@ -24,8 +24,9 @@ storyfella/
 ```
 
 Clipforge and FineWineTTS remain separate sibling repositories. Storyfella
-consumes `../clipforge/crates/inference`; the directory rename leaves that
-relative dependency unchanged.
+consumes `../../zerune_labs/agentkit/crates/agentkit-ai` for provider resolution,
+native and hosted inference, provisioning and shared server controls
+(`native-inference` feature). Inference requires no Clipforge checkout or app.
 
 Atelier is the separate GPUI drawing and image-generation app, moved from
 FineWineTTS with its existing project storage intact.
@@ -139,10 +140,8 @@ crates/studio-core/          storyfella-studio-core — the domain layer (no GUI
   src/authoring.rs      Source associations and shared asset catalog
   src/playback.rs       Snapshot compilation and pinned resource checks
   src/llm/              OpenAI-compatible LLM client
-  src/runtime/          CreativeRuntime — adapter over the shared
-                        clipforge-inference crate (path dependency)
-                        (sd-server lifecycle, sdcpp client, model store live
-                        in ../clipforge/crates/inference)
+  src/runtime/          CreativeRuntime — application adapter over Agentkit native
+                        inference, provider configuration and shared controls
   src/errors.rs         Error-code registry
   src/config.rs         Configuration loading
   src/paths.rs          Project-root path resolution

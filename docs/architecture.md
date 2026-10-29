@@ -10,8 +10,8 @@ and [central tracker](ROADMAP.md#0-current-direction-and-actionable-backlog) for
 | Component | Responsibility | Dependency boundary |
 | --- | --- | --- |
 | `apps/studio` / `storyfella-studio` | Dioxus authoring UI, project state, creative workflows and snapshot preview | Consumes GUI-free core and shared playback UI/runtime |
-| `apps/atelier` / `storyfella-atelier` | Independent GPUI drawing and image-generation app | Owns sketchbook documents, credentials and ComfyUI workflow; uses Clipforge's hosted image client; no Dioxus dependency |
-| `crates/studio-core` / `storyfella-studio-core` | Artifact registry, operations, persistence, config, creative inference adapters | No GUI dependencies; consumes sibling `clipforge-inference` |
+| `apps/atelier` / `storyfella-atelier` | Independent GPUI drawing and image-generation app | Owns sketchbook documents, credentials and ComfyUI workflow; uses Agentkit's hosted image client; no Dioxus dependency |
+| `crates/studio-core` / `storyfella-studio-core` | Artifact registry, operations, persistence, config, creative inference adapters | No GUI dependencies; consumes sibling `agentkit-ai` |
 | `apps/cli` / `svs-cli` | Existing `svs`, `model_setup`, and `vlm_probe` tools | Keeps current commands and behavior; consumes Studio core |
 | `apps/player` / `storyfella-player` | Standalone visual Dioxus desktop playback | Shared core resource adapter, playback UI and runtime; no Studio state dependency |
 | `crates/playback-ui` / `storyfella-playback-ui` | Shared visual presentation and controls | Consumes GUI-free host adapter and runtime; no dependency on either app |
@@ -31,9 +31,9 @@ The compiler emits a versioned, source-mapped story plan with sequential scene
 fallthrough and explicit terminal instructions; see [compiler.md](compiler.md).
 The runtime consumes that representation with bounded host-driven execution.
 Existing Studio core `runtime/` drives the shared native-server owner through
-Clipforge; it is distinct from the story execution runtime. FineWineTTS and Clipforge
-remain separate repositories. The inference path dependency stays
-`../clipforge/crates/inference` after the repository-directory rename.
+Agentkit; it is distinct from the story execution runtime. FineWineTTS and
+Clipforge remain separate applications. Inference depends directly on
+`../../zerune_labs/agentkit/crates/agentkit-ai`.
 
 `svs`, `model_setup`, and `vlm_probe` names, `SVS_*` settings, error codes,
 SQLite formats and original platform config/data identities are retained to
@@ -44,7 +44,7 @@ the old location; those paths are not silently rewritten by this restructuring.
 ## Existing Studio architecture
 
 Atelier lives alongside Studio as a separate GPUI application. Its hosted
-generation/editing uses `clipforge_inference::images::Client`; ComfyUI workflows
+generation/editing uses `agentkit_ai::images::Client`; ComfyUI workflows
 remain app-local. [Atelier's integration](atelier.md) records the shared
 AI boundary and the remaining image-workspace work. The Studio architecture
 below describes the Dioxus application.
@@ -58,7 +58,7 @@ HTTP.
 
 - **Rust** owns the Dioxus UI, application state, domain models, project
   persistence, process lifecycle, directory resolution, the native generation
-  runtime (the `CreativeRuntime` adapter over the shared `clipforge-inference`
+  runtime (the `CreativeRuntime` adapter over the shared `agentkit-ai`
   crate), and the LLM client.
 - **`stable-diffusion.cpp`** (`sd-server`) is a separate native process owned by
   Rust that keeps the **Qwen-Image-2.1** diffusion model resident. Rust never
@@ -81,7 +81,7 @@ HTTP.
 │    persistence/   ProjectDb (SQLite, versioned migrations)                         │
 │    story.rs       Exact .sf documents, disk snapshots and source-file saves       │
 │    llm/           LlmClient (OpenAI-compatible chat completions)                   │
-│    runtime/       CreativeRuntime adapter over the shared clipforge-inference      │
+│    runtime/       CreativeRuntime adapter over the shared agentkit-ai      │
 │                   crate (asset import, job wait, health, error mapping)            │
 │                                                                                    │
 │  apps/studio/src/  — the Dioxus application                                       │
@@ -92,7 +92,7 @@ HTTP.
 │   ┌──────────────────────────────────────────────────────────────────────────────┐ │
 │   │ sd-server (stable-diffusion.cpp)                                             │ │
 │   │ resident Qwen-Image-2.1 + Qwen3-VL encoder + VAE on 127.0.0.1:7861           │ │
-│   │ started detached by clipforge_inference::control over one shared state dir    │ │
+│   │ started detached by agentkit_ai::native::control over one shared state dir    │ │
 │   └──────────────────────────────────────────────────────────────────────────────┘ │
 └────────────────────────────────────────────────────────────────────────────────────┘
   │
@@ -104,7 +104,7 @@ HTTP.
 ```
 
 The generation server is started by the shared lifecycle owner
-(`clipforge_inference::control`) with `--listen-ip 127.0.0.1 --listen-port 7861`
+(`agentkit_ai::native::control`) with `--listen-ip 127.0.0.1 --listen-port 7861`
 and serves only on loopback; the image provider's `base_url` in the shared
 `clipforge.toml` names both the address the client calls and the port the
 runtime binds. It is started detached and recorded in the machine's shared
@@ -113,20 +113,26 @@ Server lifecycle is described below.
 
 ### The shared inference runtime
 
-The `sd-server` profile, the resident process, the `sdcpp` client, and weight
-provisioning do **not** live in this workspace: they are in the sibling
-`clipforge` project's crate, package **`clipforge-inference`**, pulled in as a
-**path dependency** (`clipforge-inference = { path = "../clipforge/crates/inference" }`
-in the root `[workspace.dependencies]`). storyfella keeps only the adapter —
-`crates/studio-core/src/runtime/` (`CreativeRuntime`), `config.rs`, and the pipeline's
-`GenerateResponse` (`crates/studio-core/src/registry/pipeline.rs`). The sibling checkout
-at `../clipforge/crates/inference` must be present for storyfella to build;
-the crate is not a workspace member.
+Native profiles, weight provisioning, HTTP clients, shared server markers and
+controls live in `agentkit_ai::native`. Provider resolution lives in
+`agentkit_ai::deployments`, which accepts an application-supplied TOML path.
+The workspace consumes `../../zerune_labs/agentkit/crates/agentkit-ai` with
+`native-inference` enabled. No Clipforge crate or installed app is required.
+
+`agentkit_ai::images` provides native/hosted execution, an `ImageModel` trait
+and per-route `ImageCapabilities`. Hosted-only consumers enable `images`
+without native support. `ProviderFactory::build_image_model` accepts the same
+provider configuration and credential resolver as chat. Studio's planner and
+text/vision helpers delegate to the existing Agentkit OpenAI-compatible provider.
+
+Storyfella owns config/state locations, source/artwork persistence and the
+`CreativeRuntime`/LLM adapters. The existing `clipforge.toml` keys, credentials,
+model files and shared native-server state locations retain their meanings.
 
 ## The `sd-server` (`sdcpp`) HTTP contract
 
 Rust consumes the native server's async `sdcpp` API through the shared crate's
-client, `clipforge_inference::sd::Client` (called via `CreativeRuntime::client`).
+client, `agentkit_ai::native::sd::Client` (called via `CreativeRuntime::client`).
 The authoritative field list is `examples/server/api.md` at the pinned upstream
 revision (`leejet/stable-diffusion.cpp` @ `3f8527a`, the revision the `clipforge`
 workspace builds `sd-server` from) — read it before adding a field, because
@@ -145,7 +151,7 @@ The base URL is the image provider's `base_url` in the shared
 
 ### Request body (`POST /sdcpp/v1/img_gen`)
 
-The client maps `GenerateRequest` (`clipforge_inference::sd::GenerateRequest`)
+The client maps `GenerateRequest` (`agentkit_ai::native::sd::GenerateRequest`)
 onto this body. Fields the app does not vary keep the server defaults.
 
 | Field | Type | Value sent |
@@ -269,7 +275,7 @@ look becomes its own artifact.
 | Process | Owner | Lifetime | Purpose |
 | --- | --- | --- | --- |
 | Dioxus desktop app | Rust | Application session | UI, state, orchestration |
-| `sd-server` | Rust (shared `clipforge-inference` `sd::Runtime`) | On demand, resident | Persistent Qwen-Image-2.1 inference |
+| `sd-server` | Rust (`agentkit-ai::native::sd::Runtime`, shared Agentkit controls) | On demand, resident | Persistent Qwen-Image-2.1 inference |
 | text/vision endpoint | openai (external) or `llama-server` (managed) | External, or on demand | LLM planning/grounding and VLM evaluation |
 
 Rust does not start `sd-server` at app launch; the shell reports it as idle
@@ -297,11 +303,11 @@ platform data dir, and cache under the platform cache dir.
 
 **AI config** is the machine's shared `clipforge.toml`
 (`paths::clipforge_config_path()`, via
-`clipforge_inference::config::default_config_path()`), shared with Atelier and
+`storyfella_studio_core::ai_config::default_config_path()`), shared with Atelier and
 Clipforge and created with Storyfella's defaults on first load; relative paths in
 it resolve against its own directory. The **shared native-server state
 directory** (`paths::state_dir()`, via
-`clipforge_inference::config::default_state_dir()`, `$SVS_STATE_DIR` override)
+`storyfella_studio_core::ai_config::default_state_dir()`, `$SVS_STATE_DIR` override)
 holds the process markers and detached-server logs every front end shares, so a
 server one app started is reused rather than duplicated. The image deployment —
 the `sd-server` executable, model tree, LoRA root, endpoint, and weights — is
@@ -332,9 +338,9 @@ See the [README roadmap](../README.md#roadmap) for the ordered backlog.
 
 ## Shared native server lifecycle
 
-The current inference implementation lives in `clipforge-inference`; the planned
-Agentkit migration is SF-PLAN-27 in [the roadmap](ROADMAP.md). Model provisioning,
-process lifecycle and wire-format details remain owned by that dependency.
+Agentkit owns native sd model provisioning, process supervision and HTTP wire
+details, cross-process markers and controls. Storyfella supplies configuration
+and state paths. SF-PLAN-27 in [the roadmap](ROADMAP.md) records validation.
 
 `control::start` starts a detached process and records its PID in the shared
 state directory. Other front ends reuse it. `control::load` ensures the configured

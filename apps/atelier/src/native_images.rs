@@ -1,12 +1,10 @@
 use crate::providers::Settings;
+use agentkit_ai::deployments::{Capability, ImageDeployment, ProviderKind, Providers};
+use agentkit_ai::images::{Client, Output, Request};
+use agentkit_ai::native::control::{self, Managed};
 use anyhow::{ensure, Context, Result};
-use clipforge_inference::{
-    config,
-    control::{self, Managed},
-    images::{Client, Output, Request},
-    Capability, ImageDeployment, ProviderKind, Providers,
-};
 use std::sync::Mutex;
+use storyfella_studio_core::ai_config as config;
 
 /// The deployment Atelier generates with: the shared registry's `sdcpp` provider
 /// whose architecture matches the selected provider, for `editing`'s capability.
@@ -51,7 +49,7 @@ pub fn available_loras(settings: &Settings) -> Vec<String> {
     let Ok(deployment) = deployment(settings, &providers, false) else {
         return Vec::new();
     };
-    clipforge_inference::sd::available_loras(&deployment.lora_dir)
+    agentkit_ai::native::sd::available_loras(&deployment.lora_dir)
 }
 
 /// Whether the machine's shared local image server is answering.
@@ -77,7 +75,7 @@ pub fn server_status(settings: &Settings) -> ServerStatus {
     let Ok(deployment) = deployment(settings, &providers, false) else {
         return ServerStatus::Stopped;
     };
-    let Some(state_dir) = config::default_state_dir() else {
+    let Some(state_dir) = storyfella_studio_core::paths::state_dir() else {
         return ServerStatus::Stopped;
     };
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
@@ -93,7 +91,7 @@ pub fn server_status(settings: &Settings) -> ServerStatus {
         ) {
             return ServerStatus::Stopped;
         }
-        let model = clipforge_inference::sd::Client::new(format!(
+        let model = agentkit_ai::native::sd::Client::new(format!(
             "http://{}:{}",
             deployment.host, deployment.port
         ))
@@ -127,7 +125,8 @@ impl NativeImages {
         let providers = config::user_or_built_in()?;
         let editing = request.source.is_some();
         let selected = deployment(settings, &providers, editing)?;
-        let state_dir = config::default_state_dir().context("No platform data directory")?;
+        let state_dir =
+            storyfella_studio_core::paths::state_dir().context("No platform data directory")?;
         let mut cached = self
             .client
             .lock()
@@ -144,6 +143,7 @@ impl NativeImages {
             .as_ref()
             .context("Missing local image client")?
             .client;
+        client.validate_request(&request)?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -151,7 +151,7 @@ impl NativeImages {
             // Ensure the machine's shared `sd-server` — started detached, owned
             // through its marker, reused if another front end already runs it —
             // before generating; the client then finds it resident.
-            control::start(&Managed::Image(selected), &state_dir)
+            control::load(&Managed::Image(selected), &state_dir)
                 .await
                 .map_err(|error| anyhow::anyhow!("{error}"))?;
             client.generate(request).await.map_err(Into::into)

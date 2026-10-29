@@ -3,9 +3,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use clipforge_inference::{
-    sd, Capability, ChatDeployment, ImageDeployment, ProviderError, ProviderKind, Providers,
+use agentkit_ai::deployments::{
+    Capability, ChatDeployment, ImageDeployment, ProviderError, ProviderKind, Providers,
 };
+use agentkit_ai::native::sd;
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -1395,7 +1396,7 @@ fn seed_app_config(path: &Path) -> Result<(), ConfigError> {
 /// seeded `clipforge.toml`, then creates the file with Storyfella's defaults when
 /// it is still absent.
 fn prepare_shared_config(path: &Path) -> Result<(), ConfigError> {
-    clipforge_inference::config::migrate_legacy_config_at(path);
+    crate::ai_config::migrate_legacy_config_at(path);
     seed_shared_config(path)
 }
 

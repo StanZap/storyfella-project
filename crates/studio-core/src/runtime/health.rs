@@ -1,8 +1,8 @@
 use std::{fmt::Display, future::Future, time::Duration};
 
-use clipforge_inference::chat::Client as ChatClient;
-use clipforge_inference::sd::{model_matches, qwen_image_2_1};
-use clipforge_inference::ChatDeployment;
+use agentkit_ai::deployments::chat::Client as ChatClient;
+use agentkit_ai::deployments::ChatDeployment;
+use agentkit_ai::native::sd::{model_matches, qwen_image_2_1};
 
 use crate::config::AppConfig;
 

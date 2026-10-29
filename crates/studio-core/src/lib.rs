@@ -24,3 +24,5 @@ pub mod registry;
 pub mod runtime;
 pub mod story;
 pub mod vision;
+
+pub mod ai_config;

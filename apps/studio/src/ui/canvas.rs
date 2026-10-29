@@ -1324,8 +1324,8 @@ mod tests {
             &storyfella_studio_core::registry::GenerationDefaults {
                 sizes: Default::default(),
                 steps: 4,
-                cfg_scale: clipforge_inference::sd::DEFAULT_CFG_SCALE,
-                sample_method: clipforge_inference::sd::DEFAULT_SAMPLE_METHOD.to_owned(),
+                cfg_scale: agentkit_ai::native::sd::DEFAULT_CFG_SCALE,
+                sample_method: agentkit_ai::native::sd::DEFAULT_SAMPLE_METHOD.to_owned(),
                 loras: Default::default(),
             },
         );

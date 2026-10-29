@@ -7,15 +7,15 @@
 //! `expect_vision` step, and any future assessment surface all go through
 //! [`VisionSession`], so neither is reimplemented per caller.
 //!
-//! The capability itself lives in the shared `clipforge-inference` crate
-//! ([`clipforge_inference::chat::Client::complete_with_images`]); this module
+//! The capability itself lives in the shared `agentkit-ai` crate
+//! ([`agentkit_ai::deployments::chat::Client::complete_with_images`]); this module
 //! only adapts storyfella's config and images to it.
 
 use std::path::{Path, PathBuf};
 
-use clipforge_inference::chat::{self, ChatImage};
-use clipforge_inference::llama;
-use clipforge_inference::ChatDeployment;
+use agentkit_ai::deployments::chat::{self, ChatImage};
+use agentkit_ai::deployments::ChatDeployment;
+use agentkit_ai::native::llama;
 use thiserror::Error;
 
 use crate::errors::{CodedError, ErrorCode};

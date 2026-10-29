@@ -24,7 +24,8 @@
 
 use std::path::PathBuf;
 
-use clipforge_inference::sd::{self, GenerateRequest, LoraSelection};
+use agentkit_ai::capabilities::images::LoraSelection;
+use agentkit_ai::native::sd::{self, GenerateRequest};
 use futures_util::future::BoxFuture;
 use thiserror::Error;
 

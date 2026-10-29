@@ -15,12 +15,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use agentkit_ai::capabilities::images::LoraSelection;
+use agentkit_ai::deployments::chat::ChatImage;
+use agentkit_ai::native::control::{self, Managed, ServerState, StopOutcome};
+use agentkit_ai::native::servers::kill_servers;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use clipforge_inference::chat::ChatImage;
-use clipforge_inference::control::{self, Managed, ServerState, StopOutcome};
-use clipforge_inference::sd::LoraSelection;
-use clipforge_inference::servers::kill_servers;
 use uuid::Uuid;
 
 use storyfella_studio_core::config::AppConfig;

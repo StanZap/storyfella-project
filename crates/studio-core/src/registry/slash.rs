@@ -30,7 +30,7 @@
 
 use std::{collections::HashMap, fmt, str::FromStr};
 
-use clipforge_inference::sd::LoraSelection;
+use agentkit_ai::capabilities::images::LoraSelection;
 
 use crate::registry::{ops::Operation, pipeline::is_valid_size, ArtifactKind, Ref, VariantAxis};
 

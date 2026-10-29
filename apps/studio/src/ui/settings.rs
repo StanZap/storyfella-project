@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use dioxus::prelude::*;
 
-use clipforge_inference::chat::Client as ChatClient;
+use agentkit_ai::deployments::chat::Client as ChatClient;
 use storyfella_studio_core::config::{
     AppConfig, ChatCapability, ChatEndpointField, ChatProvider, NewChatProvider,
     NewChatProviderKind,

@@ -56,8 +56,8 @@ impl Provider {
     pub fn supports_edit(self) -> bool {
         !matches!(self, Self::Comfy | Self::KreaNative)
     }
-    pub fn hosted(self) -> Option<clipforge_inference::images::HostedProvider> {
-        use clipforge_inference::images::HostedProvider;
+    pub fn hosted(self) -> Option<agentkit_ai::images::HostedProvider> {
+        use agentkit_ai::images::HostedProvider;
         match self {
             Self::Fal => Some(HostedProvider::Fal),
             Self::Replicate => Some(HostedProvider::Replicate),
@@ -100,7 +100,7 @@ pub struct ProviderProfile {
     pub endpoint: String,
 }
 /// A LoRA adapter applied to a local generation: the name the server registers
-/// it under (see `clipforge_inference::sd::prepare_lora_links`) and its
+/// it under (see `agentkit_ai::native::sd::prepare_lora_links`) and its
 /// strength.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LoraSetting {
@@ -220,7 +220,7 @@ pub(crate) fn response_json(response: Response) -> Result<Value> {
 
 pub(crate) fn shared_config_key(
     provider: Provider,
-    registry: &clipforge_inference::Providers,
+    registry: &agentkit_ai::deployments::Providers,
 ) -> Option<String> {
     let configured = shared_provider(registry, provider)?;
     shared_stored_api_key(provider, registry).or_else(|| {
@@ -235,7 +235,7 @@ pub(crate) fn shared_config_key(
 
 pub(crate) fn shared_stored_api_key(
     provider: Provider,
-    registry: &clipforge_inference::Providers,
+    registry: &agentkit_ai::deployments::Providers,
 ) -> Option<String> {
     shared_provider(registry, provider)?
         .api_key
@@ -245,34 +245,34 @@ pub(crate) fn shared_stored_api_key(
 }
 
 fn shared_provider(
-    registry: &clipforge_inference::Providers,
+    registry: &agentkit_ai::deployments::Providers,
     provider: Provider,
-) -> Option<&clipforge_inference::Provider> {
+) -> Option<&agentkit_ai::deployments::Provider> {
     let hosted = provider.hosted()?;
-    let matches = |configured: &clipforge_inference::Provider| {
+    let matches = |configured: &agentkit_ai::deployments::Provider| {
         matches!(
             (hosted, configured.kind),
             (
-                clipforge_inference::images::HostedProvider::Fal,
-                clipforge_inference::ProviderKind::Fal,
+                agentkit_ai::images::HostedProvider::Fal,
+                agentkit_ai::deployments::ProviderKind::Fal,
             ) | (
-                clipforge_inference::images::HostedProvider::Replicate,
-                clipforge_inference::ProviderKind::Replicate,
+                agentkit_ai::images::HostedProvider::Replicate,
+                agentkit_ai::deployments::ProviderKind::Replicate,
             ) | (
-                clipforge_inference::images::HostedProvider::Alibaba,
-                clipforge_inference::ProviderKind::Alibaba,
+                agentkit_ai::images::HostedProvider::Alibaba,
+                agentkit_ai::deployments::ProviderKind::Alibaba,
             ) | (
-                clipforge_inference::images::HostedProvider::GptImage,
-                clipforge_inference::ProviderKind::GptImage,
+                agentkit_ai::images::HostedProvider::GptImage,
+                agentkit_ai::deployments::ProviderKind::GptImage,
             )
         )
     };
     registry
-        .provider_for(clipforge_inference::Capability::T2i)
+        .provider_for(agentkit_ai::deployments::Capability::T2i)
         .filter(|(_, configured)| matches(configured))
         .or_else(|| {
             registry
-                .provider_for(clipforge_inference::Capability::Edit)
+                .provider_for(agentkit_ai::deployments::Capability::Edit)
                 .filter(|(_, configured)| matches(configured))
         })
         .or_else(|| registry.list().find(|(_, configured)| matches(configured)))
@@ -281,7 +281,7 @@ fn shared_provider(
 
 pub fn shared_endpoint(
     provider: Provider,
-    registry: &clipforge_inference::Providers,
+    registry: &agentkit_ai::deployments::Providers,
 ) -> Option<String> {
     shared_provider(registry, provider).map(|p| p.base_url.clone())
 }
@@ -293,7 +293,7 @@ pub(crate) fn api_key(provider: Provider) -> Result<String> {
     {
         return Ok(key.trim().to_owned());
     }
-    if let Ok(registry) = clipforge_inference::config::user_or_built_in() {
+    if let Ok(registry) = storyfella_studio_core::ai_config::user_or_built_in() {
         if let Some(key) = shared_config_key(provider, &registry) {
             return Ok(key);
         }
@@ -332,7 +332,7 @@ pub fn generate(request: Request) -> Result<Reference> {
 pub fn reference_limit(settings: &Settings) -> Result<usize> {
     if let Some(provider) = settings.provider.hosted() {
         Ok(
-            clipforge_inference::images::HostedDeployment::new(provider, &settings.edit_model)?
+            agentkit_ai::images::HostedDeployment::new(provider, &settings.edit_model)?
                 .max_reference_images(),
         )
     } else {
@@ -357,29 +357,20 @@ pub fn validate_inputs(
         } else {
             &settings.model
         };
-        let deployment = clipforge_inference::images::HostedDeployment::new(provider, model)?;
-        ensure!(
-            deployment.supports(if editing {
-                clipforge_inference::Capability::Edit
-            } else {
-                clipforge_inference::Capability::T2i
-            }),
-            "This model does not support the selected action; choose an appropriate model preset"
-        );
-        if provider == clipforge_inference::images::HostedProvider::Replicate
-            && !deployment.supports_mask()
-        {
-            let (w, h) = (u64::from(settings.width), u64::from(settings.height));
-            ensure!(w == h || w*2 == h*3 || w*3 == h*2,
-                "This Replicate route supports 1:1, 3:2 or 2:3 output; resize the artboard or choose a supported output shape");
-        }
-        ensure!(additional + usize::from(editing) <= deployment.max_reference_images(),
-            "{} accepts {} input image(s), including the source; remove references or choose a multi-image edit model", model, deployment.max_reference_images());
-        ensure!(
-            !mask || deployment.supports_mask(),
-            "This model does not support masks; turn off the mask or choose FLUX Fill"
-        );
-        ensure!(!deployment.supports_mask() || mask, "FLUX Fill requires a painted mask; choose an instruction-edit model for artboard edits");
+        let deployment = agentkit_ai::images::HostedDeployment::new(provider, model)?;
+        deployment
+            .capabilities()
+            .validate_inputs(
+                if editing {
+                    agentkit_ai::images::ImageOperation::Edit
+                } else {
+                    agentkit_ai::images::ImageOperation::Generate
+                },
+                additional + usize::from(editing),
+                mask,
+                (settings.width, settings.height),
+            )
+            .map_err(anyhow::Error::msg)?;
         api_key(settings.provider)
             .context("Set up this provider in Clipforge, then refresh readiness")?;
     } else if settings.provider.native_architecture().is_some() {
@@ -387,7 +378,7 @@ pub fn validate_inputs(
             additional == 0 && !mask,
             "Local models accept one source image and no additional references or mask"
         );
-        let registry = clipforge_inference::config::user_or_built_in()?;
+        let registry = storyfella_studio_core::ai_config::user_or_built_in()?;
         crate::native_images::deployment(settings, &registry, editing)?;
     } else {
         ensure!(

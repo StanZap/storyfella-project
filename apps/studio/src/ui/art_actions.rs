@@ -211,8 +211,8 @@ mod tests {
             &GenerationDefaults {
                 sizes: Default::default(),
                 steps: 25,
-                cfg_scale: clipforge_inference::sd::DEFAULT_CFG_SCALE,
-                sample_method: clipforge_inference::sd::DEFAULT_SAMPLE_METHOD.into(),
+                cfg_scale: agentkit_ai::native::sd::DEFAULT_CFG_SCALE,
+                sample_method: agentkit_ai::native::sd::DEFAULT_SAMPLE_METHOD.into(),
                 loras: Default::default(),
             },
         )

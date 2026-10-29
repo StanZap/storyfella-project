@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use reqwest::{Client, StatusCode};
+use agentkit_ai::providers::openai::{ChatGenerationOptions, OpenAiCompatibleChatModel};
+use agentkit_ai::{ChatRequest as FrameworkRequest, ToolChoice};
+use agentkit_core::{Message, MessagePart, MessageRole, RuntimeError, ToolRisk};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -15,8 +17,8 @@ pub struct LlmConfig {
     pub timeout: Duration,
 }
 
-impl From<&clipforge_inference::ChatDeployment> for LlmConfig {
-    fn from(deployment: &clipforge_inference::ChatDeployment) -> Self {
+impl From<&agentkit_ai::deployments::ChatDeployment> for LlmConfig {
+    fn from(deployment: &agentkit_ai::deployments::ChatDeployment) -> Self {
         Self {
             base_url: deployment.base_url.clone(),
             model: deployment.model.clone(),
@@ -28,7 +30,6 @@ impl From<&clipforge_inference::ChatDeployment> for LlmConfig {
 
 #[derive(Clone, Debug)]
 pub struct LlmClient {
-    http: Client,
     config: LlmConfig,
 }
 
@@ -144,12 +145,10 @@ pub struct CompletionUsage {
 
 #[derive(Debug, Error)]
 pub enum LlmError {
-    #[error("failed to construct HTTP client: {0}")]
-    Build(#[source] reqwest::Error),
-    #[error("LLM request failed: {0}")]
-    Request(#[source] reqwest::Error),
-    #[error("LLM returned HTTP {status}: {body}")]
-    Status { status: StatusCode, body: String },
+    #[error(transparent)]
+    Framework(#[from] RuntimeError),
+    #[error("Invalid planner message: {0}")]
+    Encoding(#[from] serde_json::Error),
     #[error("LLM planning did not finish: {0}")]
     Planner(String),
 }
@@ -157,29 +156,28 @@ pub enum LlmError {
 impl CodedError for LlmError {
     fn code(&self) -> ErrorCode {
         match self {
-            Self::Build(_) => ErrorCode::LlmBuild,
-            Self::Request(_) => ErrorCode::LlmRequest,
-            Self::Status { .. } => ErrorCode::LlmStatus,
+            Self::Framework(_) if self.tool_request_rejected() => ErrorCode::LlmStatus,
+            Self::Framework(_) | Self::Encoding(_) => ErrorCode::LlmRequest,
             Self::Planner(_) => ErrorCode::LlmPlanner,
         }
     }
 }
 
-#[derive(Serialize)]
-struct ChatRequest<'a> {
-    model: &'a str,
-    messages: &'a [ChatMessage],
-    stream: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    seed: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    response_format: Option<&'a Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<&'a [ToolDefinition]>,
+impl LlmError {
+    pub(crate) fn tool_request_rejected(&self) -> bool {
+        matches!(
+            self,
+            Self::Framework(RuntimeError::Provider {
+                kind: agentkit_core::ProviderErrorKind::Provider
+                    | agentkit_core::ProviderErrorKind::UnsupportedCapability
+                    | agentkit_core::ProviderErrorKind::UnsupportedProvider
+                    | agentkit_core::ProviderErrorKind::UnsupportedModel
+                    | agentkit_core::ProviderErrorKind::Authentication
+                    | agentkit_core::ProviderErrorKind::BadSchema,
+                ..
+            })
+        )
+    }
 }
 
 impl ChatMessage {
@@ -275,12 +273,8 @@ pub fn strip_json_fence(value: &str) -> &str {
 }
 
 impl LlmClient {
-    pub fn new(config: LlmConfig) -> Result<Self, LlmError> {
-        let http = Client::builder()
-            .timeout(config.timeout)
-            .build()
-            .map_err(LlmError::Build)?;
-        Ok(Self { http, config })
+    pub fn new(config: LlmConfig) -> Self {
+        Self { config }
     }
 
     /// The model identifier every request carries (what the endpoint routes to).
@@ -304,23 +298,39 @@ impl LlmClient {
         messages: &[ChatMessage],
         options: &ChatOptions,
     ) -> Result<ChatCompletion, LlmError> {
-        let url = format!(
-            "{}/chat/completions",
-            self.config.base_url.trim_end_matches('/')
-        );
-        let request = self.authorize(self.http.post(url)).json(&ChatRequest {
-            model: &self.config.model,
-            messages,
-            stream: false,
-            temperature: options.temperature,
-            max_tokens: options.max_tokens,
-            seed: options.seed,
-            response_format: options.response_format.as_ref(),
-            tools: options.tools.as_deref(),
-        });
-
-        let response = request.send().await.map_err(LlmError::Request)?;
-        Self::decode(response).await
+        let request = Self::request(messages, options)?;
+        let mut model = OpenAiCompatibleChatModel::new(&self.config.base_url, &self.config.model)
+            .with_timeout(self.config.timeout);
+        if let Some(key) = &self.config.api_key {
+            model = model.with_api_key(key);
+        }
+        let response = model
+            .chat_with_options(
+                request,
+                ChatGenerationOptions {
+                    temperature: options.temperature,
+                    max_output_tokens: options.max_tokens,
+                    seed: options.seed,
+                    response_format: options.response_format.clone(),
+                },
+            )
+            .await?;
+        let mut envelope = response
+            .metadata
+            .ok_or_else(|| LlmError::Planner("Missing completion envelope".into()))?;
+        let message = &mut envelope["choices"][0]["message"];
+        message["content"] = serde_json::json!(response.assistant_message);
+        if response.tool_calls.is_empty() {
+            message
+                .as_object_mut()
+                .expect("validated response message")
+                .remove("tool_calls");
+        } else {
+            message["tool_calls"] = Value::Array(response.tool_calls.into_iter().map(|call| serde_json::json!({
+                "id":call.id, "type":"function", "function":{"name":call.name,"arguments":call.arguments.to_string()}
+            })).collect());
+        }
+        Ok(serde_json::from_value(envelope)?)
     }
 
     /// One multi-round tool-calling session: the model may call the given
@@ -368,25 +378,87 @@ impl LlmClient {
         ))
     }
 
-    fn authorize(&self, mut request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        if let Some(api_key) = &self.config.api_key {
-            request = request.bearer_auth(api_key);
-        }
-        request
+    fn request(
+        messages: &[ChatMessage],
+        options: &ChatOptions,
+    ) -> Result<FrameworkRequest, LlmError> {
+        let messages = messages
+            .iter()
+            .map(Self::message)
+            .collect::<Result<Vec<_>, _>>()?;
+        let tools = options
+            .tools
+            .iter()
+            .flatten()
+            .map(|tool| agentkit_core::ToolDefinition {
+                name: tool.function.name.clone(),
+                description: tool.function.description.clone(),
+                input_schema: tool.function.parameters.clone(),
+                risk: ToolRisk::ReadOnly,
+                capabilities: Vec::new(),
+            })
+            .collect();
+        Ok(FrameworkRequest {
+            messages,
+            tools,
+            tool_choice: ToolChoice::Auto,
+            metadata: None,
+        })
     }
 
-    async fn decode<T: for<'de> Deserialize<'de>>(
-        response: reqwest::Response,
-    ) -> Result<T, LlmError> {
-        let status = response.status();
-        if !status.is_success() {
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unreadable response".to_owned());
-            return Err(LlmError::Status { status, body });
+    fn message(message: &ChatMessage) -> Result<Message, LlmError> {
+        let role = match message.role.as_str() {
+            "system" => MessageRole::System,
+            "user" => MessageRole::User,
+            "assistant" => MessageRole::Assistant,
+            "tool" => MessageRole::Tool,
+            other => return Err(LlmError::Planner(format!("Unknown message role {other}"))),
+        };
+        let mut content = String::new();
+        let mut parts = Vec::new();
+        match &message.content {
+            ChatContent::Text(text) => content = text.clone(),
+            ChatContent::Parts(input) => {
+                for part in input {
+                    match part {
+                        ChatContentPart::Text { text } => parts.push(MessagePart::text(text)),
+                        ChatContentPart::ImageUrl { image_url } => {
+                            let (mime, bytes) = image_url
+                                .url
+                                .strip_prefix("data:")
+                                .and_then(|url| url.split_once(";base64,"))
+                                .ok_or_else(|| {
+                                    LlmError::Planner("Expected an inline base64 image".into())
+                                })?;
+                            parts.push(MessagePart::image(mime, bytes));
+                        }
+                    }
+                }
+            }
         }
-        response.json().await.map_err(LlmError::Request)
+        let mut metadata = serde_json::Map::new();
+        if let Some(id) = &message.tool_call_id {
+            metadata.insert("tool_call_id".into(), Value::String(id.clone()));
+        }
+        if let Some(calls) = &message.tool_calls {
+            let calls = calls
+                .iter()
+                .map(|call| {
+                    Ok(serde_json::json!({
+                        "id":call.id, "name":call.function.name,
+                        "arguments":serde_json::from_str::<Value>(&call.function.arguments)?,
+                    }))
+                })
+                .collect::<Result<Vec<_>, serde_json::Error>>()?;
+            metadata.insert("tool_calls".into(), Value::Array(calls));
+        }
+        Ok(Message {
+            role,
+            content,
+            parts,
+            tool_name: None,
+            metadata: (!metadata.is_empty()).then_some(Value::Object(metadata)),
+        })
     }
 }
 
@@ -396,7 +468,7 @@ mod tests {
 
     #[test]
     fn a_chat_deployment_maps_to_the_llm_config() {
-        let deployment = clipforge_inference::ChatDeployment {
+        let deployment = agentkit_ai::deployments::ChatDeployment {
             base_url: "http://localhost:8080/v1".to_owned(),
             model: "prism-ml/bonsai-27b".to_owned(),
             api_key: Some("sk-test".to_owned()),
@@ -469,25 +541,12 @@ mod tests {
             }]),
             ..ChatOptions::default()
         };
-        let request = ChatRequest {
-            model: "m",
-            messages: &[ChatMessage::text("user", "hi")],
-            stream: false,
-            temperature: None,
-            max_tokens: None,
-            seed: None,
-            response_format: None,
-            tools: options.tools.as_deref(),
-        };
-        let value = serde_json::to_value(&request).expect("request should serialize");
-        assert_eq!(value["tools"][0]["type"], "function");
-        assert_eq!(value["tools"][0]["function"]["name"], "list_loras");
-        // Without tools the key is absent, not empty.
-        let request = ChatRequest {
-            tools: None,
-            ..request
-        };
-        let value = serde_json::to_value(&request).expect("request should serialize");
-        assert!(value.get("tools").is_none());
+        let request = LlmClient::request(&[ChatMessage::text("user", "hi")], &options).unwrap();
+        assert_eq!(request.tools[0].name, "list_loras");
+        assert_eq!(request.tools[0].input_schema["type"], "object");
+        assert!(LlmClient::request(&[], &ChatOptions::default())
+            .unwrap()
+            .tools
+            .is_empty());
     }
 }

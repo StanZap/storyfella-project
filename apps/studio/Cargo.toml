@@ -12,13 +12,13 @@ default = ["desktop"]
 desktop = ["dioxus/desktop"]
 
 [dependencies]
+agentkit-ai.workspace = true
 storyfella-language.workspace = true
 storyfella-compiler.workspace = true
 storyfella-playback-ui.workspace = true
 storyfella-runtime.workspace = true
 storyfella-studio-core = { path = "../../crates/studio-core" }
 anyhow.workspace = true
-clipforge-inference.workspace = true
 dioxus.workspace = true
 futures-util.workspace = true
 image.workspace = true

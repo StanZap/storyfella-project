@@ -9,10 +9,10 @@ name = "atelier"
 path = "src/main.rs"
 
 [dependencies]
+agentkit-ai.workspace = true
 storyfella-studio-core.workspace = true
 gpui-kit.workspace = true
 anyhow.workspace = true
-clipforge-inference.workspace = true
 tokio.workspace = true
 serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true

@@ -4,8 +4,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use clipforge_inference::sd::GenerateRequest;
-use clipforge_inference::{llama, ManagedChatServer};
+use agentkit_ai::deployments::ManagedChatServer;
+use agentkit_ai::native::llama;
+use agentkit_ai::native::sd::GenerateRequest;
 use futures_util::future::BoxFuture;
 
 use crate::{
@@ -104,9 +105,7 @@ impl CreativeBackend {
         let (managed_servers, text_provider_id) = chat_supervision(config);
         Self {
             runtime: CreativeRuntime::new(config),
-            llm: config
-                .planner_config()
-                .and_then(|config| LlmClient::new(config).ok()),
+            llm: config.planner_config().map(LlmClient::new),
             text_provider_id,
             managed_servers,
             running_servers: Arc::new(Mutex::new(HashMap::new())),
@@ -156,9 +155,7 @@ impl CreativeBackend {
     /// map, and stops a running server whose provider is gone or is no longer
     /// managed, so the app never holds a process the config does not name.
     pub fn set_chat(&mut self, config: &AppConfig) {
-        self.llm = config
-            .planner_config()
-            .and_then(|config| LlmClient::new(config).ok());
+        self.llm = config.planner_config().map(LlmClient::new);
         let (managed_servers, text_provider_id) = chat_supervision(config);
         self.text_provider_id = text_provider_id;
         let stale: Vec<Arc<llama::Runtime>> = {
@@ -568,7 +565,7 @@ impl CreativeBackend {
             )
             .await
             .map_err(|error| match error {
-                crate::llm::LlmError::Status { .. } => {
+                error if error.tool_request_rejected() => {
                     ProposeError::ToolsUnsupported(error.to_string())
                 }
                 other => ProposeError::Failed(format!("LLM request failed: {other}")),
@@ -964,8 +961,8 @@ mod tests {
         GenerationDefaults {
             sizes: Default::default(),
             steps: 25,
-            cfg_scale: clipforge_inference::sd::DEFAULT_CFG_SCALE,
-            sample_method: clipforge_inference::sd::DEFAULT_SAMPLE_METHOD.to_owned(),
+            cfg_scale: agentkit_ai::native::sd::DEFAULT_CFG_SCALE,
+            sample_method: agentkit_ai::native::sd::DEFAULT_SAMPLE_METHOD.to_owned(),
             loras: Default::default(),
         }
     }
@@ -991,7 +988,7 @@ mod tests {
         );
 
         // A provider switch supplies a whole deployment, not just a model id.
-        config.text = Some(clipforge_inference::ChatDeployment {
+        config.text = Some(agentkit_ai::deployments::ChatDeployment {
             base_url: "http://localhost:1234/v1".to_owned(),
             model: "local-model".to_owned(),
             api_key: None,

@@ -1868,7 +1868,7 @@ impl DrawingApp {
     }
 
     pub fn reload_clipforge(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Ok(registry) = clipforge_inference::config::user_or_built_in() {
+        if let Ok(registry) = storyfella_studio_core::ai_config::user_or_built_in() {
             if let Some(endpoint) = providers::shared_endpoint(self.settings.provider, &registry) {
                 self.settings.endpoint = endpoint.clone();
                 self.endpoint
