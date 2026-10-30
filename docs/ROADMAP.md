@@ -63,7 +63,25 @@ streaming presentation, not domain code to copy into Storyfella.
     protocol preservation and application binding, not generated-image quality.
     Live evidence (2026-10-29, user-reported): Atelier image generation and
     editing both work through Replicate; project persistence also works.
-    Native Qwen/Krea, model switching/reuse and cancellation remain unverified.
+    Native Qwen Metal acceptance (2026-10-29): **generation and reference editing
+    passed on M3 Max**, using the packaged `sd-server` (`3f8527a`, GGML
+    `89c4413f`) through Agentkit's public runtime/client. Both runs used 512×512,
+    20 steps and seed 42; the generated red cup was successfully edited blue
+    while retaining the scene. The opt-in `agentkit-ai/tests/native_metal.rs`
+    test saved both PNGs and passed in 379.65 seconds; evidence is in Agentkit's
+    `target/metal-live-retry.log` and `target/qwen-metal-live/`.
+    Agentkit now provisions pinned Q8_0 GGUF diffusion/text weights and the F16
+    vision projector on macOS, checks all four artifacts and passes
+    `--llm_vision` for editing. The VAE is reused and existing INT8 files are
+    preserved. Other hosts retain the existing INT8 defaults. This resolves the
+    original wrong-format default and missing Metal INT8-kernel crash without
+    modifying GGML. A separately reproduced interrupted-poll connection is
+    handled by up to three transport reconnects to the same job, within caller
+    deadlines; render submissions and HTTP failures are not retried. Native,
+    hosted-only, persistence/projector, consumer workspace and retry-bound tests
+    pass. Native Krea, model switching/reuse and cancellation remain unverified.
+    Sources: [Qwen Image 2.1](https://github.com/leejet/stable-diffusion.cpp/blob/master/docs/qwen_image_2.1.md),
+    [INT8 backend support](https://github.com/leejet/stable-diffusion.cpp/blob/master/docs/int8_convrot.md).
 - [ ] **SF-PLAN-28 — Integrate Agentkit workflows as an application foundation.**
   Depend on Agentkit's workflow/session APIs and supply Storyfella-owned context,
   domain tools, model bindings, durable run storage and UI event handling. Build
@@ -407,6 +425,31 @@ switching retains the current canvas and asset association. Capability-dependent
 tools explain unsupported combinations before queueing; they do not impose a
 production sequence or move image operations into Studio. Additional provider
 models can expose the same tools when their adapters support the capabilities.
+
+### Native runtime distribution · 2026-10-29
+
+- [ ] **SF-PLAN-30 — Ship and validate the Linux NVIDIA CUDA runtime.**
+  Build the pinned `sd-server` for each supported Linux release target during
+  packaging and include its required redistributable CUDA/runtime libraries.
+  Resolve the bundled executable independently of the working directory; keep
+  downloaded weights in writable application data and preserve explicit provider
+  paths. Define supported GPU compute architectures and minimum driver versions;
+  the current build defaults to compute capability `86`, which is not evidence
+  of broader GPU coverage. Users need a compatible NVIDIA driver, without a CUDA
+  development toolkit, compiler, Git or source checkout. Clipforge owns its
+  release packaging; Studio and Atelier need equivalent application packaging
+  and acceptance while consuming Agentkit's inference APIs. Done when a clean
+  supported NVIDIA Linux machine installs the package, provisions weights,
+  generates and edits with Qwen, generates with Krea, switches/reuses models,
+  cancels work and saves output using the bundled runtime. Test relocation and
+  launching outside the checkout, and report incompatible drivers/GPUs clearly.
+  Record the distribution, GPU, driver, packaged library versions and acceptance
+  logs for each supported release target. This makes the Linux CUDA portion of
+  [§12 item 11](#12-suggested-implementation-order) actionable and complements
+  SF-PLAN-27's live inference acceptance.
+  Current evidence: Clipforge's macOS release bundle includes the pinned
+  Metal-enabled server and passes a relocated packaged-runtime launch check.
+  This does not establish Linux CUDA packaging or generation readiness.
 
 ### Existing plans to reconcile
 
