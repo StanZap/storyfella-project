@@ -1,0 +1,40 @@
+# Copy to .svs-e2e/native-acceptance/providers.toml and replace /absolute paths.
+# Existing model files are read in place; logs, LoRA scratch and images stay here.
+[defaults]
+t2i = "resident-qwen"
+
+# Start this server yourself before running the reuse/abort test.
+[providers.resident-qwen]
+kind = "sdcpp"
+architecture = "qwen-image-2.1"
+capabilities = ["t2i", "edit"]
+base_url = "http://127.0.0.1:7862"
+executable = "/absolute/path/to/sd-server"
+model_dir = "/absolute/path/to/models"
+lora_dir = "loras"
+residency = "lowvram"
+
+# The switching test owns this separate port. It must initially be unused.
+[providers.acceptance-qwen]
+kind = "sdcpp"
+architecture = "qwen-image-2.1"
+capabilities = ["t2i", "edit"]
+base_url = "http://127.0.0.1:17863"
+executable = "/absolute/path/to/sd-server"
+model_dir = "/absolute/path/to/models"
+lora_dir = "loras"
+residency = "lowvram"
+
+[providers.acceptance-krea]
+kind = "sdcpp"
+architecture = "krea2-turbo"
+capabilities = ["t2i"]
+base_url = "http://127.0.0.1:17863"
+executable = "/absolute/path/to/sd-server"
+model_dir = "/absolute/path/to/models"
+lora_dir = "loras"
+residency = "lowvram"
+# Existing alternative weights can be supplied through the normal provider keys:
+# weights.diffusion = "/absolute/path/to/krea.gguf"
+# weights.text_encoder = "/absolute/path/to/text-encoder.gguf"
+# weights.vae = "/absolute/path/to/vae.safetensors"

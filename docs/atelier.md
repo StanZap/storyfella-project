@@ -65,6 +65,45 @@ the prompt.
 
 See the document and selection behavior below for stored roles and request placement.
 
+## Repeatable live native acceptance
+
+The opt-in `studio-core` integration tests exercise the public Agentkit image
+and lifecycle APIs used by the applications. Copy
+[`native-acceptance.example.toml`](../config/native-acceptance.example.toml) to
+`.svs-e2e/native-acceptance/providers.toml`, set existing executable/model paths
+and any weight overrides, and start the configured `resident-qwen` server.
+The `acceptance-qwen` and `acceptance-krea` providers must share a separate,
+initially unused loopback port. Keep `lora_dir` inside the acceptance directory.
+Run the scenarios sequentially to avoid concurrent GPU loads:
+
+```sh
+cargo test -p storyfella-studio-core --test native_acceptance native_generation_reuse_abort_and_saved_output -- --ignored --nocapture
+cargo test -p storyfella-studio-core --test native_acceptance native_model_switching_and_reuse -- --ignored --nocapture
+```
+
+The first scenario reuses a resident server, generates at 512×512 with 20 steps
+and seed 42, saves and decodes the PNG from disk, aborts a submitted two-step
+request, measures local cancellation latency below one second, drains remaining
+server work and verifies another request succeeds. Active GPU sampling can
+continue after the local abort; this test does not claim remote interruption.
+The second scenario loads Qwen → Krea → Qwen through shared lifecycle controls,
+checks that loading an already resident model starts no new process, and saves
+and reopens each result. It uses two Qwen steps and eight Krea steps as lifecycle
+smoke checks, not image-quality acceptance. It stops its owned server on success
+or a returned error and leaves the separately running resident server alone.
+Outputs and switching-server logs remain under `.svs-e2e/native-acceptance/`.
+After the first scenario, exercise Atelier's actual result attachment and project
+storage with both generated PNGs:
+
+```sh
+cargo test -p storyfella-atelier native_acceptance_outputs_survive_atelier_project_reopen -- --ignored --nocapture
+```
+
+This writes `native-results.atelier`, reloads it and verifies both artboards retain
+their embedded images, dimensions and provenance. These tests establish
+provider/lifecycle and project-storage behavior; live Atelier queue interaction
+and visual quality need their own acceptance.
+
 ## Local Qwen and Krea on Linux with CUDA
 
 Clipforge's shared image client serves **Qwen Image 2.1** generation and editing,

@@ -90,9 +90,38 @@ streaming presentation, not domain code to copy into Storyfella.
     handled by up to three transport reconnects to the same job, within caller
     deadlines; render submissions and HTTP failures are not retried. Native,
     hosted-only, persistence/projector, consumer workspace and retry-bound tests
-    pass. Native Krea, model switching/reuse and cancellation remain unverified.
+    pass. Native Krea, model switching/reuse and cancellation were subsequently
+    verified on macOS in the 2026-10-31 acceptance below.
     Sources: [Qwen Image 2.1](https://github.com/leejet/stable-diffusion.cpp/blob/master/docs/qwen_image_2.1.md),
     [INT8 backend support](https://github.com/leejet/stable-diffusion.cpp/blob/master/docs/int8_convrot.md).
+  - [x] Complete macOS native lifecycle acceptance (2026-10-31, Apple M3 Max).
+    Qwen generation at 512×512, 20 steps and seed 42 completed in 138.85 seconds;
+    output saved and decoded from disk. Aborting a submitted generating job
+    returned locally in 102 ms; the test drained continued GPU work and verified
+    a subsequent request succeeded. Qwen → Krea → Qwen switching, same-model
+    server reuse and saved output passed in 149.62 seconds using installed
+    GGUF overrides (Krea IQ4_XS diffusion, Q4_K_M text encoder, Wan VAE).
+    Switching used two Qwen steps and eight Krea steps as lifecycle smoke tests,
+    not visual-quality evidence. Both Qwen outputs also survived Atelier result
+    attachment and `.atelier` save/reopen with embedded bytes and provenance.
+    The first switching run exposed Agentkit's Linux-only process ownership
+    checks: macOS treated its own server as foreign and refused the switch.
+    Agentkit now verifies macOS ownership through the kernel executable path;
+    its regression failed before the fix and passes afterward, including
+    preservation of a process with a mismatched executable. Owned server cleanup
+    passed on the repeated real switching run.
+    Isolated Atelier UI acceptance against the real resident Qwen server also
+    passed: pause held queued work while a running request finished, queued and
+    running Abort retained individual history, a later request completed, and
+    both resulting artboards survived Save → close → reopen. UI runs used two
+    steps and establish queue/persistence behavior only. No hosted request was
+    submitted. Workspace checks/tests/format, strict changed-package Clippy,
+    Agentkit native-feature tests/Clippy and its format check pass; the vendored
+    GPUI dependency still emits existing Cocoa deprecation warnings.
+    Reproduction: [live native acceptance](atelier.md#repeatable-live-native-acceptance).
+    Evidence: `.svs-e2e/native-acceptance/` (logs, images and `.atelier` projects).
+    The broader live-acceptance item remains open for configured hosted-route
+    cancellation/deadline checks; Linux NVIDIA packaging/acceptance is SF-PLAN-30.
 - [ ] **SF-PLAN-28 — Integrate Agentkit workflows as an application foundation.**
   Depend on Agentkit's workflow/session APIs and supply Storyfella-owned context,
   domain tools, model bindings, durable run storage and UI event handling. Build
@@ -1171,7 +1200,8 @@ them. The queue has its own panel, opened from a header badge that counts
 outstanding requests. **Generate from drawing** opens a compact panel that
 auto-switches to a **box select** region when the canvas is dragged, then
 rasterizes the area and queues it. See [Atelier](atelier.md). Live multi-request
-validation on a real provider is pending; the queue's ordering, pause, individual
+validation against native Qwen passed on macOS (2026-10-31; SF-PLAN-27 above);
+hosted-provider queue acceptance remains pending. The queue's ordering, pause, individual
 abort, history-clearing and region-clamping rules are unit-tested. Isolated mock
 UI acceptance (2026-10-30) verified that aborting a queued request preserves the
 running one, prevents the queued submission and keeps both outcomes in history;

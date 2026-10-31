@@ -12,6 +12,59 @@ use std::{
 };
 
 #[test]
+#[ignore = "requires PNG outputs from the real native acceptance test"]
+fn native_acceptance_outputs_survive_atelier_project_reopen() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/native-acceptance");
+    let mut project = doc();
+    project.title = "Native acceptance".into();
+    let mut originals = Vec::new();
+    for name in ["native-create.png", "native-after-abort.png"] {
+        let bytes = std::fs::read(directory.join(name)).unwrap();
+        let reference = Arc::new(
+            document::reference_from_bytes(name.into(), &bytes, "Native acceptance".into())
+                .unwrap(),
+        );
+        originals.push(reference.clone());
+        project
+            .attach_result(reference, crate::workflow::Destination::NewArtboard)
+            .unwrap();
+    }
+    let path = directory.join("native-results.atelier");
+    document::save(&path, &project).unwrap();
+    let restored = document::load(&path).unwrap();
+    assert_eq!(restored.title, project.title);
+    assert_eq!(restored.canvas_id, project.canvas_id);
+    assert_eq!(restored.canvases.len(), project.canvases.len());
+    for original in originals {
+        let layer = restored
+            .layers
+            .iter()
+            .chain(
+                restored
+                    .canvases
+                    .iter()
+                    .flat_map(|canvas| canvas.layers.iter()),
+            )
+            .filter_map(|layer| layer.image.as_ref())
+            .find(|image| image.reference.fingerprint == original.fingerprint)
+            .expect("generated artwork must survive in its artboard");
+        assert_eq!(layer.reference.image, original.image);
+        assert_eq!(layer.reference.provenance, original.provenance);
+        assert_eq!(
+            document::decode_reference(&layer.reference)
+                .unwrap()
+                .dimensions(),
+            (512, 512)
+        );
+    }
+    eprintln!(
+        "Both native outputs survived Atelier save/reopen: {}",
+        path.display()
+    );
+}
+
+#[test]
 fn request_time_limit_migrates_persists_and_stays_global_across_providers() {
     let mut settings: Settings = serde_json::from_str("{}").unwrap();
     assert_eq!(settings.request_timeout_minutes, 30);
