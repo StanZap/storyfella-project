@@ -14,23 +14,47 @@ use std::{
 #[test]
 #[ignore = "requires PNG outputs from the real native acceptance test"]
 fn native_acceptance_outputs_survive_atelier_project_reopen() {
-    let directory =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/native-acceptance");
+    acceptance_outputs_survive_project_reopen(
+        "native-acceptance",
+        "Native acceptance",
+        ["native-create.png", "native-after-abort.png"],
+        "native-results.atelier",
+    );
+}
+
+#[test]
+#[ignore = "requires PNG outputs from the real hosted acceptance test"]
+fn hosted_acceptance_outputs_survive_atelier_project_reopen() {
+    acceptance_outputs_survive_project_reopen(
+        "hosted-acceptance",
+        "Hosted acceptance",
+        ["hosted-create.png", "hosted-edit.png"],
+        "hosted-results.atelier",
+    );
+}
+
+fn acceptance_outputs_survive_project_reopen(
+    folder: &str,
+    title: &str,
+    names: [&str; 2],
+    project_name: &str,
+) {
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.svs-e2e")
+        .join(folder);
     let mut project = doc();
-    project.title = "Native acceptance".into();
+    project.title = title.into();
     let mut originals = Vec::new();
-    for name in ["native-create.png", "native-after-abort.png"] {
+    for name in names {
         let bytes = std::fs::read(directory.join(name)).unwrap();
-        let reference = Arc::new(
-            document::reference_from_bytes(name.into(), &bytes, "Native acceptance".into())
-                .unwrap(),
-        );
+        let reference =
+            Arc::new(document::reference_from_bytes(name.into(), &bytes, title.into()).unwrap());
         originals.push(reference.clone());
         project
             .attach_result(reference, crate::workflow::Destination::NewArtboard)
             .unwrap();
     }
-    let path = directory.join("native-results.atelier");
+    let path = directory.join(project_name);
     document::save(&path, &project).unwrap();
     let restored = document::load(&path).unwrap();
     assert_eq!(restored.title, project.title);
@@ -55,11 +79,11 @@ fn native_acceptance_outputs_survive_atelier_project_reopen() {
             document::decode_reference(&layer.reference)
                 .unwrap()
                 .dimensions(),
-            (512, 512)
+            document::decode_reference(&original).unwrap().dimensions()
         );
     }
     eprintln!(
-        "Both native outputs survived Atelier save/reopen: {}",
+        "Both outputs survived Atelier save/reopen: {}",
         path.display()
     );
 }

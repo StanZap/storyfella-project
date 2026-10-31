@@ -104,6 +104,35 @@ their embedded images, dimensions and provenance. These tests establish
 provider/lifecycle and project-storage behavior; live Atelier queue interaction
 and visual quality need their own acceptance.
 
+## Repeatable live hosted acceptance
+
+The opt-in Replicate scenario uses the existing shared `clipforge.toml` resolved
+by `SVS_AI_CONFIG` or the normal platform path. It does not modify configuration
+or print credentials. The provider named `replicate` must declare `t2i` and
+`edit`, with its model and credential configured; `SF_ACCEPTANCE_PROVIDER` can
+select another Replicate entry. This scenario submits four real, potentially
+billed requests and spaces them by twelve seconds for limited-rate accounts.
+
+```sh
+cargo test -p storyfella-studio-core --test hosted_acceptance -- --ignored --nocapture
+cargo test -p storyfella-atelier hosted_acceptance_outputs_survive_atelier_project_reopen -- --ignored --nocapture
+```
+
+The first request aborts after submitted-job progress and requires the remote
+cancellation endpoint to accept the request within seven seconds. The second
+uses a positive one-millisecond polling deadline and requires a timeout carrying
+the submitted job ID and accepted remote cancellation. Submission has its own
+network timeout; the elapsed deadline check includes that time. An accepted
+cancellation response establishes acknowledgement, not the exact time remote
+compute stops. Recovery generation and reference editing must then complete;
+both images are saved and decoded from disk. Replicate advertises aspect-ratio
+sizing: the square request need not return exactly 512×512. The Atelier scenario
+attaches them through the real result path and verifies embedded bytes,
+dimensions and provenance after saving and reopening `hosted-results.atelier`.
+Evidence stays under `.svs-e2e/hosted-acceptance/`, including `RESULTS.txt` on a
+successful provider run. This verifies lifecycle, transport and persistence;
+it does not establish image fidelity or other unconfigured hosted providers.
+
 ## Local Qwen and Krea on Linux with CUDA
 
 Clipforge's shared image client serves **Qwen Image 2.1** generation and editing,

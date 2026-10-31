@@ -16,7 +16,7 @@ framework defects or missing reusable capabilities. Docgraph's integration is a
 reference for application-owned workflows, tool adapters, run persistence and
 streaming presentation, not domain code to copy into Storyfella.
 
-- [ ] **SF-PLAN-27 — Consolidate reusable inference in Agentkit.** Coordinate the
+- [x] **SF-PLAN-27 — Consolidate reusable inference in Agentkit.** Coordinate the
   migration of Clipforge's reusable inference layer into optional Agentkit
   capabilities: model provisioning/verification, managed native server lifecycle,
   deployment readiness and reuse, provider adapters and image generation/editing
@@ -68,7 +68,7 @@ streaming presentation, not domain code to copy into Storyfella.
     UI was reloaded against the existing server and showed
     `Local server: running · qwen_image_2.1-Q8_0.gguf` without the missing-provider
     composer error.
-  - [ ] Complete live acceptance on a supported native inference machine and
+  - [x] Complete live acceptance on a supported native inference machine and
     configured hosted routes: Qwen generation/editing, Krea generation, model
     switching/reuse, cancellation and saved output. Offline tests establish
     protocol preservation and application binding, not generated-image quality.
@@ -120,8 +120,27 @@ streaming presentation, not domain code to copy into Storyfella.
     GPUI dependency still emits existing Cocoa deprecation warnings.
     Reproduction: [live native acceptance](atelier.md#repeatable-live-native-acceptance).
     Evidence: `.svs-e2e/native-acceptance/` (logs, images and `.atelier` projects).
-    The broader live-acceptance item remains open for configured hosted-route
-    cancellation/deadline checks; Linux NVIDIA packaging/acceptance is SF-PLAN-30.
+    Configured hosted-route cancellation/deadline acceptance is completed below;
+    Linux NVIDIA packaging/acceptance remains the separate SF-PLAN-30.
+  - [x] Complete configured hosted-route acceptance (2026-10-31). Replicate is
+    the only configured hosted image provider; its `alibaba/qwen-image-3` route
+    passed submitted-job abort (143 ms), polling deadline expiry (1.15 seconds
+    including submission) and remote cancellation acknowledgement for both jobs.
+    Subsequent generation (11.62 seconds) and reference editing (12.90 seconds)
+    saved and decoded 1024×1024 outputs. The route advertises aspect-ratio sizing,
+    so a square request does not promise an exact pixel size. Both images passed
+    Atelier result attachment and `.atelier` save/reopen with embedded bytes,
+    dimensions and provenance preserved; native output persistence was rechecked.
+    The repeatable opt-in scenario spaces submissions to respect Replicate's
+    limited-account rate limit. Cancellation acknowledgement does not establish
+    when remote compute stops; this run establishes lifecycle and persistence,
+    not visual quality or acceptance of unconfigured providers. Workspace tests,
+    all-target checks, format and strict changed-package Clippy pass (existing
+    vendored GPUI Cocoa deprecation warnings remain).
+    Reproduction: [live hosted acceptance](atelier.md#repeatable-live-hosted-acceptance).
+    Evidence: `.svs-e2e/hosted-acceptance/` (live/validation logs, images, results
+    and `hosted-results.atelier`). SF-PLAN-27 is complete for the supported macOS
+    native machine and configured hosted route.
 - [ ] **SF-PLAN-28 — Integrate Agentkit workflows as an application foundation.**
   Depend on Agentkit's workflow/session APIs and supply Storyfella-owned context,
   domain tools, model bindings, durable run storage and UI event handling. Build
@@ -187,7 +206,7 @@ Detailed scope and delivery priority remain to be decided after the foundation.
 
 Inference execution and deployment management now live in Agentkit. Application
 configuration, prompts, domain tools, result persistence and UI remain app-owned.
-SF-PLAN-27 records the implemented migration and remaining live acceptance.
+SF-PLAN-27 records the completed migration and native/hosted live acceptance.
 
 ### Studio for writing, Atelier for visual creation · 2026-10-28
 
