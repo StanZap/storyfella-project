@@ -4,8 +4,8 @@
 
 The existing reference picker and queue preflight read Agentkit's profile
 capabilities. Qwen accepts a source plus two ordered references and retains PNG
-alpha; Krea remains generation-only. Unsupported masks and excess inputs fail
-before startup. Settings describes reference editing without an obsolete
+alpha; Krea remains generation-only. Excess inputs and unsupported combinations
+fail before startup. Settings describes reference editing without an obsolete
 single-source claim. These changes use the existing controls and feedback.
 
 Offline queue-contract tests cover accepted and rejected combinations. Real
@@ -14,6 +14,16 @@ path; all three outputs survived Atelier result attachment and project reopen
 with encoded bytes and provenance intact. See the
 [capability probes](docs/atelier.md#native-image-capability-probes). Live UI
 interaction with multiple references and visual edit fidelity remain unverified.
+
+Qwen's optional native mask now anchors protected source latents. The existing
+Use mask tooltip explains that unmasked areas may change slightly. Native source,
+mask and output dimensions must match; validation runs before server startup.
+Controlled black/white/half-mask checks and a shared-client run with two RGBA
+references verified the mechanism on Metal. All four PNGs survived Atelier result
+attachment and project reopening. The far-protected region matched the all-black
+reconstruction but differed from the source, confirming that native masking does
+not promise exact protection. See [mask acceptance](docs/atelier.md#native-mask-acceptance).
+Tooltip interaction and artistic edit quality have not been visually accepted.
 
 ### Atelier side panels · 2026-10-25 (current)
 

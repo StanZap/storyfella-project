@@ -134,12 +134,49 @@ preflight uses Agentkit's profile capabilities: Qwen accepts one source plus two
 ordered references, retains PNG alpha input and supports transparent output.
 When transparent output is required, an opaque result fails with the submitted
 job ID; callers supply the transparency prompt. Krea remains generation-only.
-Native masks are rejected before startup while their behavior is unverified.
+Qwen also supports optional latent masking, verified separately below.
 The pinned server documents RGBA and ordered references in
 [its Qwen guide](https://github.com/leejet/stable-diffusion.cpp/blob/3f8527a46c54ecf4cb4ed6003da8e8982283c73c/docs/qwen_image_2.1.md)
 and [wire contract](https://github.com/leejet/stable-diffusion.cpp/blob/3f8527a46c54ecf4cb4ed6003da8e8982283c73c/examples/server/api.md).
 Its generic mask feature flag does not establish model-specific editing behavior
 or exact preservation of protected pixels.
+
+## Native mask acceptance
+
+Qwen's native route advertises `MaskSupport::OptionalLatent`. White mask pixels
+are editable; black pixels anchor the source's denoising latents. The adapter
+sends the source as both `init_image` and reference 1, retains additional
+references in order, sends the mask unchanged and sets `strength = 1` to keep the
+requested sampling schedule. Source, mask and requested output dimensions must
+match. Invalid image data and geometry fail before model startup. Krea remains
+generation-only and rejects masked editing.
+
+Latent protection passes through VAE reconstruction, so unmasked pixels can
+change slightly. The existing Use mask tooltip explains this. Exact protection
+requires application compositing, as used by Atelier's selection blends; model
+masking and compositing are separate mechanisms.
+
+The opt-in controls reuse `native-create.png` from the native acceptance above.
+They submit the same source, prompt, two-step sampling and seed 42 with all-black,
+all-white and left-half-white masks. The shared-client scenario then combines
+the half mask with the two RGBA reference PNGs from the capability probes.
+Run sequentially:
+
+```sh
+cargo test -p storyfella-studio-core --test native_mask_acceptance native_qwen_mask_controls_and_protected_pixel_drift -- --ignored --nocapture
+cargo test -p storyfella-studio-core --test native_mask_acceptance native_qwen_shared_masked_edit_with_ordered_rgba_references -- --ignored --nocapture
+cargo test -p storyfella-atelier native_mask_acceptance_outputs_survive_atelier_project_reopen -- --ignored --nocapture
+```
+
+The tests measure RGB mean absolute error on a 0–255 scale. A white mask must
+change the result, and the half mask must change the editable region much more
+than the far-protected region, compared with the all-black reconstruction. The
+comparison deliberately excludes the boundary when checking protected latents.
+Direct source comparisons separately measure reconstruction drift. The Atelier
+check saves and reopens all four outputs with embedded bytes and provenance.
+Inputs, masks, outputs, metrics and logs stay in
+`.svs-e2e/native-mask-acceptance/`. These are mechanism and persistence checks;
+two-step runs do not establish artistic editing quality.
 
 ## Repeatable live hosted acceptance
 
@@ -172,11 +209,12 @@ it does not establish image fidelity or other unconfigured hosted providers.
 
 ## Local Qwen and Krea on Linux with CUDA
 
-Clipforge's shared image client serves **Qwen Image 2.1** generation and editing,
+Agentkit's shared image client serves **Qwen Image 2.1** generation and editing,
 and **Krea 2 Turbo** generation through native `stable-diffusion.cpp`. Both are
 available in Atelier's Image provider picker without an API key. Qwen edits accept
-one source plus two ordered references and preserve input alpha. Native masks and
-inputs beyond the verified limit are rejected before startup. The RGBA and
+one source plus two ordered references, preserve input alpha and support optional
+latent masks. Inputs beyond the verified limit and invalid masked-image geometry
+are rejected before startup. The RGBA and
 multi-reference live evidence above is from macOS Metal; clean Linux/CUDA
 packaging and acceptance remain SF-PLAN-30.
 

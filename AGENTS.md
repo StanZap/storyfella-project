@@ -96,8 +96,11 @@ and sd-server build tooling remain in the separate Clipforge repository.
 unsupported controls are rejected, never silently discarded by the backend.
 The native Qwen route preserves input alpha, supports verified transparent PNG
 output and accepts a source plus two ordered references. Its profile owns these
-limits; Atelier queue preflight and execution consume the same contract. Native
-masks remain unverified and unsupported. Other routes retain their own metadata.
+limits; Atelier queue preflight and execution consume the same contract. Qwen's
+optional native mask anchors source latents (`MaskSupport::OptionalLatent`);
+VAE reconstruction can change protected pixels. Mask and source dimensions must
+match, and masked output uses the source dimensions. Krea has no editing/mask
+support. Exact protected-pixel compositing remains app-owned.
 
 **The app's image deployment is a provider.** The `sd-server` executable, model
 tree, LoRA root, endpoint, and weight overrides come from the shared

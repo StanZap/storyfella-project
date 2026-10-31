@@ -48,6 +48,22 @@ fn native_rgba_acceptance_outputs_survive_atelier_project_reopen() {
     );
 }
 
+#[test]
+#[ignore = "requires PNG outputs from both real native mask acceptance scenarios"]
+fn native_mask_acceptance_outputs_survive_atelier_project_reopen() {
+    acceptance_outputs_survive_project_reopen(
+        "native-mask-acceptance",
+        "Native mask acceptance",
+        &[
+            "qwen-mask-black.png",
+            "qwen-mask-white.png",
+            "qwen-mask-half.png",
+            "qwen-mask-shared.png",
+        ],
+        "qwen-mask-results.atelier",
+    );
+}
+
 fn acceptance_outputs_survive_project_reopen(
     folder: &str,
     title: &str,
@@ -628,7 +644,7 @@ fn prepare_project_tabs_fixture() {
 fn unsupported_reference_combinations_fail_before_credentials_or_provider_execution() {
     for (provider, model, extra, mask) in [
         (Provider::QwenNative, "", 3, false),
-        (Provider::QwenNative, "", 0, true),
+        (Provider::KreaNative, "", 0, true),
         (Provider::KreaNative, "", 0, false),
         (Provider::Comfy, "", 0, false),
         (Provider::Fal, "alibaba/qwen-image-3/edit", 3, false),
@@ -648,7 +664,7 @@ fn unsupported_reference_combinations_fail_before_credentials_or_provider_execut
 }
 
 #[test]
-fn native_reference_queue_accepts_source_and_two_references() {
+fn native_queue_uses_verified_reference_and_latent_mask_capabilities() {
     let settings = Settings {
         provider: Provider::QwenNative,
         ..Settings::default()
@@ -656,7 +672,14 @@ fn native_reference_queue_accepts_source_and_two_references() {
     assert_eq!(providers::reference_limit(&settings).unwrap(), 3);
     providers::validate_capabilities(&settings, true, 2, false).unwrap();
     assert!(providers::validate_capabilities(&settings, true, 3, false).is_err());
-    assert!(providers::validate_capabilities(&settings, true, 0, true).is_err());
+    providers::validate_capabilities(&settings, true, 2, true).unwrap();
+    assert_eq!(
+        providers::image_capabilities(&settings, true)
+            .unwrap()
+            .unwrap()
+            .mask,
+        agentkit_ai::images::MaskSupport::OptionalLatent
+    );
     assert!(providers::validate_capabilities(&settings, false, 1, false).is_err());
 }
 

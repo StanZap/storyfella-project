@@ -12,6 +12,16 @@ use gpui_kit::{
 impl DrawingApp {
     pub(crate) fn image_workspace(&self, cx: &mut Context<Self>) -> Div {
         let mut workspace = column().flex_1().min_w_0().h_full().gap_0();
+        let mask_hint = if crate::providers::image_capabilities(&self.settings, true)
+            .ok()
+            .flatten()
+            .is_some_and(|capabilities| {
+                capabilities.mask == agentkit_ai::images::MaskSupport::OptionalLatent
+            }) {
+            "Use mask for next edit; unmasked areas may change slightly"
+        } else {
+            "Use mask for next edit"
+        };
         let mut toolbar = row()
             .flex_wrap()
             .py_2()
@@ -232,7 +242,7 @@ impl DrawingApp {
                                     },
                                 ))
                                 .child(
-                                    tool_button("mask-use", "mask", "Use mask for next edit")
+                                    tool_button("mask-use", "mask", mask_hint)
                                         .atelier_selected(self.use_mask, cx)
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.use_mask = !this.use_mask;

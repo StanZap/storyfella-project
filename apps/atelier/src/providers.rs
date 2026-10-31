@@ -339,7 +339,7 @@ pub fn reference_limit(settings: &Settings) -> Result<usize> {
     Ok(image_capabilities(settings, true)?.map_or(0, |capabilities| capabilities.max_input_images))
 }
 
-fn image_capabilities(
+pub(crate) fn image_capabilities(
     settings: &Settings,
     editing: bool,
 ) -> Result<Option<agentkit_ai::images::ImageCapabilities>> {

@@ -447,7 +447,7 @@ and continuing to use those assets with Atelier closed or uninstalled.
   checkpoint rather than assuming speed from the model name. Done when a creator
   can select MOSS, generate into the current asset workflow and switch between
   local models without changing the canvas or linked story asset.
-- [ ] **SF-PLAN-25 — Expand the shared image capability interface.** Establish
+- [x] **SF-PLAN-25 — Expand the shared image capability interface.** Establish
   Agentkit image contracts during SF-PLAN-27 and represent capabilities and limits
   per model/deployment: generation/editing,
   ordered reference inputs, supported masks/local-edit mechanisms, alpha input
@@ -476,7 +476,7 @@ and continuing to use those assets with Atelier closed or uninstalled.
     its native wire client carries every reference in order without rewriting PNG bytes.
     An opaque response to a transparent-output requirement fails with its job ID.
     Offline regression failed on the original one-input restriction and now
-    checks exact ordered PNG bytes, excessive inputs, unverified masks, opaque
+    checks exact ordered PNG bytes, excessive inputs, masked-input geometry, opaque
     output rejection and Krea's narrower capabilities. Atelier's existing picker,
     queue preflight and execution consume this contract; obsolete single-input
     gates are removed. All three PNGs survived Atelier result attachment and
@@ -490,10 +490,34 @@ and continuing to use those assets with Atelier closed or uninstalled.
     formatting pass. Agentkit native-feature and hosted-only tests, strict
     native-feature Clippy and package formatting pass. Existing vendored GPUI
     Cocoa deprecation warnings remain.
-  - [ ] Verify native model-specific masked editing against the served backend
-    before advertising it. Native masks remain unsupported; the server's generic
-    mask flag does not prove model-specific behavior or exact protection outside
-    the mask. Hosted controls without verified wire mappings remain unavailable.
+  - [x] Verify native model-specific masked editing before advertising it.
+    Controlled Qwen Metal acceptance (2026-10-31, Apple M3 Max, server `3f8527a`)
+    used the same 512×512 source, prompt, two steps and seed 42 with black, white
+    and half-image masks. RGB MAE (0–255) versus the black-mask reconstruction:
+    white 54.149913, half-mask editable region 40.590393, far-protected region
+    0.000000. Black-mask reconstruction differed from the source by 0.945464;
+    the half-mask far-protected region differed by 0.826960. This verifies latent
+    anchoring and demonstrates that protected source pixels are not exact.
+    A shared-client masked edit with two additional RGBA references passed in
+    61.58 seconds: editable MAE 89.607081, far-protected MAE 0.000000 against the
+    same reconstruction. All four PNGs survived Atelier attachment and project
+    save/reopen with embedded bytes and provenance preserved.
+    Agentkit now identifies optional latent masking explicitly, transmits source,
+    mask and ordered references without rewriting their PNG bytes, and requires
+    matching source/mask/output dimensions before startup. Krea still rejects
+    editing. The existing Use mask tooltip explains possible unmasked-area drift;
+    exact compositing stays app-owned. Regression first failed on the unsupported
+    shared mask contract, then passed with exact mask/source/reference bytes,
+    strength/sampling controls, invalid geometry and unchanged unmasked wire
+    behavior covered. Hosted controls without verified mappings stay unavailable.
+    Reproduction: [native mask acceptance](atelier.md#native-mask-acceptance).
+    Evidence: `.svs-e2e/native-mask-acceptance/` (inputs, masks, four outputs,
+    metrics, logs and `qwen-mask-results.atelier`). These two-step runs establish
+    mechanism and persistence, not artistic quality or live tooltip interaction.
+    Workspace tests/all-target checks, strict changed-package Clippy and
+    formatting pass. Agentkit native-feature and hosted-only tests, strict
+    native-feature Clippy and package formatting pass. Existing vendored GPUI
+    Cocoa deprecation warnings remain.
     SF-PLAN-26 owns additional tool exposure and transparent-extraction UX.
 - [ ] **SF-PLAN-26 — Connect capabilities to Atelier's existing tools.** Expose
   supported reference inputs, selections/masks, transparent extraction and
