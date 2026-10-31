@@ -2882,7 +2882,7 @@ impl DrawingApp {
         if provider.native_architecture().is_some() {
             content = content
                 .child(label(if provider.supports_edit() {
-                    "Generation and editing · one source image"
+                    "Generation and reference editing"
                 } else {
                     "Generation only"
                 }))

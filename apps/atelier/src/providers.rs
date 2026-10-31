@@ -336,18 +336,35 @@ pub fn generate(request: Request) -> Result<Reference> {
 }
 
 pub fn reference_limit(settings: &Settings) -> Result<usize> {
+    Ok(image_capabilities(settings, true)?.map_or(0, |capabilities| capabilities.max_input_images))
+}
+
+fn image_capabilities(
+    settings: &Settings,
+    editing: bool,
+) -> Result<Option<agentkit_ai::images::ImageCapabilities>> {
     if let Some(provider) = settings.provider.hosted() {
-        Ok(
-            agentkit_ai::images::HostedDeployment::new(provider, &settings.edit_model)?
-                .max_reference_images(),
-        )
+        let model = if editing {
+            &settings.edit_model
+        } else {
+            &settings.model
+        };
+        Ok(Some(
+            agentkit_ai::images::HostedDeployment::new(provider, model)?.capabilities(),
+        ))
+    } else if let Some(architecture) = settings.provider.native_architecture() {
+        Ok(Some(
+            agentkit_ai::native::sd::profile_by_id(architecture)
+                .context("Unknown local image model")?
+                .image_capabilities(),
+        ))
     } else {
-        Ok(usize::from(settings.provider.supports_edit()))
+        Ok(None)
     }
 }
 
-/// Validate capabilities and configuration before a request enters the queue.
-pub fn validate_inputs(
+/// Validate the model contract before reading credentials or deployment config.
+pub(crate) fn validate_capabilities(
     settings: &Settings,
     editing: bool,
     additional: usize,
@@ -357,15 +374,8 @@ pub fn validate_inputs(
         !editing || settings.provider.supports_edit(),
         "This provider creates new images only; choose an editing provider"
     );
-    if let Some(provider) = settings.provider.hosted() {
-        let model = if editing {
-            &settings.edit_model
-        } else {
-            &settings.model
-        };
-        let deployment = agentkit_ai::images::HostedDeployment::new(provider, model)?;
-        deployment
-            .capabilities()
+    if let Some(capabilities) = image_capabilities(settings, editing)? {
+        capabilities
             .validate_inputs(
                 if editing {
                     agentkit_ai::images::ImageOperation::Edit
@@ -377,13 +387,22 @@ pub fn validate_inputs(
                 (settings.width, settings.height),
             )
             .map_err(anyhow::Error::msg)?;
+    }
+    Ok(())
+}
+
+/// Validate capabilities and configuration before a request enters the queue.
+pub fn validate_inputs(
+    settings: &Settings,
+    editing: bool,
+    additional: usize,
+    mask: bool,
+) -> Result<()> {
+    validate_capabilities(settings, editing, additional, mask)?;
+    if settings.provider.hosted().is_some() {
         api_key(settings.provider)
             .context("Set up this provider in Clipforge, then refresh readiness")?;
     } else if settings.provider.native_architecture().is_some() {
-        ensure!(
-            additional == 0 && !mask,
-            "Local models accept one source image and no additional references or mask"
-        );
         let registry = storyfella_studio_core::ai_config::user_or_built_in()?;
         crate::native_images::deployment(settings, &registry, editing)?;
     } else {

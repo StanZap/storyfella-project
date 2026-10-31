@@ -104,6 +104,43 @@ their embedded images, dimensions and provenance. These tests establish
 provider/lifecycle and project-storage behavior; live Atelier queue interaction
 and visual quality need their own acceptance.
 
+## Native image capability probes
+
+The opt-in RGBA probe uses the resident Qwen deployment in the native acceptance
+configuration above and the public low-level Agentkit `native::sd::Client`.
+It generates a transparent cup, then edits that PNG as an RGBA reference at
+512×512, 20 steps and seed 42. Each output must encode alpha, contain more than
+10% nearly transparent pixels and more than 1% nearly opaque pixels, and survive
+a byte-identical disk round trip. Pixel counts and job timings are printed.
+The second probe consumes those two outputs and adds a horizontally flipped
+reference through Agentkit's shared image client with both alpha requirement
+flags enabled. It uses eight steps as an input/transport smoke check. Run the
+probes sequentially; the second depends on the first. The separate Atelier check
+verifies result attachment and project save/reopen preserve all three encoded
+PNGs, their dimensions and provenance.
+
+```sh
+cargo test -p storyfella-studio-core --test image_capabilities_acceptance native_qwen_rgba_generation_and_reference_editing -- --ignored --nocapture
+cargo test -p storyfella-studio-core --test image_capabilities_acceptance native_qwen_three_ordered_rgba_inputs -- --ignored --nocapture
+cargo test -p storyfella-atelier native_rgba_acceptance_outputs_survive_atelier_project_reopen -- --ignored --nocapture
+```
+
+Evidence stays under `.svs-e2e/image-capabilities/`, including
+`qwen-alpha-create.png`, `qwen-alpha-edit.png`, `qwen-three-references.png` and
+`qwen-alpha-results.atelier`.
+The probe verifies alpha transport, usable transparency and persistence. Subject
+identity and edit fidelity require separate visual evaluation. Application
+preflight uses Agentkit's profile capabilities: Qwen accepts one source plus two
+ordered references, retains PNG alpha input and supports transparent output.
+When transparent output is required, an opaque result fails with the submitted
+job ID; callers supply the transparency prompt. Krea remains generation-only.
+Native masks are rejected before startup while their behavior is unverified.
+The pinned server documents RGBA and ordered references in
+[its Qwen guide](https://github.com/leejet/stable-diffusion.cpp/blob/3f8527a46c54ecf4cb4ed6003da8e8982283c73c/docs/qwen_image_2.1.md)
+and [wire contract](https://github.com/leejet/stable-diffusion.cpp/blob/3f8527a46c54ecf4cb4ed6003da8e8982283c73c/examples/server/api.md).
+Its generic mask feature flag does not establish model-specific editing behavior
+or exact preservation of protected pixels.
+
 ## Repeatable live hosted acceptance
 
 The opt-in Replicate scenario uses the existing shared `clipforge.toml` resolved
@@ -137,8 +174,11 @@ it does not establish image fidelity or other unconfigured hosted providers.
 
 Clipforge's shared image client serves **Qwen Image 2.1** generation and editing,
 and **Krea 2 Turbo** generation through native `stable-diffusion.cpp`. Both are
-available in Atelier's Image provider picker without an API key. Native edits
-accept one source image; masks and extra references are rejected before startup.
+available in Atelier's Image provider picker without an API key. Qwen edits accept
+one source plus two ordered references and preserve input alpha. Native masks and
+inputs beyond the verified limit are rejected before startup. The RGBA and
+multi-reference live evidence above is from macOS Metal; clean Linux/CUDA
+packaging and acceptance remain SF-PLAN-30.
 
 Copy [the shared config example](../config/clipforge.example.toml) to the
 platform config directory — Linux `~/.config/clipforge/clipforge.toml` — and

@@ -464,11 +464,37 @@ and continuing to use those assets with Atelier closed or uninstalled.
     Expose ImageModel and hosted image construction through Agentkit's normal
     provider configuration and credential resolver. Native seed mapping is
     retained; known hosted routes retain ordered references and mask pixels.
-  - [ ] Verify additional native reference/mask/alpha behavior against the
-    served backend before advertising it. Native alpha input and transparent
-    output remain explicitly unverified; the current native route accepts one
-    source and no mask. Hosted controls without verified wire mappings remain
-    unavailable. SF-PLAN-26 owns exposing additional controls in Atelier.
+  - [x] Verify native Qwen ordered references and RGBA before advertising them.
+    Live Metal evidence (2026-10-31, Apple M3 Max, pinned server `3f8527a`):
+    transparent generation and RGBA reference editing at 512×512, 20 steps and
+    seed 42 completed in 141.59 and 188.68 seconds. Their PNGs contained 162,831
+    and 161,624 nearly transparent pixels of 262,144, with opaque subjects and
+    partially transparent edges. The shared image client then accepted a source
+    plus two ordered RGBA references with both alpha flags enabled; an eight-step
+    transport smoke run completed in 104.32 seconds and retained transparency.
+    Agentkit's profile now owns the three-input limit and Qwen alpha metadata;
+    its native wire client carries every reference in order without rewriting PNG bytes.
+    An opaque response to a transparent-output requirement fails with its job ID.
+    Offline regression failed on the original one-input restriction and now
+    checks exact ordered PNG bytes, excessive inputs, unverified masks, opaque
+    output rejection and Krea's narrower capabilities. Atelier's existing picker,
+    queue preflight and execution consume this contract; obsolete single-input
+    gates are removed. All three PNGs survived Atelier result attachment and
+    `.atelier` save/reopen with encoded bytes and provenance intact.
+    Reproduction: [native capability probes](atelier.md#native-image-capability-probes).
+    Evidence: `.svs-e2e/image-capabilities/` (alpha/reference/persistence logs,
+    framework regression logs, PNGs and `qwen-alpha-results.atelier`). This verifies
+    transport, transparency and persistence; edit fidelity and live picker/queue
+    interaction with multiple inputs have not been visually accepted.
+    Workspace tests/all-target checks, strict Studio-core/Atelier Clippy and
+    formatting pass. Agentkit native-feature and hosted-only tests, strict
+    native-feature Clippy and package formatting pass. Existing vendored GPUI
+    Cocoa deprecation warnings remain.
+  - [ ] Verify native model-specific masked editing against the served backend
+    before advertising it. Native masks remain unsupported; the server's generic
+    mask flag does not prove model-specific behavior or exact protection outside
+    the mask. Hosted controls without verified wire mappings remain unavailable.
+    SF-PLAN-26 owns additional tool exposure and transparent-extraction UX.
 - [ ] **SF-PLAN-26 — Connect capabilities to Atelier's existing tools.** Expose
   supported reference inputs, selections/masks, transparent extraction and
   applicable generation controls within the canvas workflow. Distinguish model

@@ -1,5 +1,20 @@
 # Storyfella Studio design standard and UX audit
 
+### Atelier native reference capabilities · 2026-10-31
+
+The existing reference picker and queue preflight read Agentkit's profile
+capabilities. Qwen accepts a source plus two ordered references and retains PNG
+alpha; Krea remains generation-only. Unsupported masks and excess inputs fail
+before startup. Settings describes reference editing without an obsolete
+single-source claim. These changes use the existing controls and feedback.
+
+Offline queue-contract tests cover accepted and rejected combinations. Real
+Metal runs verified RGBA generation/editing and the shared client's three-input
+path; all three outputs survived Atelier result attachment and project reopen
+with encoded bytes and provenance intact. See the
+[capability probes](docs/atelier.md#native-image-capability-probes). Live UI
+interaction with multiple references and visual edit fidelity remain unverified.
+
 ### Atelier side panels · 2026-10-25 (current)
 
 Activity, Settings, Brushes, Canvas & project, Practice, References and the

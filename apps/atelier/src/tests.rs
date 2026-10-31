@@ -17,7 +17,7 @@ fn native_acceptance_outputs_survive_atelier_project_reopen() {
     acceptance_outputs_survive_project_reopen(
         "native-acceptance",
         "Native acceptance",
-        ["native-create.png", "native-after-abort.png"],
+        &["native-create.png", "native-after-abort.png"],
         "native-results.atelier",
     );
 }
@@ -28,15 +28,30 @@ fn hosted_acceptance_outputs_survive_atelier_project_reopen() {
     acceptance_outputs_survive_project_reopen(
         "hosted-acceptance",
         "Hosted acceptance",
-        ["hosted-create.png", "hosted-edit.png"],
+        &["hosted-create.png", "hosted-edit.png"],
         "hosted-results.atelier",
+    );
+}
+
+#[test]
+#[ignore = "requires PNG outputs from the real native RGBA capability probe"]
+fn native_rgba_acceptance_outputs_survive_atelier_project_reopen() {
+    acceptance_outputs_survive_project_reopen(
+        "image-capabilities",
+        "Native RGBA acceptance",
+        &[
+            "qwen-alpha-create.png",
+            "qwen-alpha-edit.png",
+            "qwen-three-references.png",
+        ],
+        "qwen-alpha-results.atelier",
     );
 }
 
 fn acceptance_outputs_survive_project_reopen(
     folder: &str,
     title: &str,
-    names: [&str; 2],
+    names: &[&str],
     project_name: &str,
 ) {
     let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -45,7 +60,7 @@ fn acceptance_outputs_survive_project_reopen(
     let mut project = doc();
     project.title = title.into();
     let mut originals = Vec::new();
-    for name in names {
+    for &name in names {
         let bytes = std::fs::read(directory.join(name)).unwrap();
         let reference =
             Arc::new(document::reference_from_bytes(name.into(), &bytes, title.into()).unwrap());
@@ -83,7 +98,8 @@ fn acceptance_outputs_survive_project_reopen(
         );
     }
     eprintln!(
-        "Both outputs survived Atelier save/reopen: {}",
+        "All {} outputs survived Atelier save/reopen: {}",
+        names.len(),
         path.display()
     );
 }
@@ -611,7 +627,8 @@ fn prepare_project_tabs_fixture() {
 #[test]
 fn unsupported_reference_combinations_fail_before_credentials_or_provider_execution() {
     for (provider, model, extra, mask) in [
-        (Provider::QwenNative, "", 1, false),
+        (Provider::QwenNative, "", 3, false),
+        (Provider::QwenNative, "", 0, true),
         (Provider::KreaNative, "", 0, false),
         (Provider::Comfy, "", 0, false),
         (Provider::Fal, "alibaba/qwen-image-3/edit", 3, false),
@@ -628,6 +645,19 @@ fn unsupported_reference_combinations_fail_before_credentials_or_provider_execut
         assert!(!error.contains("credential"), "{error}");
         assert!(!error.contains("Set up"), "{error}");
     }
+}
+
+#[test]
+fn native_reference_queue_accepts_source_and_two_references() {
+    let settings = Settings {
+        provider: Provider::QwenNative,
+        ..Settings::default()
+    };
+    assert_eq!(providers::reference_limit(&settings).unwrap(), 3);
+    providers::validate_capabilities(&settings, true, 2, false).unwrap();
+    assert!(providers::validate_capabilities(&settings, true, 3, false).is_err());
+    assert!(providers::validate_capabilities(&settings, true, 0, true).is_err());
+    assert!(providers::validate_capabilities(&settings, false, 1, false).is_err());
 }
 
 #[test]

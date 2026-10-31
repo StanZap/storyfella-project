@@ -94,7 +94,10 @@ and sd-server build tooling remain in the separate Clipforge repository.
 `CreativeRuntime` adapts Agentkit to registry jobs and stored artwork.
 `ImageCapabilities` drives Atelier queue preflight and provider execution;
 unsupported controls are rejected, never silently discarded by the backend.
-Alpha output and native alpha input remain unverified in the capability metadata.
+The native Qwen route preserves input alpha, supports verified transparent PNG
+output and accepts a source plus two ordered references. Its profile owns these
+limits; Atelier queue preflight and execution consume the same contract. Native
+masks remain unverified and unsupported. Other routes retain their own metadata.
 
 **The app's image deployment is a provider.** The `sd-server` executable, model
 tree, LoRA root, endpoint, and weight overrides come from the shared

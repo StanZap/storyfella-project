@@ -120,10 +120,6 @@ impl NativeImages {
             settings.provider.supports_edit() || request.source.is_none(),
             "Krea 2 Turbo supports generation only"
         );
-        ensure!(
-            request.references.is_empty() && request.mask.is_none(),
-            "Local models accept one source image and no mask"
-        );
         let providers = config::user_or_built_in()?;
         let editing = request.source.is_some();
         let selected = deployment(settings, &providers, editing)?;
