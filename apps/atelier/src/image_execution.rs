@@ -39,6 +39,7 @@ pub fn generate(request: Request) -> Result<Reference> {
         .context("Invalid reference image encoding")?;
     let prompt = request.prompt.clone();
     let mut image_request = ImageRequest::new(request.prompt, request.size.0, request.size.1);
+    image_request.timeout = Some(request.settings.request_timeout());
     image_request.source = source;
     image_request.references = request
         .references

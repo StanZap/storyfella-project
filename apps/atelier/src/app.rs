@@ -318,6 +318,7 @@ pub struct DrawingApp {
     pub latent_node: Entity<InputState>,
     pub seed_node: Entity<InputState>,
     pub steps: Entity<InputState>,
+    pub request_timeout: Entity<InputState>,
     pub note: Entity<TextareaState>,
     pub ref_name: Entity<InputState>,
     pub ref_tags: Entity<InputState>,
@@ -479,6 +480,13 @@ impl DrawingApp {
         let positive_node = input(settings.positive_node.clone(), window, cx);
         let latent_node = input(settings.latent_node.clone(), window, cx);
         let seed_node = input(settings.seed_node.clone(), window, cx);
+        let request_timeout = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(settings.request_timeout_minutes.clamp(1, 1440).to_string())
+                .step(1.0)
+                .min(1.0)
+                .max(1440.0)
+        });
         let steps = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(
@@ -714,6 +722,7 @@ impl DrawingApp {
             latent_node,
             seed_node,
             steps,
+            request_timeout,
             note,
             ref_name,
             ref_tags,
@@ -1713,6 +1722,9 @@ impl DrawingApp {
         cx.notify();
     }
     pub fn settings_from_inputs(&mut self, cx: &mut Context<Self>) {
+        if let Ok(minutes) = self.request_timeout.read(cx).value().trim().parse::<u32>() {
+            self.settings.request_timeout_minutes = minutes.clamp(1, 1440);
+        }
         self.settings.endpoint = self.endpoint.read(cx).value().trim().to_owned();
         self.settings.model = self.model.read(cx).value().trim().to_owned();
         self.settings.edit_model = self.edit_model.read(cx).value().trim().to_owned();
@@ -2259,9 +2271,26 @@ impl DrawingApp {
         self.message("Cleared finished requests", false);
         cx.notify();
     }
-    /// Removes a queued (not yet started) request.
-    pub fn queue_remove(&mut self, id: u64, cx: &mut Context<Self>) {
-        self.queue.remove(id);
+    /// Abort only the selected request, leaving dispatch and other jobs intact.
+    pub fn queue_abort(&mut self, id: u64, cx: &mut Context<Self>) {
+        let running = self
+            .queue
+            .get(id)
+            .is_some_and(|item| matches!(item.state, JobState::Running { .. }));
+        if running && (id != self.job_id || self.generation.is_none()) {
+            return;
+        }
+        if !self.queue.abort(id) {
+            return;
+        }
+        if running {
+            if let Some(cancel) = &self.generation {
+                cancel.store(true, Ordering::Relaxed);
+            }
+            self.message("Abort requested · waiting for provider", false);
+        } else {
+            self.message("Queued request aborted", false);
+        }
         cx.notify();
     }
 
@@ -2530,18 +2559,6 @@ impl DrawingApp {
         cx.notify();
     }
 
-    /// Stops the running request. Its result is discarded when it arrives.
-    pub fn cancel_generation(&mut self) {
-        if let Some(cancel) = &self.generation {
-            cancel.store(true, Ordering::Relaxed);
-            if let Some(item) = self.queue.get_mut(self.job_id) {
-                item.state = JobState::Running {
-                    progress: "Cancelling…".into(),
-                };
-            }
-            self.message("Cancellation requested · waiting for provider", false);
-        }
-    }
     pub fn save(&mut self, save_as: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.closing_project.is_some() {
             return;
@@ -3356,11 +3373,22 @@ impl DrawingApp {
                             .take()
                             .is_some_and(|c| c.load(Ordering::Relaxed));
                         if cancelled {
+                            let native = self.queue.get(id).is_some_and(|item| {
+                                item.request
+                                    .settings
+                                    .provider
+                                    .native_architecture()
+                                    .is_some()
+                            });
                             if let Some(item) = self.queue.get_mut(id) {
                                 item.state = JobState::Cancelled;
                             }
                             self.message(
-                                "Generation cancelled; provider charges may still apply",
+                                if native {
+                                    "Request aborted · native GPU work may finish on the server"
+                                } else {
+                                    "Request aborted · provider charges may still apply"
+                                },
                                 false,
                             );
                         } else {

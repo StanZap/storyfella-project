@@ -35,6 +35,7 @@ gpui_kit::actions!(
         SaveProjectAs,
         OpenProject,
         OpenPrompt,
+        OpenSettings,
         ClosePanel,
         CloseProject,
         MoveProjectLeft,
@@ -75,6 +76,7 @@ fn main() {
                 KeyBinding::new("cmd-shift-s", SaveProjectAs, None),
                 KeyBinding::new("cmd-o", OpenProject, None),
                 KeyBinding::new("cmd-p", OpenPrompt, None),
+                KeyBinding::new("cmd-,", OpenSettings, None),
                 KeyBinding::new("escape", ClosePanel, Some("SidePanel")),
                 #[cfg(target_os = "macos")]
                 KeyBinding::new("cmd-w", CloseProject, None),
@@ -86,9 +88,13 @@ fn main() {
                 KeyBinding::new("ctrl-shift-s", SaveProjectAs, None),
                 KeyBinding::new("ctrl-o", OpenProject, None),
                 KeyBinding::new("ctrl-p", OpenPrompt, None),
+                KeyBinding::new("ctrl-,", OpenSettings, None),
             ]);
             cx.set_menus([
-                Menu::new("Atelier").items([MenuItem::action("Quit Atelier", Quit)]),
+                Menu::new("Atelier").items([
+                    MenuItem::action("Settings…", OpenSettings),
+                    MenuItem::action("Quit Atelier", Quit),
+                ]),
                 Menu::new("File").items([
                     MenuItem::action("Open project…", OpenProject),
                     MenuItem::action("Save project", SaveProject),
@@ -128,7 +134,12 @@ fn main() {
                     ..Default::default()
                 },
                 cx,
-                |window, cx| cx.new(|cx| DrawingApp::new(data_dir, window, cx)),
+                |window, cx| {
+                    let app = cx.new(|cx| DrawingApp::new(data_dir, window, cx));
+                    let focus = app.read(cx).focus.clone();
+                    window.focus(&focus, cx);
+                    app
+                },
             )
             .expect("Open Atelier window");
             cx.activate(true);

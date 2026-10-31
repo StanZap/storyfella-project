@@ -56,6 +56,7 @@ impl QueuedRequest {
 pub enum JobState {
     Queued,
     Running { progress: String },
+    Aborting,
     Done,
     Failed(u64),
     Cancelled,
@@ -66,9 +67,10 @@ impl JobState {
         match self {
             Self::Queued => "Queued",
             Self::Running { .. } => "Running",
+            Self::Aborting => "Aborting",
             Self::Done => "Done",
             Self::Failed(_) => "Failed",
-            Self::Cancelled => "Cancelled",
+            Self::Cancelled => "Aborted",
         }
     }
 
@@ -116,14 +118,18 @@ impl Queue {
         id
     }
 
-    /// Only queued items can be removed; a running or finished item is history.
-    pub fn remove(&mut self, id: u64) {
-        if self
-            .get(id)
-            .is_some_and(|item| item.state == JobState::Queued)
-        {
-            self.items.retain(|item| item.id != id);
-        }
+    /// Abort one request, retaining its history and the order of other work.
+    /// A running request stays outstanding until its worker acknowledges it.
+    pub fn abort(&mut self, id: u64) -> bool {
+        let Some(item) = self.get_mut(id) else {
+            return false;
+        };
+        item.state = match item.state {
+            JobState::Queued => JobState::Cancelled,
+            JobState::Running { .. } => JobState::Aborting,
+            _ => return false,
+        };
+        true
     }
 
     /// Drops finished items, keeping queued and running work.
@@ -251,16 +257,34 @@ mod tests {
     }
 
     #[test]
-    fn only_queued_requests_can_be_removed() {
+    fn abort_targets_one_request_and_preserves_other_work_and_pause() {
         let mut queue = Queue::default();
-        let id = queue.enqueue(request("a"), 0);
-        queue.get_mut(id).unwrap().state = JobState::Done;
-        queue.remove(id);
-        assert!(queue.get(id).is_some(), "a finished request is history");
-
-        let id = queue.enqueue(request("b"), 0);
-        queue.remove(id);
-        assert!(queue.get(id).is_none(), "a queued request can be removed");
+        let running = queue.enqueue(request("running"), 1);
+        let aborted = queue.enqueue(request("aborted"), 2);
+        let waiting = queue.enqueue(request("waiting"), 3);
+        queue.get_mut(running).unwrap().state = JobState::Running {
+            progress: "Generating".into(),
+        };
+        queue.toggle_paused();
+        assert!(queue.abort(aborted));
+        assert_eq!(queue.get(aborted).unwrap().state, JobState::Cancelled);
+        assert!(matches!(
+            queue.get(running).unwrap().state,
+            JobState::Running { .. }
+        ));
+        assert_eq!(queue.next_queued(), Some(waiting));
+        assert!(queue.is_paused());
+        assert!(queue.abort(running));
+        assert_eq!(queue.get(running).unwrap().state, JobState::Aborting);
+        assert_eq!(queue.outstanding(), 2);
+        assert!(!queue.abort(running));
+        assert!(!queue.abort(aborted));
+        assert!(!queue.abort(999));
+        queue.clear_finished(|_| false);
+        assert!(queue.get(running).is_some());
+        assert_eq!(queue.get(waiting).unwrap().state, JobState::Queued);
+        queue.get_mut(running).unwrap().state = JobState::Done;
+        assert!(!queue.abort(running));
     }
 
     #[test]

@@ -12,6 +12,23 @@ use std::{
 };
 
 #[test]
+fn request_time_limit_migrates_persists_and_stays_global_across_providers() {
+    let mut settings: Settings = serde_json::from_str("{}").unwrap();
+    assert_eq!(settings.request_timeout_minutes, 30);
+    settings.request_timeout_minutes = 90;
+    settings.select_provider(Provider::QwenNative);
+    assert_eq!(settings.request_timeout(), Duration::from_secs(5400));
+    let directory = temporary("request-time-limit");
+    let path = directory.join("settings.json");
+    worker::apply_settings(&settings, &path).unwrap();
+    let restored: Settings = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(restored.request_timeout_minutes, 90);
+    settings.request_timeout_minutes = 0;
+    assert_eq!(settings.request_timeout(), Duration::from_secs(60));
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn generated_compositions_and_candidates_keep_distinct_roles_through_save_and_history() {
     use crate::workflow::Destination;
     let mut project = doc();
@@ -706,6 +723,25 @@ executable = "runtime/sd-server"
         "krea2-turbo"
     );
     assert!(crate::native_images::deployment(&settings, &providers, true).is_err());
+
+    // Clipforge publishes the effective shared endpoint; Atelier consumes it
+    // directly, with the same paths for status, preflight and generation.
+    let mut qwen = providers
+        .image_deployment_for("qwen", agentkit_ai::deployments::Capability::T2i)
+        .unwrap();
+    qwen.port = 7862;
+    let path = directory.join("clipforge.toml");
+    providers
+        .write_image_deployments(&path, &[("qwen", qwen.clone())])
+        .unwrap();
+    let shared = agentkit_ai::deployments::Providers::load(&path).unwrap();
+    settings.provider = Provider::QwenNative;
+    for editing in [false, true] {
+        assert_eq!(
+            crate::native_images::deployment(&settings, &shared, editing).unwrap(),
+            qwen
+        );
+    }
     std::fs::remove_dir_all(directory).unwrap();
 }
 fn stroke(tool: Tool, y: f32) -> Stroke {
@@ -1522,8 +1558,12 @@ fn comfy_generation_roundtrip_with_local_mock_server() {
 #[ignore = "Runs a local rate-limit UI fixture server under .svs-e2e until stop-server exists"]
 fn serve_activity_ui_fixture() {
     use crate::project_tabs::{self, RecoveryTab};
-    let directory =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/atelier-activity-ui");
+    let directory = std::env::var_os("ATELIER_UI_FIXTURE_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../.svs-e2e/atelier-activity-ui")
+        });
     std::fs::create_dir_all(&directory).unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -1640,6 +1680,8 @@ fn serve_activity_ui_fixture() {
                     serde_json::to_vec(&serde_json::json!({"error":{"message":message}})).unwrap(),
                 )
             }
+        } else if headers.starts_with("GET /history/") && directory.join("hold-jobs").exists() {
+            ("200 OK", b"{}".to_vec())
         } else if headers.starts_with("GET /history/") {
             ("200 OK", br#"{"activity-result":{"status":{"completed":true,"status_str":"success"},"outputs":{"9":{"images":[{"filename":"output.png","subfolder":"","type":"output"}]}}}}"#.to_vec())
         } else if headers.starts_with("GET /view?") {

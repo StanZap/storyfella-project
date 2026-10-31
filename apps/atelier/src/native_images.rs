@@ -61,6 +61,8 @@ pub enum ServerStatus {
     Running { model: Option<String> },
     /// Not answering; the app starts it on demand.
     Stopped,
+    /// Configuration or probing could not be resolved; readiness is unknown.
+    Unavailable,
 }
 
 /// Probes the machine's shared `sd-server` for the selected local provider.
@@ -70,19 +72,19 @@ pub fn server_status(settings: &Settings) -> ServerStatus {
         return ServerStatus::NotLocal;
     }
     let Ok(providers) = config::user_or_built_in() else {
-        return ServerStatus::Stopped;
+        return ServerStatus::Unavailable;
     };
     let Ok(deployment) = deployment(settings, &providers, false) else {
-        return ServerStatus::Stopped;
+        return ServerStatus::Unavailable;
     };
     let Some(state_dir) = storyfella_studio_core::paths::state_dir() else {
-        return ServerStatus::Stopped;
+        return ServerStatus::Unavailable;
     };
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
     else {
-        return ServerStatus::Stopped;
+        return ServerStatus::Unavailable;
     };
     runtime.block_on(async {
         if !matches!(

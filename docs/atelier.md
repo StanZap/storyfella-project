@@ -98,7 +98,10 @@ setup reports an error while keeping the source and prompt draft.
 The new-image generation panel carries the prompt, the aspect presets (**1:1 / 3:2 / 2:3**)
 and **Add to queue**, and reports whether the machine's shared `sd-server` is
 answering (`Local server: running · <model>` or `stopped · starts on demand`),
-re-probed on demand, when the provider changes, and after each generation. A gear
+with an unavailable status when provider configuration cannot be resolved. It is
+re-probed on demand, when the provider changes, and after each generation.
+Clipforge publishes its effective native server address and absolute model and
+executable paths at desktop startup; hosted defaults and credentials are kept. A gear
 in the rail opens the **Image
 settings** window with the sampling **steps** (blank uses the model's default —
 25 for Qwen, 8 for Krea), the output **width**/**height**, and the **LoRA
@@ -112,13 +115,28 @@ providers ignore them and use the preset aspect sizes.
 model, prompt, width, height, steps and the applied LoRA adapters with their
 weights — and runs it after the requests already waiting, so several images can
 be prepared before any finishes. Exactly one request runs at a time, on the same
-shared server. **Pause** holds dispatch (a running image always finishes),
-**Stop** cancels the running request, a queued request can be removed, and
+shared server. **Pause** holds dispatch (a running image always finishes).
+Each queued or running row has **Abort**, which targets that request alone.
+Queued requests become **Aborted** without being submitted; running requests
+show **Aborting** until their worker acknowledges cancellation and their result
+is discarded. Other requests and the pause state are preserved. The native
+server cannot interrupt GPU sampling already in progress, so its computation
+may finish after Atelier stops waiting. Hosted cancellation depends on the
+provider and charges may still apply.
+
+Open app-wide Settings through **Atelier → Settings…** or **⌘,** (Ctrl+, on
+other platforms), including from Projects. **Generation → Request time limit
+(minutes)** saves a global default of 30 minutes, configurable from 1 minute to
+24 hours. New requests capture this limit; changing it does not affect requests
+already queued or running. Waiting in Atelier's queue does not count. Native
+server startup has its own readiness limit, and a native timeout stops waiting
+without guaranteeing remote cancellation.
+
 **Clear completed** drops completed or dismissed history, preserving unresolved
 failures. Each queue entry keeps the values it
 was created with, so editing the live controls afterwards never changes work
 already queued. The app-wide **Activity** control exposes failures and queue work,
-including Pause/Stop/remove/retry/result-opening actions. Failures have a concise
+including Pause/Abort/retry/result-opening actions. Failures have a concise
 explanation, recovery action and optional **Details** with a selectable read-only
 report and verified **Copy report**. Short contextual hints replace raw footer
 errors. Generation hints stay with their project and prompt context; save

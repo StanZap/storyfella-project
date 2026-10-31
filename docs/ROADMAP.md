@@ -57,6 +57,17 @@ streaming presentation, not domain code to copy into Storyfella.
     and both MCP transports; Agentkit native/core tests, hosted-only tests,
     strict Clippy and runtime/workflow/eval consumer checks. Shared HTTP tracing
     excludes endpoint credentials, queries, fragments and raw transport errors.
+    Shared native registration (2026-10-30): Clipforge desktop startup publishes
+    its effective native model deployments to the shared registry, preserving
+    hosted defaults, keys and local weight overrides. Atelier can resolve the
+    same server address and absolute launch paths even when the earlier config
+    contained only hosted providers. Regression tests cover fresh and hosted-only
+    configs and Atelier's generation/edit resolution; workspace checks/tests and
+    strict Atelier/Agentkit Clippy pass. This is configuration validation, with
+    no additional model download or image-generation run. The rebuilt Atelier
+    UI was reloaded against the existing server and showed
+    `Local server: running · qwen_image_2.1-Q8_0.gguf` without the missing-provider
+    composer error.
   - [ ] Complete live acceptance on a supported native inference machine and
     configured hosted routes: Qwen generation/editing, Krea generation, model
     switching/reuse, cancellation and saved output. Offline tests establish
@@ -1151,16 +1162,35 @@ See [iteration acceptance](atelier.md).
 **Add to queue** captures the provider, model, prompt, width, height, sampling
 steps and the applied LoRA adapters (each with its weight) as an immutable
 snapshot and runs one request at a time on the shared image server. **Pause**
-holds dispatch without interrupting a running image, **Stop** cancels the running
-request, a queued request can be removed, and **Clear finished** drops completed
+holds dispatch without interrupting a running image. Each queued/running row has
+**Abort**, targeting only that request; aborted items remain in history and
+**Clear completed** drops completed
 history; the list labels each request's state. Size, steps and adapters are set
 per request in the **Image settings** window, and Settings no longer duplicates
 them. The queue has its own panel, opened from a header badge that counts
 outstanding requests. **Generate from drawing** opens a compact panel that
 auto-switches to a **box select** region when the canvas is dragged, then
 rasterizes the area and queues it. See [Atelier](atelier.md). Live multi-request
-validation on a real provider is pending; the queue's ordering, pause, removal,
-history-clearing and region-clamping rules are unit-tested.
+validation on a real provider is pending; the queue's ordering, pause, individual
+abort, history-clearing and region-clamping rules are unit-tested. Isolated mock
+UI acceptance (2026-10-30) verified that aborting a queued request preserves the
+running one, prevents the queued submission and keeps both outcomes in history;
+the running request was then aborted separately. Native GPU sampling may finish
+after Atelier stops waiting. Workspace checks/tests/format, strict Atelier
+Clippy and macOS packaging pass; no real inference was submitted for this check.
+
+Configurable request lifetime (2026-10-30): app-wide Settings is reachable from
+the Atelier menu and ⌘,/Ctrl+, on every page. The saved generation wait limit
+defaults to 30 minutes (1–1440 configurable), replaces the fixed five-minute
+native deadline, and is captured per queued request. Hosted and ComfyUI waits
+use the same setting; native startup remains separately bounded. Mock native
+tests cover short deadlines and delayed completion with a longer allowance;
+settings tests cover migration, persistence and provider switching. Timeouts
+do not imply native GPU cancellation. Isolated native UI verification opened
+Settings with ⌘, from Projects before opening a document and saved a 45-minute
+limit. Workspace tests/checks, strict Atelier/Agentkit Clippy, hosted-only
+Agentkit and Clipforge all-target checks, and macOS packaging pass. No image
+generation was submitted for these checks.
 
 **Reference library scoping: implemented.** The Atelier reference library is the
 shared collection, not every image ever made: generated images, edits and project

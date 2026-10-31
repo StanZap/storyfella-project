@@ -407,18 +407,6 @@ impl DrawingApp {
                                 ),
                         )
                     })
-                    .when(self.generation.is_some(), |row| {
-                        row.child(
-                            Button::new("activity-stop")
-                                .ghost()
-                                .small()
-                                .label("Stop")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.cancel_generation();
-                                    cx.notify();
-                                })),
-                        )
-                    })
                     .when(
                         self.queue.items().iter().any(|item| match item.state {
                             JobState::Done | JobState::Cancelled => true,

@@ -93,7 +93,7 @@ fn job_state_label(state: &crate::queue::JobState) -> Div {
     use crate::queue::JobState;
     let color = match state {
         JobState::Queued | JobState::Cancelled => MUTED,
-        JobState::Running { .. } => AMBER,
+        JobState::Running { .. } | JobState::Aborting => AMBER,
         JobState::Done => GREEN,
         JobState::Failed(_) => WINE,
     };
@@ -229,9 +229,11 @@ fn server_status_label(status: Option<&crate::native_images::ServerStatus>) -> S
             format!("Local server: running · {model}")
         }
         Some(ServerStatus::Running { model: None }) => "Local server: running".to_string(),
-        Some(ServerStatus::Stopped) | None => {
-            "Local server: stopped · starts on demand".to_string()
+        Some(ServerStatus::Stopped) => "Local server: stopped · starts on demand".to_string(),
+        Some(ServerStatus::Unavailable) => {
+            "Local server: unavailable · check provider configuration in Clipforge".to_string()
         }
+        None => "Local server: checking…".to_string(),
         Some(ServerStatus::NotLocal) => String::new(),
     }
 }
@@ -412,6 +414,12 @@ impl DrawingApp {
             }))
             .on_action(cx.listener(|this, _: &crate::OpenPrompt, window, cx| {
                 this.open_prompt(window, cx);
+                cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|this, _: &crate::OpenSettings, _, cx| {
+                this.panel = Panel::Settings;
+                this.refresh_server_status();
+                cx.notify();
                 cx.stop_propagation();
             }))
             .on_action(cx.listener(|this, _: &crate::ClosePanel, window, cx| {
@@ -2402,8 +2410,7 @@ impl DrawingApp {
             validation.map(|validation| validation.message.as_str()),
         )
     }
-    /// One queue entry, oldest first. A queued request can be removed; a running
-    /// or finished one is left in place so its outcome stays visible.
+    /// One queue entry, oldest first, with an abort action for pending work.
     pub(crate) fn queue_row(&self, item: &crate::queue::QueueItem, cx: &mut Context<Self>) -> Div {
         use crate::queue::JobState;
         let id = item.id;
@@ -2437,15 +2444,24 @@ impl DrawingApp {
                     .child(job_state_label(&item.state)),
             )
             .child(detail);
-        if item.state == JobState::Queued {
+        if matches!(
+            item.state,
+            JobState::Queued | JobState::Running { .. } | JobState::Aborting
+        ) {
             entry = entry.child(
-                Button::new(format!("queue-remove-{id}"))
+                Button::new(format!("queue-abort-{id}"))
                     .ghost()
                     .small()
-                    .label("Remove")
-                    .accessibility_label("Remove from queue")
-                    .tooltip("Remove from queue")
-                    .on_click(cx.listener(move |this, _, _, cx| this.queue_remove(id, cx))),
+                    .label("Abort")
+                    .disabled(item.state == JobState::Aborting)
+                    .accessibility_label(format!("Abort request {id}"))
+                    .tooltip(if matches!(item.state, JobState::Running { .. })
+                        && item.request.settings.provider.native_architecture().is_some() {
+                        "Stop waiting and discard the result; native GPU work may finish on the server"
+                    } else {
+                        "Abort this request"
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| this.queue_abort(id, cx))),
             );
         }
         if matches!(item.state, JobState::Done) && item.result_id.is_some() {
@@ -2961,6 +2977,20 @@ impl DrawingApp {
                     .label("Reload providers")
                     .on_click(cx.listener(|this, _, window, cx| this.reload_clipforge(window, cx))),
             )
+            .child(separator())
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Generation"),
+            )
+            .child(number_field(
+                "Request time limit (minutes)",
+                &self.request_timeout,
+            ))
+            .child(label(
+                "Applies to new requests. Time waiting in Atelier's queue does not count.",
+            ))
             .child(separator())
             .child(
                 div()

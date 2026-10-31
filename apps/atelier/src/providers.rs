@@ -127,6 +127,8 @@ pub struct Settings {
     /// LoRA adapters applied to local generations.
     pub loras: Vec<LoraSetting>,
     pub reduced_motion: bool,
+    /// Generation wait limit captured with each request; excludes queue waiting.
+    pub request_timeout_minutes: u32,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -146,10 +148,14 @@ impl Default for Settings {
             height: 1024,
             loras: Vec::new(),
             reduced_motion: false,
+            request_timeout_minutes: 30,
         }
     }
 }
 impl Settings {
+    pub fn request_timeout(&self) -> Duration {
+        Duration::from_secs(u64::from(self.request_timeout_minutes.clamp(1, 1440)) * 60)
+    }
     pub fn remember_provider(&mut self) {
         self.profiles.insert(
             self.provider.account().into(),
@@ -486,7 +492,7 @@ fn comfy(client: &Client, request: Request) -> Result<Reference> {
             bail!("Generation cancelled; a running ComfyUI job may finish on the server");
         }
         ensure!(
-            started.elapsed() < Duration::from_secs(300),
+            started.elapsed() < request.settings.request_timeout(),
             "ComfyUI timed out; inspect its queue before retrying"
         );
         let history = response_json(

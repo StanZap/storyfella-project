@@ -11,6 +11,12 @@ columns within the shared width. Auxiliary panels replace the drawing inspector
 and restore its visibility preference when closed. Close returns focus to the
 workspace; Escape also closes a panel from its controls.
 
+App-wide Settings is available from the Atelier application menu and ⌘,
+(Ctrl+, elsewhere), including on Projects. Generation contains a numeric
+**Request time limit (minutes)** field, default 30, bounded to 1–1440 minutes.
+The limit is saved globally and captured by new queued requests; the panel
+explains that queue waiting does not count. Existing requests keep their limit.
+
 Isolated native checks verified Settings, Activity, References, Brushes, Practice
 and the drawing inspector in the shared slot, including replacement and closing.
 Workspace checks/tests/format, strict Atelier Clippy and packaging pass.
@@ -46,6 +52,14 @@ notification does not claim unsaved work is saved. Retry uses captured inputs,
 and a successful attempt resolves its report. Do not invent retry countdowns or
 automatically resubmit paid requests. Reports and queue history are session-only;
 documents, prompt drafts and originals keep their existing persistence.
+
+Each queued or running request exposes its own **Abort** action. A queued abort
+stays in history as **Aborted**; a running abort stays **Aborting** with its
+action disabled until the worker acknowledges cancellation. Pause remains a
+queue-wide dispatch control. Aborting does not change other requests or pause
+state. Native sampling may finish remotely after waiting stops; the result is
+discarded. Isolated mock UI checks verified both actions without real inference
+(2026-10-30), alongside queue regression tests and strict Atelier Clippy.
 
 Native fixture checks verified long mocked 429 diagnostics, quiet footers,
 details/copy/read-only/Escape, separate save failures, project isolation, grouped
