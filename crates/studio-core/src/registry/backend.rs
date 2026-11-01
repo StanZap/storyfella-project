@@ -310,7 +310,7 @@ impl CreativeBackend {
     fn vocabulary_block() -> String {
         "You plan operations for a visual story tool. Respond with JSON only, exactly \
          this shape: {{\"operations\": [ ... ]}} where every operation is one of:\n\
-         {{\"op\": \"create\", \"kind\": \"story|scene|beat|character|environment|object\", \"description\": \"...\", \"name\": \"...\", \"size\": [w, h], \"steps\": n, \"loras\": [{{\"path\": \"...\", \"multiplier\": 0.8}}]}}\n\
+         {{\"op\": \"create\", \"kind\": \"story|scene|beat|character|environment|object|illustration\", \"description\": \"...\", \"name\": \"...\", \"size\": [w, h], \"steps\": n, \"loras\": [{{\"path\": \"...\", \"multiplier\": 0.8}}]}}\n\
          {{\"op\": \"variant\", \"target\": \"c:<name>\", \"description\": \"...\", \"axis\": \"outfit|age|body|hair|expression|time-of-day|weather|season|mood\", \"size\": [w, h], \"steps\": n, \"loras\": [...]}}\n\
          {{\"op\": \"regenerate\", \"target\": \"c:<name>\", \"prompt\": \"...\", \"size\": [w, h], \"steps\": n, \"loras\": [...]}}\n\
          {{\"op\": \"resize\", \"target\": \"c:<name>\", \"width\": w, \"height\": h}}\n\
@@ -794,7 +794,7 @@ impl CreativeBackend {
                                     "additionalProperties": false,
                                     "properties": {
                                         "op": { "const": "create" },
-                                        "kind": { "enum": ["story", "scene", "beat", "character", "environment", "object"] },
+                                        "kind": { "enum": super::ArtifactKind::ALL },
                                         "description": { "type": "string" },
                                         "name": { "type": "string" },
                                         "size": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 },

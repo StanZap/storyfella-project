@@ -1,5 +1,30 @@
 # Storyfella Studio design standard and UX audit
 
+### Shared asset definitions · 2026-11-01
+
+Valid explicit DSL declarations create pending catalog identities without
+rendering; unfinished/invalid source retains the previous catalog. New artifact
+and variant forms default to definitions, with an explicit Generate an image now
+checkbox. Names follow DSL identifier rules. Inspector Rename updates the exact
+resolved references and catalog entry together in one undo, preserving prose.
+
+Atelier's shared-project Artboards toolbar opens Assets. The panel creates and
+describes items and variations, attaches existing image revisions and links
+artboards, using the storage worker with retained forms on errors. An item used
+by saved source is renamed in Studio. Illustrations have their own catalog
+identity rather than masquerading as a scene/beat. Catalog edits never generate
+images or rewrite Studio source from Atelier.
+
+Checked GUI writes reject stale snapshots without overwriting newer work.
+Atelier Refresh retains same-project form text for retry. Studio initially loads
+external changes on reopening; live notification, merge and conflict recovery
+remain SF-PLAN-04. Storage/catalog tests cover creation from both apps, missing
+artwork, invalid source, rename/undo, stable variation/image links, migration,
+stale saves, worker events and relocation. Native UI acceptance is assigned to
+the user. See [catalog contract](docs/shared-project.md#shared-asset-catalog).
+Workspace tests/checks, formatting, strict changed-package Clippy, the Studio
+desktop build and Atelier's macOS development packaging pass.
+
 ### Shared project folders · 2026-11-01
 
 New Studio stories create portable folders. Projects → Open accepts the shared

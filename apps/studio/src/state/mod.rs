@@ -27,6 +27,7 @@ pub struct AppState {
     /// The SQLite database file this project lives in (`None` until the
     /// project is created or opened from the Projects screen).
     pub project_path: Option<PathBuf>,
+    pub registry_version: i64,
     pub has_unsaved_changes: bool,
     pub selected_artifact_id: Option<Uuid>,
     /// Exact Writer text, bound `.sf` path and disk snapshot for conflict checks.
@@ -41,6 +42,37 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub fn edit_catalog(
+        &mut self,
+        edit: storyfella_studio_core::catalog::CatalogEdit,
+    ) -> Result<Uuid, String> {
+        if self.operation_in_progress {
+            return Err("Wait for the current operation before editing the catalog.".into());
+        }
+        let mut registry = self.registry.clone();
+        let id = storyfella_studio_core::catalog::apply(&mut registry, edit)
+            .map_err(|error| error.to_string())?;
+        let mut source = self.story.source().to_owned();
+        if let (Some(before), Some(after)) = (self.registry.artifact(id), registry.artifact(id)) {
+            if before.name != after.name {
+                source = storyfella_studio_core::catalog::rename_references(
+                    &self.registry,
+                    &source,
+                    id,
+                    &after.name,
+                )
+                .map_err(|error| error.to_string())?;
+            }
+        }
+        self.snapshot_for_undo();
+        self.registry = registry;
+        self.story.set_source(source);
+        self.selected_artifact_id = Some(id);
+        self.reconcile_story();
+        self.has_unsaved_changes = true;
+        Ok(id)
+    }
+
     pub fn apply_writing_proposal(
         &mut self,
         proposal: &storyfella_studio_core::workflows::writing::WritingProposal,
@@ -87,7 +119,9 @@ impl AppState {
             return Err("Wait for the current operation before importing artwork.".into());
         }
         if !kind.is_visual() || artwork.name.trim().is_empty() {
-            return Err("Choose a character, environment or object and enter a name.".into());
+            return Err(
+                "Choose a character, environment, object or illustration and enter a name.".into(),
+            );
         }
         if !std::path::Path::new(&asset_path).is_absolute() {
             return Err("Imported artwork needs a stored image path.".into());
@@ -173,6 +207,7 @@ impl AppState {
     /// Replaces the in-memory state with a snapshot loaded from disk.
     /// The caller is responsible for saving before navigating away.
     pub fn open_project(&mut self, stored: StoredProject, path: PathBuf) {
+        self.registry_version = stored.registry_version;
         self.saved_associations = stored.registry.story_scenes.clone();
         self.registry = stored.registry;
         self.project_name = stored.name;
@@ -195,6 +230,11 @@ impl AppState {
         if self.story.source() != source {
             self.snapshot_for_undo();
             self.story.set_source(source);
+            storyfella_studio_core::catalog::reconcile_declarations(
+                &mut self.registry,
+                self.story.source(),
+                true,
+            );
             let analysis = analyze(
                 self.story.source(),
                 &AssetCatalog::from_registry(&self.registry).assets,
@@ -271,6 +311,13 @@ impl AppState {
     }
 
     pub fn reconcile_story(&mut self) {
+        if storyfella_studio_core::catalog::reconcile_declarations(
+            &mut self.registry,
+            self.story.source(),
+            false,
+        ) {
+            self.has_unsaved_changes = true;
+        }
         let analysis = analyze(
             self.story.source(),
             &AssetCatalog::from_registry(&self.registry).assets,
@@ -410,7 +457,8 @@ impl AppState {
         self.reconcile_story();
     }
 
-    pub fn mark_saved(&mut self) {
+    pub fn mark_saved(&mut self, registry_version: i64) {
+        self.registry_version = registry_version;
         self.saved_associations = self.registry.story_scenes.clone();
         self.has_unsaved_changes = false;
     }
@@ -730,14 +778,18 @@ mod tests {
     }
 
     #[test]
-    fn structural_edits_and_pending_creation_undo_source_and_registry_together() {
+    fn structural_edits_and_declarations_undo_source_and_registry_together() {
         let mut state = AppState::default();
         let source = "scene harbor\n  beat arrival\n    prop: lantern\n";
         state.set_story_source(source.into());
         let before = state.registry.clone();
         let lantern = state
-            .create_pending_asset("lantern", storyfella_language::AssetKind::Prop)
-            .unwrap();
+            .registry
+            .artifacts
+            .iter()
+            .find(|a| a.name == "lantern")
+            .unwrap()
+            .id;
         assert!(state
             .create_pending_asset("lantern", storyfella_language::AssetKind::Prop)
             .is_none());
@@ -746,9 +798,10 @@ mod tests {
             ArtifactKind::Object
         );
         assert!(state.undo());
-        assert_eq!(state.registry, before);
-        assert_eq!(state.story.source(), source);
+        assert!(state.registry.artifacts.is_empty());
+        assert_eq!(state.story.source(), "");
         assert!(state.redo());
+        assert_eq!(state.registry, before);
         let with_asset = state.registry.clone();
         state.set_story_source("scene sea\n  end\n".into());
         assert!(state.undo());
@@ -760,6 +813,37 @@ mod tests {
             .registry
             .artifact(before.story_scenes[0].artifact_id)
             .is_some());
+    }
+
+    #[test]
+    fn catalog_rename_keeps_identity_and_changes_only_resolved_source_references_in_one_undo() {
+        use storyfella_studio_core::catalog::CatalogEdit;
+        let mut state = AppState::default();
+        let source = "scene harbor\r\n  cast: mara, tam\r\n  beat arrival\r\n    mara: mara is my old name.\r\n    tam: Hello mara\r\n";
+        state.set_story_source(source.into());
+        let id = state
+            .registry
+            .artifacts
+            .iter()
+            .find(|a| a.name == "mara")
+            .unwrap()
+            .id;
+        let before = state.registry.clone();
+        state
+            .edit_catalog(CatalogEdit::Describe {
+                id,
+                name: "captain_mara".into(),
+                description: "Captain".into(),
+            })
+            .unwrap();
+        assert_eq!(state.registry.artifact(id).unwrap().name, "captain_mara");
+        assert_eq!(state.story.source(), "scene harbor\r\n  cast: captain_mara, tam\r\n  beat arrival\r\n    captain_mara: mara is my old name.\r\n    tam: Hello mara\r\n");
+        assert_eq!(state.registry.artifacts.len(), before.artifacts.len());
+        assert!(state.undo());
+        assert_eq!(state.registry, before);
+        assert_eq!(state.story.source(), source);
+        assert!(state.redo());
+        assert_eq!(state.registry.artifact(id).unwrap().name, "captain_mara");
     }
 
     #[test]
@@ -827,6 +911,7 @@ mod tests {
         state.snapshot_for_undo();
 
         let stored = storyfella_studio_core::persistence::StoredProject {
+            registry_version: 0,
             id: uuid::Uuid::new_v4(),
             name: "Stored Story".to_owned(),
             registry: character_registry("stored"),

@@ -152,6 +152,9 @@ pub fn Inspector(
             }
 
             div { class: "min-h-0 flex-1 space-y-6 overflow-y-auto p-4",
+                if storyfella_studio_core::catalog::KINDS.contains(&artifact.kind) {
+                    CatalogRename { key: "{artifact.id}", id: artifact.id, name: artifact.name.clone(), disabled }
+                }
 
                 // ---------------------------------------------------- canon
                 section {
@@ -329,6 +332,36 @@ pub fn Inspector(
                 }
 
             }
+        }
+    }
+}
+
+#[component]
+fn CatalogRename(id: uuid::Uuid, name: String, disabled: bool) -> Element {
+    let mut app_state = use_context::<Signal<crate::state::AppState>>();
+    let mut requested = use_signal(|| name.clone());
+    let mut error = use_signal(|| None::<String>);
+    use_effect(use_reactive(&name, move |name| {
+        requested.set(name);
+        error.set(None);
+    }));
+    let (input_id, mount) = super::text_input::use_text_value(requested(), None);
+    let unchanged = requested().trim() == name;
+    rsx! {
+        form { class: "space-y-2", onsubmit: move |event| {
+            event.prevent_default();
+            if disabled || unchanged { return; }
+            let description = app_state.read().registry.artifact(id).map(|item| item.description.clone());
+            let Some(description) = description else { return; };
+            match app_state.write().edit_catalog(storyfella_studio_core::catalog::CatalogEdit::Describe { id, name: requested(), description }) {
+                Ok(_) => error.set(None),
+                Err(message) => error.set(Some(message)),
+            }
+        },
+            label { r#for: input_id.clone(), class: "text-xs text-zinc-400", "Reference name" }
+            input { id: input_id, onmounted: mount, class: "setting-control w-full", disabled, oninput: move |event| requested.set(event.value()) }
+            button { r#type: "submit", class: "studio-button", disabled: disabled || unchanged, title: "Rename the catalog item and its resolved story references together", "Rename" }
+            if let Some(message) = error() { p { role: "alert", class: "studio-inline-error", "{message}" } }
         }
     }
 }

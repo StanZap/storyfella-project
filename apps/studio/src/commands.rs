@@ -411,10 +411,11 @@ pub fn save_project(mut app_state: Signal<AppState>) -> Result<(), ReportedError
         app_state.write().adopt_story_document(story);
     }
     let registry = app_state.read().registry.clone();
-    ProjectDb::open(&path)
-        .and_then(|db| db.save_registry(&registry))
+    let version = app_state.read().registry_version;
+    let version = ProjectDb::open(&path)
+        .and_then(|db| db.save_registry_checked(&registry, version))
         .map_err(|error| error.report())?;
-    app_state.write().mark_saved();
+    app_state.write().mark_saved(version);
     Ok(())
 }
 

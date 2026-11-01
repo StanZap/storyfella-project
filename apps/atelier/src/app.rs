@@ -44,6 +44,7 @@ pub enum Page {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
+    Catalog,
     References,
     None,
     Canvas,
@@ -169,6 +170,13 @@ pub struct CanvasTile {
     pub image: CanvasImage,
 }
 pub struct DrawingApp {
+    pub catalog: Option<crate::catalog_ui::CatalogState>,
+    pub catalog_kind: storyfella_studio_core::registry::ArtifactKind,
+    pub catalog_base: Option<uuid::Uuid>,
+    pub catalog_error: Option<String>,
+    pub catalog_busy: bool,
+    pub catalog_name: Entity<InputState>,
+    pub catalog_description: Entity<TextareaState>,
     pub project_tabs: Vec<crate::project_tabs::ProjectTab>,
     pub project_tab_order: Vec<u64>,
     pub closing_project: Option<u64>,
@@ -553,6 +561,14 @@ impl DrawingApp {
             .zip(references.iter().cloned())
             .collect();
         let mut app = Self {
+            catalog: None,
+            catalog_kind: storyfella_studio_core::registry::ArtifactKind::Character,
+            catalog_base: None,
+            catalog_error: None,
+            catalog_busy: false,
+            catalog_name: input(String::new(), window, cx),
+            catalog_description: cx
+                .new(|cx| TextareaState::new(window, cx).placeholder("Story-facing description")),
             project_tabs,
             project_tab_order,
             closing_project: None,
@@ -2828,6 +2844,42 @@ impl DrawingApp {
         while let Ok(event) = self.workers.events.try_recv() {
             refresh = true;
             match event {
+                Event::CatalogSaved {
+                    epoch,
+                    path,
+                    result,
+                } => {
+                    self.catalog_busy = false;
+                    match result {
+                        Ok((id, snapshot)) => {
+                            if epoch == self.epoch
+                                && self
+                                    .catalog
+                                    .as_ref()
+                                    .is_some_and(|catalog| catalog.path == path)
+                            {
+                                self.catalog = Some(crate::catalog_ui::CatalogState {
+                                    path,
+                                    snapshot,
+                                    selected: Some(id),
+                                });
+                                self.catalog_error = None;
+                                self.message("Asset catalog saved", false);
+                            }
+                        }
+                        Err(error) => {
+                            if epoch == self.epoch {
+                                self.catalog_error = Some(format!("{error:#}"));
+                            } else {
+                                self.report_error(
+                                    crate::activity::Scope::Project(epoch),
+                                    crate::activity::Task::Save(path),
+                                    format!("{error:#}"),
+                                );
+                            }
+                        }
+                    }
+                }
                 Event::WorkspaceSaved(result) => {
                     if let Err(error) = result {
                         self.closing = false;

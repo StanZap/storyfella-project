@@ -107,7 +107,10 @@ fn adoption_and_relocation_preserve_source_identities_associations_and_every_rev
         }
     }
     db.save_registry(&reopened.registry).unwrap();
-    assert_eq!(db.load().unwrap(), reopened);
+    let saved = db.load().unwrap();
+    assert_eq!(saved.registry, reopened.registry);
+    assert_eq!(saved.story, reopened.story);
+    assert_eq!(saved.registry_version, reopened.registry_version + 1);
 }
 
 #[test]

@@ -14,6 +14,7 @@
 
 pub mod artwork;
 pub mod authoring;
+pub mod catalog;
 pub mod config;
 pub mod errors;
 pub mod llm;

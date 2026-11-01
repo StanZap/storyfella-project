@@ -23,10 +23,11 @@ use super::{
 };
 
 /// Kind order: the creation loop first.
-const GROUPS: [ArtifactKind; 6] = [
+const GROUPS: [ArtifactKind; 7] = [
     ArtifactKind::Character,
     ArtifactKind::Environment,
     ArtifactKind::Object,
+    ArtifactKind::Illustration,
     ArtifactKind::Scene,
     ArtifactKind::Story,
     ArtifactKind::Beat,

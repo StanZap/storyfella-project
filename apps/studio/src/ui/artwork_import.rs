@@ -139,7 +139,9 @@ pub fn ArtworkImport(
                     label { class: "block text-sm text-zinc-300", "Use as",
                         select { class: "mt-1 w-full rounded-lg bg-zinc-900 p-2 text-zinc-100", disabled: importing(), value: kind().as_str(),
                             onchange: move |event| kind.set(match event.value().as_str() { "environment" => ArtifactKind::Environment, "object" => ArtifactKind::Object, _ => ArtifactKind::Character }),
-                            option { value: "character", "Character" } option { value: "environment", "Environment" } option { value: "object", "Object" }
+                            for kind in storyfella_studio_core::catalog::KINDS {
+                                option { value: kind.as_str(), "{kind}" }
+                            }
                         }
                     }
                     details { summary { class: "text-xs text-zinc-400", "Provenance" }

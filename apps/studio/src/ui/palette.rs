@@ -152,6 +152,9 @@ pub fn entries(state: &AppState, query: &str) -> Vec<Entry> {
             ("Edit image", ArtAction::Modify(id)),
             ("Attach adapter", ArtAction::AttachAdapter(id)),
         ] {
+            if matches!(action, ArtAction::Variant(_)) && !artifact.kind.supports_variants() {
+                continue;
+            }
             entries.push(Entry {
                 label: label.into(),
                 hint: if matches!(action, ArtAction::Modify(_))
@@ -223,7 +226,7 @@ fn form_action(state: &AppState, command: &str) -> Option<Action> {
     let action = match command {
         "/create" => ArtAction::Create(storyfella_studio_core::registry::ArtifactKind::Character),
         "/variant" => {
-            let a = target?;
+            let a = target.filter(|a| a.kind.supports_variants())?;
             ArtAction::Variant(a.variant_of.unwrap_or(a.id))
         }
         "/regenerate" => ArtAction::Regenerate(target?.id),

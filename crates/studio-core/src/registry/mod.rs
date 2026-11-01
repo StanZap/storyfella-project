@@ -1,10 +1,8 @@
 //! The artifact registry — the domain model behind the operation API.
 //!
-//! One unified id space for every artifact (story, scene, beat, character,
-//! environment, object); `c:<ref>` references resolve here. This is new
-//! domain-model work layered onto the existing `Project` model: the registry
-//! lives alongside `Project` in `AppState` (SQLite lives in
-//! `src/persistence/` — see `docs/ROADMAP.md` §10).
+//! One unified id space for stories, scenes, beats, characters, environments,
+//! objects and illustrations; `c:<ref>` references resolve here. Studio and
+//! Atelier share these catalog identities through SQLite project storage.
 //!
 //! Invariants maintained by the registry API (mirroring the planned SQL
 //! schema in §10):
@@ -46,18 +44,20 @@ pub enum ArtifactKind {
     Character,
     Environment,
     Object,
+    Illustration,
 }
 
 impl ArtifactKind {
     /// Every kind, in declaration order. Used by completion so a new kind
     /// shows up in the command bar without a second list to maintain.
-    pub const ALL: [ArtifactKind; 6] = [
+    pub const ALL: [ArtifactKind; 7] = [
         ArtifactKind::Story,
         ArtifactKind::Scene,
         ArtifactKind::Beat,
         ArtifactKind::Character,
         ArtifactKind::Environment,
         ArtifactKind::Object,
+        ArtifactKind::Illustration,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -68,17 +68,25 @@ impl ArtifactKind {
             ArtifactKind::Character => "character",
             ArtifactKind::Environment => "environment",
             ArtifactKind::Object => "object",
+            ArtifactKind::Illustration => "illustration",
         }
     }
 
-    /// Whether this kind carries images (characters, environments, objects).
+    /// Whether this kind is a visual catalog item, including illustrations.
     /// Visual kinds get their first image generated as part of `create`/
     /// `variant`; the rest are text-only.
     pub fn is_visual(&self) -> bool {
         matches!(
             self,
-            ArtifactKind::Character | ArtifactKind::Environment | ArtifactKind::Object
+            ArtifactKind::Character
+                | ArtifactKind::Environment
+                | ArtifactKind::Object
+                | ArtifactKind::Illustration
         )
+    }
+
+    pub fn supports_variants(self) -> bool {
+        matches!(self, Self::Character | Self::Environment | Self::Object)
     }
 
     /// The default generation size for new visual artifacts of this kind
@@ -92,6 +100,7 @@ impl ArtifactKind {
             ArtifactKind::Object => Some((768, 768)),
             ArtifactKind::Scene => Some((1024, 576)),
             ArtifactKind::Beat => Some((1024, 576)),
+            ArtifactKind::Illustration => Some((1024, 576)),
             ArtifactKind::Story => None,
         }
     }
@@ -114,8 +123,9 @@ impl std::str::FromStr for ArtifactKind {
             "character" => Ok(Self::Character),
             "environment" => Ok(Self::Environment),
             "object" => Ok(Self::Object),
+            "illustration" => Ok(Self::Illustration),
             other => Err(format!(
-                "unknown artifact kind {other:?}; expected story|scene|beat|character|environment|object"
+                "unknown artifact kind {other:?}; expected story|scene|beat|character|environment|object|illustration"
             )),
         }
     }
@@ -451,7 +461,7 @@ impl SizeDefaults {
             ArtifactKind::Object => self.object,
             ArtifactKind::Scene => self.scene,
             ArtifactKind::Beat => self.beat,
-            ArtifactKind::Story => None,
+            ArtifactKind::Story | ArtifactKind::Illustration => None,
         }
     }
 }
@@ -579,7 +589,10 @@ impl KindLoraBindings {
             ArtifactKind::Character => self.character.as_ref(),
             ArtifactKind::Environment => self.environment.as_ref(),
             ArtifactKind::Object => self.object.as_ref(),
-            ArtifactKind::Scene | ArtifactKind::Beat | ArtifactKind::Story => None,
+            ArtifactKind::Scene
+            | ArtifactKind::Beat
+            | ArtifactKind::Story
+            | ArtifactKind::Illustration => None,
         }
     }
 }
@@ -868,10 +881,7 @@ impl ArtifactRegistry {
             default_size,
         } = options;
         if let Some(base_id) = variant_of {
-            if !matches!(
-                kind,
-                ArtifactKind::Character | ArtifactKind::Environment | ArtifactKind::Object
-            ) {
+            if !kind.supports_variants() {
                 return Err(RegistryError::NotVariantable { kind });
             }
             let base = self
@@ -893,7 +903,10 @@ impl ArtifactRegistry {
                 .ok_or(RegistryError::NoArtifact(parent_id))?;
             let parent_kind = parent_artifact.kind;
             let compatible = match kind {
-                ArtifactKind::Story | ArtifactKind::Character | ArtifactKind::Object => false,
+                ArtifactKind::Story
+                | ArtifactKind::Character
+                | ArtifactKind::Object
+                | ArtifactKind::Illustration => false,
                 ArtifactKind::Scene => parent_kind == ArtifactKind::Story,
                 ArtifactKind::Beat => parent_kind == ArtifactKind::Scene,
                 ArtifactKind::Environment => parent_kind == ArtifactKind::Environment,
@@ -902,7 +915,10 @@ impl ArtifactRegistry {
                 return Err(
                     if matches!(
                         kind,
-                        ArtifactKind::Story | ArtifactKind::Character | ArtifactKind::Object
+                        ArtifactKind::Story
+                            | ArtifactKind::Character
+                            | ArtifactKind::Object
+                            | ArtifactKind::Illustration
                     ) {
                         RegistryError::NoParentAllowed { kind }
                     } else {

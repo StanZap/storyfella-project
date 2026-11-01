@@ -40,7 +40,8 @@ pub struct Token {
     pub span: Span,
 }
 
-pub(crate) fn identifier(value: &str) -> bool {
+/// Whether a name can be used directly in a DSL declaration or reference.
+pub fn identifier(value: &str) -> bool {
     let mut chars = value.chars();
     chars
         .next()

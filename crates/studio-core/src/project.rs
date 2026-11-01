@@ -101,7 +101,12 @@ impl ProjectFolder {
         fs::create_dir(root.join("artwork"))?;
         fs::create_dir(root.join("atelier"))?;
         let folder = Self { root, id };
-        let portable = folder.store_images(registry)?;
+        let mut registry = registry.clone();
+        crate::catalog::reconcile_declarations(&mut registry, source, false);
+        let catalog = crate::authoring::AssetCatalog::from_registry(&registry);
+        let analysis = storyfella_language::analyze(source, &catalog.assets);
+        crate::authoring::reconcile(&mut registry, &analysis);
+        let portable = folder.store_images(&registry)?;
         db.save_registry(&portable)?;
         let mut story = db.load()?.story;
         story.set_source(source.to_owned());

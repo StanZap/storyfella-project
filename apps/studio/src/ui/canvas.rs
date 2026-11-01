@@ -217,7 +217,10 @@ pub fn Canvas(
                     .filter(|a| a.kind.is_visual())
                 {
                     let action = match key {
-                        "v" => ArtAction::Variant(artifact.variant_of.unwrap_or(artifact.id)),
+                        "v" if artifact.kind.supports_variants() => {
+                            ArtAction::Variant(artifact.variant_of.unwrap_or(artifact.id))
+                        }
+                        "v" => return,
                         "r" => ArtAction::Regenerate(artifact.id),
                         _ => ArtAction::Modify(artifact.id),
                     };
@@ -832,7 +835,7 @@ fn ArtifactDetail(
                         IconButton {
                             icon: IconName::Add,
                             label: shortcuts::tooltip("New variant", "new-variant"),
-                            disabled,
+                            disabled: disabled || !artifact.kind.supports_variants(),
                             onclick: move |_| actions.send(StudioAction::Art(ArtAction::Variant(base_id))),
                         }
                         IconButton {
@@ -900,7 +903,7 @@ fn ArtifactDetail(
                 }
             }
 
-            if is_visual && show_variants() {
+            if artifact.kind.supports_variants() && show_variants() {
                 // Keep the strip below the render. Always the base plus
                 // its variants, whichever member is open.
                 div { class: "flex shrink-0 items-end gap-2 overflow-x-auto border-t border-white/[0.05] px-4 py-2",

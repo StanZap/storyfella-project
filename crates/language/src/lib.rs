@@ -9,6 +9,6 @@ mod source;
 pub use analysis::*;
 pub use ast::*;
 pub use editing::*;
-pub use lexer::{lex, Token, TokenKind, KEYWORDS};
+pub use lexer::{identifier, lex, Token, TokenKind, KEYWORDS};
 pub use parser::{parse, ParsedDocument};
 pub use source::*;

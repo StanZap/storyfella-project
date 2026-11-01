@@ -180,11 +180,11 @@ impl AtelierSelection for Button {
     }
 }
 
-fn field(name: &'static str, input: &Entity<InputState>) -> Div {
+pub(crate) fn field(name: &'static str, input: &Entity<InputState>) -> Div {
     column().gap_1().child(label(name)).child(Input::new(input))
 }
 
-fn side_panel_frame(title: &'static str, content: Div, close: Button) -> Div {
+pub(crate) fn side_panel_frame(title: &'static str, content: Div, close: Button) -> Div {
     column()
         .key_context("SidePanel")
         .w(px(360.))
@@ -377,6 +377,7 @@ impl DrawingApp {
             Page::Artboards => self.artboards_workspace(cx).into_any_element(),
         };
         let side_panel = match self.panel {
+            Panel::Catalog => Some(self.catalog_panel(cx)),
             Panel::Brushes => Some(self.brush_settings(cx)),
             Panel::Canvas => Some(self.canvas_settings(cx)),
             Panel::Settings => Some(self.provider_settings(cx)),

@@ -52,7 +52,7 @@ pub enum OperationKind {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Operation {
-    /// New artifact (story, scene, beat, character, environment, object).
+    /// New artifact in the unified registry.
     Create {
         kind: ArtifactKind,
         description: String,
@@ -597,10 +597,7 @@ pub fn compile(
             let base_artifact = registry
                 .artifact(base)
                 .ok_or(RegistryError::NoArtifact(base))?;
-            if !matches!(
-                base_artifact.kind,
-                ArtifactKind::Character | ArtifactKind::Environment | ArtifactKind::Object
-            ) {
+            if !base_artifact.kind.supports_variants() {
                 return Err(CompileError::NotVariantable(base_artifact.kind));
             }
             if description.trim().is_empty() {
@@ -963,10 +960,7 @@ pub fn compile(
         } => {
             let id = registry.resolve(target)?;
             let artifact = registry.artifact(id).ok_or(RegistryError::NoArtifact(id))?;
-            if !matches!(
-                artifact.kind,
-                ArtifactKind::Character | ArtifactKind::Environment | ArtifactKind::Object
-            ) {
+            if !artifact.kind.is_visual() {
                 return Err(CompileError::NotVariantable(artifact.kind));
             }
             if let Some(multiplier) = multiplier {
@@ -1363,10 +1357,7 @@ pub async fn execute(
         } => {
             let id = registry.resolve(target)?;
             let artifact = registry.artifact(id).ok_or(RegistryError::NoArtifact(id))?;
-            if !matches!(
-                artifact.kind,
-                ArtifactKind::Character | ArtifactKind::Environment | ArtifactKind::Object
-            ) {
+            if !artifact.kind.is_visual() {
                 return Err(CompileError::NotVariantable(artifact.kind).into());
             }
             // The arg is a file name in the lora dir, or the name/path of an

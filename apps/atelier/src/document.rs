@@ -126,6 +126,8 @@ impl CanvasArtboard {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Document {
+    #[serde(default)]
+    pub asset_links: Vec<storyfella_studio_core::catalog::AssetLink>,
     pub version: u32,
     pub title: String,
     pub width: u32,
@@ -158,6 +160,7 @@ fn show_references() -> bool {
 impl Default for Document {
     fn default() -> Self {
         Self {
+            asset_links: Vec::new(),
             version: 2,
             title: "Untitled project".into(),
             width: 2400,
@@ -309,6 +312,13 @@ impl Document {
                 "Invalid canvas artboard"
             );
         }
+        let mut linked = std::collections::HashSet::new();
+        ensure!(
+            self.asset_links
+                .iter()
+                .all(|link| canvas_ids.contains(&link.canvas_id) && linked.insert(link.canvas_id)),
+            "Invalid asset-to-artboard links"
+        );
         ensure!(
             self.references.len() <= 128
                 && self.reference.is_none_or(|i| i < self.references.len()),

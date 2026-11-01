@@ -129,8 +129,10 @@ within their scene. Scene names are unique and define branch targets.
 | `location` | Location | Declares the scene environment |
 | `prop` | Prop | Declares an object |
 
-Declarations identify visual resources by name. They do not create assets or
-invoke image generation.
+Declarations identify visual resources by name. Language analysis and compilation
+do not create assets or invoke image generation. Studio reconciles valid explicit
+declarations into pending shared catalog entries without images; unfinished or
+invalid drafts retain the previous catalog. See [shared catalog](shared-project.md#shared-asset-catalog).
 
 ### Dialogue, thought, and narration
 

@@ -554,6 +554,21 @@ impl DrawingApp {
                 row()
                     .p_4()
                     .child(div().flex_1().child("Artboards"))
+                    .when(self.shared_catalog_path().is_some(), |bar| {
+                        bar.child(
+                            Button::new("shared-catalog")
+                                .ghost()
+                                .small()
+                                .label("Assets")
+                                .accessibility_label("Open shared asset catalog")
+                                .tooltip("Open shared asset catalog")
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.open_catalog(window, cx)
+                                    }),
+                                ),
+                        )
+                    })
                     .child(
                         Button::new("artboard-create")
                             .small()

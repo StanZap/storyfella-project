@@ -29,9 +29,12 @@ Atelier also opens a [shared Storyfella project](shared-project.md) through its
 `storyfella.toml` manifest. Its editable document lives at
 `atelier/main.atelier`; ordinary Save and reopening use that project-local path.
 Studio retains ownership of `story.sf`. Moving the complete project folder
-preserves the visual document and its embedded images. Catalog integration,
-live synchronization and saved-image publication are tracked separately under
-SF-PLAN-03–06.
+preserves the visual document and its embedded images. Artboards → Assets reads
+and edits the shared catalog, creates definitions and explicit variations without
+rendering, attaches saved images to existing UUIDs and links working artboards.
+The document retains those links across saves and folder moves. Rename of an
+item used in source belongs in Studio. Live synchronization and ordinary
+canvas-save image publication remain SF-PLAN-04–06.
 
 A project contains drawing/image artboards; each artboard owns artwork layers,
 reference associations and pending AI candidates. **Artboards → Create** creates

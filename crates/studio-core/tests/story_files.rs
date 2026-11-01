@@ -197,13 +197,14 @@ fn missing_source_in_current_schema_is_an_error_not_an_empty_draft() {
 }
 
 // Reconstruct the v8 Writer column from the current schema. Artifact tables
-// are unchanged by v9; this avoids maintaining a second registry schema.
+// are copied through the later catalog rebuild; remove newer project columns
+// too so this remains a real migration fixture rather than an inconsistent schema.
 fn v8_project(path: &std::path::Path, source: &str) {
     let current = ProjectDb::open(path).unwrap();
     drop(current);
     fs::remove_file(source_path(path)).unwrap();
     let conn = Connection::open(path).unwrap();
-    conn.execute_batch("ALTER TABLE projects ADD COLUMN story_source TEXT NOT NULL DEFAULT ''; ALTER TABLE projects DROP COLUMN story_scenes_json; DELETE FROM schema_meta WHERE version >= 9;").unwrap();
+    conn.execute_batch("ALTER TABLE projects ADD COLUMN story_source TEXT NOT NULL DEFAULT ''; ALTER TABLE projects DROP COLUMN story_scenes_json; ALTER TABLE projects DROP COLUMN registry_version; DELETE FROM schema_meta WHERE version >= 9;").unwrap();
     conn.execute("UPDATE projects SET story_source = ?1", params![source])
         .unwrap();
 }

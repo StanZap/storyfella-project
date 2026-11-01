@@ -97,6 +97,7 @@ pub fn ArtActionDialog(
     let mut name = use_signal(String::new);
     let mut description = use_signal(String::new);
     let mut error = use_signal(|| None::<String>);
+    let mut generate_image = use_signal(|| false);
     let (name_id, name_mount) = super::text_input::use_text_value(name(), None);
     let (description_id, description_mount) =
         super::text_input::use_text_value(description(), None);
@@ -108,16 +109,26 @@ pub fn ArtActionDialog(
             .map(|a| a.name.clone())
     });
     let create = matches!(action, ArtAction::Create(_));
+    let definition = match action {
+        ArtAction::Create(_) => storyfella_studio_core::catalog::KINDS.contains(&kind()),
+        ArtAction::Variant(_) => true,
+        _ => false,
+    };
     let adapter = matches!(action, ArtAction::AttachAdapter(_));
     let first_image = matches!(action, ArtAction::Regenerate(id) if app_state.read().registry.artifact(id)
         .is_some_and(|artifact| app_state.read().display_image(artifact).is_none()));
-    let title = if first_image {
+    let title = if definition && !generate_image() {
+        "New catalog entry"
+    } else if first_image {
         "Generate image"
     } else {
         action.title()
     };
     let show_name = create || adapter || matches!(action, ArtAction::Variant(_));
     let label = match action {
+        ArtAction::Create(_) | ArtAction::Variant(_) if definition && !generate_image() => {
+            "Create catalog entry"
+        }
         ArtAction::Create(_) if kind().is_visual() => "Create and render",
         ArtAction::Create(_) => "Create entry",
         ArtAction::Variant(_) => "Create and render variant",
@@ -135,6 +146,31 @@ pub fn ArtActionDialog(
             error.set(Some(
                 "Open the intended project before submitting this action.".into(),
             ));
+            return;
+        }
+        if definition && !generate_image() {
+            let (kind, variant_of) = match action {
+                ArtAction::Variant(id) => {
+                    let state = app_state.read();
+                    let Some(base) = state.registry.artifact(id) else {
+                        error.set(Some("The base item no longer exists.".into()));
+                        return;
+                    };
+                    (base.kind, Some(id))
+                }
+                _ => (kind(), None),
+            };
+            match app_state.write().edit_catalog(
+                storyfella_studio_core::catalog::CatalogEdit::Create {
+                    kind,
+                    name: name(),
+                    description: description(),
+                    variant_of,
+                },
+            ) {
+                Ok(_) => onclose.call(()),
+                Err(message) => error.set(Some(message)),
+            }
             return;
         }
         match operation(action, kind(), &name(), &description()).and_then(|op| {
@@ -167,9 +203,9 @@ pub fn ArtActionDialog(
                 }
                 if show_name {
                     label { class: "studio-field", r#for: name_id.clone(),
-                        span { if adapter { "Adapter name or file" } else if create { "Name" } else { "Variant name (optional)" } }
+                        span { if adapter { "Adapter name or file" } else if create { "Name" } else if definition && !generate_image() { "Variant name" } else { "Variant name (optional)" } }
                         input { id: name_id, onmounted: name_mount, class: "setting-control", autofocus: true,
-                            placeholder: if adapter { "portrait-style.safetensors" } else { "Mara · harbor captain" },
+                            placeholder: if adapter { "portrait-style.safetensors" } else if definition && !generate_image() { "mara" } else { "Mara · harbor captain" },
                             oninput: move |e| name.set(e.value()) }
                     }
                 }
@@ -182,6 +218,12 @@ pub fn ArtActionDialog(
                     }
                 }
                 if let Some(message) = error() { p { role: "alert", class: "studio-inline-error", "{message}" } }
+                if definition {
+                    label { class: "flex items-center gap-2 text-sm text-zinc-300",
+                        input { r#type: "checkbox", checked: generate_image(), onchange: move |event| generate_image.set(event.checked()) }
+                        "Generate an image now"
+                    }
+                }
                 footer { class: "flex justify-end gap-2",
                     button { r#type: "button", class: "studio-button", onclick: move |_| onclose.call(()), "Cancel" }
                     button { r#type: "submit", class: "studio-button studio-button-primary", disabled, title: "Uses project settings; existing revisions are preserved", "{label}" }

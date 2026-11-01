@@ -8897,6 +8897,7 @@ dependencies = [
  "storyfella-studio-core",
  "tiny-skia",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

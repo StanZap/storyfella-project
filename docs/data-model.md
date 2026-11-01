@@ -16,7 +16,7 @@ ArtifactRegistry
 │   └── Artifact
 │       ├── id: Uuid                     — one id space, c:<ref> resolution
 │       ├── kind: ArtifactKind           — story | scene | beat | character |
-│       │                                  environment | object
+│       │                                  environment | object | illustration
 │       ├── name: String                 — the memorable c: key (unique per
 │       │                                  project; empty → short id refs)
 │       ├── description: String          — defining text / default prompt
@@ -100,6 +100,13 @@ mask edit path). Schema v9 exports `projects.story_source` to `.sf` before
 dropping the column. Schema v10 adds ordered scene/beat name-to-UUID associations
 in `projects.story_scenes_json`; source remains exclusively in `.sf`.
 The `svs` CLI persists artwork to `.svs-project.db`.
+Schema v11 adds the independent illustration kind and a registry version for
+checked GUI writes. The artifact-table rebuild retains existing graph rows and
+checks foreign keys before commit. A loaded `StoredProject` carries that version;
+GUI writers commit against it and preserve newer work on a stale-write error.
+Catalog entries reuse artifact UUIDs; source requirements, saved image revisions
+and Atelier's asset/artboard links remain separate. See the
+[shared catalog contract](shared-project.md#shared-asset-catalog).
 
 ### The GUI save flow
 

@@ -2205,3 +2205,87 @@ fn shared_story_folder_relocates_with_its_editable_document_and_artwork() {
     );
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn shared_catalog_worker_creates_items_and_document_links_survive_save_rename_and_move() {
+    use storyfella_studio_core::{
+        catalog::{AssetLink, CatalogEdit},
+        persistence::ProjectDb,
+        project::ProjectFolder,
+        registry::{ArtifactKind, ArtifactRegistry},
+    };
+    let root = temporary("shared-catalog");
+    std::fs::create_dir_all(&root).unwrap();
+    let source = "scene harbor\n  end\n";
+    let folder = ProjectFolder::create(
+        &root.join("project"),
+        "Harbor",
+        &ArtifactRegistry::default(),
+        source,
+    )
+    .unwrap();
+    let path = crate::document::project_document(&folder.manifest()).unwrap();
+    let snapshot = ProjectDb::open(folder.database()).unwrap().load().unwrap();
+    let workers = worker::start();
+    workers
+        .storage
+        .send(Storage::CatalogEdit {
+            epoch: 7,
+            path: folder.database(),
+            snapshot,
+            edit: CatalogEdit::Create {
+                kind: ArtifactKind::Character,
+                name: "mara".into(),
+                description: "Captain".into(),
+                variant_of: None,
+            },
+        })
+        .unwrap();
+    let (id, snapshot) = match workers.events.recv_timeout(Duration::from_secs(5)).unwrap() {
+        Event::CatalogSaved {
+            epoch: 7,
+            result: Ok(saved),
+            ..
+        } => saved,
+        _ => panic!("Catalog save should report its captured project"),
+    };
+    let mut document = crate::document::load(&path).unwrap();
+    document.asset_links.push(AssetLink {
+        asset_id: id,
+        canvas_id: document.canvas_id,
+    });
+    crate::document::save(&path, &document).unwrap();
+    workers
+        .storage
+        .send(Storage::CatalogEdit {
+            epoch: 7,
+            path: folder.database(),
+            snapshot,
+            edit: CatalogEdit::Describe {
+                id,
+                name: "captain_mara".into(),
+                description: "Updated story requirement".into(),
+            },
+        })
+        .unwrap();
+    match workers.events.recv_timeout(Duration::from_secs(5)).unwrap() {
+        Event::CatalogSaved {
+            result: Ok((same, stored)),
+            ..
+        } => {
+            assert_eq!(same, id);
+            assert_eq!(stored.story.source(), source);
+        }
+        _ => panic!("Catalog rename should preserve identity"),
+    }
+    std::fs::rename(folder.root(), root.join("moved")).unwrap();
+    let moved = ProjectFolder::open(&root.join("moved")).unwrap();
+    let document = crate::document::load(&moved.atelier_document().unwrap()).unwrap();
+    assert_eq!(document.asset_links[0].asset_id, id);
+    let stored = ProjectDb::open(moved.database()).unwrap().load().unwrap();
+    assert_eq!(stored.registry.artifact(id).unwrap().name, "captain_mara");
+    let mut invalid = document.clone();
+    invalid.asset_links.push(invalid.asset_links[0].clone());
+    assert!(invalid.validate().is_err());
+    std::fs::remove_dir_all(root).unwrap();
+}

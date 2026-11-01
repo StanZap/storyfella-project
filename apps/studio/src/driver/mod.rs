@@ -195,10 +195,7 @@ impl StepVerb {
                 .ok_or_else(|| format!("action {action} expects a string argument"))
         };
         let map = expect_mapping;
-        let kind = |text: &str| -> Result<ArtifactKind, String> {
-            ArtifactKind::from_str(text)
-                .map_err(|_| format!("unknown artifact kind \"{text}\" (character, environment, object, scene, story, beat)"))
-        };
+        let kind = ArtifactKind::from_str;
         Ok(match action {
             "go_projects" => Self::GoProjects,
             "go_story" => Self::GoStory,

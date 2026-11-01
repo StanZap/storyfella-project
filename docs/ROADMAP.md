@@ -311,7 +311,7 @@ language support can follow the initial shared-project workflow.
   exact source, identities, associations, variations and all image revisions
   reopen. Atelier's adapter test saves/moves/reopens an embedded visual document.
   Native UI acceptance is assigned to the user; live sync/publication remain 04–06.
-- [ ] **SF-PLAN-03 — Shared asset catalog.** Define stable project identities for
+- [x] **SF-PLAN-03 — Shared asset catalog.** Define stable project identities for
   characters, places, props, illustrations and variations, independently of
   artwork. DSL definitions create catalog items before images exist; Atelier
   can create items independently and make them available for Studio references.
@@ -319,6 +319,18 @@ language support can follow the initial shared-project workflow.
   requirements from visual working documents and saved artwork. Done when an
   item created in either app appears in the other without manual duplication,
   and later artwork remains attached to the original identity.
+  Evidence (2026-11-01): [shared catalog contract](shared-project.md#shared-asset-catalog)
+  reuses registry UUIDs for characters/places/props, explicit variations and
+  independent illustrations. Studio reconciles valid declarations without
+  rendering and offers definition-first forms and source-aware rename/undo.
+  Atelier's Assets panel creates/updates entries, imports saved image revisions
+  and links artboards; source-used names are renamed in Studio. Schema v11
+  preserves existing graphs and guards GUI saves against stale snapshots.
+  Tests cover both directions, later artwork attachment, identity/variation
+  retention, rename/undo, invalid drafts, stale writes, storage-worker events,
+  artboard links and relocation. Native UI acceptance is assigned to the user.
+  Reopen/Refresh supplies initial visibility; live sync/merging and normal
+  canvas-save publication remain SF-PLAN-04–06.
 - [ ] **SF-PLAN-04 — Synchronization and simultaneous use.** Synchronize catalog
   items, requirements, work state and saved artwork in both directions. Assign
   write ownership for story sources, visual documents and shared metadata;

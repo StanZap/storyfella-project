@@ -2,6 +2,7 @@ mod activity;
 mod activity_ui;
 mod app;
 mod canvas_renderer;
+mod catalog_ui;
 mod creative_workflow;
 mod document;
 mod edit;

@@ -49,6 +49,7 @@ use crate::story::{export_draft, source_path, StoryDocument, StoryFileError};
 /// removed with schema v3.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StoredProject {
+    pub registry_version: i64,
     pub id: Uuid,
     pub name: String,
     pub registry: ArtifactRegistry,
@@ -68,6 +69,8 @@ pub struct ProjectDb {
 
 #[derive(Debug, Error)]
 pub enum StoreError {
+    #[error("the asset catalog changed in another editor; reopen the project before saving this older catalog snapshot")]
+    Conflict,
     #[error("could not access shared project resources: {0:#}")]
     Resources(#[from] anyhow::Error),
     #[error(transparent)]
@@ -118,7 +121,7 @@ pub enum StoreError {
 impl CodedError for StoreError {
     fn code(&self) -> ErrorCode {
         match self {
-            Self::Resources(_) => ErrorCode::StoreSave,
+            Self::Resources(_) | Self::Conflict => ErrorCode::StoreSave,
             Self::Story(error) => error.code(),
             Self::Open { .. } | Self::Path { .. } => ErrorCode::StoreOpen,
             Self::Configure { .. } => ErrorCode::StoreConfigure,
@@ -158,6 +161,24 @@ impl ProjectDb {
     /// Replaces the stored snapshot with `registry` in one transaction,
     /// leaving the `projects` row untouched.
     pub fn save_registry(&self, registry: &ArtifactRegistry) -> Result<(), StoreError> {
+        self.persist_registry(registry, None).map(|_| ())
+    }
+
+    /// Optimistic snapshot commit: another editor's catalog changes must never
+    /// be silently replaced. The comparison and write share one transaction.
+    pub fn save_registry_checked(
+        &self,
+        registry: &ArtifactRegistry,
+        version: i64,
+    ) -> Result<i64, StoreError> {
+        self.persist_registry(registry, Some(version))
+    }
+
+    fn persist_registry(
+        &self,
+        registry: &ArtifactRegistry,
+        expected: Option<i64>,
+    ) -> Result<i64, StoreError> {
         if let Some(folder) = crate::project::for_database(&self.path)? {
             let id = single_project_id(&self.conn.lock())?;
             if id != folder.id().to_string() {
@@ -168,7 +189,10 @@ impl ProjectDb {
                 });
             }
         }
-        self.write_snapshot(&crate::project::prepare_registry(&self.path, registry)?)
+        self.write_snapshot(
+            &crate::project::prepare_registry(&self.path, registry)?,
+            expected,
+        )
     }
 
     /// Used only when adopting a saved project into a new portable folder.
@@ -198,7 +222,11 @@ impl ProjectDb {
         Ok(())
     }
 
-    fn write_snapshot(&self, registry: &ArtifactRegistry) -> Result<(), StoreError> {
+    fn write_snapshot(
+        &self,
+        registry: &ArtifactRegistry,
+        expected: Option<i64>,
+    ) -> Result<i64, StoreError> {
         crate::authoring::validate_associations(registry).map_err(|value| StoreError::Corrupt {
             path: self.path.clone(),
             column: "projects.story_scenes_json".into(),
@@ -213,10 +241,27 @@ impl ProjectDb {
             })?;
         let mut conn = self.conn.lock();
         let project_id = single_project_id(&conn)?;
-        let tx = conn.transaction().map_err(|source| StoreError::Save {
-            path: self.path.clone(),
-            source,
-        })?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|source| StoreError::Save {
+                path: self.path.clone(),
+                source,
+            })?;
+        let changed = tx.execute(
+            "UPDATE projects SET registry_version = registry_version + 1 WHERE ?1 IS NULL OR registry_version = ?1",
+            params![expected],
+        ).map_err(|source| StoreError::Save { path: self.path.clone(), source })?;
+        if changed != 1 {
+            return Err(StoreError::Conflict);
+        }
+        let version = tx
+            .query_row("SELECT registry_version FROM projects", [], |row| {
+                row.get(0)
+            })
+            .map_err(|source| StoreError::Save {
+                path: self.path.clone(),
+                source,
+            })?;
         // FKs are checked at commit, so the circular artifacts ↔ revisions
         // references can be inserted in any order within this transaction.
         tx.execute_batch("PRAGMA defer_foreign_keys = ON;")
@@ -381,17 +426,30 @@ impl ProjectDb {
         tx.commit().map_err(|source| StoreError::Save {
             path: self.path.clone(),
             source,
-        })
+        })?;
+        Ok(version)
     }
 
     /// Loads the project row and the full registry snapshot.
     pub fn load(&self) -> Result<StoredProject, StoreError> {
-        let conn = self.conn.lock();
-        let (row_id, row_name) = conn
+        let mut connection = self.conn.lock();
+        let conn = connection
+            .transaction()
+            .map_err(|source| StoreError::Load {
+                path: self.path.clone(),
+                source,
+            })?;
+        let (row_id, row_name, registry_version) = conn
             .query_row(
-                "SELECT id, name FROM projects ORDER BY rowid LIMIT 1",
+                "SELECT id, name, registry_version FROM projects ORDER BY rowid LIMIT 1",
                 [],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
             )
             .optional()
             .map_err(|source| StoreError::Load {
@@ -760,6 +818,7 @@ impl ProjectDb {
         })?;
         crate::project::resolve_registry(&self.path, project_id, &mut registry)?;
         Ok(StoredProject {
+            registry_version,
             story: StoryDocument::open(&source_path(&self.path))?,
             id: project_id,
             name: row_name,
@@ -816,6 +875,16 @@ impl ProjectDb {
             if version <= current {
                 continue;
             }
+            // SQLite requires disabling FK enforcement outside the transaction
+            // when rebuilding a referenced table. Validate all links before
+            // committing; an error drops this unopened database connection.
+            if version == 11 {
+                conn.pragma_update(None, "foreign_keys", false)
+                    .map_err(|source| StoreError::Migrate {
+                        path: self.path.clone(),
+                        source,
+                    })?;
+            }
             let tx = conn.transaction().map_err(|source| StoreError::Migrate {
                 path: self.path.clone(),
                 source,
@@ -842,6 +911,22 @@ impl ProjectDb {
                     path: self.path.clone(),
                     source,
                 })?;
+            if version == 11 {
+                let violation: Option<String> = tx
+                    .query_row("PRAGMA foreign_key_check", [], |row| row.get(0))
+                    .optional()
+                    .map_err(|source| StoreError::Migrate {
+                        path: self.path.clone(),
+                        source,
+                    })?;
+                if let Some(table) = violation {
+                    return Err(StoreError::Corrupt {
+                        path: self.path.clone(),
+                        column: table,
+                        value: "Invalid foreign key during catalog migration".into(),
+                    });
+                }
+            }
             tx.execute(
                 "INSERT INTO schema_meta (version, applied_at) VALUES (?1, ?2)",
                 params![version, unix_now()],
@@ -854,6 +939,13 @@ impl ProjectDb {
                 path: self.path.clone(),
                 source,
             })?;
+            if version == 11 {
+                conn.pragma_update(None, "foreign_keys", true)
+                    .map_err(|source| StoreError::Migrate {
+                        path: self.path.clone(),
+                        source,
+                    })?;
+            }
         }
         Ok(())
     }
@@ -896,7 +988,7 @@ impl ProjectDb {
 /// databases; `schema_meta` records what has been applied.
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
-    SCHEMA_V9, SCHEMA_V10,
+    SCHEMA_V9, SCHEMA_V10, SCHEMA_V11,
 ];
 
 /// Schema version 2 — the GUI carried the legacy `Project` model
@@ -947,6 +1039,34 @@ const SCHEMA_V9: &str = "ALTER TABLE projects DROP COLUMN story_source;";
 /// Ordered compiler-name → artwork UUID associations, never a second source.
 const SCHEMA_V10: &str =
     "ALTER TABLE projects ADD COLUMN story_scenes_json TEXT NOT NULL DEFAULT '[]';";
+
+/// Shared catalog snapshots and independent illustrations. Rebuild rather than
+/// altering SQLite's schema text, preserving every existing row and identity.
+const SCHEMA_V11: &str = "
+ALTER TABLE projects ADD COLUMN registry_version INTEGER NOT NULL DEFAULT 0 CHECK (registry_version >= 0);
+CREATE TABLE artifacts_next (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  kind TEXT NOT NULL CHECK (kind IN ('story','scene','beat','character','environment','object','illustration')),
+  name TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  variant_of_id TEXT REFERENCES artifacts(id),
+  variant_axis TEXT CHECK (variant_axis IN ('outfit','age','body','hair','expression','time-of-day','weather','season','mood')),
+  parent_id TEXT REFERENCES artifacts(id),
+  composition_mode TEXT CHECK (composition_mode IN ('baked','layered','hybrid')),
+  active_revision_id TEXT REFERENCES revisions(id),
+  drafts_json TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  default_width INTEGER,
+  default_height INTEGER,
+  default_steps INTEGER,
+  default_seed INTEGER
+);
+INSERT INTO artifacts_next SELECT * FROM artifacts ORDER BY rowid;
+DROP TABLE artifacts;
+ALTER TABLE artifacts_next RENAME TO artifacts;
+";
 
 const SCHEMA_V1: &str = "
 CREATE TABLE projects (
@@ -1428,6 +1548,39 @@ mod tests {
         let reopened = ProjectDb::open(&path).expect("reopen should be idempotent");
         let stored = reopened.load().expect("load should succeed");
         assert_eq!(stored.registry.artifacts.len(), 6);
+        clean_up(&path);
+    }
+
+    #[test]
+    fn catalog_migration_preserves_the_populated_registry_graph_and_foreign_keys() {
+        let (path, db) = temp_db();
+        let registry = sample_registry();
+        db.save_registry(&registry).unwrap();
+        let original = db.load().unwrap();
+        drop(db);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("ALTER TABLE projects DROP COLUMN registry_version; DELETE FROM schema_meta WHERE version >= 11;").unwrap();
+        drop(conn);
+        let db = ProjectDb::open(&path).unwrap();
+        let stored = db.load().unwrap();
+        assert_eq!(stored.id, original.id);
+        assert_eq!(stored.registry, original.registry);
+        assert_eq!(stored.story, original.story);
+        assert_eq!(stored.registry_version, 0);
+        let conn = db.conn.lock();
+        assert_eq!(
+            conn.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert!(
+            conn.execute("DELETE FROM artifacts", []).is_err(),
+            "real revision/layer/variant foreign keys remain enforced"
+        );
+        drop(conn);
+        db.save_registry_checked(&stored.registry, stored.registry_version)
+            .unwrap();
+        assert_eq!(db.load().unwrap().registry, stored.registry);
         clean_up(&path);
     }
 

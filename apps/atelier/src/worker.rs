@@ -20,6 +20,14 @@ pub struct ProjectPreview {
     pub note: String,
 }
 pub enum Event {
+    CatalogSaved {
+        epoch: u64,
+        path: PathBuf,
+        result: Result<(
+            uuid::Uuid,
+            storyfella_studio_core::persistence::StoredProject,
+        )>,
+    },
     ProjectClosed {
         epoch: u64,
         revision: u64,
@@ -53,6 +61,12 @@ pub enum Event {
     ServerStatus(crate::native_images::ServerStatus),
 }
 pub enum Storage {
+    CatalogEdit {
+        epoch: u64,
+        path: PathBuf,
+        snapshot: storyfella_studio_core::persistence::StoredProject,
+        edit: storyfella_studio_core::catalog::CatalogEdit,
+    },
     CloseProject {
         doc: Document,
         path: PathBuf,
@@ -125,6 +139,22 @@ pub fn start() -> Workers {
     std::thread::spawn(move || {
         while let Ok(command) = queue.recv() {
             let event = match command {
+                Storage::CatalogEdit {
+                    epoch,
+                    path,
+                    snapshot,
+                    edit,
+                } => {
+                    let result = (|| {
+                        let db = storyfella_studio_core::persistence::ProjectDb::open(&path)?;
+                        storyfella_studio_core::catalog::save_edit(&db, &snapshot, edit)
+                    })();
+                    Event::CatalogSaved {
+                        epoch,
+                        path,
+                        result,
+                    }
+                }
                 Storage::CloseProject {
                     doc,
                     path,
