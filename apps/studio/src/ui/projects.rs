@@ -4,36 +4,75 @@ use dioxus::prelude::*;
 
 use storyfella_studio_core::config::AppConfig;
 use storyfella_studio_core::errors::ReportedError;
-use storyfella_studio_core::persistence::ProjectDb;
+use storyfella_studio_core::persistence::{ProjectDb, StoredProject};
 
 use crate::{commands, state::AppState};
 
 use super::{
-    components::IconButton,
+    components::{ErrorDetailsButton, IconButton, RecoveryNotice},
+    dialog::Dialog,
     icons::{Icon, IconName},
+    inputs::{InputSize, SearchInput, TextInput},
 };
 
-/// One row of the Recent list: a `.svs-project.db` file plus the headline
-/// counts read from it.
+/// A project row and its cached search index. Filtering never reopens databases
+/// or reads source files on each keystroke.
 #[derive(Clone, Debug, PartialEq)]
 struct RecentProject {
     path: PathBuf,
     name: String,
     artifacts: usize,
+    search_text: String,
+}
+
+impl RecentProject {
+    fn from_stored(path: PathBuf, stored: StoredProject) -> Self {
+        let mut search_text = format!(
+            "{}\n{}\n{}",
+            stored.name,
+            path.display(),
+            stored.story.source()
+        );
+        for artifact in &stored.registry.artifacts {
+            search_text.push('\n');
+            search_text.push_str(&artifact.name);
+            search_text.push('\n');
+            search_text.push_str(&artifact.description);
+        }
+        Self {
+            path,
+            name: stored.name,
+            artifacts: stored.registry.artifacts.len(),
+            search_text: search_text.to_lowercase(),
+        }
+    }
+
+    fn matches_query(&self, query: &str) -> bool {
+        query
+            .to_lowercase()
+            .split_whitespace()
+            .all(|term| self.search_text.contains(term))
+    }
 }
 
 #[component]
 pub fn Projects(
     config: AppConfig,
     app_state: Signal<AppState>,
-    on_open: EventHandler<MouseEvent>,
+    on_open: EventHandler<()>,
 ) -> Element {
+    let mut searching = use_signal(|| false);
+    let mut query = use_signal(String::new);
+    let mut show_form = use_signal(|| false);
     let mut name = use_signal(String::new);
-    let (name_id, name_mount) = super::text_input::use_text_value(name(), None);
+    let name_id = use_hook(|| format!("project-name-{}", uuid::Uuid::new_v4()));
+    let mut form_error = use_signal(|| None::<ReportedError>);
     let mut error_report = use_context::<Signal<Option<ReportedError>>>();
     let mut recent = use_signal(|| scan_projects(&config.project_dir));
     let mut scan_errors = use_signal(Vec::<String>::new);
     let opened = app_state.read().project_path.clone();
+    let screen = use_context::<Signal<super::AppScreen>>();
+    let active = screen() == super::AppScreen::Projects;
     let standalone_project = opened.as_ref().is_some_and(|path| {
         !path.parent().is_some_and(|parent| {
             parent
@@ -41,28 +80,43 @@ pub fn Projects(
                 .exists()
         })
     });
-    let recent_dir = config.project_dir.clone();
+    let remember_dir = config.project_dir.clone();
     use_effect(use_reactive(&opened, move |path| {
         if let Some(path) = path {
-            if let Err(error) = remember_project(&recent_dir, &path) {
+            if let Err(error) = remember_project(&remember_dir, &path) {
                 scan_errors.set(vec![error]);
             }
         }
-        recent.set(scan_projects(&recent_dir));
+    }));
+    let recent_dir = config.project_dir.clone();
+    use_effect(use_reactive(&(opened, active), move |(_, active)| {
+        if active {
+            recent.set(scan_projects(&recent_dir));
+        }
     }));
     let refresh_dir = config.project_dir.clone();
 
-    let (recent_list, load_errors) = recent.read().clone();
-    let recent_items = recent_list.iter().cloned().map(|item| {
+    let recent_data = recent.read();
+    let (recent_list, load_errors) = &*recent_data;
+    let query_text = query();
+    let filtered: Vec<_> = recent_list
+        .iter()
+        .filter(|item| item.matches_query(&query_text))
+        .collect();
+    let result_count = filtered.len();
+    let recent_items = filtered.into_iter().map(|item| {
+        let path = item.path.clone();
+        let title = path.display().to_string();
+        let name = item.name.clone();
+        let artifacts = item.artifacts;
         rsx! {
             button {
-                class: "group flex w-full items-center gap-5 border-y border-white/[0.06] py-5 text-left",
-                title: item.path.display().to_string(),
-                onclick: move |event| {
-                    let path = item.path.clone();
+                class: "group flex w-full items-center gap-5 rounded-xl border-y border-white/[0.06] px-3 py-5 text-left transition-colors hover:border-white/15 hover:bg-white/[0.04] focus-visible:bg-white/[0.04]",
+                title,
+                onclick: move |_| {
                     match commands::open_project(&path, app_state) {
                         Ok(()) => {
-                            on_open.call(event);
+                            on_open.call(());
                         }
                         Err(error) => {
                             error_report.set(Some(error.log()));
@@ -73,8 +127,8 @@ pub fn Projects(
                     Icon { name: IconName::Sparkles, class: "size-5" }
                 }
                 div { class: "min-w-0 flex-1",
-                    h3 { class: "truncate text-sm font-medium text-zinc-200 group-hover:text-white", "{item.name}" }
-                    p { class: "mt-1 text-[11px] text-zinc-600", "{item.artifacts} artifacts" }
+                    h3 { class: "truncate text-sm font-medium text-zinc-200 group-hover:text-white", "{name}" }
+                    p { class: "mt-1 text-[11px] text-zinc-600", "{artifacts} artifacts" }
                 }
                 Icon { name: IconName::Arrow, class: "size-4 text-zinc-700 transition group-hover:translate-x-1 group-hover:text-zinc-300" }
             }
@@ -84,7 +138,8 @@ pub fn Projects(
     let create = {
         let project_dir = config.project_dir.clone();
         let mut name = name;
-        move |event: MouseEvent| {
+        move |event: FormEvent| {
+            event.prevent_default();
             let story_name = name();
             if story_name.trim().is_empty() {
                 return;
@@ -92,39 +147,17 @@ pub fn Projects(
             match commands::create_project(&project_dir, &story_name, app_state) {
                 Ok(_) => {
                     name.set(String::new());
-                    on_open.call(event);
+                    show_form.set(false);
+                    form_error.set(None);
+                    on_open.call(());
                 }
-                Err(report) => error_report.set(Some(report.log())),
+                Err(report) => form_error.set(Some(report.log())),
             }
-        }
-    };
-
-    // A populated project to look at the layouts with. Creates the project
-    // the normal way, then fills the registry and story before the first
-    // save so it lands on disk like any other.
-    let create_sample = {
-        let project_dir = config.project_dir.clone();
-        let asset_dir = config.asset_dir.clone();
-        move |event: MouseEvent| match commands::create_project(
-            &project_dir,
-            "Keeper of the Low Light",
-            app_state,
-        ) {
-            Ok(_) => {
-                let (registry, story) = crate::app::sample::project(&asset_dir);
-                let mut state = app_state.write();
-                state.registry = registry;
-                state.set_story_source(story);
-                state.has_unsaved_changes = true;
-                drop(state);
-                on_open.call(event);
-            }
-            Err(report) => error_report.set(Some(report.log())),
         }
     };
 
     let open_dialog = {
-        move |event: MouseEvent| {
+        move |_| {
             let Some(picked) = rfd::FileDialog::new()
                 .set_title("Open project")
                 .add_filter(
@@ -137,88 +170,97 @@ pub fn Projects(
             };
             match commands::open_project(&picked, app_state) {
                 Ok(()) => {
-                    on_open.call(event);
+                    show_form.set(false);
+                    form_error.set(None);
+                    on_open.call(());
                 }
-                Err(report) => error_report.set(Some(report.log())),
+                Err(report) => form_error.set(Some(report.log())),
             }
         }
     };
 
+    let dismiss_search = EventHandler::new(move |_| {
+        searching.set(false);
+        document::eval("requestAnimationFrame(() => document.querySelector('[aria-label=\"Search projects\"]')?.focus());");
+    });
     rsx! {
-        section { class: "h-full overflow-y-auto px-10 py-10",
-            div { class: "mx-auto max-w-5xl",
-                header { class: "mb-12 flex items-end justify-between",
-                    div {
-                        h1 { class: "text-3xl font-semibold tracking-[-0.04em] text-zinc-100", "Your stories" }
-                    }
-                    div { class: "flex items-center gap-2",
-                        if standalone_project {
-                            button { class: "studio-button", title: "Copy the open story and its artwork into a portable project folder",
-                                onclick: move |_| {
-                                    if let Some(parent) = rfd::FileDialog::new().set_title("Choose a parent folder for the project copy").pick_folder() {
-                                        if let Err(report) = commands::copy_to_project_folder(&parent, app_state) { error_report.set(Some(report.log())); }
-                                    }
-                                },
-                                "Copy to project folder…"
+        section { class: "flex h-full min-h-0 flex-col", onkeydown: move |event| {
+            if searching() && event.key() == Key::Escape {
+                event.prevent_default();
+                event.stop_propagation();
+                query.set(String::new());
+                dismiss_search.call(());
+            }
+        },
+            div { class: "min-h-0 flex-1 overflow-y-auto px-6 py-10 sm:px-10",
+                div { class: "mx-auto max-w-5xl",
+                    div { class: "mb-8 flex h-12 items-center gap-3",
+                        if searching() {
+                            SearchInput {
+                                value: query(), label: "Search projects", controls: "studio-project-list",
+                                size: InputSize::Large, autofocus: true,
+                                placeholder: "Search names, story content or assets… (Esc to cancel)",
+                                title: "Search project names, locations, story content and asset descriptions. Esc cancels.",
+                                oninput: move |value| query.set(value), oncancel: dismiss_search,
+                            }
+                        } else {
+                            h1 { class: "min-w-0 flex-1 text-3xl font-semibold tracking-[-0.04em] text-zinc-100", "Your stories" }
+                            div { role: "group", aria_label: "Project actions", class: "flex shrink-0 items-center gap-1",
+                                IconButton { label: "Search projects", icon: IconName::Search, onclick: move |_| searching.set(true) }
+                                IconButton { label: "Refresh projects", icon: IconName::Refresh, onclick: move |_| { scan_errors.set(Vec::new()); recent.set(scan_projects(&refresh_dir)); } }
+                                IconButton { label: "New story", icon: IconName::Add, expanded: show_form(), onclick: move |_| show_form.set(true) }
                             }
                         }
-                        button {
-                            class: "flex h-9 items-center gap-2 rounded-xl bg-white/[0.05] px-4 text-xs font-medium text-zinc-300 transition hover:bg-white/[0.09] hover:text-white",
-                            onclick: open_dialog,
-                            Icon { name: IconName::Arrow, class: "size-3.5 rotate-180" }
-                            "Open…"
-                        }
                     }
-                }
-
-                div { class: "grid grid-cols-[minmax(0,1.4fr)_minmax(260px,.8fr)] gap-10",
-                    div {
-                        div { class: "mb-4 flex items-center justify-between",
-                            h2 { class: "text-sm font-medium text-zinc-300", "Recent" }
-                            IconButton { label: "Refresh recent projects", icon: IconName::Refresh, onclick: move |_| { scan_errors.set(Vec::new()); recent.set(scan_projects(&refresh_dir)); } }
-                        }
-                        for message in load_errors.iter().chain(scan_errors.read().iter()) {
-                            p { role: "alert", class: "mb-3 break-words text-xs text-amber-300", "{message}" }
-                        }
-                        if recent.read().0.is_empty() {
-                            div { class: "grid min-h-44 place-items-center border-y border-white/[0.05]",
-                                div { class: "text-center",
-                                    Icon { name: IconName::Sparkles, class: "mx-auto mb-3 size-6 text-zinc-700" }
-                                    p { class: "text-xs text-zinc-600", "No projects yet — start a new story or import one." }
-                                }
-                            }
+                    for message in load_errors.iter().chain(scan_errors.read().iter()) {
+                        p { role: "alert", class: "mb-3 break-words text-xs text-amber-300", "{message}" }
+                    }
+                    if searching() {
+                        span { role: "status", class: "sr-only", "{result_count} matching projects" }
+                    }
+                    div { id: "studio-project-list",
+                        if recent_list.is_empty() {
+                            p { class: "py-10 text-sm text-zinc-400", "No stories yet. Use + to create or open one." }
+                        } else if result_count == 0 {
+                            p { class: "py-10 text-sm text-zinc-400", "No projects match your search." }
                         } else {
                             {recent_items}
                         }
                     }
-
-                    aside { class: "border-l border-white/[0.06] pl-10",
-                        div { class: "mb-5 grid size-10 place-items-center rounded-xl bg-white/[0.045] text-zinc-400", Icon { name: IconName::Add, class: "size-4" } }
-                        h2 { class: "text-sm font-medium text-zinc-200", "Start a new story" }
-                        label { r#for: name_id.clone(), class: "mt-5 block text-xs text-zinc-400", "Story name" }
-                        input {
-                            aria_label: "Story name",
-                            class: "mt-2 h-10 w-full border-b border-white/[0.1] bg-transparent text-sm text-zinc-100 outline-none transition placeholder:text-zinc-700 focus:border-violet-400/60",
-                            placeholder: "Story name",
-                            id: name_id,
-                            onmounted: name_mount,
-                            oninput: move |event| name.set(event.value()),
+                }
+            }
+        }
+        if show_form() {
+            Dialog { title: "New story", on_close: move |_| show_form.set(false),
+                form { class: "studio-task-form", onsubmit: create,
+                    header { class: "flex items-center gap-3",
+                        h2 { class: "flex-1 text-xl font-semibold", "New story" }
+                        IconButton { label: "Close story form", icon: IconName::Close, onclick: move |_| show_form.set(false) }
+                    }
+                    div { class: "studio-field",
+                        label { r#for: name_id.clone(), "Story name" }
+                        TextInput { id: name_id.clone(), value: name(), label: "Story name", autofocus: true, placeholder: "Story name", oninput: move |value| name.set(value) }
+                    }
+                    if let Some(report) = form_error() {
+                        RecoveryNotice { title: report.code.message(), message: "Your input is retained. Correct it or try again.",
+                            ErrorDetailsButton { error: report }
                         }
-                        button {
-                            class: "mt-5 flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-zinc-100 text-xs font-semibold text-zinc-950 transition hover:bg-white disabled:opacity-35",
-                            disabled: name.read().trim().is_empty(),
-                            onclick: create,
-                            "Create story"
-                            Icon { name: IconName::Arrow, class: "size-3.5" }
-                        }
-
-                        div { class: "mt-8 border-t border-white/[0.06] pt-5",
-                            button {
-                                class: "mt-4 flex h-9 w-full items-center justify-center gap-2 rounded-xl bg-violet-400/15 text-[11px] font-semibold text-violet-200 transition hover:bg-violet-400/25",
-                                onclick: create_sample,
-                                title: "Create a separate example story with characters, artwork and variants",
-                                "Create sample project"
-                            }
+                    }
+                    footer { class: "flex flex-wrap justify-end gap-2",
+                        button { r#type: "button", class: "studio-button", title: "Open an existing project, manifest or story file", onclick: open_dialog, "Open existing…" }
+                        button { r#type: "submit", class: "studio-button studio-button-primary", disabled: name.read().trim().is_empty(), title: "Create a story project", "Create story" }
+                    }
+                    if standalone_project {
+                        button { r#type: "button", class: "studio-button", title: "Copy the open story and artwork into a portable project folder",
+                            onclick: move |_| {
+                                if let Some(parent) = rfd::FileDialog::new().set_title("Choose a parent folder for the project copy").pick_folder() {
+                                    match commands::copy_to_project_folder(&parent, app_state) {
+                                        Ok(()) => { show_form.set(false); form_error.set(None); on_open.call(()); }
+                                        Err(report) => form_error.set(Some(report.log())),
+                                    }
+                                }
+                            },
+                            "Copy current story to project folder…"
                         }
                     }
                 }
@@ -309,11 +351,7 @@ fn scan_projects(project_dir: &Path) -> (Vec<RecentProject>, Vec<String>) {
                 return None;
             }
             match ProjectDb::open(&path).and_then(|db| db.load()) {
-                Ok(stored) => Some(RecentProject {
-                    path,
-                    name: stored.name,
-                    artifacts: stored.registry.artifacts.len(),
-                }),
+                Ok(stored) => Some(RecentProject::from_stored(path, stored)),
                 Err(error) => {
                     errors.push(format!("Cannot load {}: {error}", path.display()));
                     None
@@ -327,6 +365,95 @@ fn scan_projects(project_dir: &Path) -> (Vec<RecentProject>, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn filtering_searches_saved_story_asset_metadata_and_location_without_rereading_on_input() {
+        use storyfella_studio_core::{
+            catalog::{self, CatalogEdit},
+            project::ProjectFolder,
+            registry::{ArtifactKind, ArtifactRegistry},
+        };
+        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.svs-e2e/tests")
+            .join(format!("project-search-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut registry = ArtifactRegistry::default();
+        catalog::apply(
+            &mut registry,
+            CatalogEdit::Create {
+                kind: ArtifactKind::Object,
+                name: "brass_lantern".into(),
+                description: "The captain's weathered lamp".into(),
+                variant_of: None,
+            },
+        )
+        .unwrap();
+        let folder = ProjectFolder::create(
+            &directory.join("lighthouse"),
+            "The Lighthouse",
+            &registry,
+            "scene harbor\n  narrate: Nightwatch at the café during a storm.\n  end\n",
+        )
+        .unwrap();
+        ProjectFolder::create(
+            &directory.join("school"),
+            "The School",
+            &ArtifactRegistry::default(),
+            "scene classroom\n  end\n",
+        )
+        .unwrap();
+        let (projects, errors) = scan_projects(&directory);
+        assert!(errors.is_empty());
+        assert_eq!(projects.len(), 2);
+        for query in [
+            "LIGHTHOUSE",
+            "NIGHTWATCH",
+            "CAFÉ",
+            "brass_lantern",
+            "weathered",
+            "lighthouse captain",
+            "lighthouse/story.db",
+        ] {
+            let matched: Vec<_> = projects
+                .iter()
+                .filter(|item| item.matches_query(query))
+                .collect();
+            assert_eq!(matched.len(), 1, "{query}");
+            assert_eq!(matched[0].name, "The Lighthouse");
+        }
+        assert_eq!(
+            projects
+                .iter()
+                .filter(|item| item.matches_query("  "))
+                .count(),
+            2
+        );
+        assert!(!projects
+            .iter()
+            .any(|item| item.matches_query("lighthouse classroom")));
+        assert!(!projects
+            .iter()
+            .any(|item| item.matches_query("unknown words")));
+        std::fs::write(
+            folder.root().join("story.sf"),
+            "scene harbor\n  narrate: An unexpected sunrise.\n  end\n",
+        )
+        .unwrap();
+        assert!(
+            !projects.iter().any(|item| item.matches_query("sunrise")),
+            "typing uses the cached scan"
+        );
+        let (refreshed, errors) = scan_projects(&directory);
+        assert!(errors.is_empty());
+        assert_eq!(
+            refreshed
+                .iter()
+                .filter(|item| item.matches_query("sunrise"))
+                .count(),
+            1
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn external_opens_are_deduplicated_and_ordered_and_corrupt_index_is_preserved() {
         let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

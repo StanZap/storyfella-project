@@ -3,6 +3,9 @@
 This document covers setting up a machine and the day-to-day commands for the
 Rust application.
 
+For Studio UI changes, consult the [reusable component catalog](ui-components.md)
+before creating another field, icon action, dialog or feedback surface.
+
 The repository directory is `storyfella`, beside the separate `clipforge` and
 `finewinetts` repositories. Studio and the visual Player use Dioxus desktop:
 

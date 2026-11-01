@@ -684,6 +684,23 @@ The broader product and UX assessments still need the review tracked below.
     obey the same prerequisite. Global navigation remains available. Regression
     coverage checks palette destinations before/after opening a project;
     manual sidebar acceptance is assigned to the user. See [DESIGN.md](../DESIGN.md).
+  - [x] Minimal Projects home (2026-11-01): hide workspace header controls,
+    navigation rail and status bar on Projects; group search/refresh/add with
+    tooltips at the right of the Your stories row, without a separate topbar.
+    Search replaces that row with a focused, cached project-content filter;
+    Esc clears it and restores the row/list. Project items highlight on hover.
+    Shared TextInput → TextInputWithAction → SearchInput components now provide
+    a trailing × with the same cancellation as Esc, customizable field/action
+    options and one native typing bridge. The New story name uses TextInput.
+    See [reusable component APIs and examples](ui-components.md).
+    Workspace headers now replace the project-name shortcut with a labelled
+    sidebar toggle; no project name is displayed there. Hidden navigation gives
+    its width to the workspace and can be restored from the same toggle.
+    Saved-project tests cover name/source/asset/location matching and refresh.
+    Add opens the retained story form with existing-file
+    opening and project-folder adoption; remove the permanent form and sample
+    creation from home. Manual UI acceptance is assigned to the user; see
+    [interaction contract](../DESIGN.md#minimal-projects-home--2026-11-01).
 - [ ] **SF-PLAN-12 — Extend workspace language tooling.** Add workspace navigation
   and concrete code actions once the multi-file contract in SF-PLAN-08 is defined.
   Done when Studio and external editors agree on analysis, rename touches only

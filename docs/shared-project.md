@@ -48,7 +48,8 @@ original paths as provenance; current artwork references are portable.
 Studio creates new projects as uniquely named folders and discovers manifests
 under the configured project directory. Open accepts the manifest, `.sf` or `.db`.
 Existing standalone source/database pairs still open in place. From Projects,
-**Copy to project folder…** copies the currently open standalone story to a new
+Add (+) opens the story form, where **Copy current story to project folder…**
+copies the currently open standalone story to a new
 folder with its original project/artifact/revision identities and associations.
 The source pair and original artwork remain in place. Existing destinations are
 never merged or overwritten. The destination manifest is published only after

@@ -9,6 +9,7 @@ mod dialog;
 pub mod gallery;
 mod guide;
 mod icons;
+mod inputs;
 mod inspector;
 mod keys;
 mod palette;
@@ -216,6 +217,7 @@ pub fn Workspace(
     // Land on Projects so a story is opened before any canvas work — the
     // canvas cannot save until a project file is bound.
     let mut screen = use_signal(|| AppScreen::Projects);
+    let mut sidebar_visible = use_signal(|| true);
     use_context_provider(|| screen);
     let action_request = actions::ActionRequest(use_signal(|| None));
     use_context_provider(|| action_request);
@@ -397,7 +399,6 @@ pub fn Workspace(
 
     let mut palette_open = use_context::<Signal<bool>>();
 
-    let project_name = app_state.read().project_name.clone();
     let dirty = app_state.read().has_unsaved_changes || app_state.read().has_description_drafts();
     let artifact_count = app_state.read().registry.artifacts.len();
 
@@ -519,35 +520,48 @@ pub fn Workspace(
     }));
     use_context_provider(|| dispatch);
 
+    let projects_home = screen() == AppScreen::Projects;
+    let shell_rows = if projects_home {
+        "grid-rows-[minmax(0,1fr)]"
+    } else {
+        "grid-rows-[auto_minmax(0,1fr)_auto]"
+    };
     rsx! {
-        main { class: "studio-shell grid h-screen grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden bg-[#0b0b0e] font-sans text-zinc-100 selection:bg-violet-500/30",
-            header { class: "studio-header",
-                button {
-                    class: "studio-project-switcher",
-                    title: "Choose project",
-                    onclick: move |_| screen.set(AppScreen::Projects),
-                    Icon { name: IconName::Folder, class: "size-[18px] shrink-0" }
-                    span { class: "truncate", if app_state.read().project_path.is_some() { "{project_name}" } else { "Open a project" } }
-                }
-                span { class: "text-sm font-medium text-zinc-400", "{screen().label()}" }
-                div { class: "ml-auto flex items-center gap-1",
-                    IconButton { label: shortcuts::tooltip("Commands and navigation", "palette"), icon: IconName::Search, onclick: move |_| palette_open.set(true) }
-                    span { class: "mx-2 h-5 w-px bg-white/10" }
-                    IconButton { label: shortcuts::tooltip("Undo", "undo"), icon: IconName::Undo, disabled: !app_state.read().can_undo(), onclick: move |_| { app_state.write().undo(); } }
-                    IconButton { label: shortcuts::tooltip("Redo", "redo"), icon: IconName::Redo, disabled: !app_state.read().can_redo(), onclick: move |_| { app_state.write().redo(); } }
-                    IconButton { label: shortcuts::tooltip("Save project", "save"), icon: IconName::Save, disabled: !dirty || app_state.read().project_path.is_none(), onclick: move |_| save_current_project(app_state, error_report) }
+        main { class: "studio-shell grid h-screen {shell_rows} overflow-hidden bg-[#0b0b0e] font-sans text-zinc-100 selection:bg-violet-500/30",
+            if !projects_home {
+                header { class: "studio-header",
+                    IconButton {
+                        icon: IconName::Sidebar,
+                        label: if sidebar_visible() { "Hide sidebar" } else { "Show sidebar" },
+                        expanded: sidebar_visible(), controls: "studio-workspace-navigation",
+                        onclick: move |_| { let visible = sidebar_visible(); sidebar_visible.set(!visible); },
+                    }
+                    span { class: "text-sm font-medium text-zinc-400", "{screen().label()}" }
+                    div { class: "ml-auto flex items-center gap-1",
+                        IconButton { label: shortcuts::tooltip("Commands and navigation", "palette"), icon: IconName::Search, onclick: move |_| palette_open.set(true) }
+                        span { class: "mx-2 h-5 w-px bg-white/10" }
+                        IconButton { label: shortcuts::tooltip("Undo", "undo"), icon: IconName::Undo, disabled: !app_state.read().can_undo(), onclick: move |_| { app_state.write().undo(); } }
+                        IconButton { label: shortcuts::tooltip("Redo", "redo"), icon: IconName::Redo, disabled: !app_state.read().can_redo(), onclick: move |_| { app_state.write().redo(); } }
+                        IconButton { label: shortcuts::tooltip("Save project", "save"), icon: IconName::Save, disabled: !dirty || app_state.read().project_path.is_none(), onclick: move |_| save_current_project(app_state, error_report) }
+                    }
                 }
             }
             div { class: "flex min-h-0 min-w-0",
-                nav { class: "studio-navigation", aria_label: "Workspace navigation",
-                    for destination in [AppScreen::Writer, AppScreen::Canvas, AppScreen::Preview] {
-                        if destination.available(app_state.read().project_path.is_some()) {
+                if !projects_home {
+                    nav {
+                        id: "studio-workspace-navigation",
+                        hidden: !sidebar_visible(),
+                        class: if sidebar_visible() { "studio-navigation" } else { "hidden" },
+                        aria_label: "Workspace navigation",
+                        for destination in [AppScreen::Writer, AppScreen::Canvas, AppScreen::Preview] {
+                            if destination.available(app_state.read().project_path.is_some()) {
+                                ScreenTab { destination, active: screen() == destination, onclick: move |_| screen.set(destination) }
+                            }
+                        }
+                        div { class: "min-h-4 flex-1" }
+                        for destination in [AppScreen::Projects, AppScreen::Plans, AppScreen::Settings] {
                             ScreenTab { destination, active: screen() == destination, onclick: move |_| screen.set(destination) }
                         }
-                    }
-                    div { class: "min-h-4 flex-1" }
-                    for destination in [AppScreen::Projects, AppScreen::Plans, AppScreen::Settings] {
-                        ScreenTab { destination, active: screen() == destination, onclick: move |_| screen.set(destination) }
                     }
                 }
                 div { class: "min-h-0 min-w-0 flex-1",
@@ -564,13 +578,15 @@ pub fn Workspace(
 
             // Status bar: where the keyboard hints and counts live, so they
             // stop crowding the surfaces they describe.
-            footer { class: "flex items-center gap-3 border-t border-white/[0.055] bg-[#101014] px-3 font-mono text-[10.5px] text-zinc-600",
-                span { class: "rounded bg-violet-400/15 px-2 py-0.5 text-[10px] font-bold tracking-[0.08em] text-violet-300",
-                    if app_state.read().operation_in_progress() { "Working…" } else if dirty { "Unsaved changes" } else if app_state.read().project_path.is_some() { "Saved" } else { "No project open" }
-                }
-                span { "{artifact_count} artifacts" }
-                div { class: "ml-auto flex items-center gap-3",
-                    span { class: "font-sans text-zinc-400", "{shortcuts::keys(\"palette\").unwrap_or_default()} commands · {shortcuts::keys(\"save\").unwrap_or_default()} save" }
+            if !projects_home {
+                footer { class: "flex items-center gap-3 border-t border-white/[0.055] bg-[#101014] px-3 font-mono text-[10.5px] text-zinc-600",
+                    span { class: "rounded bg-violet-400/15 px-2 py-0.5 text-[10px] font-bold tracking-[0.08em] text-violet-300",
+                        if app_state.read().operation_in_progress() { "Working…" } else if dirty { "Unsaved changes" } else if app_state.read().project_path.is_some() { "Saved" } else { "No project open" }
+                    }
+                    span { "{artifact_count} artifacts" }
+                    div { class: "ml-auto flex items-center gap-3",
+                        span { class: "font-sans text-zinc-400", "{shortcuts::keys(\"palette\").unwrap_or_default()} commands · {shortcuts::keys(\"save\").unwrap_or_default()} save" }
+                    }
                 }
             }
         }

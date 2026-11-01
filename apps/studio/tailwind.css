@@ -92,13 +92,31 @@ button { min-width: 24px; min-height: 24px; }
 :is(.studio-shell, .studio-dialog) .studio-search-field:focus-visible,
 .studio-shell .studio-command-input:focus-visible { box-shadow: none; }
 .studio-palette-search:focus-within { background: rgb(167 139 250 / .04); }
+/* One field surface for plain text and composed trailing actions. */
+.studio-input {
+    display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0;
+    padding: 0 4px 0 12px; border-radius: 10px;
+    background: rgb(255 255 255 / .04); color: #d4d4d8;
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / .055);
+}
+.studio-input:focus-within { box-shadow: inset 0 0 0 1px rgb(167 139 250 / .45); }
+.studio-input.is-disabled { opacity: .45; }
+.studio-input-regular { height: 36px; }
+.studio-input-large { height: 48px; }
+.studio-input-element {
+    flex: 1; width: 100%; min-width: 0; height: 100%; padding: 0;
+    border: 0; border-radius: inherit; background: transparent;
+    color: inherit; font-size: .8125rem;
+}
+.studio-input > .studio-input-element:focus-visible { outline: none; box-shadow: none; }
+.studio-input > .studio-icon-button { width: 28px; height: 28px; }
+.studio-input-large > .studio-icon-button { width: 36px; height: 36px; }
+/* SearchInput owns its one visible cancel action across desktop webviews. */
+.studio-input-element::-webkit-search-decoration,
+.studio-input-element::-webkit-search-cancel-button { -webkit-appearance: none; }
 .studio-header {
     min-height: 56px; display: flex; flex-shrink: 0; align-items: center; gap: 16px;
     padding: 8px 16px; border-bottom: 1px solid rgb(255 255 255 / .07);
-}
-.studio-project-switcher {
-    display: flex; align-items: center; gap: 8px; max-width: 35%; min-width: 0;
-    padding: 6px 8px; border-radius: 8px; color: #e4e4e7; font-size: .875rem;
 }
 .studio-navigation {
     width: 80px; flex-shrink: 0; display: flex; flex-direction: column; gap: 6px;
@@ -123,7 +141,7 @@ button { min-width: 24px; min-height: 24px; }
 .studio-button-primary { background: #7c3aed; color: white; }
 .studio-button:disabled, .studio-icon-button:disabled { opacity: .35; }
 .studio-button:hover:not(:disabled), .studio-icon-button:hover:not(:disabled),
-.studio-nav-item:hover, .studio-project-switcher:hover { background: rgb(167 139 250 / .2); }
+.studio-nav-item:hover { background: rgb(167 139 250 / .2); }
 .studio-button-primary:hover:not(:disabled) { background: #6d28d9; }
 .studio-button-danger { color: #fda4af; background: rgb(244 63 94 / .08); }
 .studio-button-danger:hover:not(:disabled) { background: rgb(244 63 94 / .16); }

@@ -1,5 +1,66 @@
 # Storyfella Studio design standard and UX audit
 
+### Workspace sidebar toggle · 2026-11-01
+
+The workspace header starts with a sidebar toggle, followed by the current screen
+label. It contains no project name or duplicate Projects shortcut. The toggle
+uses the shared icon action with Show sidebar/Hide sidebar tooltips and accessible
+expanded/control state. The Projects destination remains in the sidebar. Hiding
+the sidebar removes its width and focus targets; the header toggle stays available
+to restore it. Visibility is retained across screen changes during the session.
+Projects home keeps its separate minimal presentation with no workspace chrome.
+Native toggle and keyboard acceptance remains assigned to the user.
+
+### Shared text and search inputs · 2026-11-01
+
+Studio's reusable vocabulary now includes TextInput, TextInputWithAction and
+SearchInput, composed around one native input surface and the existing text-value
+bridge. Project search uses SearchInput with a visible trailing ×; × and Esc both
+clear filtering, restore the heading/list and return focus to Search. There is
+one cancel icon across desktop webviews. The New story name uses TextInput.
+Inputs support accessible labels, optional stable IDs, placeholders, two sizes,
+disabled/read-only states, mount focus and labelled trailing actions. Styling and
+focus treatment are shared; action buttons do not submit enclosing forms.
+
+See [the reusable component catalog](docs/ui-components.md) for APIs, defaults,
+composition, examples and existing shared components. Native input/cancel/focus
+acceptance remains assigned to the user.
+Shared-input/sidebar validation passes: workspace tests/all-target checks,
+strict Studio Clippy, formatting, regenerated Tailwind and the desktop build.
+Logs: `.svs-e2e/logs/shared-inputs-*`.
+
+### Minimal Projects home · 2026-11-01
+
+The row directly above the project list places Your stories on the left and
+search, refresh and add on the right, with tooltips and accessible names. There
+is no separate home topbar. The workspace header (sidebar toggle, screen label
+and save/undo controls), navigation rail and bottom
+status bar are hidden on this page, including when a story remains open.
+Search replaces that whole heading/action row with a focused input. Filtering
+matches project names, locations, saved story content and asset names/descriptions,
+case-insensitively; multiple words must all match. The cached index is refreshed
+on returning to Projects or using Refresh, without file reads or copying story
+indexes on each keystroke. Esc or the trailing × clears the filter, restores the heading/actions
+and full list, and returns focus to Search. Empty results are explicit and result
+counts are announced. The search action does not open the command palette;
+the global command shortcut remains available. Project rows have a subtle hover
+background/border highlight and a matching keyboard-focus treatment. Task owners
+and open story state remain mounted across navigation.
+
+The page shows the project list and its empty/error states. Add opens the shared
+native dialog with the story-name form; creation, opening an existing file and
+standalone-project adoption live there. Sample-project creation is removed from
+the home UI; the driver fixture remains. Enter submits creation, Escape/Close
+returns focus to Add, and closing retains the typed name. Failures retain the
+form with local recovery feedback and direct technical Details. The permanent
+creation sidebar and duplicate Recent toolbar are removed. Manual UI acceptance
+is assigned to the user under SF-PLAN-11.
+Workspace tests/all-target checks, strict Studio Clippy, formatting, regenerated
+Tailwind styles and the Studio desktop build pass. A saved-project fixture tests
+name/content/asset/location filtering, Unicode case, combined terms, no matches
+and refresh after source edits. Native row, focus and Esc acceptance remains
+assigned to the user.
+
 ### Shared asset definitions · 2026-11-01
 
 Valid explicit DSL declarations create pending catalog identities without
@@ -46,7 +107,8 @@ See [storage contract](docs/shared-project.md) and SF-PLAN-02.
 Story, Canvas and Preview appear in the left navigation only while a project is
 open. Projects, Plans and Settings remain available. The command palette and
 Story/Canvas shortcuts obey the same prerequisite. Visiting Projects retains the
-open story and its navigation; selecting an artifact is not required. Existing
+open story; the Projects home now hides workspace navigation as described above.
+Selecting an artifact is not required. Existing
 mounted task owners and drafts retain their lifetimes across navigation.
 
 Palette regression coverage checks the destinations before and after project
