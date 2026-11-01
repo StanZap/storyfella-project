@@ -288,11 +288,15 @@ folder layout and synchronization mechanisms remain to be designed.
 The following checklist describes the shared-project workstream. Multi-file
 language support can follow the initial shared-project workflow.
 
-- [ ] **SF-PLAN-01 — Define app responsibilities.** Inventory Studio's visual
+- [x] **SF-PLAN-01 — Define app responsibilities.** Inventory Studio's visual
   creation, generation, editing and asset-management surfaces and assign their
   destination in Atelier. Studio retains DSL authoring, story definitions,
   references, lightweight asset previews, readiness and playback. Done when each
   affected workflow has a destination and migration acceptance criteria.
+  Evidence (2026-11-01): [workflow inventory and migration contract](app-responsibilities.md)
+  maps current forms, Canvas/Writer/Settings, commands, history, CLI and Atelier
+  surfaces to owners and explicit acceptance. Production controls remain until
+  SF-PLAN-04–07 provide their working replacements.
 - [ ] **SF-PLAN-02 — Design a shared project folder.** Specify source files,
   metadata, artwork, Atelier working documents, manifest and database ownership.
   Use portable asset references and preserve existing source, revisions and
