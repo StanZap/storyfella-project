@@ -118,7 +118,8 @@ impl NativeImages {
     pub fn generate(&self, settings: &Settings, request: Request) -> Result<Output> {
         ensure!(
             settings.provider.supports_edit() || request.source.is_none(),
-            "Krea 2 Turbo supports generation only"
+            "{} supports generation only",
+            settings.provider.name()
         );
         let providers = config::user_or_built_in()?;
         let editing = request.source.is_some();

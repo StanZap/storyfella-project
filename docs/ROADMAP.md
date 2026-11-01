@@ -447,6 +447,11 @@ and continuing to use those assets with Atelier closed or uninstalled.
   checkpoint rather than assuming speed from the model name. Done when a creator
   can select MOSS, generate into the current asset workflow and switch between
   local models without changing the canvas or linked story asset.
+  Progress: Agentkit has the pinned SFT profile, four-artifact provisioning and
+  tokenizer overrides; Atelier exposes MOSS as generation-only. Clipforge's
+  updated Metal runtime successfully loaded the downloaded model and tokenizer
+  on the M3 Max. Generation benchmarking and model switching with saved artwork
+  remain pending; see [Atelier's MOSS acceptance](atelier.md#moss-image-sft).
 - [x] **SF-PLAN-25 — Expand the shared image capability interface.** Establish
   Agentkit image contracts during SF-PLAN-27 and represent capabilities and limits
   per model/deployment: generation/editing,

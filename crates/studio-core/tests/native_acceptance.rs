@@ -11,19 +11,8 @@ use std::{
 };
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
-
-struct ServerCleanup {
-    state: PathBuf,
-    port: u16,
-}
-
-impl Drop for ServerCleanup {
-    fn drop(&mut self) {
-        if let Err(error) = control::stop(&self.state, self.port) {
-            eprintln!("Acceptance server cleanup failed: {error}");
-        }
-    }
-}
+mod support;
+use support::ServerCleanup;
 
 fn workspace() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")

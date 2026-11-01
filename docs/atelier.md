@@ -442,3 +442,35 @@ Live macOS checks cover library actions, full-size inspection, fitted comparison
 zoom/pan, mask paint/erase/undo, field typing, image layer paint/erase, artwork
 export, and Studio's role picker/import/undo/redo. Linux runtime behavior and paid
 provider output quality have not been retested here.
+
+### MOSS Image SFT
+
+Atelier offers **MOSS Image SFT · local** through Agentkit's `moss-image-sft`
+profile. It supports generation only, using 50 Euler steps, CFG 3 and the
+discrete scheduler by default. Editing, masks and alpha output are not advertised.
+The profile provisions pinned Q8_0 diffusion, Qwen3.5-9B Q4_K_M text weights,
+FLUX.2 VAE and an external tokenizer. Clipforge owns the native runtime build;
+its pin is `c6dfa9def12fd0cb36ac7149ba30a75792bedbf0`. An older installed runtime
+must be replaced with `cargo xtask sd-server` from Clipforge before loading MOSS.
+
+The downloaded profile and external tokenizer successfully loaded on an Apple
+M3 Max through Clipforge's updated Metal server. This verifies startup only;
+SF-PLAN-24 still requires generation timing and switching with saved artwork.
+
+For isolated acceptance, copy
+[`moss-acceptance.example.toml`](../config/moss-acceptance.example.toml) to
+`.svs-e2e/moss-integration/providers.toml`. Set the existing executable and model
+tree there; the default executable assumes the isolated MOSS backend build in
+`target/moss-native-backend`. Keep the acceptance port at 17864, separate from
+the resident user server. Provisioning resumes partial files and verifies
+checksums; it uses the configured model tree.
+
+```sh
+cargo test -p storyfella-studio-core --test moss_acceptance provision_moss_model -- --ignored --nocapture
+cargo test -p storyfella-studio-core --test moss_acceptance moss_generation_and_server_reuse -- --ignored --nocapture
+```
+
+The generation probe records startup and 512×512/50-step generation timings in
+`.svs-e2e/moss-integration/RESULTS.txt`, saves and reopens `moss-create.png`, and
+cleans up its owned server on errors or panic. Neither probe changes a user
+server or marks the roadmap acceptance complete.

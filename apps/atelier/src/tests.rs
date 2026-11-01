@@ -825,6 +825,13 @@ capabilities = ["t2i"]
 base_url = "http://127.0.0.1:7862"
 model_dir = "weights"
 executable = "runtime/sd-server"
+[providers.moss]
+kind = "sdcpp"
+architecture = "moss-image-sft"
+capabilities = ["t2i"]
+base_url = "http://127.0.0.1:7863"
+model_dir = "weights"
+executable = "runtime/sd-server"
 "#,
         &directory,
     )
@@ -853,6 +860,18 @@ executable = "runtime/sd-server"
         "krea2-turbo"
     );
     assert!(crate::native_images::deployment(&settings, &providers, true).is_err());
+
+    settings.provider = Provider::MossNative;
+    assert!(Provider::ALL.contains(&Provider::MossNative));
+    assert!(!settings.provider.supports_edit());
+    let moss = crate::native_images::deployment(&settings, &providers, false).unwrap();
+    assert_eq!(moss.architecture, "moss-image-sft");
+    assert_eq!(moss.model_dir, directory.join("weights"));
+    assert!(moss.profile().tokenizer.is_some());
+    assert!(crate::native_images::deployment(&settings, &providers, true).is_err());
+    let reopened: Settings =
+        serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+    assert_eq!(reopened.provider, Provider::MossNative);
 
     // Clipforge publishes the effective shared endpoint; Atelier consumes it
     // directly, with the same paths for status, preflight and generation.

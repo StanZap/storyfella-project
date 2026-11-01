@@ -76,7 +76,7 @@ give disposable test bundles a distinct identity, preserving the shipped one.
 ### Shared inference through Agentkit
 
 The workspace consumes `../../zerune_labs/agentkit/crates/agentkit-ai` with
-`native-inference` enabled. `agentkit_ai::native` owns Qwen/Krea profiles,
+`native-inference` enabled. `agentkit_ai::native` owns Qwen/Krea/MOSS profiles,
 sdcpp clients, LoRAs, verified provisioning, llama readiness, shared process
 markers and controls. `agentkit_ai::deployments` resolves and persists the
 existing provider TOML schema; `agentkit_ai::images` owns native/hosted image

@@ -21,11 +21,13 @@ pub enum Provider {
     Alibaba,
     QwenNative,
     KreaNative,
+    MossNative,
 }
 impl Provider {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::QwenNative,
         Self::KreaNative,
+        Self::MossNative,
         Self::Fal,
         Self::Replicate,
         Self::Alibaba,
@@ -36,6 +38,7 @@ impl Provider {
         match self {
             Self::QwenNative => "Qwen Image 2.1 · local",
             Self::KreaNative => "Krea 2 Turbo · local",
+            Self::MossNative => "MOSS Image SFT · local",
             _ => self.hosted().map(|p| p.name()).unwrap_or("ComfyUI"),
         }
     }
@@ -48,13 +51,19 @@ impl Provider {
             Self::Alibaba => "alibaba",
             Self::QwenNative => "qwen-native",
             Self::KreaNative => "krea-native",
+            Self::MossNative => "moss-native",
         }
     }
     pub fn key_env(self) -> &'static str {
         self.hosted().map(|p| p.key_env()).unwrap_or("")
     }
     pub fn supports_edit(self) -> bool {
-        !matches!(self, Self::Comfy | Self::KreaNative)
+        if let Some(architecture) = self.native_architecture() {
+            agentkit_ai::native::sd::profile_by_id(architecture)
+                .is_some_and(|profile| profile.supports_edit())
+        } else {
+            self != Self::Comfy
+        }
     }
     pub fn hosted(self) -> Option<agentkit_ai::images::HostedProvider> {
         use agentkit_ai::images::HostedProvider;
@@ -63,7 +72,7 @@ impl Provider {
             Self::Replicate => Some(HostedProvider::Replicate),
             Self::Alibaba => Some(HostedProvider::Alibaba),
             Self::GptImage => Some(HostedProvider::GptImage),
-            Self::Comfy | Self::QwenNative | Self::KreaNative => None,
+            Self::Comfy | Self::QwenNative | Self::KreaNative | Self::MossNative => None,
         }
     }
     pub fn defaults(self) -> ProviderProfile {
@@ -84,6 +93,7 @@ impl Provider {
         match self {
             Self::QwenNative => Some("qwen-image-2.1"),
             Self::KreaNative => Some("krea2-turbo"),
+            Self::MossNative => Some("moss-image-sft"),
             _ => None,
         }
     }

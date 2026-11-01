@@ -1,0 +1,13 @@
+# Copy to .svs-e2e/moss-integration/providers.toml. All paths resolve from there.
+[defaults]
+t2i = "moss-image"
+
+[providers.moss-image]
+kind = "sdcpp"
+architecture = "moss-image-sft"
+capabilities = ["t2i"]
+base_url = "http://127.0.0.1:17864"
+executable = "../../target/moss-native-backend/bin/sd-server"
+model_dir = "models"
+lora_dir = "loras"
+residency = "lowvram"

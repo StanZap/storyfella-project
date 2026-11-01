@@ -896,6 +896,7 @@ impl CodedError for agentkit_ai::native::control::ControlError {
             Self::Marker(agentkit_ai::native::servers::MarkerError::Kill { .. }) => {
                 ErrorCode::RuntimeGenerationStop
             }
+            Self::UnverifiedServer(_, _) => ErrorCode::RuntimeGenerationStop,
             Self::Provider(_) => ErrorCode::ConfigProviders,
             // Reaching either from the image lifecycle means the configured
             // registry no longer serves a managed image server.

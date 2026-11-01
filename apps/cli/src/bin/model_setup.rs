@@ -4,7 +4,7 @@ use clap::Parser;
 use storyfella_studio_core::config::AppConfig;
 
 #[derive(Debug, Parser)]
-#[command(about = "Download and verify the Qwen-Image-2.1 model artifacts")]
+#[command(about = "Download and verify the configured native image model artifacts")]
 struct Arguments {}
 
 #[tokio::main]
@@ -44,7 +44,12 @@ async fn main() -> Result<()> {
             }
         })
         .await
-        .context("failed to provision the Qwen-Image-2.1 profile")?;
+        .with_context(|| {
+            format!(
+                "failed to provision the {} profile",
+                deployment.architecture
+            )
+        })?;
     println!("model profile is downloaded and checksum-verified");
     Ok(())
 }
