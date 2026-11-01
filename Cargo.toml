@@ -41,6 +41,8 @@ agentkit-core = { path = "../../zerune_labs/agentkit/crates/agentkit-core" }
 agentkit-workflow = { path = "../../zerune_labs/agentkit/crates/agentkit-workflow" }
 agentkit-ai = { path = "../../zerune_labs/agentkit/crates/agentkit-ai", features = ["native-inference"] }
 directories = "6.0.0"
+# Three-way source merging preserves manual review edits across AI retries.
+diffy = "0.5.2"
 tempfile = "3.10"
 dioxus = { version = "0.7.10", features = [] }
 futures-util = "0.3.33"

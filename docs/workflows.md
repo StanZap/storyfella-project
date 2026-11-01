@@ -18,41 +18,89 @@ commit together. Definitions, source context and results are stored locally;
 provider bindings and credentials remain ephemeral. Studio uses a
 `<project>.workflows.sqlite3` companion; Atelier uses `workflows.sqlite3` beneath
 its existing data root. These files are separate from ordinary project snapshot
-saves. They record executions, not a promise to automatically repeat model calls
-after a crash. Automatic restart/recovery UI and reactive multi-turn sessions
-remain tracked in SF-PLAN-28.
+saves. Studio also stores writing workspace checkpoints here. Recovery never
+automatically repeats a model call. Reactive multi-turn sessions remain tracked
+in SF-PLAN-28.
 
 ## Writer
 
 **Writing help** opens beside the editable source. Choose a selection, the
-current beat or the current scene; choose Rewrite or Expand and enter custom
+current beat, current scene or Entire file; choose Rewrite or Expand and enter custom
 instructions. Preserve facts is the default; creative changes are explicit.
 The request includes the containing scene and descriptions of its resolved
 assets. It uses the current text-provider binding from Settings, including the
 existing managed-server readiness path.
+Entire file captures the complete source, including every scene, comments and
+boundary whitespace, without depending on the caret. Retry keeps this scope.
 
 Agentkit streams provisional replacement text into the panel. Before model
 submission, the captured draft must compile without source errors; pending
-artwork warnings are allowed. Before review, Studio inserts the replacement
-into the complete captured document and runs the shared compiler. Invalid or
-empty output triggers up to two automatic repair attempts using the original
+artwork warnings are allowed. Responses first regain captured indentation,
+line endings and terminal blank lines that a provider may have trimmed. A
+partial-line selection is not reindented. Before review, Studio inserts the
+replacement into the complete captured document and runs the shared compiler.
+Genuinely invalid or empty output triggers up to two automatic repair attempts using the original
 request, rejected replacement and compiler diagnostics. Each attempt uses the
 public runner and durable storage; repair runs link to their preceding attempt.
-The prompt supplies the DSL rules and complete source as validation context.
+The prompt supplies the DSL rules, complete source and small boundary previews
+as validation context. Repair feedback identifies offending source lines and
+line/column positions; the original request remains structured JSON. Progress
+shows the repair attempt and fixed limit.
 Only a valid result is published as a proposal. Exhausted repair produces a
 recoverable failure, retaining the draft, request and any prior valid proposal.
 Cancellation applies throughout drafting and repair. Compilation guarantees
 structural validity, not narrative quality or instruction fidelity.
 
-On completion, the request collapses and the suggestion fills the reading area,
-with an Original toggle
-and fixed Accept suggestion/Discard actions. Edit request restores the compact
-composer. Compiler errors block acceptance; new notes are grouped, while warnings
-already present in the captured draft stay in Problems. Accept runs through
-AppState and the existing source reconciliation as one undoable edit. Discard
-leaves source and registry untouched. Another version reruns the captured
-request; submitting the edited composer captures the current scope and
-instructions. A failed attempt retains the previous proposal.
+On completion, the request collapses and the story area becomes a continuous
+diff editor. Inline shows deleted lines and editable proposed text together;
+Side by side aligns a read-only draft with the editable suggestion. Changing
+views preserves text, selection and editor undo history. CodeMirror owns diff
+layout and native editing; shared Rust analysis supplies reference-aware syntax
+styles. Rust remains the authority for application and saving.
+
+The gutter's reset arrow restores an individual change to the accepted draft;
+its checkbox selects that change for group actions. With checked changes, the
+request panel offers Keep selected and Reset selected; otherwise it offers
+Keep change and Reset change for the current difference. A group is resolved
+against one snapshot and kept as one undoable edit. Editing the proposed text
+clears checkbox selection so shifted ranges cannot target another change.
+The panel also owns change navigation, Try again,
+Keep all and Discard all. Navigation buttons and F7/Shift+F7 stop at the
+first/last change. Actions have
+named icons and tooltips; acceptance and recovery retain visible labels.
+Edit request and Try again sit together in the header. Retry uses the current
+prompt and request settings; the panel shows the user's prompt without a
+separate Rewrite label, repeated count heading or generic editing instructions.
+Unavailable actions are disabled, including accepting an invalid selected
+change/group or discarding an empty review. Edits anywhere in the proposed version remain pending
+and excluded from project saving and Preview. Keep runs through AppState and
+source reconciliation as one undoable edit; Keep all applies all remaining
+changes in one edit. Discard restores the accepted text for the selected range,
+preserving previously kept changes. Compiler errors block acceptance, including
+partial edits that depend on another change. Newly introduced notes are grouped;
+existing warnings stay in Problems. Retry captures the current accepted draft;
+cancelled or failed retries retain the previous editable comparison.
+Manual edits and explicit reset choices are preserved across retries using a
+three-way source merge. Non-overlapping model changes combine with them; an
+overlap or compiler-invalid combination keeps the current review and reports
+the conflict; ambiguous adjacent edits are also treated conservatively. Merge
+markers never enter the source. Protection survives repeated
+retries and reopening, even when an intermediate model reproduces the user's
+text. Saved checkpoints from before this protection are upgraded transactionally
+using their original proposal as the pre-edit baseline. The Rust `diffy` crate
+provides text merging; CodeMirror continues to own editor interaction and layout.
+
+Writing workspaces autosave locally as they change. Reopening the same project
+restores the request form, pending review (including manual edits), comparison
+mode, checked changes, current difference and unsaved accepted draft. These checkpoints never write
+pending suggestions to the `.sf` file or feed them to Preview. Closing during
+generation retains the request and received partial text; reopening marks it
+interrupted and offers an explicit Try again, without sending a new request.
+If the story differs from both the checkpoint's disk snapshot and accepted
+draft, recovery preserves both versions and offers Restore writing session
+(an unsaved, undoable draft) or Discard saved session. Storage failures remain
+visible in Writing help. Editor undo history is scoped to the running app;
+recovery restores document text rather than the previous process's undo stack.
 
 Each request stores its exact source, byte range, project and source paths.
 Application requires the same complete source snapshot and owning paths; newer
@@ -66,8 +114,14 @@ remote compute after local cancellation.
 Creative context includes the containing scene and resolved asset descriptions;
 the complete source supplies validation context for surrounding structure and
 cross-scene links.
-Project-wide writing instructions, conversational history, domain tool calling,
-and automatic recovery of proposals into the panel remain follow-up work.
+Project-wide writing instructions, conversational history and domain tool
+calling remain follow-up work.
+
+The desktop editor bridge exchanges UTF-16 positions and monotonic edit
+sequences. Rust resolves positions against the exact source, preserving CRLF
+and UTF-8 boundaries. Every acceptance action captures current editor text
+before dispatch; older host renders cannot overwrite newer typing. CodeMirror
+does not write files or contact model providers.
 
 ## Atelier
 

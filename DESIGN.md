@@ -1,6 +1,98 @@
 # Storyfella Studio design standard and UX audit
 
-### Writing review and error recovery · 2026-11-01 (current)
+### Writing response boundaries · 2026-11-01
+
+Recorded user attempts exposed a false repair cycle: model responses omitted
+the captured block's final newline, joining a closing dialogue quote to the next
+beat declaration. Another response trimmed only the first line's indentation.
+Writing now restores captured block indentation, line endings and terminal blank
+lines before compiler validation. Partial-line selections retain their text-edit
+semantics; malformed DSL is still rejected. Repair requests contain a structured
+original request, boundary previews and offending lines with line/column
+diagnostics. Progress states show the repair attempt out of the fixed limit.
+
+Offline replay of seven recent rejected outputs now compiles without another
+model call. An older output containing unlabelled prose remains invalid, showing
+that normalization does not bypass syntax checks. Synthetic regressions cover
+first-line trimming, whole-block dedenting, CRLF, terminal blank lines and
+partial selections. Workspace checks/tests, formatting and strict Studio/core
+Clippy pass. Replay/logs live under `.svs-e2e/workflows/`; user source fixtures
+remain ignored and the original project was not modified.
+
+### Editor diff review · 2026-11-01 (current)
+
+This supersedes the separate suggestion reading area below. A completed writing
+request opens a continuous CodeMirror merge editor in the existing story area.
+Inline review shows read-only deleted lines above editable proposed lines;
+side-by-side review aligns the accepted draft and editable suggestion. Both use
+the story's font metrics, indentation and reference-aware syntax colors, subtle
+block backgrounds, line numbers, a reset arrow and a selection checkbox per change.
+In side-by-side review, original and suggested line numbers flank the centre
+divider. The reset arrow sits left of the original number column; the checkbox
+sits right of the suggested number column. Inline review retains both controls
+in its left-hand number gutter.
+Word-level highlighting is disabled in both modes: changed text has one subtle
+full-width block background, without additional backgrounds behind words or
+wrapped text runs. Native text-selection highlighting remains available.
+The existing workspace bars are retained. The editor toolbar switches views;
+the request panel owns change navigation, Keep/Reset selected actions, Try again,
+Keep all and Discard all. There is no floating action bar over the story.
+Writing help uses the shared icon-action component: compact edit, retry, reset and
+previous/next icons; labelled keep, discard and recovery actions; every
+action has a tooltip. The panel's guidance is brief and acceptance buttons fit
+their labels. Review shows the user's prompt once, without a separate Rewrite/
+Expand label, repeated change-count heading or generic editing instructions.
+The navigation row supplies the current change and total. Navigation and
+shortcuts stop at the first/last difference.
+Edit request and Try again are adjacent icon actions in the panel header;
+review, interruption and failure states share that single retry entry point.
+Keep is disabled when the chosen change/group would introduce source errors,
+and Discard all is disabled when no pending differences remain.
+
+Writing help scope includes Selection, Current beat, Current scene and Entire
+file for both Rewrite and Expand. Entire file includes all scenes, comments and
+file boundaries, independent of the caret; retry retains that whole-file scope.
+The normal Writer uses one compact action row: editing tools on the left,
+Problems with diagnostic counts and the current line/total on the right.
+Expandable tools open their larger content below the action row, with named
+regions and expanded/control associations. Problems and reference content are
+hidden when closed, without separate permanent status rows. Future toolbar
+toggles should follow this same pattern.
+
+Mode switches preserve proposed text, selection and editor undo history. Manual
+edits anywhere in the proposed version remain pending until kept. Manual
+text is also protected across Try again: combine non-overlapping edits,
+but retain the current review and explain a conflict when a new rewrite
+overlaps them or makes their combination invalid. Do not insert merge markers
+into story source. Authorship indicators should use a subtle gutter marker
+and tooltip if introduced; avoid another background layer over the diff.
+The accepted draft alone feeds normal saving and Preview. Rust owns source/project guards,
+compiler validation, reconciliation and project undo. Writing workspace changes
+autosave beside the project, including unsaved accepted text, pending manual
+edits, checked changes, request controls and partial streamed responses. Reopening the project
+restores review without another model call. Interrupted generation offers an
+explicit retry; an external source conflict offers restore-as-unsaved-draft or
+discard-saved-session before autosave can replace the checkpoint. Storage
+failures are shown in the request panel. Keeping a change is one
+undoable edit; Keep all is one edit for the remaining changes. A structural edit
+which depends on another change cannot be kept alone: it must be corrected or
+kept with the related edits. A changed draft or project pauses application and
+retains the comparison. Retry uses the current accepted draft and preserves an
+existing comparison on cancellation/failure.
+
+Native macOS release checks with a disposable local fixture verified continuous
+editing, Inline/Side by side switching, editor undo/redo across a view switch,
+partial Keep followed by Discard, accepted-source-only autosave, invalid manual
+edits blocked by both acceptance paths, retry and one-step Keep all/Undo. Shared
+core tests cover ranges, insertion/deletion, ownership, CRLF/Unicode and retry.
+Evidence: `.svs-e2e/workflows/`. Other-platform and full assistive-technology
+acceptance remain open.
+The long-document pass also verified aligned unchanged text after the inserted
+passage on a shared outer scroll surface. Gutter actions are exposed to the
+accessibility tree and were activated using Tab/Enter. The same pass corrected
+side-by-side clipping caused by trying to scroll CodeMirror's inner views.
+
+### Writing review and error recovery · 2026-11-01 (superseded panel layout)
 
 This supersedes the Writer panel presentation below. Scope and action share a
 compact row above a short instructions field and an explicit Allow new details
@@ -431,6 +523,11 @@ understandable without knowing Rust, the CLI, or the backend process model.
 - Protect drafts and completed work across failures, navigation, and shutdown.
 - Make available actions discoverable with both a pointer and a keyboard.
 - Share terminology, state, and behavior across equivalent surfaces.
+- Favor minimal interfaces with a clear hierarchy. Group related actions where
+  the user makes the decision; show each action once in the current task.
+  Remove repeated headings, counts and boilerplate. Keep the user's work and
+  relevant state visible, with detail available on demand. Minimalism must
+  preserve discoverability, accessible names and useful feedback.
 - Show useful information first; technical context is optional detail.
 - Keep routine guidance out of the workspace. Use concise labels, named icons,
   tooltips and disclosures; reserve visible supporting copy for decisions,
@@ -443,6 +540,23 @@ understandable without knowing Rust, the CLI, or the backend process model.
 These are Studio's application of the established usability heuristics for
 visibility, consistency, control, recognition, error prevention and recovery.
 [Nielsen Norman Group](https://www.nngroup.com/articles/ten-usability-heuristics/)
+
+### Icon actions and labels
+
+Prefer compact icon actions throughout the workspace, using the shared icon
+and button components. Every icon action must have an explicit tooltip naming
+its immediate result and an accessible name, whether or not a label is visible.
+Use icon-only buttons for familiar local actions such as previous/next, edit,
+retry, close and reset. Keep icon-plus-label buttons for primary submissions, group
+acceptance, destructive or ambiguous choices, and recovery actions. Do not
+replace meaningful labels with unfamiliar symbols or rely on tooltips as the
+only explanation of a consequential decision. Keep icons, focus treatment and
+terminology consistent across equivalent actions; retain keyboard operation.
+Disable an action whenever its prerequisites are unmet or it has no target.
+Navigation stops at its boundaries: Previous is disabled on the first item,
+Next on the last, and both when there is only one item. Keep unavailable
+controls visually subdued and semantically disabled; handlers and shortcuts
+must obey the same availability rules.
 
 ## 2. Feedback and error handling
 

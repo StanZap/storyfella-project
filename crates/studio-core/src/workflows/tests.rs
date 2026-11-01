@@ -152,6 +152,15 @@ async fn invalid_writing_is_repaired_before_publication_and_keeps_original_snaps
         .unwrap();
     assert!(definition.contains("compiler_errors_in_complete_document"));
     assert!(definition.contains("invalid_replacement"));
+    let graph: serde_json::Value = serde_json::from_str(&definition).unwrap();
+    let repair: serde_json::Value =
+        serde_json::from_str(graph["nodes"][2]["config"]["text"].as_str().unwrap()).unwrap();
+    assert!(repair["original_request"].is_object());
+    assert!(repair["compiler_errors_in_complete_document"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|error| error.as_str().unwrap().contains("(line ")));
     assert!(proposal
         .apply(
             Path::new("project.db"),
@@ -204,7 +213,7 @@ async fn cancellation_during_repair_does_not_publish_or_submit_another_model_cal
         &store,
         cancel,
         move |event| {
-            if matches!(event, Feedback::Status(ref text) if text == "Refining the suggestion…") {
+            if matches!(event, Feedback::Status(ref text) if text.starts_with("Refining the suggestion (")) {
                 signal.store(true, Ordering::Relaxed);
             }
         },
@@ -352,6 +361,122 @@ fn scopes_are_exact_and_proposals_refuse_other_snapshots_or_projects() {
         &crate::registry::ArtifactRegistry::new()
     )
     .is_err());
+}
+
+#[tokio::test]
+async fn entire_file_rewrite_and_expand_cover_all_scenes_and_exact_boundaries() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = RunStore::open(&directory.path().join("runs.sqlite3")).unwrap();
+    let registry = crate::registry::ArtifactRegistry::new();
+    let source = "# Café 🌊\r\n\r\nscene harbor\r\n  narrate: The sea is quiet.\r\n  end\r\n\r\nscene forest\r\n  narrate: Mara waits.\r\n  end\r\n\r\n";
+    for action in [
+        writing::WritingAction::Rewrite,
+        writing::WritingAction::Expand,
+    ] {
+        let mut request = WritingRequest::capture(
+            Path::new("project.db"),
+            Path::new("project.sf"),
+            source,
+            WritingScope::File,
+            &registry,
+        )
+        .unwrap();
+        request.action = action;
+        assert_eq!(
+            request.range,
+            storyfella_language::Span::new(0, source.len())
+        );
+        assert_eq!(request.original(), source);
+        assert_eq!(request.context, source);
+        let prompt: serde_json::Value = serde_json::from_str(&request.prompt()).unwrap();
+        assert_eq!(prompt["scope"], "entire_file");
+        assert_eq!(prompt["replace_only_this_source"], source);
+        let mut replacement = source
+            .replace("quiet", "restless")
+            .replace("waits", "speaks");
+        if action == writing::WritingAction::Expand {
+            replacement =
+                replacement.replace("  end", "  narrate: The day is only beginning.\r\n  end");
+        }
+        let model = Arc::new(FakeChatModel::new_streaming([writing_reply(&replacement)]));
+        let proposal = writing::run_with_model(
+            request,
+            model,
+            &registry,
+            &store,
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let next = proposal
+            .apply(Path::new("project.db"), Path::new("project.sf"), source)
+            .unwrap();
+        assert_eq!(next, replacement);
+        assert!(next.starts_with("# Café 🌊\r\n\r\n"));
+        assert!(next.ends_with("\r\n\r\n"));
+        assert!(!proposal.review(&registry).unwrap().has_errors);
+    }
+}
+
+#[tokio::test]
+async fn trimmed_model_output_keeps_block_boundaries_without_a_repair_call() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = RunStore::open(&directory.path().join("runs.sqlite3")).unwrap();
+    let request = request();
+    let expected = request.original().replace("quiet", "restless");
+    // A single queued response proves formatting repair needs no second call.
+    let model = Arc::new(FakeChatModel::new_streaming([writing_reply(
+        expected.trim(),
+    )]));
+    let registry = crate::registry::ArtifactRegistry::new();
+    let proposal = writing::run_with_model(
+        request,
+        model,
+        &registry,
+        &store,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(proposal.replacement, expected);
+    assert!(!proposal.review(&registry).unwrap().has_errors);
+}
+
+#[test]
+fn model_boundary_normalization_preserves_crlf_blank_lines_and_partial_selections() {
+    let registry = crate::registry::ArtifactRegistry::new();
+    let source = "scene harbor\r\n  beat arrival\r\n    narrate: Café is quiet.\r\n\r\n  beat departure\r\n    end\r\n";
+    let request = WritingRequest::capture(
+        Path::new("project.db"),
+        Path::new("project.sf"),
+        source,
+        WritingScope::Beat(source.find("Café").unwrap()),
+        &registry,
+    )
+    .unwrap();
+    for response in [
+        "beat arrival\n    narrate: Café is restless.",
+        "beat arrival\n  narrate: Café is restless.",
+    ] {
+        assert_eq!(
+            request.normalize_replacement(response),
+            "  beat arrival\r\n    narrate: Café is restless.\r\n\r\n"
+        );
+    }
+    let start = source.find("quiet").unwrap();
+    let partial = WritingRequest::capture(
+        Path::new("project.db"),
+        Path::new("project.sf"),
+        source,
+        WritingScope::Selection(storyfella_language::Span::new(start, start + 5)),
+        &registry,
+    )
+    .unwrap();
+    assert_eq!(partial.normalize_replacement("still"), "still");
 }
 
 #[tokio::test]

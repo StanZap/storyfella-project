@@ -12,17 +12,31 @@ pub fn IconButton(
     icon: IconName,
     #[props(default)] disabled: bool,
     #[props(default)] active: bool,
+    #[props(default)] show_label: bool,
+    #[props(default)] primary: bool,
+    #[props(default)] tooltip: Option<String>,
+    #[props(default)] expanded: Option<bool>,
+    #[props(default)] controls: Option<String>,
     onclick: EventHandler<MouseEvent>,
 ) -> Element {
+    let base_class = match (show_label, primary) {
+        (true, true) => "studio-button studio-button-primary",
+        (true, false) => "studio-button",
+        (false, _) => "studio-icon-button",
+    };
+    let active_class = if active { "is-active" } else { "" };
     rsx! {
         button {
             r#type: "button",
-            class: if active { "studio-icon-button is-active" } else { "studio-icon-button" },
+            class: "{base_class} {active_class}",
             aria_label: label.clone(),
-            title: label,
+            aria_expanded: expanded,
+            aria_controls: controls,
+            title: tooltip.unwrap_or_else(|| label.clone()),
             disabled,
             onclick,
             Icon { name: icon, class: "size-[18px]" }
+            if show_label { span { "{label}" } }
         }
     }
 }
@@ -238,13 +252,13 @@ fn ErrorDetailsModal(error: ReportedError, on_close: EventHandler<()>) -> Elemen
     }
 }
 
-/// A compact explanation with recovery actions, shared by panels and startup.
+/// A compact explanation with optional recovery actions, shared by panels and startup.
 #[component]
 pub fn RecoveryNotice(
     title: String,
     message: String,
     #[props(default = false)] alert: bool,
-    children: Element,
+    #[props(default = rsx! {})] children: Element,
 ) -> Element {
     rsx! {
         section { class: "studio-recovery-notice", role: if alert { "alert" } else { "status" },
@@ -261,8 +275,11 @@ pub fn ErrorDetailsButton(error: ReportedError) -> Element {
     let mut details = use_context::<ErrorDetails>().0;
     rsx! {
         button {
-            class: "shrink-0 rounded-lg bg-white/[0.06] px-2.5 py-1.5 text-[9px] font-medium text-zinc-400 transition hover:bg-white/[0.1] hover:text-white",
+            class: "inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-white/[0.06] px-2.5 py-1.5 text-[9px] font-medium text-zinc-400 transition hover:bg-white/[0.1] hover:text-white",
+            title: "Show error details",
+            aria_label: "Show error details",
             onclick: move |_| details.set(Some(error.clone())),
+            Icon { name: IconName::List, class: "size-3.5" }
             "Details"
         }
     }

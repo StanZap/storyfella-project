@@ -175,8 +175,30 @@ streaming presentation, not domain code to copy into Storyfella.
     repair invalid/empty output with compiler feedback (two attempts maximum),
     and never publish invalid results. Offline tests cover repair, exhaustion,
     cancellation and invalid-draft preflight without model submission.
+    Response-boundary correction: restore trimmed indentation/newlines before
+    validation rather than spending repair calls on formatting. Seven recorded
+    rejected outputs now validate on replay; genuine syntax failures remain
+    guarded. Repair progress is numbered and diagnostics include source lines.
+  - [x] Writing workspace recovery: project-local SQLite checkpoints retain
+    request controls, captured scope, partial output, pending/manual review
+    edits, comparison mode and unsaved accepted draft. Reopen restores text;
+    interrupted calls require explicit retry. Source conflicts preserve the
+    saved session until restore/discard is chosen. See [recovery behavior](workflows.md).
+    Native acceptance also verifies reset-arrow/checkbox gutters, grouped
+    Keep/Reset actions, selection recovery across close/reopen, and one-step
+    undo for grouped acceptance. Evidence: `.svs-e2e/workflows/recovery-native-acceptance.md`;
+    workspace checks/tests, strict Studio/core Clippy and release build pass.
+    Manual-edit protection on retry: three-way source merging retains manual
+    additions/deletions and reset choices across rewrites and reopening;
+    conflicting or invalid combinations keep the current review. Checkpoint
+    migration preserves existing work. Deterministic tests cover repeated
+    retries, model-reproduced edits, CRLF/Unicode, conflicts and migration.
+    Entire-file Rewrite/Expand is available alongside selection/beat/scene;
+    deterministic workflow tests cover multiple scenes and exact CRLF/file
+    boundaries. Writer tools, Problems counts and line position share one bar;
+    toggled details expand below it. UI acceptance is assigned to the user.
   - [ ] Complete foundation acceptance: configured-provider quality checks,
-    reactive session/context tools and proposal recovery UI. Preserve existing workflow request history
+    reactive session/context tools. Preserve existing workflow request history
     without automatically repeating paid calls after restart. SF-PLAN-15–17
     retain the broader writing-context and concurrent-edit acceptance criteria.
   Startup correction (2026-11-01): valid hosted-image defaults and text-only
@@ -368,6 +390,11 @@ both apps with the same identity and artwork links intact.
   proposal applies as one undoable source edit and rejected proposals leave the
   story and asset catalog untouched. Use the Agentkit workflow integration in
   SF-PLAN-28 for execution.
+  Editor review (2026-11-01): continuous Inline and Side-by-side diff views,
+  editable proposals, per-change reset/selection, grouped Keep/Reset and panel-owned navigation,
+  retry and overall actions. Pending edits stay out of autosave/Preview;
+  acceptance remains compiler-checked and undoable. Native acceptance and
+  boundaries are recorded in [DESIGN.md](../DESIGN.md) and [workflows](workflows.md).
 - [ ] **SF-PLAN-16 — Relevant writing context.** Supply nearby passages, relevant
   character descriptions, scene participants and project writing instructions.
   Preserve DSL structure and resolved references, surface diagnostics on proposed

@@ -27,6 +27,9 @@ async fn planner_host_preserves_structured_controls_and_round_trip_tool_messages
                     Err(e) => panic!("{e}"),
                 }
             };
+            // Accepted sockets can inherit the listener's nonblocking mode.
+            // Request reads below deliberately use blocking I/O with a timeout.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();

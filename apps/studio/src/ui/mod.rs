@@ -20,6 +20,8 @@ pub mod shortcuts;
 mod text_input;
 pub mod writer;
 mod writing_assistant;
+mod writing_review;
+mod writing_session;
 
 pub const QUIT_MENU_ID: &str = "storyfella-quit";
 

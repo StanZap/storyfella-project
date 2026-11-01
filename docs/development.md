@@ -27,7 +27,7 @@ sibling checkout and do not need that secret.
 
 - Rust stable
 - The current stable Dioxus CLI (`dx`) — see <https://dioxuslabs.com>
-- Node.js/npm (Tailwind CSS 4 toolchain, pinned in `apps/studio/package-lock.json`)
+- Node.js/npm (Tailwind CSS and CodeMirror toolchain, pinned in `apps/studio/package-lock.json`)
 - An OpenAI-compatible LLM endpoint (llama.cpp / LM Studio), running separately, only when LLM features are exercised
 - A CUDA toolchain and an NVIDIA GPU to build and run `sd-server` (see below)
 - Linux desktop builds: the WebKitGTK/GTK development packages (see below)
@@ -227,6 +227,14 @@ cd apps/studio && dx serve --platform desktop
 `cargo xtask serve` runs the same command (and `cargo xtask run` builds once
 and launches without the dev server).
 
+Studio's continuous diff editor uses CodeMirror merge, bundled locally with
+esbuild. Run `npm ci` in `apps/studio` after checkout or dependency updates.
+The Studio Cargo build script runs `npm run editor:build` when editor source or
+the npm manifests change, before `asset!` embeds the generated JavaScript.
+No CDN or runtime package fetch is used. The generated `assets/writing-diff.js`
+is ignored; edit `ui-js/writing-diff.js`, not the bundle. Rust still owns source
+validation, application, persistence and workflow execution.
+
 `dx` compiles `apps/studio/assets/tailwind.css` from `apps/studio/tailwind.css`
 automatically. To build or watch the CSS independently:
 
@@ -236,7 +244,7 @@ cd apps/studio && npm run css:watch
 ```
 
 Most component styling is expressed as Tailwind utility classes in RSX, so
-editing Rust usually requires no CSS work. The committed `assets/tailwind.css`
+editing Rust usually requires no CSS work. The ignored `assets/tailwind.css`
 is generated output; a regeneration that only changes that file is a build
 artifact update, not a feature change.
 

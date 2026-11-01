@@ -179,7 +179,7 @@ In-depth material lives in the [documentation index](docs/README.md): current ar
 
 - Rust stable
 - The current stable Dioxus CLI (`dx`)
-- Node.js/npm (for the pinned Tailwind CSS 4 toolchain)
+- Node.js/npm (for the pinned Tailwind CSS and CodeMirror diff-editor toolchain)
 - An LLM endpoint (llama.cpp `llama-server` or LM Studio), running separately when LLM features are exercised
 - A CUDA toolchain and an NVIDIA GPU to build and run `sd-server`
 - Linux desktop builds: the system packages required by Dioxus/WebKitGTK
@@ -210,10 +210,10 @@ Install the frontend toolchain once (from `apps/studio`, which holds `package.js
 
 ```bash
 cd apps/studio
-npm install
+npm ci
 ```
 
-The `tailwind.css` file in `apps/studio` selects Tailwind CSS 4 and lets `dx` automatically compile `assets/tailwind.css`. Most component styling is expressed as Tailwind utility classes in RSX. To build or watch CSS independently, use `npm run css:build` or `npm run css:watch`.
+The `tailwind.css` file in `apps/studio` selects Tailwind CSS 4 and lets `dx` automatically compile `assets/tailwind.css`. Most component styling is expressed as Tailwind utility classes in RSX. To build or watch CSS independently, use `npm run css:build` or `npm run css:watch`. Studio's Cargo build script also bundles the local CodeMirror diff editor with esbuild; see [the editor toolchain](docs/development.md).
 
 ```bash
 cd apps/studio && dx serve --platform desktop

@@ -4,6 +4,8 @@ use dioxus::prelude::*;
 pub enum IconName {
     Add,
     Arrow,
+    ChevronUp,
+    ChevronDown,
     Check,
     Close,
     Copy,
@@ -37,6 +39,8 @@ pub fn Icon(name: IconName, #[props(default = "size-5".to_owned())] class: Strin
     let path = match name {
         IconName::Add => "M12 5v14M5 12h14",
         IconName::Arrow => "m9 18 6-6-6-6",
+        IconName::ChevronUp => "m6 15 6-6 6 6",
+        IconName::ChevronDown => "m6 9 6 6 6-6",
         IconName::Check => "m4 12.5 5 5L20 6.5",
         IconName::Close => "M6 6l12 12M18 6 6 18",
         IconName::Copy => "M8 8h12v12H8V8ZM4 16V4h12",

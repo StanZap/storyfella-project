@@ -68,6 +68,11 @@ impl StoryDocument {
         &self.source
     }
 
+    /// Last successfully read or written text, for guarded session recovery.
+    pub fn saved_source(&self) -> &str {
+        &self.saved_source
+    }
+
     pub fn set_source(&mut self, source: String) {
         self.source = source;
     }

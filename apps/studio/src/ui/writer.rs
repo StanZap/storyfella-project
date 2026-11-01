@@ -235,7 +235,12 @@ fn highlight_line(analysis: &Analysis, line: usize) -> Vec<Piece> {
     let Some(span) = source.line_span(line) else {
         return Vec::new();
     };
-    analysis.document.tokens.iter().filter(|t| t.span.start >= span.start && t.span.end <= span.end).map(|token| {
+    highlight_span(analysis, span)
+}
+
+pub(super) fn highlight_span(analysis: &Analysis, span: storyfella_language::Span) -> Vec<Piece> {
+    let source = &analysis.document.source;
+    analysis.document.tokens.iter().filter(|t| t.span.start < span.end && t.span.end > span.start).map(|token| {
         let reference = analysis.references.iter().find(|r| r.name.span == token.span && matches!(r.kind, ReferenceKind::Asset(_)));
         let class = if let Some(reference) = reference {
             if reference.asset_id.is_some() {
@@ -252,7 +257,8 @@ fn highlight_line(analysis: &Analysis, line: usize) -> Vec<Piece> {
                 _ => "text-zinc-400",
             }
         };
-        Piece { text: source.slice(token.span).unwrap().to_owned(), class }
+        let visible = storyfella_language::Span::new(token.span.start.max(span.start), token.span.end.min(span.end));
+        Piece { text: source.slice(visible).unwrap().to_owned(), class }
     }).collect()
 }
 
@@ -331,8 +337,34 @@ pub fn Writer(
     let mut show_references = use_signal(|| false);
     let mut rename_target = use_signal(|| None::<(usize, String)>);
     let mut problem_filter = use_signal(|| "all".to_owned());
+    let mut show_problems = use_signal(|| false);
     let mut edit_error = use_signal(|| None::<String>);
     let mut writing_help = use_signal(|| false);
+    let review_controller = super::writing_review::ReviewController {
+        review: use_signal(|| None),
+        mode: use_signal(super::writing_review::ReviewMode::default),
+        error: use_signal(|| None),
+        busy: use_signal(|| false),
+        changes: use_signal(Vec::new),
+        selected: use_signal(|| 0),
+        marked: use_signal(Vec::new),
+        sequence: use_signal(|| 0),
+        ready: use_signal(|| false),
+        bridge: use_signal(|| None),
+        retry: use_signal(|| 0),
+    };
+    use_context_provider(|| review_controller);
+    let mut review_mode = review_controller.mode;
+    let reviewing = review_controller.review.read().is_some();
+    let remaining = review_controller.changes.read().len();
+    let mut had_review = use_signal(|| false);
+    use_effect(move || {
+        let now = review_controller.review.read().is_some();
+        if *had_review.peek() && !now {
+            focus_position(cursor());
+        }
+        had_review.set(now);
+    });
     use_effect(move || {
         if writing_help() {
             document::eval(
@@ -351,6 +383,21 @@ pub fn Writer(
     let catalog = AssetCatalog::from_registry(&registry);
     let analysis = analyze(&source, &catalog.assets);
     let compilation = storyfella_compiler::compile_analysis(&analysis, &catalog.bindings);
+    let error_count = compilation
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .count();
+    let warning_count = compilation.diagnostics.len() - error_count;
+    let problem_label = format!(
+        "Problems · {error_count} {} · {warning_count} {}",
+        if error_count == 1 { "error" } else { "errors" },
+        if warning_count == 1 {
+            "warning"
+        } else {
+            "warnings"
+        }
+    );
     let diagnostics: Vec<_> = compilation
         .diagnostics
         .iter()
@@ -516,6 +563,17 @@ pub fn Writer(
                     IconButton { label: "Writing help", icon: IconName::Sparkles, active: writing_help(), onclick: move |_| writing_help.toggle() }
                 }
 
+                if reviewing {
+                  div { key: "{review_controller.review.read().as_ref().unwrap().proposal.run_id}", class: "flex min-h-0 flex-1 flex-col",
+                    div { class: "studio-review-toolbar", aria_label: "Review view",
+                        p { class: "mr-auto text-xs text-zinc-400", if remaining == 1 { "1 change remaining" } else { "{remaining} changes remaining" } }
+                        button { class: if review_mode() == super::writing_review::ReviewMode::Inline { "is-selected" } else { "" }, title: "Review changes in one continuous editor", aria_pressed: review_mode() == super::writing_review::ReviewMode::Inline, onclick: move |_| review_mode.set(super::writing_review::ReviewMode::Inline), "Inline" }
+                        button { class: if review_mode() == super::writing_review::ReviewMode::SideBySide { "is-selected" } else { "" }, title: "Compare the draft and suggestion side by side", aria_pressed: review_mode() == super::writing_review::ReviewMode::SideBySide, onclick: move |_| review_mode.set(super::writing_review::ReviewMode::SideBySide), "Side by side" }
+                    }
+                    super::writing_review::WritingReviewEditor { app_state }
+                  }
+                }
+                div { hidden: reviewing, class: "flex min-h-0 flex-1 flex-col",
                 if source.is_empty() {
                     div { class: "grid flex-1 place-items-center px-6 text-center",
                         div { class: "grid size-12 place-items-center rounded-2xl bg-white/[0.045] text-zinc-600 ring-1 ring-inset ring-white/[0.06]",
@@ -603,7 +661,7 @@ pub fn Writer(
                     }
                     div { class: "flex flex-wrap items-center gap-2 border-t border-white/[0.05] px-4 py-2 text-[11px] text-zinc-400",
                         IconButton { label: "Go to definition", icon: IconName::Definition, disabled: definition.is_none(), onclick: move |_| { if let Some(position) = definition { cursor.set(position); focus_position(position); } } }
-                        IconButton { label: if show_references() { "Hide references" } else { "Show references" }, icon: IconName::References, active: show_references(), onclick: move |_| show_references.toggle() }
+                        IconButton { label: if show_references() { "Hide references" } else { "Show references" }, icon: IconName::References, active: show_references(), expanded: show_references(), controls: "studio-writer-references", disabled: reference_positions.is_empty() && !show_references(), onclick: move |_| show_references.toggle() }
                         IconButton { label: "Format story", icon: IconName::Format, onclick: move |_| {
                             let catalog = AssetCatalog::from_registry(&app_state.read().registry);
                             let analysis = analyze(app_state.read().story.source(), &catalog.assets);
@@ -613,23 +671,25 @@ pub fn Writer(
                         IconButton { label: "Rename scene or beat", icon: IconName::Edit, disabled: rename_symbol.is_none(), onclick: move |_| {
                             if let Some(name) = rename_symbol.clone() { rename_target.set(Some((offset, name))); }
                         } }
+                        div { class: "ml-auto flex flex-wrap items-center gap-3",
+                            div { role: "status",
+                                IconButton { label: problem_label, icon: IconName::List, show_label: true,
+                                    tooltip: if show_problems() { "Hide story problems" } else { "Show story problems" },
+                                    expanded: show_problems(), controls: "studio-writer-problems",
+                                    disabled: compilation.diagnostics.is_empty() && !show_problems(),
+                                    onclick: move |_| show_problems.toggle()
+                                }
+                            }
+                            p { class: "font-mono text-[10px] text-zinc-500", "Line {at + 1} of {lines.len()}" }
+                        }
                     }
                     if let Some(error) = edit_error() { p { class: "px-4 py-1 text-[11px] text-rose-300", "{error}" } }
-                    if show_references() {
-                        div { class: "max-h-24 overflow-auto px-4 py-1",
-                            for position in reference_positions {
-                                button { class: "mr-2 font-mono text-[11px] text-violet-300", onclick: move |_| { cursor.set(position); focus_position(position); }, "{position.line + 1}:{position.character + 1}" }
-                            }
+                    div { id: "studio-writer-references", role: "region", aria_label: "Story references", hidden: !show_references(), class: "max-h-24 overflow-auto px-4 py-1",
+                        for position in reference_positions {
+                            button { class: "mr-2 font-mono text-[11px] text-violet-300", onclick: move |_| { cursor.set(position); focus_position(position); }, "{position.line + 1}:{position.character + 1}" }
                         }
                     }
-                    details { class: "studio-problems shrink-0 border-t border-white/[0.05]",
-                        summary { class: "flex cursor-pointer list-none items-center gap-2 px-4 py-2 text-xs text-zinc-300",
-                            Icon { name: IconName::Arrow, class: "studio-disclosure-arrow size-3.5 text-zinc-500" }
-                            span { "Problems" }
-                            span { role: "status", class: "ml-auto text-zinc-400",
-                                "{compilation.diagnostics.iter().filter(|d| d.severity == Severity::Error).count()} errors · {compilation.diagnostics.iter().filter(|d| d.severity != Severity::Error).count()} warnings"
-                            }
-                        }
+                    div { id: "studio-writer-problems", role: "region", aria_label: "Story problems", hidden: !show_problems(), class: "shrink-0 border-t border-white/[0.05]",
                         div { class: "px-4 py-2",
                             select { aria_label: "Filter story problems", oninput: move |event| problem_filter.set(event.value()),
                                 option { value: "all", selected: problem_filter() == "all", "All problems" }
@@ -656,11 +716,7 @@ pub fn Writer(
                             p { class: "px-4 py-1 text-[11px] text-amber-300", "Story artwork keeps the last valid scene and beat association while this draft has errors." }
                         }
                     }
-                    div { class: "flex items-center gap-3 border-t border-white/[0.05] px-4 py-1.5",
-                        p { class: "font-mono text-[10px] text-zinc-700",
-                            "line {at + 1} of {lines.len()}"
-                        }
-                    }
+                }
                 }
             }
 
@@ -670,7 +726,7 @@ pub fn Writer(
 
             // ------------------------------------------------------- panel
             div { hidden: !writing_help(), class: "studio-writing-rail",
-                super::writing_assistant::WritingAssistant { app_state, backend, onclose: move |_| { writing_help.set(false); document::eval("document.getElementById('svs-writer')?.focus();"); } }
+                super::writing_assistant::WritingAssistant { app_state, backend, open: writing_help, onclose: move |_| { writing_help.set(false); document::eval("document.getElementById('svs-writer')?.focus();"); } }
             }
             aside { hidden: writing_help(), class: "flex w-[320px] shrink-0 flex-col bg-zinc-950/35",
                 div { class: "flex items-center gap-2 border-b border-white/[0.05] px-4 py-2.5",

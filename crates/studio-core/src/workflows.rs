@@ -3,6 +3,8 @@
 #[cfg(test)]
 mod tests;
 pub mod writing;
+pub mod writing_review;
+pub mod writing_session;
 
 use std::{
     path::Path,
@@ -37,7 +39,7 @@ pub struct RunStore(Mutex<Connection>);
 
 impl RunStore {
     pub fn open(path: &Path) -> Result<Self> {
-        let connection = Connection::open(path)?;
+        let mut connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.execute_batch(
             "PRAGMA journal_mode=WAL;
@@ -46,8 +48,11 @@ impl RunStore {
                 definition TEXT NOT NULL, context TEXT NOT NULL, state TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS workflow_events (
                 run_id TEXT NOT NULL, sequence INTEGER NOT NULL, event TEXT NOT NULL,
-                PRIMARY KEY (run_id, sequence));",
+                PRIMARY KEY (run_id, sequence));
+            CREATE TABLE IF NOT EXISTS writing_sessions (
+                source_path TEXT PRIMARY KEY, snapshot TEXT NOT NULL);",
         )?;
+        writing_session::migrate_review_edits(&mut connection)?;
         Ok(Self(Mutex::new(connection)))
     }
 

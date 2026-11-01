@@ -10,9 +10,8 @@ use storyfella_studio_core::{
     errors::{ErrorCode, ReportedError},
     registry::backend::CreativeBackend,
     workflows::{
-        writing::{
-            self, ProposalReview, WritingAction, WritingProposal, WritingRequest, WritingScope,
-        },
+        writing::{self, ProposalReview, WritingAction, WritingRequest, WritingScope},
+        writing_review::WritingReview,
         Feedback, RunStore,
     },
 };
@@ -64,6 +63,7 @@ async fn capture_request(
         .offset(selected.positions[1])
         .ok_or_else(|| anyhow::anyhow!("Select the passage again."))?;
     let scope = match scope {
+        "file" => WritingScope::File,
         "selection" => WritingScope::Selection(Span::new(start, end)),
         "scene" => WritingScope::Scene(start),
         _ => WritingScope::Beat(start),
@@ -83,41 +83,70 @@ async fn capture_request(
     )
 }
 
-fn action_label(action: WritingAction) -> &'static str {
-    match action {
-        WritingAction::Rewrite => "Rewrite",
-        WritingAction::Expand => "Expand",
-    }
-}
-
 #[component]
 pub fn WritingAssistant(
     mut app_state: Signal<AppState>,
     backend: Signal<CreativeBackend>,
+    open: Signal<bool>,
     onclose: EventHandler<()>,
 ) -> Element {
     let mut screen = use_context::<Signal<super::AppScreen>>();
+    let mut controller = use_context::<super::writing_review::ReviewController>();
     let text_configured = backend.read().planner_config().is_some();
     let mut scope = use_signal(|| "beat".to_owned());
     let mut action = use_signal(WritingAction::default);
     let mut instructions = use_signal(String::new);
     let mut preserve = use_signal(|| true);
     let mut request = use_signal(|| None::<WritingRequest>);
-    let mut proposal = use_signal(|| None::<WritingProposal>);
     let mut request_open = use_signal(|| true);
-    let mut show_original = use_signal(|| false);
-    let mut busy = use_signal(|| false);
+    let mut busy = controller.busy;
     let mut message = use_signal(|| None::<String>);
     let mut failure = use_signal(|| None::<ReportedError>);
     let mut streamed = use_signal(String::new);
     let mut phase = use_signal(|| "Writing a suggestion…".to_owned());
     let mut cancellation = use_signal(|| Arc::new(AtomicBool::new(false)));
+    let mut interrupted = use_signal(|| false);
+    let fields = super::writing_session::SessionFields {
+        scope,
+        action,
+        instructions,
+        preserve,
+        request,
+        request_open,
+        streamed,
+        phase,
+        cancellation,
+        interrupted,
+        message,
+        failure,
+    };
+    let mut recovery =
+        super::writing_session::use_writing_session(app_state, controller, fields, open);
     let (instructions_id, instructions_mount) =
         super::text_input::use_text_value(instructions(), None);
     use_drop(move || cancellation.peek().store(true, Ordering::Relaxed));
+    let mut had_review = use_signal(|| None::<std::path::PathBuf>);
+    use_effect(move || {
+        let reviewing = controller.review.read().is_some();
+        let owner = app_state.read().project_path.clone();
+        if had_review.peek().is_some()
+            && *had_review.peek() == owner
+            && !reviewing
+            && !interrupted()
+        {
+            request_open.set(true);
+            request.set(None);
+            failure.set(None);
+            message.set(Some(
+                "Review finished. You can start another request.".into(),
+            ));
+            controller.error.set(None);
+        }
+        had_review.set(if reviewing { owner } else { None });
+    });
 
     let mut start = move |retry: bool| {
-        if busy() {
+        if busy() || recovery.conflict.read().is_some() {
             return;
         }
         let Some(config) = backend.read().planner_config() else {
@@ -128,7 +157,10 @@ pub fn WritingAssistant(
         let selected_instructions = instructions();
         let selected_preserve = preserve();
         let previous = request();
+        let existing_review = (controller.review)();
+        let previous_request_open = request_open();
         busy.set(true);
+        interrupted.set(false);
         message.set(None);
         failure.set(None);
         streamed.set(String::new());
@@ -137,18 +169,37 @@ pub fn WritingAssistant(
         cancellation.set(cancel.clone());
         let backend = backend.read().clone();
         spawn(async move {
-            let captured = if retry {
+            let captured = if let Some(review) = &existing_review {
+                if let Some(error) = controller.owner_error(&app_state.read()) {
+                    message.set(Some(error));
+                    busy.set(false);
+                    return;
+                }
+                if selected_scope == "file" {
+                    WritingRequest::capture(
+                        &review.proposal.request.project,
+                        &review.proposal.request.source_path,
+                        &review.draft,
+                        WritingScope::File,
+                        &app_state.read().registry,
+                    )
+                } else {
+                    review.retry_request(&controller.changes.read(), &app_state.read().registry)
+                }
+            } else if retry {
                 previous.ok_or_else(|| anyhow::anyhow!("Choose a passage first."))
             } else {
-                capture_request(app_state, &selected_scope)
-                    .await
-                    .map(|mut captured| {
-                        captured.action = selected_action;
-                        captured.instructions = selected_instructions;
-                        captured.preserve_facts = selected_preserve;
-                        captured
-                    })
-            };
+                capture_request(app_state, &selected_scope).await
+            }
+            .map(|mut captured| {
+                captured.action = selected_action;
+                captured.instructions = selected_instructions;
+                captured.preserve_facts = selected_preserve;
+                captured
+            });
+            if !Arc::ptr_eq(&cancel, &cancellation.peek()) {
+                return;
+            }
             let captured = match captured {
                 Ok(captured) => captured,
                 Err(error) => {
@@ -158,6 +209,7 @@ pub fn WritingAssistant(
                 }
             };
             request.set(Some(captured.clone()));
+            let owner = (captured.project.clone(), captured.source_path.clone());
             let registry = app_state.read().registry.clone();
             let result = async {
                 let store = RunStore::open(&captured.project.with_extension("workflows.sqlite3"))?;
@@ -172,25 +224,53 @@ pub fn WritingAssistant(
                     }
                 }
                 let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
-                let run = writing::run(captured, config, &registry, &store, cancel, move |event| { let _ = send.send(event); });
+                let run = writing::run(captured, config, &registry, &store, cancel.clone(), move |event| { let _ = send.send(event); });
                 tokio::pin!(run);
                 loop {
                     tokio::select! {
                         result = &mut run => break result,
-                        Some(event) = receive.recv() => match event {
-                            Feedback::Text(text) => streamed.write().push_str(&text),
-                            Feedback::Status(status) => { phase.set(status); streamed.set(String::new()); }
-                            Feedback::Event(_) => {}
+                        Some(event) = receive.recv() => {
+                            if Arc::ptr_eq(&cancel, &cancellation.peek()) && !cancel.load(Ordering::Relaxed) {
+                                match event {
+                                    Feedback::Text(text) => streamed.write().push_str(&text),
+                                    Feedback::Status(status) => { phase.set(status); streamed.set(String::new()); }
+                                    Feedback::Event(_) => {}
+                                }
+                            }
                         },
                     }
                 }
             }.await;
+            // Project switching cancels the old task. Its late completion must
+            // never replace the newly opened project's restored workspace.
+            if !Arc::ptr_eq(&cancel, &cancellation.peek())
+                || app_state.read().project_path.as_ref() != Some(&owner.0)
+                || app_state.read().story.path() != Some(owner.1.as_path())
+            {
+                return;
+            }
+            let retrying_review = existing_review.is_some();
             match result {
-                Ok(Some(value)) => {
-                    proposal.set(Some(value));
-                    request_open.set(false);
-                    show_original.set(false);
-                }
+                Ok(Some(value)) => match if let Some(previous) = existing_review {
+                    previous.retry_review(value, &app_state.read().registry)
+                } else {
+                    WritingReview::new(value, &app_state.read().registry)
+                } {
+                    Ok(review) if !review.finished() => {
+                        controller.begin(review);
+                        request_open.set(false);
+                    }
+                    Ok(_) => {
+                        message.set(Some(
+                            "No changes suggested. Try more specific instructions.".into(),
+                        ));
+                        request_open.set(true);
+                    }
+                    Err(error) => {
+                        message.set(Some(error.to_string()));
+                        request_open.set(previous_request_open || !retrying_review);
+                    }
+                },
                 Ok(None) => {
                     message.set(Some("Cancelled. Your story is unchanged.".into()));
                     request_open.set(true);
@@ -208,69 +288,144 @@ pub fn WritingAssistant(
         });
     };
 
-    let current = proposal();
-    let mut mismatch = None;
+    let mut last_retry = use_signal(|| 0);
+    use_effect(move || {
+        let retry = (controller.retry)();
+        if retry != *last_retry.peek() {
+            last_retry.set(retry);
+            start(true);
+        }
+    });
+
+    let current = (controller.review)();
+    let remaining = controller.changes.read().len();
+    let selected = (controller.selected)().min(remaining.saturating_sub(1));
+    let marked = controller.marked.read().len();
+    let ready = (controller.ready)();
+    let mismatch = controller.owner_error(&app_state.read());
     let mut review = ProposalReview::default();
     if let Some(value) = &current {
         let state = app_state.read();
-        mismatch = match state.project_path.as_deref().zip(state.story.path()) {
-            Some((project, path)) => value.apply(project, path, state.story.source()).err().map(|_| "The story has changed since this request. Your suggestion is kept; edit the request to work from the current draft.".to_owned()),
-            None => Some("Open this suggestion's story before accepting it.".into()),
-        };
-        match value.review(&state.registry) {
+        match value
+            .acceptance(None)
+            .and_then(|proposal| proposal.review(&state.registry))
+        {
             Ok(value) => review = value,
-            Err(error) => mismatch = Some(error.to_string()),
+            Err(_) => review.has_errors = true,
         }
     }
+    let can_keep_selection = current.as_ref().is_some_and(|value| {
+        let changes = controller.changes.read();
+        let marked = controller.marked.read();
+        let proposal = if marked.is_empty() {
+            changes
+                .get(selected)
+                .map(|change| value.acceptance(Some(change)))
+        } else {
+            marked
+                .iter()
+                .map(|index| changes.get(*index).cloned())
+                .collect::<Option<Vec<_>>>()
+                .map(|changes| value.acceptance_group(&changes))
+        };
+        proposal.is_some_and(|proposal| {
+            proposal
+                .and_then(|proposal| proposal.review(&app_state.read().registry))
+                .is_ok_and(|review| !review.has_errors)
+        })
+    });
+    let reviewing = current.is_some();
+    let can_retry = text_configured
+        && mismatch.is_none()
+        && recovery.conflict.read().is_none()
+        && (!reviewing || !review.has_errors)
+        && if current.is_some() {
+            ready
+        } else {
+            let state = app_state.read();
+            request.read().as_ref().is_some_and(|request| {
+                state.project_path.as_ref() == Some(&request.project)
+                    && state.story.path() == Some(request.source_path.as_path())
+                    && state.story.source() == request.source
+            })
+        };
 
     rsx! {
         aside { class: "studio-writing-panel", aria_label: "Writing help",
             header { class: "studio-writing-header",
                 h2 { class: "text-sm font-semibold", "Writing help" }
                 div { class: "ml-auto flex items-center gap-1",
-                    if busy() { button { class: "studio-writing-link", onclick: move |_| cancellation.read().store(true, Ordering::Relaxed), "Cancel" } }
+                    if busy() { IconButton { label: "Cancel writing request", icon: IconName::Close, onclick: move |_| cancellation.read().store(true, Ordering::Relaxed) } }
                     if request().is_some() && !busy() {
-                        button { class: "studio-writing-link", aria_expanded: request_open(), onclick: move |_| request_open.toggle(), if request_open() { "Hide request" } else { "Edit request" } }
+                        IconButton { label: if request_open() { "Hide request" } else { "Edit request" }, icon: IconName::Edit, active: request_open(), expanded: request_open(), onclick: move |_| request_open.toggle() }
+                        IconButton { label: "Try again", icon: IconName::Refresh, tooltip: if reviewing && review.has_errors { "Correct the proposed source errors before generating another version" } else { "Generate another version using this request" }, disabled: !can_retry, onclick: move |_| {
+                            if reviewing { controller.command("retry", "", false, false); }
+                            else { start(true); }
+                        } }
                     }
                     IconButton { label: "Close Writing help", icon: IconName::Close, onclick: move |_| onclose.call(()) }
                 }
             }
+            if let Some(saved) = (recovery.conflict)() {
+                div { class: "px-4 pt-3",
+                    RecoveryNotice { title: "Your story changed while you were away", message: "Your saved writing session is safe. Restore it as an unsaved draft to continue reviewing, or keep the current story and discard that session.",
+                        IconButton { label: "Restore writing session", icon: IconName::Undo, show_label: true, tooltip: "Restore the saved writing workspace as an editable draft", onclick: move |_| {
+                            app_state.write().set_story_source(saved.draft.clone());
+                            fields.restore(controller, Some(&saved));
+                            recovery.conflict.set(None);
+                        } }
+                        IconButton { label: "Discard saved session", icon: IconName::Close, show_label: true, tooltip: "Keep the current story and discard the saved writing workspace", onclick: move |_| recovery.conflict.set(None) }
+                    }
+                }
+            }
+            if let Some(error) = (recovery.error)() {
+                p { role: "alert", class: "px-4 pt-3 text-xs leading-5 text-rose-300", "{error}" }
+            }
             if !text_configured {
                 div { class: "px-4 pt-3",
                     RecoveryNotice { title: "Connect a text model", message: "Choose a text provider to start writing together. Your story stays here.",
-                        button { class: "studio-button", onclick: move |_| screen.set(super::AppScreen::Settings), "Open Settings" }
+                        IconButton { label: "Open Settings", icon: IconName::Settings, show_label: true, onclick: move |_| screen.set(super::AppScreen::Settings) }
                     }
                 }
             }
             div { class: "studio-writing-request", hidden: !request_open() || busy(),
                 div { class: "grid grid-cols-2 gap-2",
-                    select { aria_label: "Writing scope", value: scope(), oninput: move |event| scope.set(event.value()),
-                        option { value: "selection", "Selection" } option { value: "beat", "Current beat" } option { value: "scene", "Current scene" }
+                    select { aria_label: "Writing scope", disabled: current.is_some(), value: scope(), oninput: move |event| scope.set(event.value()),
+                        option { value: "selection", "Selection" } option { value: "beat", "Current beat" } option { value: "scene", "Current scene" } option { value: "file", "Entire file" }
                     }
                     select { aria_label: "Writing action", value: if action() == WritingAction::Expand { "expand" } else { "rewrite" }, oninput: move |event| action.set(if event.value() == "expand" { WritingAction::Expand } else { WritingAction::Rewrite }),
                         option { value: "rewrite", "Rewrite" } option { value: "expand", "Expand" }
                     }
                 }
+                if current.is_some() { p { class: "text-xs leading-5 text-zinc-400", "Finish reviewing this passage before choosing another scope." } }
                 textarea { id: instructions_id, onmounted: instructions_mount, aria_label: "Writing instructions", class: "studio-writing-prompt", rows: 3, placeholder: "How should this passage change?", oninput: move |event| instructions.set(event.value()) }
                 div { class: "flex flex-wrap items-center justify-between gap-2",
                     label { class: "flex items-center gap-2 text-xs text-zinc-400",
                         input { r#type: "checkbox", class: "accent-violet-500", checked: !preserve(), onchange: move |_| preserve.toggle() }
                         "Allow new details"
                     }
-                    button { class: "studio-button studio-button-primary", disabled: !text_configured, onclick: move |_| start(false), if action() == WritingAction::Expand { "Suggest expansion" } else { "Suggest rewrite" } }
+                    IconButton { label: if action() == WritingAction::Expand { "Suggest expansion" } else { "Suggest rewrite" }, icon: IconName::Sparkles, show_label: true, primary: true, tooltip: "Generate a suggestion for the chosen passage", disabled: !text_configured || recovery.conflict.read().is_some(), onclick: move |_| start(false) }
                 }
             }
             if let Some(captured) = request() {
-                div { class: "studio-writing-brief", hidden: request_open() && !busy(),
-                    span { class: "text-xs font-medium text-zinc-400", "{action_label(captured.action)}" }
-                    if !captured.instructions.trim().is_empty() { p { class: "mt-1 text-sm leading-6 text-zinc-200", "{captured.instructions}" } }
+                if !captured.instructions.trim().is_empty() {
+                    div { class: "studio-writing-brief", hidden: request_open() && !busy(),
+                        p { class: "text-sm leading-6 text-zinc-200", "{captured.instructions}" }
+                    }
                 }
             }
             div { class: "studio-writing-reading",
+                if interrupted() && !busy() {
+                    RecoveryNotice { title: "Writing was interrupted", message: "Your request and the response received so far were restored. Try again when you're ready; no new request has been sent." }
+                    if !streamed.read().is_empty() {
+                        details { class: "studio-writing-notes", summary { "Recovered partial response" }
+                            pre { class: "studio-writing-source", "{streamed}" }
+                        }
+                    }
+                }
                 if let Some(report) = failure() {
                     RecoveryNotice { title: "Couldn't create a suggestion", message: "Your story and request are unchanged. Check the text model or try again.", alert: true,
-                        button { class: "studio-button", disabled: busy() || !text_configured, onclick: move |_| start(true), "Try again" }
-                        button { class: "studio-writing-link", onclick: move |_| screen.set(super::AppScreen::Settings), "Model settings" }
+                        IconButton { label: "Model settings", icon: IconName::Settings, show_label: true, onclick: move |_| screen.set(super::AppScreen::Settings) }
                         ErrorDetailsButton { error: report }
                     }
                 }
@@ -280,39 +435,44 @@ pub fn WritingAssistant(
                         p { role: "status", class: "text-sm text-zinc-400", "{phase}" }
                     }
                     pre { class: "studio-writing-source", "{streamed}" }
-                } else if let Some(value) = current.as_ref() {
-                    div { class: "studio-writing-review-nav", aria_label: "Compare suggestion",
-                        button { aria_pressed: !show_original(), class: if !show_original() { "is-selected" } else { "" }, onclick: move |_| show_original.set(false), "Suggestion" }
-                        button { aria_pressed: show_original(), class: if show_original() { "is-selected" } else { "" }, onclick: move |_| show_original.set(true), "Original" }
-                        div { class: "ml-auto",
-                            IconButton { label: "Another version", icon: IconName::Refresh, disabled: !text_configured, onclick: move |_| start(true) }
+                } else if current.is_some() {
+                    if !ready && controller.error.read().is_none() { p { role: "status", class: "text-xs text-zinc-400", "Opening review…" } }
+                    if remaining > 0 {
+                        div { class: "studio-writing-selection",
+                            div { class: "flex items-center justify-between gap-2",
+                                p { class: "text-xs text-zinc-400", if marked > 0 { "{marked} selected" } else { "Change {selected + 1} of {remaining}" } }
+                                div { class: "flex gap-1",
+                                    IconButton { label: "Previous change", icon: IconName::ChevronUp, tooltip: "Go to the previous change · Shift+F7", disabled: !ready || selected == 0, onclick: move |_| controller.command("previous", "", false, false) }
+                                    IconButton { label: "Next change", icon: IconName::ChevronDown, tooltip: "Go to the next change · F7", disabled: !ready || selected + 1 >= remaining, onclick: move |_| controller.command("next", "", false, false) }
+                                }
+                            }
+                            div { class: "mt-2 flex gap-2",
+                                IconButton { label: if marked > 0 { "Keep selected" } else { "Keep change" }, icon: IconName::Check, show_label: true, tooltip: if ready && mismatch.is_none() && !can_keep_selection { "Correct these edits or select their related changes before keeping them".into() } else if marked > 0 { format!("Keep {marked} selected changes in the draft") } else { "Keep this change in the draft".into() }, disabled: !ready || mismatch.is_some() || !can_keep_selection, onclick: move |_| controller.command("action", "keep", false, marked > 0) }
+                                IconButton { label: if marked > 0 { "Reset selected" } else { "Reset change" }, icon: IconName::Undo, tooltip: if marked > 0 { format!("Restore {marked} selected changes to the draft text") } else { "Restore this change to the draft text".into() }, disabled: !ready || mismatch.is_some(), onclick: move |_| controller.command("action", "discard", false, marked > 0) }
+                            }
                         }
                     }
-                    pre { class: "studio-writing-source", role: "region", aria_label: if show_original() { "Original passage" } else { "Suggested passage" }, if show_original() { "{value.request.original()}" } else { "{value.replacement}" } }
                     if !review.diagnostics.is_empty() {
                         details { class: "studio-writing-notes",
                             summary { if review.has_errors { "Source issues to resolve ({review.diagnostics.len()})" } else { "Notes for this suggestion ({review.diagnostics.len()})" } }
                             for diagnostic in &review.diagnostics { p { class: "mt-2 text-xs leading-5 text-zinc-400", "{diagnostic.message}" } }
                         }
                     }
-                } else if failure().is_none() && message().is_none() {
-                    p { class: "text-sm leading-6 text-zinc-500", "Select a passage or place the cursor in a beat or scene. Suggestions appear here for review." }
+                } else if failure().is_none() && message().is_none() && !interrupted() && request.read().is_none() && recovery.conflict.read().is_none() {
+                    p { class: "text-sm leading-6 text-zinc-500", "Choose a passage, the current beat or scene, or the entire file." }
                 }
             }
             if current.is_some() && !busy() {
                 footer { class: "studio-writing-actions",
                     if let Some(text) = mismatch.as_ref() { p { role: "status", class: "mb-3 text-xs leading-5 text-zinc-400", "{text}" } }
-                    if review.has_errors { p { role: "status", class: "mb-3 text-xs text-rose-300", "Story validation changed. This suggestion is kept, but cannot be applied safely." } }
-                    div { class: "flex items-center gap-2",
-                        button { class: "studio-button studio-button-primary flex-1", disabled: mismatch.is_some() || review.has_errors, onclick: move |_| {
-                            if let Some(value) = proposal() {
-                                match app_state.write().apply_writing_proposal(&value) {
-                                    Ok(()) => { proposal.set(None); message.set(None); failure.set(None); request.set(None); request_open.set(true); onclose.call(()); }
-                                    Err(error) => message.set(Some(error)),
-                                }
-                            }
-                        }, "Accept suggestion" }
-                        button { class: "studio-button", onclick: move |_| { proposal.set(None); failure.set(None); message.set(None); request_open.set(true); }, "Discard" }
+                    if let Some(error) = (controller.error)() { p { role: "status", class: "mb-3 text-xs leading-5 text-rose-300", "{error}" } }
+                    else if review.has_errors { p { role: "status", class: "mb-3 text-xs text-rose-300", "Fix the proposed text before keeping all changes. Your draft is unchanged by pending edits." } }
+                    div { class: "flex flex-wrap items-center gap-2",
+                        IconButton { label: if remaining == 0 { "Done" } else { "Keep all" }, icon: IconName::Check, show_label: true, primary: true, tooltip: "Keep all remaining changes and finish reviewing", disabled: !ready || mismatch.is_some() || review.has_errors, onclick: move |_| controller.command("action", "keep", true, false) }
+                        IconButton { label: "Discard all", icon: IconName::Close, show_label: true, tooltip: "Discard all pending changes; keep previously accepted edits", disabled: mismatch.is_some() || ready && remaining == 0, onclick: move |_| {
+                            if ready { controller.command("action", "discard", true, false); }
+                            else { controller.review.set(None); }
+                        } }
                     }
                 }
             }
