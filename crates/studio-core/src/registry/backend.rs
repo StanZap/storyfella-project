@@ -128,11 +128,6 @@ impl CreativeBackend {
         self.runtime.stop_generation_runtime().await
     }
 
-    /// The residency the resident server starts with (`resident`/`lowvram`).
-    pub fn image_residency(&self) -> &'static str {
-        self.runtime.residency()
-    }
-
     /// Changes the image residency for the next server start (see
     /// [`CreativeRuntime::set_residency`]); `false` for an unknown id.
     pub fn set_image_residency(&mut self, residency: &str) -> bool {
@@ -264,6 +259,10 @@ impl CreativeBackend {
             Some(id) => self.start_chat_server(id).await,
             None => Ok(()),
         }
+    }
+
+    pub fn planner_config(&self) -> Option<crate::llm::LlmConfig> {
+        self.llm.as_ref().map(|client| client.config().clone())
     }
 
     fn draft_system_prompt() -> &'static str {
@@ -645,6 +644,9 @@ impl GenerationBackend for CreativeBackend {
         let this = self.clone();
         let request = request.clone();
         Box::pin(async move {
+            let client = this.runtime.client().map_err(|error| {
+                PipelineError::backend_with_context(error, generate_context(&request, None))
+            })?;
             // The generator and a chat model cannot share the card: stop every
             // managed chat server before the resident image server starts.
             this.stop_chat_servers().await.map_err(|error| {
@@ -653,14 +655,9 @@ impl GenerationBackend for CreativeBackend {
             this.runtime.ensure_ready().await.map_err(|error| {
                 PipelineError::backend_with_context(error, generate_context(&request, None))
             })?;
-            let job = this
-                .runtime
-                .client()
-                .generate(&request)
-                .await
-                .map_err(|error| {
-                    PipelineError::backend_with_context(error, generate_context(&request, None))
-                })?;
+            let job = client.generate(&request).await.map_err(|error| {
+                PipelineError::backend_with_context(error, generate_context(&request, None))
+            })?;
             // The job id lets a failed run be cross-referenced against the
             // server logs.
             let job_id = job.id.clone();

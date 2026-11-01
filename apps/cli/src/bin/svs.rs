@@ -403,7 +403,11 @@ fn parse_lora(value: &str) -> Result<LoraSelection, String> {
 
 fn parse_model(value: &str) -> Result<String, String> {
     let architecture = AppConfig::load()
-        .map(|config| config.image.architecture)
+        .and_then(|config| {
+            config
+                .native_image()
+                .map(|image| image.architecture.clone())
+        })
         .map_err(|error| error.to_string())?;
     if value == architecture {
         Ok(value.to_owned())
@@ -509,9 +513,10 @@ async fn run(cli: Cli) -> Result<()> {
                     }
                     // The address the provider declares is the one both the
                     // runtime and the client use.
-                    let runtime = config.image.runtime();
+                    let image = config.native_image()?;
+                    let runtime = image.runtime();
                     runtime
-                        .ensure_ready(&config.image.host, config.image.port)
+                        .ensure_ready(&image.host, image.port)
                         .await
                         .map_err(|error| anyhow!(error.report().log()))?;
                     println!("generation runtime ready with {model}; Ctrl-C to stop");
@@ -527,10 +532,12 @@ async fn run(cli: Cli) -> Result<()> {
                     if force {
                         stop_generation_server(&config, true)?;
                     }
-                    let pid =
-                        control::start(&Managed::Image(config.image.clone()), &config.state_dir)
-                            .await
-                            .map_err(|error| anyhow!(error.report().log()))?;
+                    let pid = control::start(
+                        &Managed::Image(config.native_image()?.clone()),
+                        &config.state_dir,
+                    )
+                    .await
+                    .map_err(|error| anyhow!(error.report().log()))?;
                     match pid {
                         Some(pid) => println!(
                             "generation runtime started with {model} (pid {pid}); `svs runtime stop` stops it"
@@ -546,9 +553,12 @@ async fn run(cli: Cli) -> Result<()> {
                     if force {
                         kill_foreign_generation_servers(&config)?;
                     }
-                    control::restart(&Managed::Image(config.image.clone()), &config.state_dir)
-                        .await
-                        .map_err(|error| anyhow!(error.report().log()))?;
+                    control::restart(
+                        &Managed::Image(config.native_image()?.clone()),
+                        &config.state_dir,
+                    )
+                    .await
+                    .map_err(|error| anyhow!(error.report().log()))?;
                     println!("generation runtime restarted with {model}");
                     Ok(())
                 }
@@ -619,7 +629,7 @@ async fn run_eval(eval: EvalArgs) -> Result<()> {
 /// owner started is found by its recorded marker; `force` also stops one it did
 /// not start, identified precisely by the served executable and listen port.
 fn stop_generation_server(config: &AppConfig, force: bool) -> Result<()> {
-    let port = config.image.port;
+    let port = config.native_image()?.port;
     match control::stop(&config.state_dir, port).map_err(|error| anyhow!(error.report().log()))? {
         StopOutcome::Stopped(pid) => {
             println!("stopped the generation server on :{port} (pid {pid})");
@@ -645,8 +655,9 @@ fn stop_generation_server(config: &AppConfig, force: bool) -> Result<()> {
 /// Reports whether the generation server is up, and whether the shared owner
 /// manages it.
 async fn generation_status(config: &AppConfig) -> Result<()> {
-    let port = config.image.port;
-    match control::status(&Managed::Image(config.image.clone()), &config.state_dir).await {
+    let image = config.native_image()?;
+    let port = image.port;
+    match control::status(&Managed::Image(image.clone()), &config.state_dir).await {
         ServerState::Up { owned: Some(pid) } => {
             println!(":{port} up · managed by the shared owner (pid {pid})")
         }
@@ -662,9 +673,10 @@ async fn generation_status(config: &AppConfig) -> Result<()> {
 /// not start. Identified by the served executable and listen port — not a
 /// `pkill` pattern, so another model's server is left alone.
 fn kill_foreign_generation_servers(config: &AppConfig) -> Result<()> {
-    let port = config.image.port;
+    let image = config.native_image()?;
+    let port = image.port;
     let killed =
-        kill_servers(&config.image.executable, port).map_err(|error| anyhow!(error.to_string()))?;
+        kill_servers(&image.executable, port).map_err(|error| anyhow!(error.to_string()))?;
     if killed.is_empty() {
         println!("no generation server is running on :{port}");
     } else {

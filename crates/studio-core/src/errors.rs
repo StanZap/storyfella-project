@@ -88,6 +88,7 @@ pub enum ErrorCode {
     ConfigMalformedSize,
     ConfigProviders,
     ConfigSerialize,
+    ConfigNativeImageUnavailable,
 
     // ---- LLM endpoint client (src/llm/mod.rs) ----
     LlmBuild,
@@ -130,6 +131,7 @@ pub enum ErrorCode {
     AppCommandInvalid,
     AppCheckpointRejected,
     AppStackEmpty,
+    WritingProposalFailed,
 }
 
 impl ErrorCode {
@@ -486,6 +488,13 @@ impl ErrorCode {
                 "The shared clipforge.toml could not be assembled into a registry. \
                  Check it for conflicting or malformed values.",
             ),
+            Self::ConfigNativeImageUnavailable => (
+                "SVS-CFG-110",
+                "Studio's native image engine is not selected",
+                "Writing and playback remain available. Use Atelier for hosted images, \
+                 or select a native sdcpp t2i provider in the shared clipforge.toml \
+                 to enable Studio's native image actions.",
+            ),
             Self::LlmBuild => (
                 "SVS-LLM-101",
                 "Could not build HTTP client",
@@ -691,6 +700,12 @@ impl ErrorCode {
                 "Nothing to run",
                 "The operation stack contained no operations. This is an \
                  internal error; check the logs.",
+            ),
+            Self::WritingProposalFailed => (
+                "SVS-APP-106",
+                "Could not create a writing suggestion",
+                "Your story and request are unchanged. Check the text model in Settings, \
+                 or retry when the endpoint is available.",
             ),
         }
     }
@@ -939,7 +954,7 @@ mod tests {
     fn registry_size_is_pinned() {
         assert_eq!(
             codes().len(),
-            91,
+            93,
             "update the registry count when adding error codes"
         );
     }
@@ -1077,6 +1092,7 @@ mod tests {
             ErrorCode::ConfigMalformedSize,
             ErrorCode::ConfigProviders,
             ErrorCode::ConfigSerialize,
+            ErrorCode::ConfigNativeImageUnavailable,
             ErrorCode::LlmBuild,
             ErrorCode::LlmRequest,
             ErrorCode::LlmStatus,
@@ -1109,6 +1125,7 @@ mod tests {
             ErrorCode::AppCommandInvalid,
             ErrorCode::AppCheckpointRejected,
             ErrorCode::AppStackEmpty,
+            ErrorCode::WritingProposalFailed,
         ]
     }
 }

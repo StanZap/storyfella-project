@@ -317,7 +317,10 @@ fn RenameSymbolDialog(
 }
 
 #[component]
-pub fn Writer(app_state: Signal<AppState>) -> Element {
+pub fn Writer(
+    app_state: Signal<AppState>,
+    backend: Signal<storyfella_studio_core::registry::backend::CreativeBackend>,
+) -> Element {
     let mut error_report = use_context::<Signal<Option<ReportedError>>>();
     let caret = use_context::<super::WriterCaret>();
     let mut cursor = caret.position;
@@ -329,6 +332,14 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
     let mut rename_target = use_signal(|| None::<(usize, String)>);
     let mut problem_filter = use_signal(|| "all".to_owned());
     let mut edit_error = use_signal(|| None::<String>);
+    let mut writing_help = use_signal(|| false);
+    use_effect(move || {
+        if writing_help() {
+            document::eval(
+                "document.querySelector('[aria-label=\"Writing instructions\"]')?.focus();",
+            );
+        }
+    });
     let source = app_state.read().story.source().to_owned();
     let mut previous_source = use_signal(|| source.clone());
     let story_path = app_state
@@ -502,6 +513,7 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
                             "—"
                         }
                     }
+                    IconButton { label: "Writing help", icon: IconName::Sparkles, active: writing_help(), onclick: move |_| writing_help.toggle() }
                 }
 
                 if source.is_empty() {
@@ -657,7 +669,10 @@ pub fn Writer(app_state: Signal<AppState>) -> Element {
             }
 
             // ------------------------------------------------------- panel
-            aside { class: "flex w-[320px] shrink-0 flex-col bg-zinc-950/35",
+            div { hidden: !writing_help(), class: "studio-writing-rail",
+                super::writing_assistant::WritingAssistant { app_state, backend, onclose: move |_| { writing_help.set(false); document::eval("document.getElementById('svs-writer')?.focus();"); } }
+            }
+            aside { hidden: writing_help(), class: "flex w-[320px] shrink-0 flex-col bg-zinc-950/35",
                 div { class: "flex items-center gap-2 border-b border-white/[0.05] px-4 py-2.5",
                     p { class: "text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-600",
                         "In scope"

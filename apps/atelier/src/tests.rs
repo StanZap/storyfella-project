@@ -1641,7 +1641,7 @@ fn comfy_maps_only_configured_nodes_and_rejects_editor_workflow() {
     assert!(providers::prepare_workflow(&bad, "prompt", (1024, 1024), 1).is_err());
 }
 #[test]
-fn comfy_generation_roundtrip_with_local_mock_server() {
+fn comfy_workflow_roundtrip_stores_output_and_reopens_in_atelier() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let mut image = std::io::Cursor::new(vec![]);
@@ -1682,25 +1682,79 @@ fn comfy_generation_roundtrip_with_local_mock_server() {
             stream.write_all(&body).unwrap();
         }
     });
-    let reference = providers::generate(providers::Request {
-        native: Arc::new(Default::default()),
-        settings: Settings {
-            provider: Provider::Comfy,
-            endpoint: format!("http://{address}"),
-            workflow: workflow(),
-            ..Settings::default()
+    let directory = temporary("creative-workflow");
+    let (reference, thumbnail) = crate::creative_workflow::generate(
+        providers::Request {
+            native: Arc::new(Default::default()),
+            settings: Settings {
+                provider: Provider::Comfy,
+                endpoint: format!("http://{address}"),
+                workflow: workflow(),
+                ..Settings::default()
+            },
+            prompt: "A ceramic pitcher".into(),
+            source: None,
+            references: vec![],
+            mask: None,
+            progress: None,
+            size: (1024, 1024),
+            cancel: Arc::new(AtomicBool::new(false)),
         },
-        prompt: "A ceramic pitcher".into(),
-        source: None,
-        references: vec![],
-        mask: None,
-        progress: None,
-        size: (1024, 1024),
-        cancel: Arc::new(AtomicBool::new(false)),
-    })
+        &directory,
+    )
     .unwrap();
     assert_eq!(document::decode_reference(&reference).unwrap().width(), 32);
+    assert_eq!(thumbnail.width(), 32);
     assert!(reference.provenance.contains("A ceramic pitcher"));
+    assert_eq!(reference.prompt, "A ceramic pitcher");
+    let saved = std::fs::read_dir(directory.join("generated"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .unwrap();
+    let run_id = saved
+        .file_stem()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .strip_prefix("reference-")
+        .unwrap();
+    use storyfella_studio_core::workflows::{
+        framework::{WorkflowRunEvents, WorkflowRunStatus, WorkflowRunStore},
+        RunStore,
+    };
+    let store = RunStore::open(&directory.join("workflows.sqlite3")).unwrap();
+    let state = store.load(run_id).unwrap().unwrap();
+    assert_eq!(state.status, WorkflowRunStatus::Completed);
+    assert!(store.events(run_id).unwrap().len() > 2);
+    assert_eq!(
+        store.context(run_id).unwrap().unwrap()["prompt"],
+        "A ceramic pitcher"
+    );
+    let mut project = doc();
+    project
+        .attach_result(
+            Arc::new(reference.clone()),
+            crate::workflow::Destination::NewArtboard,
+        )
+        .unwrap();
+    let path = directory.join("result.atelier");
+    document::save(&path, &project).unwrap();
+    let reopened = document::load(&path).unwrap();
+    assert!(reopened
+        .layers
+        .iter()
+        .chain(
+            reopened
+                .canvases
+                .iter()
+                .flat_map(|canvas| canvas.layers.iter())
+        )
+        .filter_map(|layer| layer.image.as_ref())
+        .any(|image| image.reference.image == reference.image));
     server.join().unwrap();
 }
 #[test]
@@ -1850,18 +1904,23 @@ fn serve_activity_ui_fixture() {
 
 #[test]
 fn generation_cancellation_prevents_network_submission() {
-    let result = providers::generate(providers::Request {
-        native: Arc::new(Default::default()),
-        settings: Settings::default(),
-        prompt: "Study".into(),
-        source: None,
-        references: vec![],
-        mask: None,
-        progress: None,
-        size: (1024, 1024),
-        cancel: Arc::new(AtomicBool::new(true)),
-    });
+    let directory = temporary("workflow-cancel");
+    let result = crate::creative_workflow::generate(
+        providers::Request {
+            native: Arc::new(Default::default()),
+            settings: Settings::default(),
+            prompt: "Study".into(),
+            source: None,
+            references: vec![],
+            mask: None,
+            progress: None,
+            size: (1024, 1024),
+            cancel: Arc::new(AtomicBool::new(true)),
+        },
+        &directory,
+    );
     assert!(result.unwrap_err().to_string().contains("cancelled"));
+    assert!(!directory.join("generated").exists());
 }
 
 #[test]

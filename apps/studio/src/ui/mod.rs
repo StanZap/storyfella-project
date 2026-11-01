@@ -19,6 +19,7 @@ mod settings;
 pub mod shortcuts;
 mod text_input;
 pub mod writer;
+mod writing_assistant;
 
 pub const QUIT_MENU_ID: &str = "storyfella-quit";
 
@@ -247,7 +248,13 @@ pub fn Workspace(
 
     // Image residency (`resident`/`lowvram`): a launch-time choice, shared so
     // Settings can change it; a running server restarts into the new mode.
-    let image_residency = use_signal(|| config.image.residency.as_str().to_owned());
+    let image_residency = use_signal(|| {
+        config
+            .image
+            .as_ref()
+            .map(|image| image.residency.as_str().to_owned())
+            .unwrap_or_default()
+    });
     use_context_provider(|| image_residency);
 
     // The app-wide error surface: every failure is reported here (coded
@@ -332,13 +339,14 @@ pub fn Workspace(
     // start the resident server in the background. A failure is logged, not
     // surfaced — the first generation would report the same error anyway.
     let prewarm_backend = backend;
+    let native_image_selected = config.image.is_some();
     let mut prewarmed_for = use_signal(|| None::<PathBuf>);
     use_effect(move || {
         let path = app_state.read().project_path.clone();
         let Some(path) = path else {
             return;
         };
-        if !prewarm() || prewarmed_for() == Some(path.clone()) {
+        if !native_image_selected || !prewarm() || prewarmed_for() == Some(path.clone()) {
             return;
         }
         prewarmed_for.set(Some(path));
@@ -534,7 +542,7 @@ pub fn Workspace(
                 // Keep task owners and drafts alive while navigating. Hidden screens
                 // are excluded from focus and accessibility by the native attribute.
                 div { hidden: screen() != AppScreen::Projects, class: "h-full", Projects { config: config.clone(), app_state, on_open: move |_| screen.set(AppScreen::Canvas) } }
-                div { hidden: screen() != AppScreen::Writer, class: "h-full", ProjectGate { open: app_state.read().project_path.is_some(), Writer { app_state } } }
+                div { hidden: screen() != AppScreen::Writer, class: "h-full", ProjectGate { open: app_state.read().project_path.is_some(), Writer { app_state, backend } } }
                 div { hidden: screen() != AppScreen::Canvas, class: "h-full", ProjectGate { open: app_state.read().project_path.is_some(), Canvas { app_state, backend, defaults, asset_directory: config.asset_dir.join("generated") } } }
                 div { hidden: screen() != AppScreen::Preview, class: "h-full", ProjectGate { open: app_state.read().project_path.is_some(), preview::Preview { app_state } } }
                 div { hidden: screen() != AppScreen::Plans, class: "h-full", Plans { on_run: on_run_plan, running: app_state.read().operation_in_progress() || session.read().as_ref().is_some_and(|run| matches!(run.state, driver::GuideState::Running)) } }

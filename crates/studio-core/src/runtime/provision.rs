@@ -9,7 +9,27 @@ use std::path::PathBuf;
 
 use agentkit_ai::native::{DownloadProgress, ModelStore, ModelStoreError};
 
-use crate::config::AppConfig;
+use crate::{
+    config::{AppConfig, ConfigError},
+    errors::{CodedError, ErrorCode},
+};
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProvisionError {
+    #[error(transparent)]
+    Configuration(#[from] ConfigError),
+    #[error(transparent)]
+    Model(#[from] ModelStoreError),
+}
+
+impl CodedError for ProvisionError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::Configuration(error) => error.code(),
+            Self::Model(error) => error.code(),
+        }
+    }
+}
 
 /// One weight file the image profile loads — where it lives, how big it is,
 /// and whether a local override replaces the download.
@@ -47,8 +67,8 @@ impl ModelArtifactStatus {
 pub fn image_artifacts(config: &AppConfig) -> Vec<ModelArtifactStatus> {
     config
         .image
-        .artifact_plan()
         .iter()
+        .flat_map(|image| image.artifact_plan())
         .map(|entry| ModelArtifactStatus {
             filename: entry.artifact.filename.to_owned(),
             path: entry.path.clone(),
@@ -61,22 +81,20 @@ pub fn image_artifacts(config: &AppConfig) -> Vec<ModelArtifactStatus> {
 /// Downloads and verifies every artifact that still needs downloading, in
 /// order, reporting progress as it goes. Artifacts the provider overrides
 /// with a local file are never fetched.
-pub async fn provision_image_model<F>(
-    config: &AppConfig,
-    progress: F,
-) -> Result<(), ModelStoreError>
+pub async fn provision_image_model<F>(config: &AppConfig, progress: F) -> Result<(), ProvisionError>
 where
     F: FnMut(DownloadProgress),
 {
-    let artifacts: Vec<_> = config
-        .image
+    let image = config.native_image()?;
+    let artifacts: Vec<_> = image
         .artifact_plan()
         .iter()
         .filter(|entry| entry.needs_download())
         .map(|entry| entry.artifact)
         .collect();
-    let store = ModelStore::new(config.image.model_root());
-    store.ensure_all(&artifacts, progress).await
+    let store = ModelStore::new(image.model_root());
+    store.ensure_all(&artifacts, progress).await?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -698,7 +698,9 @@ fn ModelsSettings(
             on_commit: on_edit_endpoint,
             on_fetch: on_fetch_vision,
         }
-        ImageModelGroup { config: config.clone(), defaults, services }
+        if let Some(image) = config.image.clone() {
+            ImageModelGroup { config: config.clone(), image, defaults, services }
+        } else { NativeImageNotice {} }
         ProvidersSection { config: config.clone(), on_add: on_add_provider, on_remove: on_remove_provider }
     }
 }
@@ -777,8 +779,10 @@ fn ServicesSettings(
         if let Some(error) = operation_error() {
             OperationErrorBanner { error }
         }
-        ImageServiceCard { config: config.clone(), backend, services: services.clone(), busy, on_operate }
-        div { id: "image-models", ModelFiles { config: config.clone() } }
+        if let Some(image) = config.image.clone() {
+            ImageServiceCard { config: config.clone(), image: image.clone(), backend, services: services.clone(), busy, on_operate }
+            div { id: "image-models", ModelFiles { config: config.clone(), image } }
+        } else { NativeImageNotice {} }
         ChatServers { config: config.clone(), running: chat_servers, busy: chat_busy, on_operate: on_chat_operate }
     }
 }
@@ -1138,7 +1142,7 @@ fn ChatEndpointGroup(
             }
         }
         div { class: "mt-4 border-y border-white/[0.06]",
-            if providers.len() > 1 {
+            if !providers.is_empty() {
                 SettingRow { title: "Provider".to_owned(), description: String::new(),
                     SearchSelect { label: provider_label, options: providers, value: provider_id.clone(), placeholder: "Select a provider".to_owned(), on_select: on_select_provider }
                 }
@@ -1281,6 +1285,15 @@ fn service_of(health: &[ServiceHealth], id: ServiceId) -> (HealthStatus, String)
         .unwrap_or((HealthStatus::Idle, "Not checked yet".to_owned()))
 }
 
+#[component]
+fn NativeImageNotice() -> Element {
+    rsx! {
+        p { class: "border-y border-white/[0.06] py-4 text-xs leading-5 text-zinc-400",
+            "Studio's native image engine is not selected. Writing and playback work with your current providers. Use Atelier for hosted images, or select a native image provider in clipforge.toml to enable Studio's image controls."
+        }
+    }
+}
+
 /// The image model's identity and output: the served profile, the sampling
 /// steps, the per-kind canvas, and the adapters bound to it. Running the engine
 /// — its files, downloads, residency and start/stop — lives on the Services
@@ -1288,6 +1301,7 @@ fn service_of(health: &[ServiceHealth], id: ServiceId) -> (HealthStatus, String)
 #[component]
 fn ImageModelGroup(
     config: AppConfig,
+    image: agentkit_ai::deployments::ImageDeployment,
     mut defaults: Signal<GenerationDefaults>,
     services: Vec<ServiceHealth>,
 ) -> Element {
@@ -1299,7 +1313,7 @@ fn ImageModelGroup(
     let mut steps_draft = use_signal(|| steps.to_string());
     let (steps_id, steps_mount) = super::text_input::use_text_value(steps_draft(), None);
     // The lora dir shown here and the bindings share the same defaults.
-    let lora_dir = config.image.lora_dir.clone();
+    let lora_dir = image.lora_dir.clone();
     // Discovered adapters, reloadable: symlinked or newly dropped files
     // appear after pressing the refresh icon next to the directory.
     let mut discovered = use_signal(|| discover_loras(&lora_dir));
@@ -1316,7 +1330,7 @@ fn ImageModelGroup(
         }
         div { class: "mt-4 border-y border-white/[0.06]",
             SettingRow { title: "Model", description: String::new(),
-                input { class: "setting-control", value: "{config.image.architecture}", readonly: true }
+                input { class: "setting-control", value: "{image.architecture}", readonly: true }
             }
             SettingRow { title: "Steps per image", description: "Quality vs. speed of every generation. The default is 25 at CFG {cfg_scale:.1} (Qwen-Image-2.1); fewer steps is faster and rougher.",
                 div { class: "flex items-center gap-3",
@@ -1391,6 +1405,7 @@ fn ImageModelGroup(
 #[component]
 fn ImageServiceCard(
     config: AppConfig,
+    image: agentkit_ai::deployments::ImageDeployment,
     backend: Signal<CreativeBackend>,
     services: Vec<ServiceHealth>,
     busy: Signal<Option<ServiceId>>,
@@ -1460,7 +1475,7 @@ fn ImageServiceCard(
             refresh.call(());
         });
     });
-    let executable = config.image.executable.display().to_string();
+    let executable = image.executable.display().to_string();
     rsx! {
         div { class: "flex items-start gap-3",
             span { class: "mt-1 grid size-8 shrink-0 place-items-center rounded-xl bg-white/[0.035]", StatusDot { status } }
@@ -1494,7 +1509,7 @@ fn ImageServiceCard(
                 input { class: "setting-control", value: "{executable}", readonly: true }
             }
             SettingRow { title: "Runtime endpoint", description: String::new(),
-                input { class: "setting-control", value: "http://{config.image.host}:{config.image.port}", readonly: true }
+                input { class: "setting-control", value: "http://{image.host}:{image.port}", readonly: true }
             }
             SettingRow { title: "Prewarm on project open", description: "Start the resident server as soon as a project opens, so the first generation is not a multi-minute weight load. Leave it off while another local model shares the card.",
                 Toggle { label: "Prewarm on project open", enabled: prewarm(), onchange: on_prewarm }
@@ -1633,14 +1648,15 @@ fn artifact_detail(status: &ModelArtifactStatus) -> String {
 /// The image profile's weight files and the in-app download that fills the
 /// gaps, so a first run does not need a terminal.
 #[component]
-fn ModelFiles(config: AppConfig) -> Element {
+fn ModelFiles(config: AppConfig, image: agentkit_ai::deployments::ImageDeployment) -> Element {
     let mut repair_error = use_signal(|| None::<String>);
     let mut pending_directory = use_signal(|| None::<std::path::PathBuf>);
     let change_config = config.clone();
+    let change_model_dir = image.model_dir.clone();
     let change_location = move |_| {
         let Some(directory) = rfd::FileDialog::new()
             .set_title("Choose model folder")
-            .set_directory(&change_config.image.model_dir)
+            .set_directory(&change_model_dir)
             .pick_folder()
         else {
             return;
@@ -1653,7 +1669,7 @@ fn ModelFiles(config: AppConfig) -> Element {
             Err(error) => repair_error.set(Some(error.to_string())),
         }
     };
-    let model_directory = config.image.model_dir.clone();
+    let model_directory = image.model_dir.clone();
     let configuration_path = config
         .ai_config_path
         .clone()
@@ -1672,7 +1688,7 @@ fn ModelFiles(config: AppConfig) -> Element {
         .iter()
         .filter(|status| status.local_override.is_some() && !status.is_present())
         .count();
-    let executable_ready = config.image.executable.is_file();
+    let executable_ready = image.executable.is_file();
     let bytes_to_download: u64 = artifacts
         .iter()
         .filter(|status| status.needs_download())
@@ -1788,7 +1804,7 @@ fn ModelFiles(config: AppConfig) -> Element {
                 }
             }
         }
-        p { class: "mt-3 text-xs text-zinc-300", "Download: {human_bytes(bytes_to_download)} · Destination: {config.image.model_dir.display()}" }
+        p { class: "mt-3 text-xs text-zinc-300", "Download: {human_bytes(bytes_to_download)} · Destination: {image.model_dir.display()}" }
         div { class: "mt-3 flex flex-wrap items-center gap-3",
             button { disabled: running, title: if running { "Wait for this download before changing its destination" } else { "Choose an existing model tree or a new download destination" }, class: "rounded bg-white/10 px-3 py-2", onclick: change_location, "Change location…" }
             button { class: "rounded bg-white/10 px-3 py-2", onclick: move |_| {
@@ -1805,7 +1821,7 @@ fn ModelFiles(config: AppConfig) -> Element {
             p { role: "alert", class: "mt-3 text-xs text-amber-300", "{blocked_overrides} configured local weight files are missing. Repair their paths in clipforge.toml; downloading cannot replace a local override." }
         }
         if !executable_ready {
-            p { role: "alert", class: "mt-3 text-xs text-amber-300", "The generation executable is missing: {config.image.executable.display()}. Configure an installed sd-server executable in clipforge.toml." }
+            p { role: "alert", class: "mt-3 text-xs text-amber-300", "The generation executable is missing: {image.executable.display()}. Configure an installed sd-server executable in clipforge.toml." }
         }
         if blocked_overrides > 0 || !executable_ready {
             button { class: "mt-3 rounded bg-white/10 px-3 py-2", onclick: move |_| repair_error.set(super::components::open_path(&configuration_path).err()), "Open configuration" }
@@ -1998,7 +2014,9 @@ fn StorageSettings(config: AppConfig) -> Element {
             description: "Platform-appropriate directories keep generated assets, model weights, and disposable cache data separate."
         }
         div { class: "border-y border-white/[0.06]",
-            PathRow { title: "Models", description: "The image engine's weight tree.", path: config.image.model_dir.display().to_string() }
+            if let Some(image) = &config.image {
+                PathRow { title: "Models", description: "The image engine's weight tree.", path: image.model_dir.display().to_string() }
+            }
             PathRow { title: "Generated assets", description: "Imported generations.", path: config.asset_dir.display().to_string() }
             PathRow { title: "Projects", description: "Where new project databases are created.", path: config.project_dir.display().to_string() }
             PathRow { title: "Cache", description: "Disposable data; safe to clear.", path: config.cache_dir.display().to_string() }

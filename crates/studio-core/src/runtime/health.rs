@@ -160,7 +160,11 @@ async fn check_chat(id: ServiceId, mut deployment: ChatDeployment) -> ServiceHea
 }
 
 async fn check_generation(config: &AppConfig, runtime: &CreativeRuntime) -> ServiceHealth {
-    let executable = &config.image.executable;
+    let Some(image) = &config.image else {
+        return ServiceHealth::new(ServiceId::ImageGeneration, HealthStatus::Idle,
+            "Studio's native image engine is not selected. Writing and playback are available; use Atelier for hosted images.");
+    };
+    let executable = &image.executable;
     if !executable.is_file() {
         return ServiceHealth::new(
             ServiceId::ImageGeneration,
@@ -181,8 +185,18 @@ async fn check_generation(config: &AppConfig, runtime: &CreativeRuntime) -> Serv
     // One capabilities probe answers both questions: whether a server is
     // answering, and whether the profile's model is the one resident. Nothing
     // answering is the on-demand state; a mismatched resident is a conflict.
-    match with_timeout(runtime.client().capabilities(), CHECK_TIMEOUT_SECONDS).await {
-        Ok(capabilities) if !model_matches(&capabilities.model, &runtime.expected_model()) => {
+    let (client, expected) = match (runtime.client(), runtime.expected_model()) {
+        (Ok(client), Ok(expected)) => (client, expected),
+        _ => {
+            return ServiceHealth::new(
+                ServiceId::ImageGeneration,
+                HealthStatus::Idle,
+                "Native image engine is not selected",
+            )
+        }
+    };
+    match with_timeout(client.capabilities(), CHECK_TIMEOUT_SECONDS).await {
+        Ok(capabilities) if !model_matches(&capabilities.model, &expected) => {
             ServiceHealth::new(
                 ServiceId::ImageGeneration,
                 HealthStatus::Degraded,
@@ -236,14 +250,29 @@ mod tests {
     use super::{truncate, HealthStatus, ServiceHealth, ServiceId};
 
     #[tokio::test]
+    async fn unselected_native_images_do_not_request_setup_or_probe_a_server() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config =
+            crate::config::AppConfig::load_from(directory.path().join("absent.toml")).unwrap();
+        config.image = None;
+        config.image_provider_id = None;
+        let runtime = super::CreativeRuntime::new(&config);
+        let health = super::check_generation(&config, &runtime).await;
+        assert_eq!(health.status, HealthStatus::Idle);
+        assert!(health.recovery.is_none());
+        assert!(health.detail.contains("Writing and playback"));
+    }
+
+    #[tokio::test]
     async fn missing_image_files_offer_setup_before_any_server_action() {
         let directory = std::env::temp_dir().join(format!("svs-health-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&directory).unwrap();
         let mut config =
             crate::config::AppConfig::load_from(directory.join("absent.toml")).unwrap();
-        config.image.model_dir = directory.join("models");
-        config.image.executable = directory.join("sd-server");
-        config.image.lora_dir = directory.join("loras");
+        let image = config.image.as_mut().unwrap();
+        image.model_dir = directory.join("models");
+        image.executable = directory.join("sd-server");
+        image.lora_dir = directory.join("loras");
         let runtime = super::CreativeRuntime::new(&config);
         let missing_executable = super::check_generation(&config, &runtime).await;
         assert_eq!(missing_executable.status, HealthStatus::Offline);
@@ -251,7 +280,11 @@ mod tests {
             missing_executable.recovery,
             Some(super::ServiceRecovery::ConfigureImageFiles)
         );
-        std::fs::write(&config.image.executable, b"test file; never executed").unwrap();
+        std::fs::write(
+            &config.native_image().unwrap().executable,
+            b"test file; never executed",
+        )
+        .unwrap();
         let missing_models = super::check_generation(&config, &runtime).await;
         assert_eq!(missing_models.status, HealthStatus::Degraded);
         assert_eq!(

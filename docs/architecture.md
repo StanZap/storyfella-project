@@ -311,10 +311,14 @@ directory** (`paths::state_dir()`, via
 holds the process markers and detached-server logs every front end shares, so a
 server one app started is reused rather than duplicated. The image deployment —
 the `sd-server` executable, model tree, LoRA root, endpoint, and weights — is
-resolved from the AI config; the deployment's `AppConfig::image` is what the
+resolved from the AI config; the optional `AppConfig::image` is what the
 runtime, the health probe, `model_setup`, and Settings read. Model storage
 defaults to the OS-local Storyfella data folder in both development and release
-builds; Settings can save an absolute override. See
+builds; Settings can save an absolute override. A hosted or absent t2i default
+leaves the native deployment unset: Writer, playback and text-provider settings
+remain available, image prewarm is skipped, and native-only actions report
+SVS-CFG-110 without starting servers or downloading weights. Shared hosted
+defaults remain unchanged for Atelier. See
 [model storage](development.md#inference-settings).
 
 ## What is deliberately absent

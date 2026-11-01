@@ -460,44 +460,11 @@ pub(crate) fn apply_settings(settings: &providers::Settings, path: &std::path::P
 }
 pub fn generate(mut request: Request, id: u64, sender: Sender<Event>, directory: PathBuf) {
     std::thread::spawn(move || {
-        let mask = request.mask.clone();
-        let source = request.source.clone();
-        let parent = request
-            .source
-            .as_ref()
-            .map(|source| crate::library::id(source));
-        let prompt = request.prompt.clone();
         let progress_sender = sender.clone();
         request.progress = Some(Box::new(move |message| {
             let _ = progress_sender.send(Event::GenerationProgress(id, message));
         }));
-        let result = providers::generate(request).and_then(|mut reference| {
-            if let (Some(mask), Some(source)) = (&mask, &source) {
-                reference = mask.composite(source, &reference)?;
-            }
-            reference.parent = parent;
-            reference.prompt = prompt;
-            if let Some(source) = &source {
-                reference.name = format!("Edit · {}", source.name);
-            }
-            let directory = directory.join("generated");
-            let decoded = document::decode_reference(&reference)?;
-            let image = document::thumbnail(decoded.clone(), 800).to_rgba8();
-            let stem = format!(
-                "reference-{}-{id}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)?
-                    .as_millis()
-            );
-            let mut png = std::io::Cursor::new(Vec::new());
-            decoded.write_to(&mut png, image::ImageFormat::Png)?;
-            document::atomic_write(&directory.join(format!("{stem}.png")), &png.into_inner())?;
-            document::atomic_write(
-                &directory.join(format!("{stem}.json")),
-                &serde_json::to_vec(&reference)?,
-            )?;
-            Ok((reference, image))
-        });
+        let result = crate::creative_workflow::generate(request, &directory);
         let _ = sender.send(Event::Generated(id, result));
     });
 }

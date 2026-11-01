@@ -10,9 +10,8 @@ struct Arguments {}
 #[tokio::main]
 async fn main() -> Result<()> {
     Arguments::parse();
-    let deployment = AppConfig::load()
-        .context("failed to load the configuration")?
-        .image;
+    let config = AppConfig::load().context("failed to load the configuration")?;
+    let deployment = config.native_image()?;
 
     // The provider names the model tree; artifacts it overrides with a local
     // file are never downloaded.

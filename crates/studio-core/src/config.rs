@@ -176,12 +176,11 @@ pub struct AppConfig {
     /// The provider id serving `t2i`, kept so Settings can persist the
     /// residency choice under the right `[providers.<id>]` section.
     pub image_provider_id: Option<String>,
-    /// The image-generation deployment resolved from the shared
+    /// The optional native image-generation deployment resolved from the shared
     /// `clipforge.toml`: the `sd-server` executable, model tree, LoRA root,
-    /// endpoint, and weights.
-    pub image: ImageDeployment,
-    /// Every configured provider serving `text`, in id order. The Settings
-    /// provider picker switches `[defaults] text` among these, so moving
+    /// endpoint, and weights. Hosted or absent t2i defaults leave this unset;
+    /// authoring and playback do not require a native image engine.
+    pub image: Option<ImageDeployment>,
     /// Every configured provider that serves a chat capability — `openai` or
     /// `llamacpp` — in id order, with the endpoint each resolves to. Both the
     /// text and vision pickers choose from this one list: any chat provider
@@ -255,6 +254,8 @@ pub enum ConfigError {
     Serialize { source: toml::ser::Error },
     #[error(transparent)]
     Providers(#[from] ProviderError),
+    #[error("Studio's native image engine is not selected. Use Atelier for hosted image generation, or select an sdcpp t2i provider in clipforge.toml. Writing and playback remain available.")]
+    NativeImageUnavailable,
 }
 
 impl CodedError for ConfigError {
@@ -268,6 +269,7 @@ impl CodedError for ConfigError {
             Self::MalformedSize { .. } => ErrorCode::ConfigMalformedSize,
             Self::Serialize { .. } => ErrorCode::ConfigSerialize,
             Self::Providers(_) => ErrorCode::ConfigProviders,
+            Self::NativeImageUnavailable => ErrorCode::ConfigNativeImageUnavailable,
         }
     }
 }
@@ -387,6 +389,12 @@ impl AppConfig {
         self.text.as_ref().map(LlmConfig::from)
     }
 
+    pub fn native_image(&self) -> Result<&ImageDeployment, ConfigError> {
+        self.image
+            .as_ref()
+            .ok_or(ConfigError::NativeImageUnavailable)
+    }
+
     /// The shared AI config file provider edits are written to.
     fn ai_path(&self) -> Result<&Path, ConfigError> {
         self.ai_config_path
@@ -464,7 +472,11 @@ impl AppConfig {
         ai_config: Option<PathBuf>,
     ) -> Result<Self, ConfigError> {
         let path = base;
-        let image = providers.image_deployment(Capability::T2i)?;
+        let image = match providers.image_deployment(Capability::T2i) {
+            Ok(image) => Some(image),
+            Err(ProviderError::NotImageProvider { .. } | ProviderError::NoProvider(_)) => None,
+            Err(error) => return Err(error.into()),
+        };
         // The chat capabilities are optional: an unconfigured planner or vision
         // endpoint leaves the app fully usable, with those features degraded.
         let text = providers.chat_deployment(Capability::Text).ok();
@@ -475,8 +487,9 @@ impl AppConfig {
         let vision_provider_id = providers
             .default_provider(Capability::Vision)
             .map(str::to_owned);
-        let image_provider_id = providers
-            .default_provider(Capability::T2i)
+        let image_provider_id = image
+            .as_ref()
+            .and_then(|_| providers.default_provider(Capability::T2i))
             .map(str::to_owned);
         let chat_providers = chat_providers(&providers);
 
@@ -499,7 +512,12 @@ impl AppConfig {
         };
         let file_lora = &file.lora;
         let lora_bindings = LoraBindings {
-            dir: image.lora_dir.clone(),
+            dir: match &image {
+                Some(image) => image.lora_dir.clone(),
+                None => paths::model_dir()
+                    .ok_or(ConfigError::PlatformDirectories)?
+                    .join(sd::DEFAULT_LORA_DIR),
+            },
             kinds: KindLoraBindings {
                 character: file_lora.character.clone().map(|file| LoraBinding { file }),
                 environment: file_lora
@@ -881,6 +899,7 @@ impl AppConfig {
     /// [`paths::clipforge_config_path`]) — the Settings control writes here so
     /// the choice survives restarts.
     pub fn persist_image_residency(&self, residency: &str) -> Result<(), ConfigError> {
+        self.native_image()?;
         let path = self.ai_path()?;
         let provider_id = self
             .image_provider_id
@@ -935,6 +954,7 @@ impl AppConfig {
     /// Save an absolute model-tree override in the shared AI config. Files stay
     /// in place: selecting an existing tree reuses its downloads.
     pub fn persist_model_dir(&self, directory: &Path) -> Result<(), ConfigError> {
+        self.native_image()?;
         let path = self.ai_path()?;
         let provider = self
             .image_provider_id
@@ -1796,9 +1816,12 @@ mod tests {
         assert_eq!(vision.base_url, "http://localhost:8080/v1");
         assert_eq!(vision.model, "google/gemma-4-e4b");
         // The image deployment resolves from the same registry.
-        assert_eq!(config.image.architecture, "qwen-image-2.1");
+        assert_eq!(
+            config.native_image().unwrap().architecture,
+            "qwen-image-2.1"
+        );
         // The seeded model directory is absolute, never relative to the config.
-        assert!(config.image.model_dir.is_absolute());
+        assert!(config.native_image().unwrap().model_dir.is_absolute());
         // The derived planner `LlmConfig` carries the same endpoint.
         assert_eq!(
             config.planner_config().expect("planner config").model,
@@ -1811,11 +1834,67 @@ mod tests {
     fn default_model_storage_is_os_local_even_without_a_config_file() {
         let path = std::env::temp_dir().join(format!("absent-{}.toml", uuid::Uuid::new_v4()));
         let config = AppConfig::load_from(&path).unwrap();
-        assert_eq!(config.image.model_dir, paths::model_dir().unwrap());
-        assert!(config.image.executable.starts_with(&config.image.model_dir));
-        assert!(config.image.lora_dir.starts_with(&config.image.model_dir));
+        let image = config.native_image().unwrap();
+        assert_eq!(image.model_dir, paths::model_dir().unwrap());
+        assert!(image.executable.starts_with(&image.model_dir));
+        assert!(image.lora_dir.starts_with(&image.model_dir));
         assert!(config.text.is_none());
         assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn hosted_or_text_only_settings_keep_authoring_available_without_native_images() {
+        use crate::registry::backend::CreativeBackend;
+        use crate::runtime::{image_artifacts, provision_image_model, CreativeRuntime};
+        let hosted = r#"
+t2i = 'replicate'
+edit = 'replicate'
+[providers.replicate]
+kind = 'replicate'
+capabilities = ['t2i', 'edit']
+base_url = 'https://api.replicate.com/v1'
+model = 'alibaba/qwen-image-3'
+api_key = 'test-kept-key'
+"#;
+        for image_config in ["", hosted] {
+            let directory = tempfile::tempdir().unwrap();
+            let app = directory.path().join("studio.toml");
+            let ai = directory.path().join("clipforge.toml");
+            let text_config = "[providers.writer]\nkind='openai'\ncapabilities=['text']\nbase_url='http://127.0.0.1:1/v1'\nmodel='writer-test'\n";
+            let contents = format!("[defaults]\ntext='writer'\n{image_config}\n{text_config}");
+            std::fs::write(&ai, &contents).unwrap();
+            std::fs::write(&app, "[runtime]\nprewarm=true\n").unwrap();
+            let config = AppConfig::load_split(Some(app), Some(ai.clone())).unwrap();
+            assert!(config.image.is_none());
+            assert!(config.image_provider_id.is_none());
+            assert_eq!(config.planner_config().unwrap().model, "writer-test");
+            assert!(image_artifacts(&config).is_empty());
+            assert!(matches!(
+                config.native_image(),
+                Err(ConfigError::NativeImageUnavailable)
+            ));
+            assert_eq!(
+                config.native_image().unwrap_err().code(),
+                ErrorCode::ConfigNativeImageUnavailable
+            );
+            assert!(config.persist_image_residency("lowvram").is_err());
+            assert!(config
+                .persist_model_dir(&directory.path().join("models"))
+                .is_err());
+            let runtime = CreativeRuntime::new(&config);
+            assert!(runtime.client().is_err());
+            assert!(runtime.ensure_ready().await.is_err());
+            assert!(runtime.stop_generation_runtime().await.is_err());
+            assert!(!runtime.is_running().await);
+            assert!(
+                provision_image_model(&config, |_| panic!("must not download"))
+                    .await
+                    .is_err()
+            );
+            let backend = CreativeBackend::new(&config);
+            backend.ensure_planner_ready().await.unwrap();
+            assert_eq!(std::fs::read_to_string(&ai).unwrap(), contents);
+        }
     }
 
     #[test]
@@ -1852,7 +1931,9 @@ mod tests {
         let model_dir = directory.join("existing models");
         AppConfig::persist_model_dir_to(&user, "qwen-image", &model_dir).unwrap();
         let config = AppConfig::load_layered(base.clone(), Some(user.clone())).unwrap();
-        let image_path = config.image.artifact_plan()[0].path.clone();
+        let image_path = config.native_image().unwrap().artifact_plan()[0]
+            .path
+            .clone();
         std::fs::create_dir_all(image_path.parent().unwrap()).unwrap();
         std::fs::write(&image_path, b"existing bytes stay in place").unwrap();
         let mut defaults = config.generation_defaults.clone();
@@ -1860,7 +1941,7 @@ mod tests {
         AppConfig::persist_generation_defaults_to(&user, &defaults).unwrap();
         AppConfig::persist_image_residency_to(&user, "qwen-image", "lowvram").unwrap();
         let config = AppConfig::load_layered(base, Some(user.clone())).unwrap();
-        assert_eq!(config.image.model_dir, model_dir);
+        assert_eq!(config.native_image().unwrap().model_dir, model_dir);
         assert_eq!(config.text.as_ref().unwrap().model, "chosen-model");
         assert_eq!(config.generation_defaults.steps, 7);
         assert!(config.prewarm);
@@ -2007,7 +2088,7 @@ mod tests {
         let config = AppConfig::load_split(Some(directory.join("studio.toml")), Some(ai.clone()))
             .expect("seed loads");
         assert_eq!(config.image_provider_id.as_deref(), Some("qwen-image"));
-        assert!(config.image.model_dir.is_absolute());
+        assert!(config.native_image().unwrap().model_dir.is_absolute());
         assert_eq!(config.text_provider_id.as_deref(), Some("local"));
         assert_eq!(config.vision_provider_id.as_deref(), Some("vision"));
         assert!(

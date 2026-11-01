@@ -41,6 +41,41 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub fn apply_writing_proposal(
+        &mut self,
+        proposal: &storyfella_studio_core::workflows::writing::WritingProposal,
+    ) -> Result<(), String> {
+        if self.operation_in_progress {
+            return Err(
+                "Wait for the current operation before applying a writing proposal.".into(),
+            );
+        }
+        let project = self
+            .project_path
+            .as_deref()
+            .ok_or("Open the proposal's project first")?;
+        let path = self
+            .story
+            .path()
+            .ok_or("Open the proposal's source file first")?;
+        let source = proposal
+            .apply(project, path, self.story.source())
+            .map_err(|error| error.to_string())?;
+        let catalog = AssetCatalog::from_registry(&self.registry);
+        let analysis = analyze(&source, &catalog.assets);
+        if storyfella_compiler::compile_analysis(&analysis, &catalog.bindings)
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == storyfella_language::Severity::Error)
+        {
+            return Err(
+                "The proposed source has errors. Review the diagnostics before applying.".into(),
+            );
+        }
+        self.set_story_source(source);
+        Ok(())
+    }
+
     pub fn import_artwork(
         &mut self,
         artwork: &storyfella_studio_core::artwork::ApprovedArtwork,
@@ -553,6 +588,53 @@ mod tests {
             )
             .expect("artifact should create");
         registry
+    }
+
+    #[test]
+    fn writing_acceptance_is_one_undo_and_refuses_concurrent_or_invalid_edits() {
+        use storyfella_studio_core::workflows::writing::{
+            WritingProposal, WritingRequest, WritingScope,
+        };
+        let directory = std::env::temp_dir().join(format!("writing-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let project = directory.join("story.db");
+        let path = directory.join("story.sf");
+        let original = "scene harbor\n  beat arrival\n    narrate: The sea is quiet.\n    end\n";
+        std::fs::write(&path, original).unwrap();
+        let mut state = AppState {
+            project_path: Some(project.clone()),
+            story: StoryDocument::open(&path).unwrap(),
+            ..Default::default()
+        };
+        state.reconcile_story();
+        let request = WritingRequest::capture(
+            &project,
+            state.story.path().unwrap(),
+            original,
+            WritingScope::Beat(40),
+            &state.registry,
+        )
+        .unwrap();
+        let proposal = WritingProposal {
+            run_id: "test".into(),
+            replacement: request.original().replace("quiet", "restless"),
+            request,
+        };
+        let registry = state.registry.clone();
+        state.apply_writing_proposal(&proposal).unwrap();
+        assert!(state.story.source().contains("restless"));
+        assert_eq!(state.undo_stack.len(), 1);
+        assert!(state.has_unsaved_changes);
+        state.undo();
+        assert_eq!(state.story.source(), original);
+        assert_eq!(state.registry, registry);
+        let mut invalid = proposal.clone();
+        invalid.replacement = "scene\n".into();
+        assert!(state.apply_writing_proposal(&invalid).is_err());
+        state.set_story_source(format!("{original}# new edit\n"));
+        let before = state.clone();
+        assert!(state.apply_writing_proposal(&proposal).is_err());
+        assert_eq!(state, before);
     }
 
     /// State holding one named character (the common test fixture).

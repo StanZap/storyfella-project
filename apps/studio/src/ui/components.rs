@@ -194,47 +194,63 @@ fn ErrorDetailsModal(error: ReportedError, on_close: EventHandler<()>) -> Elemen
     rsx! {
         Dialog { title: "Error details", on_close,
             div {
-                class: "w-full max-w-xl rounded-2xl bg-zinc-950 p-6 shadow-[0_30px_90px_rgba(0,0,0,.5)] ring-1 ring-white/[0.09]",
+                class: "studio-error-report",
                 onclick: move |event| event.stop_propagation(),
                 div { class: "mb-3 flex items-center gap-2",
-                    span { class: "size-2 rounded-full bg-rose-400" }
-                    p { class: "text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500", "Error details" }
-                    span { class: "rounded-md bg-rose-400/10 px-2 py-0.5 font-mono text-[9px] text-rose-300 ring-1 ring-inset ring-rose-400/20", "{error.code.code()}" }
+                    p { class: "text-xs text-zinc-400", "Technical details" }
+                    span { class: "ml-auto font-mono text-xs text-zinc-500", "{error.code.code()}" }
                 }
                 h2 { class: "mb-1 text-base font-semibold text-zinc-100", "{error.code.message()}" }
                 p {
-                    class: "max-h-44 overflow-y-auto whitespace-pre-wrap rounded-lg bg-white/[0.035] px-3 py-2.5 font-mono text-xs leading-5 text-zinc-300 ring-1 ring-inset ring-white/[0.06] select-text",
+                    class: "studio-error-diagnostic",
                     "{error.details}"
                 }
                 if !error.context.is_empty() {
-                    div { class: "mt-3 rounded-lg bg-white/[0.035] px-3 py-2.5 ring-1 ring-inset ring-white/[0.06]",
-                        p { class: "mb-1.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-zinc-600", "Context" }
+                    details { class: "mt-4 text-xs text-zinc-400",
+                        summary { class: "cursor-pointer", "Request context" }
                         for (key, value) in &error.context {
                             p { class: "truncate font-mono text-[9px] leading-4 text-zinc-500", title: "{value}", "{key}: {value}" }
                         }
                     }
                 }
-                p { class: "mt-3 rounded-lg bg-amber-400/[0.06] px-3 py-2 text-[10px] leading-4 text-amber-200/80 ring-1 ring-inset ring-amber-300/15",
+                p { class: "mt-4 text-[13px] leading-6 text-zinc-400",
                     "{error.code.hint()}"
                 }
                 div { class: "mt-5 flex justify-end gap-2",
                     button {
-                        class: "flex h-8 items-center gap-2 rounded-lg bg-white/[0.05] px-3.5 text-[10px] font-medium text-zinc-300 ring-1 ring-inset ring-white/[0.07] transition hover:bg-white/[0.09] hover:text-white",
+                        class: "studio-button",
                         onclick: copy_action,
                         if copy_status() == "Copied" {
                             Icon { name: IconName::Check, class: "size-3" }
                         } else {
                             Icon { name: IconName::Copy, class: "size-3" }
                         }
-                        "{copy_status}"
+                        if copy_status() == "Copy" { "Copy report" } else { "{copy_status}" }
                     }
                     button {
-                        class: "flex h-8 items-center rounded-lg bg-zinc-100 px-3.5 text-[10px] font-semibold text-zinc-950 transition hover:bg-white",
+                        class: "studio-button",
                         onclick: move |_| on_close.call(()),
                         "Close"
                     }
                 }
             }
+        }
+    }
+}
+
+/// A compact explanation with recovery actions, shared by panels and startup.
+#[component]
+pub fn RecoveryNotice(
+    title: String,
+    message: String,
+    #[props(default = false)] alert: bool,
+    children: Element,
+) -> Element {
+    rsx! {
+        section { class: "studio-recovery-notice", role: if alert { "alert" } else { "status" },
+            p { class: "text-sm font-medium text-zinc-200", "{title}" }
+            p { class: "mt-1 text-[13px] leading-6 text-zinc-400", "{message}" }
+            div { class: "mt-3 flex flex-wrap items-center gap-2", {children} }
         }
     }
 }

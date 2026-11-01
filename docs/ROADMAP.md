@@ -150,6 +150,45 @@ streaming presentation, not domain code to copy into Storyfella.
   project saving in their owning apps. Done when a Studio writing workflow and
   an Atelier asset-iteration workflow run through public Agentkit contracts with
   responsive feedback, cancellation and no duplicated framework execution loop.
+  - [x] First workflow integration (2026-10-31): consume the public runner and
+    durable controller through GUI-free `studio-core::workflows`, with local
+    transactional run/event storage. Writer offers scoped Rewrite/Expand,
+    custom instructions, streamed proposals, original/replacement review,
+    diagnostics, accept/reject/another version and cancellation. Source/path
+    snapshots guard application, which uses normal reconciliation and one undo.
+    Atelier's captured image queue runs image execution and saved-output steps
+    through the same framework; progress, Abort and document attachment remain
+    application-owned. See [workflow contracts and scope](workflows.md).
+    Offline evidence: workspace tests, the real streaming-HTTP writing contract,
+    stored run/event round trips, stalled-step cancellation, source conflict and
+    one-edit undo tests, and Atelier's mocked workflow/save/reopen. Isolated
+    macOS desktop checks verify review, Accept/Undo, running Cancel, concurrent
+    source-edit protection, Reject and invalid-proposal diagnostics. No real
+    model submission was made for this slice. Logs: `.svs-e2e/workflows/`.
+    Review UX correction (2026-11-01): compact request composer, collapsed brief,
+    full-height Suggestion/Original reading area and pinned acceptance actions.
+    Existing warnings stay in Problems; new review notes are grouped and source
+    errors still block acceptance. Failures use one contextual recovery notice
+    and a neutral technical report. Native release checks cover long review,
+    comparison, Accept/Undo, HTTP failure and startup configuration recovery.
+    Writing validity gate: compile the complete proposed document before review,
+    repair invalid/empty output with compiler feedback (two attempts maximum),
+    and never publish invalid results. Offline tests cover repair, exhaustion,
+    cancellation and invalid-draft preflight without model submission.
+  - [ ] Complete foundation acceptance: configured-provider quality checks,
+    reactive session/context tools and proposal recovery UI. Preserve existing workflow request history
+    without automatically repeating paid calls after restart. SF-PLAN-15–17
+    retain the broader writing-context and concurrent-edit acceptance criteria.
+  Startup correction (2026-11-01): valid hosted-image defaults and text-only
+  provider registries no longer block Studio authoring. Native image deployment
+  is optional, prewarm skips it when absent, and native-only actions fail before
+  server/download side effects. Settings exposes text/vision configuration and
+  explains unavailable native controls. Shared defaults and keys are unchanged.
+  Missing text-provider setup is now shown directly in Writing help, with an
+  Open Settings action; Generate remains disabled until a text binding exists.
+  The Settings provider selector also remains available for a single configured
+  endpoint, enabling first-provider assignment. LM Studio text setup and a
+  minimal completion were verified locally with the already-loaded Gemma model.
 - [ ] **SF-PLAN-29 — Controlled model downloads through Agentkit.** Extend
   Agentkit's model provisioning with typed download state, progress events and
   explicit Pause, Resume and Cancel controls. Report current-file and aggregate

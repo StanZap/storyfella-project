@@ -282,6 +282,10 @@ impl LlmClient {
         &self.config.model
     }
 
+    pub fn config(&self) -> &LlmConfig {
+        &self.config
+    }
+
     /// Swaps the requested model at runtime (the Settings picker; the config
     /// file persists the choice across runs).
     pub fn set_model(&mut self, model: String) {

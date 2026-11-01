@@ -44,7 +44,7 @@ pub fn App() -> Element {
                     ConfigError::Read { path, .. } | ConfigError::Parse { path, .. }
                     | ConfigError::Write { path, .. } | ConfigError::InvalidSize { path, .. }
                     | ConfigError::MalformedSize { path, .. } => Some(path.clone()),
-                    ConfigError::Providers(_) | ConfigError::Serialize { .. } => {
+                    ConfigError::Providers(_) | ConfigError::NativeImageUnavailable | ConfigError::Serialize { .. } => {
                         storyfella_studio_core::paths::clipforge_config_path()
                             .filter(|path| path.exists())
                             .or_else(storyfella_studio_core::paths::config_path)
@@ -52,21 +52,24 @@ pub fn App() -> Element {
                     ConfigError::PlatformDirectories => None,
                 };
                 rsx! {
-                main { class: "min-h-screen bg-slate-950 p-12 font-sans text-red-200",
-                    h1 { class: "mb-3 text-2xl font-semibold text-red-100", "Configuration error" }
-                    p { role: "alert", class: "max-w-2xl text-sm leading-6 text-red-200/80", "{error}" }
-                    div { class: "mt-5 flex gap-4",
-                        crate::ui::components::ErrorDetailsButton { error: error.report() }
+                main { class: "studio-startup",
+                  div { class: "studio-startup-content",
+                    p { class: "studio-startup-brand", "Storyfella Studio" }
+                    h1 { class: "studio-startup-title", "Studio couldn't open its settings" }
+                    p { class: "studio-startup-message", "Your stories are safe. Check the configuration file, then try again. Technical details are available below." }
+                    crate::ui::components::RecoveryNotice { title: error.code().message(), message: error.code().hint(), alert: true,
                         if let Some(repair_path) = repair_path {
-                            button { onclick: move |_| open_error.set(crate::ui::components::open_path(&repair_path).err()), "Open configuration" }
+                            button { class: "studio-button studio-button-primary", onclick: move |_| open_error.set(crate::ui::components::open_path(&repair_path).err()), "Open configuration" }
                         }
-                        button { onclick: move |_| {
+                        button { class: "studio-button", onclick: move |_| {
                             let result = AppConfig::load().map(|mut config| { retry_launch.configure_paths(&mut config); config });
                             config_result.set(result);
-                        }, "Retry" }
+                        }, "Try again" }
+                        crate::ui::components::ErrorDetailsButton { error: error.report() }
                     }
-                    if let Some(message) = open_error() { p { role: "alert", "{message}" } }
+                    if let Some(message) = open_error() { p { role: "alert", class: "mt-4 text-sm text-zinc-400", "{message}" } }
                     crate::ui::components::ErrorDetailsHost {}
+                  }
                 }
                 }
             },

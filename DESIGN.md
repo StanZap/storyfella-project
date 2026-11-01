@@ -1,5 +1,95 @@
 # Storyfella Studio design standard and UX audit
 
+### Writing review and error recovery · 2026-11-01 (current)
+
+This supersedes the Writer panel presentation below. Scope and action share a
+compact row above a short instructions field and an explicit Allow new details
+checkbox. Completed requests collapse to a brief with Edit request. The reading
+area uses the available panel height, with Suggestion/Original comparison and
+fixed Accept suggestion/Discard actions. Source text has one scroll container;
+normal review contains no filesystem paths. Closing returns focus to the source.
+
+Review groups new compiler notes and suppresses warnings already present in the
+captured draft. Generation validates the complete proposed document and repairs
+invalid output automatically, with at most two repair attempts. Only valid
+results reach review; exhaustion becomes a contextual recovery notice. A draft
+with existing source errors is rejected before model submission. Live registry
+changes can still invalidate a retained suggestion, so acceptance rechecks the
+current compiler state. Operational
+failures appear once in the panel with retry, settings and Details, preserving
+the request and any previous suggestion. Technical reports use a neutral dialog
+with collapsed request context. Startup configuration failures use the same
+recovery treatment, with a readable summary and Open configuration/Try again.
+
+An isolated macOS release build with a local streaming fixture verified a long
+suggestion, scrolling with actions pinned, Original comparison, acceptance and
+one toolbar Undo, a single HTTP-failure notice and its details dialog. A malformed
+scratch config verified the startup recovery layout. No real provider call was
+made in these UI checks. Regression coverage verifies grouped new notes,
+suppressed existing warnings and blocking source errors. Workspace checks/tests
+and strict Studio/core Clippy pass. Other-platform and assistive-technology
+acceptance remain open.
+
+The validity gate was also exercised in the native release build: a deliberately
+malformed first response was repaired into a valid, acceptable proposal. Three
+invalid responses produced one recovery notice, no proposal and no Accept
+button, with source unchanged. Offline tests verify repair lineage in storage,
+bounded exhaustion, cancellation and existing-source preflight.
+Pre-commit review also corrected escaped DSL examples in the system prompt,
+removed unused workflow helpers and verified cancellation immediately before
+publishing an otherwise valid suggestion. Required workspace validation and
+strict Clippy for all four changed Rust packages pass; vendored Cocoa warnings
+remain unchanged.
+
+### Hosted configuration and Studio startup · 2026-11-01
+
+A valid shared hosted image default (including Replicate), or a text-only
+registry, allows Studio to open. Writer, playback and text-provider Settings
+remain available. Native image controls and model downloads are shown only
+when the selected t2i provider resolves to a native deployment; otherwise Models
+and Services explain the available authoring workflow and Atelier's hosted-image
+role. Prewarm skips an unselected native engine. Explicit native-only requests
+report SVS-CFG-110 before touching servers or downloads. Shared defaults,
+credentials, models and malformed-configuration checks are preserved.
+
+Regression tests cover hosted and text-only registries, retained text bindings,
+unchanged shared settings, denied native operations/downloads and idle health
+without a setup prompt. An isolated macOS dx build with a Replicate default and
+prewarm enabled opened Writer/Writing help and both Settings pages; Services
+showed the native-engine explanation without server/download controls. No
+provider generation was submitted. Workspace tests/checks and strict changed
+package Clippy pass; existing vendored Cocoa deprecation warnings remain.
+
+### Writer assistance · 2026-10-31
+
+Missing text setup is disclosed in the panel before submission, with an Open
+Settings action and disabled Generate button. A readiness check also guards
+dispatch, so this condition does not become a generic planning failure. Retained
+request feedback uses the source filename, with its full path only in a tooltip.
+Settings keeps the provider selector visible when exactly one chat provider is
+configured, so a newly added first provider can be assigned to Text or Vision
+without creating a second endpoint. Local LM Studio setup was verified with
+`google/gemma-4-e4b`: Studio reported the selected text binding loaded/reachable
+and a minimal local request completed successfully (2026-11-01).
+
+Writing help replaces In scope in the existing right-hand slot. It keeps the
+source editable while Rewrite/Expand runs, shows streamed feedback, and presents
+the original with its proposed replacement, diagnostics and new requirements.
+Accept is disabled for source/project mismatch or compiler errors. Reject and
+request another version remain explicit; acceptance is one undoable source
+edit. Request failures use the shared error report and retain instructions.
+The native textarea keeps its selection and typing behavior. The panel stays
+mounted through workspace navigation so delayed results retain their owner.
+
+Offline regression coverage verifies snapshot guards, cancellation, error
+preservation and acceptance/undo. An isolated macOS dx build with a local
+streaming fixture verified the panel, beat rewrite/review, Accept and one Undo,
+running Cancel with retained instructions, delayed reply after source edits
+(Accept disabled), Reject and invalid-source diagnostics. The pass fixed a
+desktop query-lifetime failure before acceptance. No real model request was
+submitted. Other-platform, smaller-window and assistive-technology acceptance
+remain open; see [workflow contracts](docs/workflows.md) and SF-PLAN-28.
+
 ### Atelier native reference capabilities · 2026-10-31
 
 The existing reference picker and queue preflight read Agentkit's profile

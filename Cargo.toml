@@ -38,6 +38,7 @@ clap = { version = "4.6.5", features = ["derive"] }
 # model store, the served profile, the resident process, and the `sdcpp` HTTP
 # client. Owned by the shared Agentkit workspace.
 agentkit-core = { path = "../../zerune_labs/agentkit/crates/agentkit-core" }
+agentkit-workflow = { path = "../../zerune_labs/agentkit/crates/agentkit-workflow" }
 agentkit-ai = { path = "../../zerune_labs/agentkit/crates/agentkit-ai", features = ["native-inference"] }
 directories = "6.0.0"
 tempfile = "3.10"
