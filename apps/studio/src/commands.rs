@@ -22,6 +22,7 @@ use uuid::Uuid;
 
 use storyfella_studio_core::errors::{CodedError, ErrorCode, ReportedError};
 use storyfella_studio_core::persistence::ProjectDb;
+use storyfella_studio_core::project::ProjectFolder;
 use storyfella_studio_core::registry::{
     backend::CreativeBackend,
     ops::{self, ExecuteOptions, OpOrigin, Operation},
@@ -248,7 +249,7 @@ fn random_seed() -> u64 {
     u64::from_be_bytes(id.as_bytes()[..8].try_into().expect("eight bytes"))
 }
 
-/// Creates the database file for a new story (unique slug path) and saves
+/// Creates a portable folder for a new story (unique slug path) and saves
 /// the fresh registry into it before the screen switches to the canvas.
 /// Returns the created path.
 pub fn create_project(
@@ -270,15 +271,17 @@ pub fn create_project(
     };
     std::fs::create_dir_all(project_dir)
         .map_err(|error| ReportedError::plain(ErrorCode::StoreSave, error.to_string()))?;
-    let path = unique_project_path(project_dir, story_name);
-    let db = ProjectDb::open(&path).map_err(|error| error.report())?;
-    db.rename_project(story_name)
+    let folder = ProjectFolder::create(
+        &unique_project_path(project_dir, story_name),
+        story_name,
+        &registry,
+        &source,
+    )
+    .map_err(|error| ReportedError::plain(ErrorCode::StoreSave, format!("{error:#}")))?;
+    let path = folder.database();
+    let stored = ProjectDb::open(&path)
+        .and_then(|db| db.load())
         .map_err(|error| error.report())?;
-    db.save_registry(&registry)
-        .map_err(|error| error.report())?;
-    let mut stored = db.load().map_err(|error| error.report())?;
-    stored.story.set_source(source);
-    stored.story.save().map_err(|error| error.report())?;
     app_state.write().open_project(stored, path.clone());
     Ok(path)
 }
@@ -293,7 +296,15 @@ pub fn open_project(path: &Path, mut app_state: Signal<AppState>) -> Result<(), 
     let path = path
         .canonicalize()
         .map_err(|error| ReportedError::plain(ErrorCode::StoreOpen, error.to_string()))?;
-    let project_path = if path.extension().is_some_and(|extension| extension == "sf") {
+    let project_path = if path.is_dir()
+        || path
+            .file_name()
+            .is_some_and(|name| name == storyfella_studio_core::project::MANIFEST)
+    {
+        ProjectFolder::open(&path)
+            .map_err(|error| ReportedError::plain(ErrorCode::StoreOpen, format!("{error:#}")))?
+            .database()
+    } else if path.extension().is_some_and(|extension| extension == "sf") {
         path.with_extension("db")
     } else {
         path
@@ -336,6 +347,32 @@ pub fn save_new_project(path: &Path, mut app_state: Signal<AppState>) -> Result<
     stored.story.set_source(source);
     stored.story.save().map_err(|error| error.report())?;
     app_state.write().open_project(stored, path.to_owned());
+    Ok(())
+}
+
+/// Explicit, nondestructive adoption of an existing source/database pair.
+pub fn copy_to_project_folder(
+    parent: &Path,
+    mut app_state: Signal<AppState>,
+) -> Result<(), ReportedError> {
+    ensure_project_idle(app_state)?;
+    save_project(app_state)?;
+    let state = app_state.read();
+    let path = state
+        .project_path
+        .as_ref()
+        .ok_or_else(|| storyfella_studio_core::story::StoryFileError::Unbound.report())?;
+    let stored = ProjectDb::open(path)
+        .and_then(|db| db.load())
+        .map_err(|error| error.report())?;
+    let destination = unique_project_path(parent, &stored.name);
+    let folder = ProjectFolder::import(&destination, &stored)
+        .map_err(|error| ReportedError::plain(ErrorCode::StoreSave, format!("{error:#}")))?;
+    drop(state);
+    let stored = ProjectDb::open(folder.database())
+        .and_then(|db| db.load())
+        .map_err(|error| error.report())?;
+    app_state.write().open_project(stored, folder.database());
     Ok(())
 }
 
@@ -389,7 +426,7 @@ pub fn reload_story(mut app_state: Signal<AppState>) -> Result<(), ReportedError
     Ok(())
 }
 
-/// `"My Story"` → `my-story.svs-project.db`; an existing file gets a `-2`,
+/// `"My Story"` → `my-story/`; an existing folder gets a `-2`,
 /// `-3`, … suffix.
 pub fn unique_project_path(project_dir: &Path, name: &str) -> PathBuf {
     let slug: String = name
@@ -408,10 +445,10 @@ pub fn unique_project_path(project_dir: &Path, name: &str) -> PathBuf {
     } else {
         slug
     };
-    let mut candidate = project_dir.join(format!("{slug}.svs-project.db"));
+    let mut candidate = project_dir.join(&slug);
     let mut index = 2;
-    while candidate.exists() || storyfella_studio_core::story::source_path(&candidate).exists() {
-        candidate = project_dir.join(format!("{slug}-{index}.svs-project.db"));
+    while candidate.exists() {
+        candidate = project_dir.join(format!("{slug}-{index}"));
         index += 1;
     }
     candidate
@@ -580,15 +617,12 @@ mod tests {
 
     #[test]
     fn slugs_are_safe_filename_components() {
-        let dir = std::path::Path::new("/tmp/projects");
+        let dir = std::path::Path::new("projects");
         assert_eq!(
             unique_project_path(dir, "The Lighthouse!"),
-            dir.join("the-lighthouse.svs-project.db")
+            dir.join("the-lighthouse")
         );
-        assert_eq!(
-            unique_project_path(dir, "   "),
-            dir.join("story.svs-project.db")
-        );
+        assert_eq!(unique_project_path(dir, "   "), dir.join("story"));
     }
 
     #[test]
@@ -597,16 +631,10 @@ mod tests {
             .join("../../.svs-e2e/tests")
             .join(format!("svs-slug-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("story.svs-project.db"), b"x").unwrap();
-        assert_eq!(
-            unique_project_path(&dir, "Story"),
-            dir.join("story-2.svs-project.db")
-        );
-        std::fs::write(dir.join("story-2.svs-project.sf"), b"source only").unwrap();
-        assert_eq!(
-            unique_project_path(&dir, "Story"),
-            dir.join("story-3.svs-project.db")
-        );
+        std::fs::write(dir.join("story"), b"x").unwrap();
+        assert_eq!(unique_project_path(&dir, "Story"), dir.join("story-2"));
+        std::fs::create_dir(dir.join("story-2")).unwrap();
+        assert_eq!(unique_project_path(&dir, "Story"), dir.join("story-3"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

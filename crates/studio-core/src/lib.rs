@@ -20,6 +20,7 @@ pub mod llm;
 pub mod paths;
 pub mod persistence;
 pub mod playback;
+pub mod project;
 pub mod registry;
 pub mod runtime;
 pub mod story;

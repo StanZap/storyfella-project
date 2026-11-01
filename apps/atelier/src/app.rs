@@ -1330,6 +1330,13 @@ impl DrawingApp {
         }
     }
     pub fn open_project(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let path = match document::project_document(&path) {
+            Ok(path) => path,
+            Err(error) => {
+                self.message(format!("Could not open project: {error:#}"), true);
+                return;
+            }
+        };
         let normalized = path.canonicalize().unwrap_or(path.clone());
         let same_path = |candidate: &Option<PathBuf>| {
             candidate
@@ -2732,7 +2739,7 @@ impl DrawingApp {
                     multiple: matches!(picker, Picker::Import),
                     prompt: Some(
                         match picker {
-                            Picker::Open => "Open Atelier project",
+                            Picker::Open => "Open Atelier project or Storyfella manifest",
                             Picker::Import => "Import reference images",
                             _ => "Load ComfyUI API workflow",
                         }

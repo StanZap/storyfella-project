@@ -68,6 +68,8 @@ pub struct ProjectDb {
 
 #[derive(Debug, Error)]
 pub enum StoreError {
+    #[error("could not access shared project resources: {0:#}")]
+    Resources(#[from] anyhow::Error),
     #[error(transparent)]
     Story(#[from] StoryFileError),
     #[error("could not resolve project database path {path}: {source}")]
@@ -116,6 +118,7 @@ pub enum StoreError {
 impl CodedError for StoreError {
     fn code(&self) -> ErrorCode {
         match self {
+            Self::Resources(_) => ErrorCode::StoreSave,
             Self::Story(error) => error.code(),
             Self::Open { .. } | Self::Path { .. } => ErrorCode::StoreOpen,
             Self::Configure { .. } => ErrorCode::StoreConfigure,
@@ -155,7 +158,29 @@ impl ProjectDb {
     /// Replaces the stored snapshot with `registry` in one transaction,
     /// leaving the `projects` row untouched.
     pub fn save_registry(&self, registry: &ArtifactRegistry) -> Result<(), StoreError> {
-        self.write_snapshot(registry)
+        if let Some(folder) = crate::project::for_database(&self.path)? {
+            let id = single_project_id(&self.conn.lock())?;
+            if id != folder.id().to_string() {
+                return Err(StoreError::Corrupt {
+                    path: self.path.clone(),
+                    column: "projects.id".into(),
+                    value: "Manifest and database project identities differ".into(),
+                });
+            }
+        }
+        self.write_snapshot(&crate::project::prepare_registry(&self.path, registry)?)
+    }
+
+    /// Used only when adopting a saved project into a new portable folder.
+    pub(crate) fn set_project_id(&self, id: Uuid) -> Result<(), StoreError> {
+        self.conn
+            .lock()
+            .execute("UPDATE projects SET id = ?1", [id.to_string()])
+            .map_err(|source| StoreError::Save {
+                path: self.path.clone(),
+                source,
+            })?;
+        Ok(())
     }
 
     /// Renames the `projects` row (used at creation, and by any future
@@ -733,6 +758,7 @@ impl ProjectDb {
                 value,
             }
         })?;
+        crate::project::resolve_registry(&self.path, project_id, &mut registry)?;
         Ok(StoredProject {
             story: StoryDocument::open(&source_path(&self.path))?,
             id: project_id,

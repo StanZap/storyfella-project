@@ -279,11 +279,13 @@ characters, illustrations and variations independently; Studio can subsequently
 reference those shared items. Both apps understand one story project, organized
 as a folder of sources, metadata and assets.
 
-Today Studio uses one authoritative `.sf` file plus a companion SQLite database;
-images can live outside that pair. Atelier has separate `.atelier` projects and
-exchanges approved artwork through `.sfart`. The shared project folder, automatic
-handoff and multi-file DSL compilation are proposed work. Exact storage formats,
-folder layout and synchronization mechanisms remain to be designed.
+Studio supports one authoritative `.sf` file plus a companion SQLite database.
+New Studio projects use a shared folder with project-local artwork and an Atelier
+working-document directory; existing standalone pairs remain readable and can be
+explicitly copied into that layout. Atelier opens the shared manifest and also
+retains standalone `.atelier` projects and `.sfart` exchange. Automatic handoff,
+live synchronization and multi-file DSL compilation remain separate planned work.
+See the [shared storage contract](shared-project.md).
 
 The following checklist describes the shared-project workstream. Multi-file
 language support can follow the initial shared-project workflow.
@@ -297,11 +299,18 @@ language support can follow the initial shared-project workflow.
   maps current forms, Canvas/Writer/Settings, commands, history, CLI and Atelier
   surfaces to owners and explicit acceptance. Production controls remain until
   SF-PLAN-04–07 provide their working replacements.
-- [ ] **SF-PLAN-02 — Design a shared project folder.** Specify source files,
+- [x] **SF-PLAN-02 — Design a shared project folder.** Specify source files,
   metadata, artwork, Atelier working documents, manifest and database ownership.
   Use portable asset references and preserve existing source, revisions and
   associations. Done when a populated project moves to another folder and opens
   in both apps with its links intact.
+  Evidence (2026-11-01): [versioned folder and ownership contract](shared-project.md),
+  GUI-free create/adopt/validate/resource resolution, Studio create/open/recents
+  and explicit nondestructive adoption, Atelier manifest opening and project-local
+  Save. Storage tests remove the original location and move a populated project;
+  exact source, identities, associations, variations and all image revisions
+  reopen. Atelier's adapter test saves/moves/reopens an embedded visual document.
+  Native UI acceptance is assigned to the user; live sync/publication remain 04–06.
 - [ ] **SF-PLAN-03 — Shared asset catalog.** Define stable project identities for
   characters, places, props, illustrations and variations, independently of
   artwork. DSL definitions create catalog items before images exist; Atelier

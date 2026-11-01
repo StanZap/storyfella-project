@@ -500,6 +500,38 @@ impl History {
         );
     }
 }
+/// Resolve a shared story project to its editable visual document. Opening an
+/// empty shared project creates only its first Atelier document, never source.
+pub fn project_document(path: &Path) -> Result<std::path::PathBuf> {
+    if path.is_dir()
+        || path
+            .file_name()
+            .is_some_and(|name| name == storyfella_studio_core::project::MANIFEST)
+    {
+        let folder = storyfella_studio_core::project::ProjectFolder::open(path)?;
+        let target = folder.atelier_document()?;
+        if !target.exists() {
+            let title = storyfella_studio_core::persistence::ProjectDb::open(folder.database())?
+                .load()?
+                .name;
+            let doc = Document {
+                title,
+                ..Default::default()
+            };
+            let bytes = serde_json::to_vec(&doc)?;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+        }
+        Ok(target)
+    } else {
+        Ok(path.to_owned())
+    }
+}
+
 pub fn load(path: &Path) -> Result<Document> {
     ensure!(
         fs::metadata(path)?.len() <= 128 * 1024 * 1024,

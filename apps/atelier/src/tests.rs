@@ -2159,3 +2159,49 @@ fn history_and_worker_snapshots_share_completed_stroke_samples() {
     assert_eq!(snapshot.layers[0].strokes[0].points.len(), 2);
     assert_eq!(doc.layers[0].strokes[0].points.len(), 3);
 }
+#[test]
+fn shared_story_folder_relocates_with_its_editable_document_and_artwork() {
+    use storyfella_studio_core::{
+        persistence::ProjectDb, project::ProjectFolder, registry::ArtifactRegistry,
+    };
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.svs-e2e/tests")
+        .join(format!("shared-folder-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let folder = ProjectFolder::create(
+        &root.join("original"),
+        "Harbor",
+        &ArtifactRegistry::default(),
+        "scene harbor\n  end\n",
+    )
+    .unwrap();
+    let path = crate::document::project_document(&folder.manifest()).unwrap();
+    let mut doc = crate::document::load(&path).unwrap();
+    assert_eq!(doc.title, "Harbor");
+    doc.note = "Retain my visual working document".into();
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgba8(2, 2)
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    let reference =
+        crate::document::reference_from_bytes("cup".into(), &bytes.into_inner(), "fixture".into())
+            .unwrap();
+    doc.references.push(std::sync::Arc::new(reference));
+    crate::document::save(&path, &doc).unwrap();
+    std::fs::rename(folder.root(), root.join("relocated")).unwrap();
+    let moved = ProjectFolder::open(&root.join("relocated")).unwrap();
+    let path = crate::document::project_document(&moved.manifest()).unwrap();
+    let reopened = crate::document::load(&path).unwrap();
+    assert_eq!(reopened.note, doc.note);
+    assert_eq!(reopened.references[0].image, doc.references[0].image);
+    assert_eq!(
+        ProjectDb::open(moved.database())
+            .unwrap()
+            .load()
+            .unwrap()
+            .story
+            .source(),
+        "scene harbor\n  end\n"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}

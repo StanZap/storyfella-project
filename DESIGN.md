@@ -1,5 +1,21 @@
 # Storyfella Studio design standard and UX audit
 
+### Shared project folders · 2026-11-01
+
+New Studio stories create portable folders. Projects → Open accepts the shared
+`storyfella.toml` manifest as well as existing `.sf`/`.db` files; Recent discovers
+shared folders. An open standalone project offers Copy to project folder with a
+native parent-folder picker. This copies source, registry identities and artwork,
+opens the copy on success and retains the original on failure. Existing folders
+are never overwritten. Atelier opens the same manifest and saves its working
+document inside the folder. No model call or export/approval gate is involved.
+
+Deterministic storage/adapter tests verify relocation with original paths removed,
+exact source and image retention, saved Atelier documents, invalid versions/IDs,
+missing source/images, immutable revision conflicts and escaping resource paths.
+Manual UI acceptance of the create/open/copy flows is assigned to the user.
+See [storage contract](docs/shared-project.md) and SF-PLAN-02.
+
 ### Project navigation availability · 2026-11-01
 
 Story, Canvas and Preview appear in the left navigation only while a project is

@@ -34,6 +34,13 @@ pub fn Projects(
     let mut recent = use_signal(|| scan_projects(&config.project_dir));
     let mut scan_errors = use_signal(Vec::<String>::new);
     let opened = app_state.read().project_path.clone();
+    let standalone_project = opened.as_ref().is_some_and(|path| {
+        !path.parent().is_some_and(|parent| {
+            parent
+                .join(storyfella_studio_core::project::MANIFEST)
+                .exists()
+        })
+    });
     let recent_dir = config.project_dir.clone();
     use_effect(use_reactive(&opened, move |path| {
         if let Some(path) = path {
@@ -120,7 +127,10 @@ pub fn Projects(
         move |event: MouseEvent| {
             let Some(picked) = rfd::FileDialog::new()
                 .set_title("Open project")
-                .add_filter("Storyfella project or story", &["db", "sf"])
+                .add_filter(
+                    "Storyfella project, manifest or story",
+                    &["toml", "db", "sf"],
+                )
                 .pick_file()
             else {
                 return;
@@ -141,11 +151,23 @@ pub fn Projects(
                     div {
                         h1 { class: "text-3xl font-semibold tracking-[-0.04em] text-zinc-100", "Your stories" }
                     }
-                    button {
-                        class: "flex h-9 items-center gap-2 rounded-xl bg-white/[0.05] px-4 text-xs font-medium text-zinc-300 transition hover:bg-white/[0.09] hover:text-white",
-                        onclick: open_dialog,
-                        Icon { name: IconName::Arrow, class: "size-3.5 rotate-180" }
-                        "Open…"
+                    div { class: "flex items-center gap-2",
+                        if standalone_project {
+                            button { class: "studio-button", title: "Copy the open story and its artwork into a portable project folder",
+                                onclick: move |_| {
+                                    if let Some(parent) = rfd::FileDialog::new().set_title("Choose a parent folder for the project copy").pick_folder() {
+                                        if let Err(report) = commands::copy_to_project_folder(&parent, app_state) { error_report.set(Some(report.log())); }
+                                    }
+                                },
+                                "Copy to project folder…"
+                            }
+                        }
+                        button {
+                            class: "flex h-9 items-center gap-2 rounded-xl bg-white/[0.05] px-4 text-xs font-medium text-zinc-300 transition hover:bg-white/[0.09] hover:text-white",
+                            onclick: open_dialog,
+                            Icon { name: IconName::Arrow, class: "size-3.5 rotate-180" }
+                            "Open…"
+                        }
                     }
                 }
 
@@ -249,6 +271,18 @@ fn scan_projects(project_dir: &Path) -> (Vec<RecentProject>, Vec<String>) {
                 match entry {
                     Ok(entry) if entry.path().extension().is_some_and(|ext| ext == "db") => {
                         discovered.push(entry.path())
+                    }
+                    Ok(entry)
+                        if entry
+                            .path()
+                            .join(storyfella_studio_core::project::MANIFEST)
+                            .is_file() =>
+                    {
+                        match storyfella_studio_core::project::ProjectFolder::open(&entry.path()) {
+                            Ok(folder) => discovered.push(folder.database()),
+                            Err(error) => errors
+                                .push(format!("Cannot load {}: {error:#}", entry.path().display())),
+                        }
                     }
                     Ok(_) => {}
                     Err(error) => errors.push(format!("Could not read a project entry: {error}")),

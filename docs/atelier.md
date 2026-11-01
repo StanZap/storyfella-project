@@ -25,6 +25,14 @@ and secrets are managed in Clipforge. Keys stay out of projects and exports.
 
 ## Image workflow
 
+Atelier also opens a [shared Storyfella project](shared-project.md) through its
+`storyfella.toml` manifest. Its editable document lives at
+`atelier/main.atelier`; ordinary Save and reopening use that project-local path.
+Studio retains ownership of `story.sf`. Moving the complete project folder
+preserves the visual document and its embedded images. Catalog integration,
+live synchronization and saved-image publication are tracked separately under
+SF-PLAN-03–06.
+
 A project contains drawing/image artboards; each artboard owns artwork layers,
 reference associations and pending AI candidates. **Artboards → Create** creates
 a new composition. Open an artboard to draw or edit; **Create / image prompt**

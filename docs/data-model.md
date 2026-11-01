@@ -76,6 +76,17 @@ promoted revision, experiment an edit that has not been made canonical.
 
 ## Persistence format
 
+### Portable project folders
+
+New Studio projects use the [shared project folder](shared-project.md):
+`storyfella.toml`, `story.sf`, `story.db`, immutable `artwork/` revisions and
+`atelier/` working documents. The existing registry/schema stays authoritative;
+shared databases store image paths relative to their root and resolve them on
+load. Existing standalone source/database pairs remain readable and can be
+explicitly copied into a project folder with identities and artwork preserved.
+The standalone pair behavior described below still applies to CLI and older
+projects. Live synchronization and canvas-save publication remain SF-PLAN-04–06.
+
 `ProjectDb` (`crates/studio-core/src/persistence/mod.rs`) is SQLite storage for the project: one
 `projects` row, then `artifacts`, `revisions`, `layers`,
 `lora_registry` (project LoRA entries — round-tripped since the
@@ -93,8 +104,8 @@ The `svs` CLI persists artwork to `.svs-project.db`.
 ### The GUI save flow
 
 `AppState.project_path` names the open database file. The Projects screen
-scans `paths.project_dir` (config) for `.svs-project.db` files, creates new
-projects as `slug.svs-project.db`, and opens any `.db` file in place via the
+scans `paths.project_dir` (config) for project folders and `.db` files, creates new
+projects as `slug/`, and opens any `.db` file in place via the
 Open… picker. The picker also opens `.sf` with a companion `.db` beside it.
 `AppState.story` holds the authoritative source document, bound file path and
 last disk snapshot. Source-file migration and external-edit conflict handling are described below. The workspace autosaves per the General settings select — after
@@ -136,7 +147,7 @@ It no longer stores the authored Writer source.
 
 ### Project files
 
-Each project is a pair in the same directory:
+Standalone projects are a pair in the same directory:
 
 ```text
 my-story.svs-project.db     artwork and project metadata
