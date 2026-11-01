@@ -654,6 +654,11 @@ The broader product and UX assessments still need the review tracked below.
   [development and regression scenarios](development.md)
   and the prototype acceptance notes below. Verify current behavior before
   promoting findings into TODOs and assign visual creation work to Atelier.
+  - [x] Project navigation availability (2026-11-01): hide Story, Canvas and
+    Preview until a project is open; palette destinations and keyboard shortcuts
+    obey the same prerequisite. Global navigation remains available. Regression
+    coverage checks palette destinations before/after opening a project;
+    manual sidebar acceptance is assigned to the user. See [DESIGN.md](../DESIGN.md).
 - [ ] **SF-PLAN-12 — Extend workspace language tooling.** Add workspace navigation
   and concrete code actions once the multi-file contract in SF-PLAN-08 is defined.
   Done when Studio and external editors agree on analysis, rename touches only

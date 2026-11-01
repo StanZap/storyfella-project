@@ -1,5 +1,17 @@
 # Storyfella Studio design standard and UX audit
 
+### Project navigation availability · 2026-11-01
+
+Story, Canvas and Preview appear in the left navigation only while a project is
+open. Projects, Plans and Settings remain available. The command palette and
+Story/Canvas shortcuts obey the same prerequisite. Visiting Projects retains the
+open story and its navigation; selecting an artifact is not required. Existing
+mounted task owners and drafts retain their lifetimes across navigation.
+
+Palette regression coverage checks the destinations before and after project
+opening. Workspace checks/tests, formatting, strict Studio Clippy and the desktop
+debug build pass. Manual UI acceptance is assigned to the user under SF-PLAN-11.
+
 ### Writing response boundaries · 2026-11-01
 
 Recorded user attempts exposed a false repair cycle: model responses omitted

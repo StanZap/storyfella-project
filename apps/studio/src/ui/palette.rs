@@ -74,6 +74,9 @@ pub fn entries(state: &AppState, query: &str) -> Vec<Entry> {
     let project_open = state.project_path.is_some();
     let available = project_open && !state.operation_in_progress();
     for destination in AppScreen::ALL {
+        if !destination.available(project_open) {
+            continue;
+        }
         entries.push(Entry {
             label: format!("Go to {}", destination.label()),
             hint: "Workspace navigation".into(),
@@ -591,17 +594,32 @@ mod tests {
     }
 
     #[test]
-    fn navigation_remains_available_without_a_project_but_mutations_do_not() {
-        let found = entries(&AppState::default(), "");
+    fn project_navigation_requires_an_open_project() {
+        let mut state = AppState::default();
+        let found = entries(&state, "");
         for screen in AppScreen::ALL {
-            assert!(found
-                .iter()
-                .any(|e| e.action == Action::Navigate(screen) && e.enabled));
+            assert_eq!(
+                found
+                    .iter()
+                    .any(|e| e.action == Action::Navigate(screen) && e.enabled),
+                matches!(
+                    screen,
+                    AppScreen::Projects | AppScreen::Plans | AppScreen::Settings
+                )
+            );
         }
         assert!(found
             .iter()
             .filter(|e| matches!(e.action, Action::Compose(_) | Action::Task(_)))
             .all(|e| !e.enabled));
+
+        state.project_path = Some("palette-test.svs-project.db".into());
+        let found = entries(&state, "");
+        for screen in AppScreen::ALL {
+            assert!(found
+                .iter()
+                .any(|e| e.action == Action::Navigate(screen) && e.enabled));
+        }
     }
 
     #[test]

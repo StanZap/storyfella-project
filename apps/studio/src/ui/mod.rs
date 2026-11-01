@@ -129,6 +129,10 @@ pub enum AppScreen {
     Settings,
 }
 impl AppScreen {
+    fn available(self, project_open: bool) -> bool {
+        project_open || matches!(self, Self::Projects | Self::Plans | Self::Settings)
+    }
+
     pub const ALL: [Self; 6] = [
         Self::Writer,
         Self::Canvas,
@@ -441,11 +445,11 @@ pub fn Workspace(
         {
             goto.set(None);
             match press.key.as_str() {
-                "s" => {
+                "s" if AppScreen::Writer.available(app_state.read().project_path.is_some()) => {
                     screen.set(AppScreen::Writer);
                     return;
                 }
-                "c" => {
+                "c" if AppScreen::Canvas.available(app_state.read().project_path.is_some()) => {
                     screen.set(AppScreen::Canvas);
                     return;
                 }
@@ -488,7 +492,11 @@ pub fn Workspace(
     };
 
     let dispatch = actions::ActionDispatcher(EventHandler::new(move |action| match action {
-        palette::Action::Navigate(destination) => screen.set(destination),
+        palette::Action::Navigate(destination) => {
+            if destination.available(app_state.read().project_path.is_some()) {
+                screen.set(destination);
+            }
+        }
         palette::Action::Task(action) => {
             screen.set(AppScreen::Canvas);
             action_request.send(action);
@@ -533,7 +541,9 @@ pub fn Workspace(
             div { class: "flex min-h-0 min-w-0",
                 nav { class: "studio-navigation", aria_label: "Workspace navigation",
                     for destination in [AppScreen::Writer, AppScreen::Canvas, AppScreen::Preview] {
-                        ScreenTab { destination, active: screen() == destination, onclick: move |_| screen.set(destination) }
+                        if destination.available(app_state.read().project_path.is_some()) {
+                            ScreenTab { destination, active: screen() == destination, onclick: move |_| screen.set(destination) }
+                        }
                     }
                     div { class: "min-h-4 flex-1" }
                     for destination in [AppScreen::Projects, AppScreen::Plans, AppScreen::Settings] {
