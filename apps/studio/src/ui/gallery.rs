@@ -1,23 +1,19 @@
-//! The artifact grid — the canvas at rest.
+//! The artifact grid — Assets at rest.
 //!
-//! Replaces the kind-grouped sidebar with tiles: the picture is the thing you
-//! are looking for, so it is what you navigate by. Variants stack behind
-//! their base, and work in flight stays *in the grid* (dimmed, badged) rather
-//! than in a toast that disappears — a generation is a tile that is not
-//! finished yet, not a notification.
+//! Saved pictures lead navigation. Variations stack behind their base;
+//! image production and its progress belong to Atelier.
 //!
 //! Source associations supply origins; the story sequence follows `.sf`.
 
 use dioxus::prelude::*;
 use uuid::Uuid;
 
-use storyfella_studio_core::registry::{Artifact, ArtifactKind, ArtifactRegistry, RevisionStatus};
+use storyfella_studio_core::registry::{Artifact, ArtifactKind, ArtifactRegistry};
 
 use crate::state::AppState;
 
 use super::{
-    actions::{ActionRequest, ArtAction, StudioAction},
-    components::IconButton,
+    actions::{ActionRequest, ArtAction},
     generated_asset_url,
     icons::{Icon, IconName},
 };
@@ -44,8 +40,6 @@ pub struct Tile {
     pub image: Option<String>,
     /// How many variants sit behind this base.
     pub variants: usize,
-    /// A generation is running for this artifact.
-    pub working: bool,
     /// The authored declaration key, independent of the artwork's display name.
     pub origin: Option<String>,
     pub subtitle: String,
@@ -65,16 +59,6 @@ fn tiles_for(registry: &ArtifactRegistry, kind: ArtifactKind, query: &str) -> Ve
                 .iter()
                 .filter(|other| other.variant_of == Some(artifact.id))
                 .count();
-            // Both in-flight states, not just `Queued`: `Generating` is the
-            // one a revision holds for most of its life, so keying off
-            // `Queued` alone would drop the badge exactly while the picture
-            // is being made.
-            let working = artifact.revisions.iter().any(|revision| {
-                matches!(
-                    revision.status,
-                    RevisionStatus::Queued | RevisionStatus::Generating
-                )
-            });
             Tile {
                 id: artifact.id,
                 name: if artifact.name.trim().is_empty() {
@@ -83,12 +67,8 @@ fn tiles_for(registry: &ArtifactRegistry, kind: ArtifactKind, query: &str) -> Ve
                     artifact.name.clone()
                 },
                 kind,
-                image: registry
-                    .latest_image(artifact.id)
-                    .and_then(|revision| revision.asset_path.as_deref())
-                    .and_then(generated_asset_url),
+                image: AppState::display_image(artifact).and_then(generated_asset_url),
                 variants,
-                working,
                 origin: storyfella_studio_core::authoring::declaration_key(registry, artifact.id),
                 subtitle: first_line(&artifact.description),
             }
@@ -159,6 +139,7 @@ pub fn Gallery(
         Some(rsx! {
             section { key: "{kind}",
                 div { class: "mb-3 flex items-center gap-2",
+                    super::icons::AssetIcon { kind, class: "size-4 text-zinc-400" }
                     p { class: "text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-600",
                         "{heading}"
                     }
@@ -187,12 +168,10 @@ pub fn Gallery(
             div { class: "sticky top-0 z-10 flex items-center gap-3 border-b border-white/[0.05] bg-zinc-950/80 px-6 py-3 backdrop-blur-xl",
                 button { class: "studio-button studio-button-primary", disabled,
                     title: super::shortcuts::tooltip("New artifact", "new"),
-                    onclick: move |_| actions.send(StudioAction::Art(ArtAction::Create(ArtifactKind::Character))),
+                    onclick: move |_| actions.send(ArtAction::Create(ArtifactKind::Character)),
                     Icon { name: IconName::Add, class: "size-4" }
                     "New artifact"
                 }
-                IconButton { icon: IconName::Upload, label: "Import Atelier artwork", disabled,
-                    onclick: move |_| actions.send(StudioAction::ImportArtwork) }
                 span { class: "text-xs text-zinc-500", "{result_count}" }
                 input {
                     class: "ml-auto h-8 w-56 rounded-lg bg-white/[0.045] px-3 text-[11px] text-zinc-200 outline-none ring-1 ring-inset ring-white/[0.06] transition placeholder:text-zinc-700 focus:ring-violet-400/40",
@@ -235,7 +214,7 @@ pub fn Gallery(
                     button {
                         class: "mt-4 rounded-lg bg-violet-400/15 px-3 py-1.5 text-[11px] font-semibold text-violet-200 transition hover:bg-violet-400/25 disabled:opacity-40",
                         disabled,
-                        onclick: move |_| actions.send(StudioAction::Art(ArtAction::Create(ArtifactKind::Character))),
+                        onclick: move |_| actions.send(ArtAction::Create(ArtifactKind::Character)),
                         "New artifact"
                     }
                 }
@@ -271,27 +250,19 @@ fn TileCard(tile: Tile, focused: bool, onopen: EventHandler<Uuid>) -> Element {
                 }
 
                 if let Some(url) = tile.image.clone() {
-                    img {
-                        class: "absolute inset-0 size-full rounded-[10px] object-contain ring-1 ring-inset ring-white/[0.11] transition group-hover:ring-white/20",
-                        class: if focused { "ring-2 ring-violet-400" } else { "" },
-                        class: if tile.working { "opacity-40" } else { "" },
+                    super::artwork::ArtworkImage {
+                        class: format!("absolute inset-0 size-full rounded-[10px] object-contain ring-1 ring-inset ring-white/[0.11] transition group-hover:ring-white/20 {}", if focused { "ring-2 ring-violet-400" } else { "" }),
                         src: "{url}",
                         alt: "{tile.name}",
                     }
                 } else {
                     div { class: "absolute inset-0 grid place-items-center rounded-[10px] bg-white/[0.04] text-zinc-700 ring-1 ring-inset ring-white/[0.07]",
-                        Icon { name: IconName::Layers, class: "size-5" }
+                        super::icons::AssetIcon { kind: tile.kind, class: "size-5" }
                     }
                 }
 
-                // In-flight work stays in the grid rather than in a toast.
-                if tile.working {
-                    span { class: "absolute right-1.5 top-1.5 z-10 flex items-center gap-1.5 rounded-md bg-violet-400/25 px-1.5 py-0.5 text-[9px] font-semibold text-violet-100 ring-1 ring-inset ring-violet-300/30 backdrop-blur",
-                        span { class: "size-2 animate-pulse rounded-full bg-violet-300" }
-                        "rendering"
-                    }
-                } else if tile.variants > 0 {
-                    span { class: "absolute right-1.5 top-1.5 z-10 rounded-md bg-black/60 px-1.5 py-0.5 text-[9px] font-semibold text-zinc-300 ring-1 ring-inset ring-white/10 backdrop-blur",
+                if tile.variants > 0 {
+                    span { class: "absolute right-1.5 top-1.5 z-10 rounded-md bg-black/60 px-1.5 py-0.5 text-[9px] font-semibold text-[#fff] ring-1 ring-inset ring-white/10 backdrop-blur",
                         "{tile.variants + 1}"
                     }
                 }
@@ -381,41 +352,6 @@ mod tests {
         assert_eq!(first_line("One sentence. Two."), "One sentence");
         assert_eq!(first_line("  no punctuation  "), "no punctuation");
         assert_eq!(first_line(""), "");
-    }
-
-    #[test]
-    fn both_in_flight_states_mark_a_tile_as_working() {
-        for status in [RevisionStatus::Queued, RevisionStatus::Generating] {
-            let mut registry = registry_with(&[(ArtifactKind::Character, "mara")]);
-            let id = registry.artifacts[0].id;
-            let revision = registry
-                .start_revision(
-                    id,
-                    "a prompt".into(),
-                    None,
-                    None,
-                    storyfella_studio_core::registry::RevisionOrigin::Canon,
-                )
-                .expect("revision should start");
-            registry
-                .artifact_mut(id)
-                .unwrap()
-                .revisions
-                .iter_mut()
-                .find(|candidate| candidate.id == revision)
-                .unwrap()
-                .status = status;
-
-            let tiles = tiles_for(&registry, ArtifactKind::Character, "");
-            assert!(tiles[0].working, "{status:?} should read as in flight");
-        }
-    }
-
-    #[test]
-    fn finished_work_stops_reading_as_in_flight() {
-        let registry = registry_with(&[(ArtifactKind::Character, "mara")]);
-        let tiles = tiles_for(&registry, ArtifactKind::Character, "");
-        assert!(!tiles[0].working);
     }
 
     #[test]

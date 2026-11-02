@@ -381,57 +381,46 @@ cargo xtask plan config/plans/ui-tour.yaml --mode guide --log
 ```
 
 Or open **Plans**, choose **Story authoring walkthrough**, select **Guide**,
-and run it. The roughly two-minute walkthrough creates a fresh sample project,
-types its entire story from a blank Writer at 40 characters per second,
-shows the Writer's resolved and pending references, explores canvas variants
-and revision history, and changes a character's settings and canon through
-the composer. Pause, resume, change speed, or stop from the assistant card.
+and run it. The walkthrough creates a fresh sample project,
+types its entire story from a blank Writer at 80 characters per second,
+shows the Writer's resolved and pending references, opens saved artwork and
+changes a character's story-facing description. Pause, resume, change speed,
+or stop from the assistant card.
 It ends in the Writer so you can try editing the story yourself.
-Pictures and revision history are fixtures; the render step is explicitly
-simulated. No inference backend is needed. See [development.md](development.md)
-for the review goals and the next UX slices.
+Pictures and revision history are fixtures. No inference backend is needed.
+Visual production belongs to Atelier; Studio plans cannot generate or edit images.
 
 | Plan | Needs a backend | Covers |
 | --- | --- | --- |
 | `smoke.yaml` | no | Project creation, story and beat artifacts, registry state |
-| `ui-tour.yaml` | no | Narrated Story authoring walkthrough: source, asset references, variants, inspector, canon commands and palette |
-| `story-setup.yaml` | yes | The artifact kinds and how they relate — mostly text, so it is quick (~30s) |
-| `edit-vocabulary.yaml` | yes | `modify` vs `describe` vs `variant` vs `regenerate`, including an edit vanishing and then surviving |
-| `character-sheet.yaml` | yes | One character fanned across outfit / time-of-day / weather / mood axes |
-| `canvas-and-quality.yaml` | yes | Draft small, iterate, then `/resize` once the composition is settled |
-| `edit.yaml` | yes | Create a character, then recolour / re-cut / re-dress her by instruction |
-| `iteration.yaml` | yes | The creation loop — create, variant, regenerate, beat |
-| `tour.yaml` | yes | Guided walkthrough of the product surface |
+| `ui-tour.yaml` | no | Narrated authoring walkthrough: source, asset references, saved artwork, descriptions and palette |
+| `playback.yaml` | no | Saved fixture playback, choices, bookmark and restore |
 
 Writing a plan: steps are `verb: value` pairs, `expect_*` steps gate
-progress, `soft: true` downgrades a failure to a warning (use it for
-`expect_image`, which depends on generation timing), and `message:` is the
-narration shown in guide mode. `compose:` types text into the canvas
-composer character by character and submits it exactly like a user pressing
-Enter — prefer it over `command:` when the point is to exercise the UI.
+progress, `soft: true` downgrades a failure to a warning (for example, an
+optional vision endpoint), and `message:` is the
+narration shown in guide mode. `command:` supports `/describe` and text-only
+story/scene/beat creation. Visual operations are rejected when the plan loads,
+before any step changes state. Core and `svs` retain the full operation vocabulary.
 `type_story:` appends text in the Writer through its normal source setter,
-keeping the caret and scope panel on the typed line. Guide mode animates both
-actions; `sample_project:` also types its complete source using the same controls.
+keeping the caret and scope panel on the typed line. Guide mode animates typing;
+`sample_project:` also types its complete source using the same controls.
 The rate is `typing_cps` characters per second (default 60, allowed 1–200).
 Unknown plan settings are rejected with their name, so a typo cannot silently
 fall back to a different typing speed.
 The assistant card's **Typing** slider changes that rate live, independently
 of the narration's 1x/2x/4x controls. Pause stops typing and delays command
-submission; stopping leaves the partial text available to inspect. Check mode
+execution; stopping leaves the partial text available to inspect. Check mode
 applies typed text immediately without the animation.
-
-Steps that stop for approval cannot be driven from a plan: the driver
-auto-rejects checkpoints, so the op fails fast with the checkpoint message.
-`modify` is checkpoint-free (an instruction edit segments nothing).
 
 Two traps worth knowing before writing one. A bare `- wait_ms: 800` is **not**
 a step — every step needs an action, and `wait_ms`/`message`/`soft` are
 modifiers on one; serde reports that mistake against the first step in the
 file rather than the offending one, so trust the message over the line
 number. And a plan runs against the live app on a spawned task, sharing the
-same state as the user: `create_project` (which every plan starts with)
-switches away from whatever project is open, and typing in the composer
-mid-run collides with the plan's own `compose` steps. Guide mode's assistant
+same state as the user: project-open/create steps
+switch away from whatever project is open, and editing the story
+mid-run can affect subsequent expectations. Guide mode's assistant
 card has pause/stop for exactly this; check mode calls `std::process::exit`
 when the report prints.
 
@@ -477,7 +466,7 @@ touch the generation backend.
 
 Configuration is split by concern into two files, both loaded by
 `crates/studio-core/src/config.rs`. **App config** — `[paths]`, `[generation]`,
-`[generation.sizes]`, `[lora]`, `[runtime]` — lives in the platform
+`[generation.sizes]`, `[lora]` — lives in the platform
 `studio.toml` (see the `app config` note below). **AI config**
 — the `[defaults]` capability map and the `[providers.<id>]` registry — lives in
 the machine's shared `clipforge.toml` (see the
@@ -486,7 +475,9 @@ to defaults. The keys below are app settings unless the note says otherwise.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `generation.steps` | `25` | Default steps per generation (Settings → Models; Qwen-Image-2.1 has no few-step turbo path) |
+| `appearance.theme` | `dark` | Studio interface: `dark`, `light` or live OS-following `system`; applies without restart |
+| `models.separate_vision` | Infer from configured providers | `false` makes Vision follow Text; `true` uses the separately selected Vision provider and shows its fields. Existing routing, including an unconfigured capability, is preserved when absent. |
+| `generation.steps` | `25` | CLI default steps per generation (Qwen-Image-2.1 has no few-step turbo path) |
 | `generation.cfg_scale` | `6.0` | Text-guidance scale (`sample_params.guidance.txt_cfg`) |
 | `generation.sample_method` | `euler` | Sampler (`sample_params.sample_method`) |
 | `generation.sizes.character` | `512x768` | Default canvas for character images (`WxH`, multiples of 32) |
@@ -517,6 +508,14 @@ to be run from the repository root. The platform `studio.toml` is created with
 `generation.sizes.character` = `1024x1536` (the full Qwen portrait canvas).
 
 ### App config
+
+The appearance and Vision-mode preferences belong to `studio.toml`; provider
+URLs, models, credentials and the separate Vision selection remain in the shared
+`clipforge.toml`. Turning separate Vision off does not rewrite those provider
+settings. Studio-core's effective `AppConfig::vision` follows Text while linked,
+including text-provider/model/key changes; `svs eval` and guide vision checks
+consume that same effective deployment. The selected Text model must accept
+images in this mode. Re-enabling separate Vision restores its saved selection.
 
 The app config is one platform-local file, `studio.toml`, in the platform
 application config directory resolved by `directories::ProjectDirs`
@@ -578,7 +577,7 @@ overwrites an existing one. `crates/studio-core/src/config.rs` validates it
 through the shared `agentkit_ai::deployments::Providers` registry: the image backend —
 the `sd-server` executable, model tree, LoRA root, endpoint, and weights — is
 resolved to a provider and kept on `AppConfig::image`, and `text`/`vision` resolve
-to `AppConfig::text`/`vision`. The LoRA root shown in Settings is the provider's
+to `AppConfig::text`/`vision`. The CLI's LoRA root is the provider's
 `lora_dir`.
 
 ```toml

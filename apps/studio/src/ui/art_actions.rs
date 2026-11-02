@@ -1,285 +1,110 @@
-//! Visual forms compile to the same typed operations as slash commands.
-use super::{actions::ArtAction, components::IconButton, dialog::Dialog, icons::IconName};
+//! Catalog definitions are authoring operations; image production belongs to Atelier.
+use super::{actions::ArtAction, dialog::Dialog, inputs::TextInput};
 use crate::state::AppState;
 use dioxus::prelude::*;
-use std::path::PathBuf;
-use storyfella_studio_core::registry::{
-    ops::{self, Operation},
-    ArtifactKind, GenerationDefaults, Ref,
+use storyfella_studio_core::{
+    catalog::{CatalogEdit, KINDS},
+    registry::ArtifactKind,
 };
-
-fn operation(
-    action: ArtAction,
-    kind: ArtifactKind,
-    name: &str,
-    description: &str,
-) -> Result<Operation, String> {
-    let name = name.trim();
-    let description = description.trim();
-    let target = || Ref::new(action.target().expect("Targeted art action").to_string());
-    match action {
-        ArtAction::Create(_) => {
-            if name.is_empty() {
-                return Err("Enter a name for this artifact.".into());
-            }
-            if description.is_empty() {
-                return Err("Describe the artifact you want to create.".into());
-            }
-            Ok(Operation::Create {
-                kind,
-                name: Some(name.into()),
-                description: description.into(),
-                size: None,
-                steps: None,
-                loras: vec![],
-            })
-        }
-        ArtAction::Variant(_) => {
-            if description.is_empty() {
-                return Err("Describe what should be different in this variant.".into());
-            }
-            Ok(Operation::Variant {
-                target: target(),
-                name: (!name.is_empty()).then(|| name.into()),
-                description: description.into(),
-                axis: None,
-                size: None,
-                steps: None,
-                loras: vec![],
-            })
-        }
-        ArtAction::Modify(_) => {
-            if description.is_empty() {
-                return Err("Describe what to change and what to keep.".into());
-            }
-            Ok(Operation::Modify {
-                target: target(),
-                description: description.into(),
-                size: None,
-                steps: None,
-                loras: vec![],
-            })
-        }
-        ArtAction::Regenerate(_) => Ok(Operation::Regenerate {
-            target: target(),
-            prompt: (!description.is_empty()).then(|| description.into()),
-            size: None,
-            steps: None,
-            loras: vec![],
-        }),
-        ArtAction::AttachAdapter(_) => {
-            if name.is_empty() {
-                return Err("Enter the adapter's registered name or file name.".into());
-            }
-            Ok(Operation::AttachLora {
-                target: target(),
-                lora: name.into(),
-                multiplier: None,
-            })
-        }
-    }
-}
 
 #[component]
 pub fn ArtActionDialog(
     action: ArtAction,
-    project: Option<PathBuf>,
     app_state: Signal<AppState>,
-    defaults: Signal<GenerationDefaults>,
-    disabled: bool,
-    onrun: EventHandler<Operation>,
     onclose: EventHandler<()>,
 ) -> Element {
-    let mut kind = use_signal(|| match action {
+    let mut app_state = app_state;
+    // The selector belongs only to new definitions. Variations resolve their
+    // base's current kind at submission instead of retaining a stale copy.
+    let initial = match action {
         ArtAction::Create(kind) => kind,
-        _ => ArtifactKind::Character,
-    });
+        ArtAction::Variant(_) => ArtifactKind::Character,
+    };
+    let mut kind = use_signal(|| initial);
     let mut name = use_signal(String::new);
+    let name_id = use_hook(|| format!("new-asset-name-{}", uuid::Uuid::new_v4()));
     let mut description = use_signal(String::new);
     let mut error = use_signal(|| None::<String>);
-    let mut generate_image = use_signal(|| false);
-    let (name_id, name_mount) = super::text_input::use_text_value(name(), None);
     let (description_id, description_mount) =
         super::text_input::use_text_value(description(), None);
-    let target_name = action.target().and_then(|id| {
-        app_state
-            .read()
-            .registry
-            .artifact(id)
-            .map(|a| a.name.clone())
-    });
-    let create = matches!(action, ArtAction::Create(_));
-    let definition = match action {
-        ArtAction::Create(_) => storyfella_studio_core::catalog::KINDS.contains(&kind()),
-        ArtAction::Variant(_) => true,
-        _ => false,
-    };
-    let adapter = matches!(action, ArtAction::AttachAdapter(_));
-    let first_image = matches!(action, ArtAction::Regenerate(id) if app_state.read().registry.artifact(id)
-        .is_some_and(|artifact| app_state.read().display_image(artifact).is_none()));
-    let title = if definition && !generate_image() {
-        "New catalog entry"
-    } else if first_image {
-        "Generate image"
-    } else {
-        action.title()
-    };
-    let show_name = create || adapter || matches!(action, ArtAction::Variant(_));
-    let label = match action {
-        ArtAction::Create(_) | ArtAction::Variant(_) if definition && !generate_image() => {
-            "Create catalog entry"
-        }
-        ArtAction::Create(_) if kind().is_visual() => "Create and render",
-        ArtAction::Create(_) => "Create entry",
-        ArtAction::Variant(_) => "Create and render variant",
-        ArtAction::Regenerate(_) if first_image => "Generate image",
-        ArtAction::Regenerate(_) => "Generate new revision",
-        ArtAction::Modify(_) => "Generate edited image",
-        ArtAction::AttachAdapter(_) => "Attach adapter",
-    };
-    let submit = move |event: FormEvent| {
-        event.prevent_default();
-        if disabled {
-            return;
-        }
-        if project.is_none() || app_state.read().project_path != project {
-            error.set(Some(
-                "Open the intended project before submitting this action.".into(),
-            ));
-            return;
-        }
-        if definition && !generate_image() {
-            let (kind, variant_of) = match action {
-                ArtAction::Variant(id) => {
-                    let state = app_state.read();
-                    let Some(base) = state.registry.artifact(id) else {
-                        error.set(Some("The base item no longer exists.".into()));
-                        return;
-                    };
-                    (base.kind, Some(id))
-                }
-                _ => (kind(), None),
-            };
-            match app_state.write().edit_catalog(
-                storyfella_studio_core::catalog::CatalogEdit::Create {
-                    kind,
-                    name: name(),
-                    description: description(),
-                    variant_of,
-                },
-            ) {
-                Ok(_) => onclose.call(()),
-                Err(message) => error.set(Some(message)),
-            }
-            return;
-        }
-        match operation(action, kind(), &name(), &description()).and_then(|op| {
-            ops::compile(&app_state.read().registry, &op, &defaults.read())
-                .map_err(|e| e.to_string())?;
-            Ok(op)
-        }) {
-            Ok(op) => {
-                onrun.call(op);
-                onclose.call(());
-            }
-            Err(message) => error.set(Some(message)),
-        }
-    };
+    let project = use_hook(|| app_state.peek().project_path.clone());
+    let stale = project.is_none() || project != app_state.read().project_path;
     rsx! {
-        Dialog { title, on_close: onclose,
-            form { class: "studio-task-form", onsubmit: submit,
-                header { class: "flex items-center gap-3",
-                    h2 { class: "flex-1 text-xl font-semibold", "{title}" }
-                    IconButton { label: "Close", icon: IconName::Close, onclick: move |_| onclose.call(()) }
-                }
-                if let Some(target) = target_name { p { class: "text-sm text-zinc-400", "For {target}" } }
-                if create {
-                    label { class: "studio-field", span { "Kind" }
-                        select { class: "setting-control", aria_label: "Artifact kind", value: kind().as_str(),
-                            onchange: move |e| { if let Some(next) = ArtifactKind::ALL.iter().find(|k| k.as_str() == e.value()) { kind.set(*next); } },
-                            for candidate in ArtifactKind::ALL { option { value: candidate.as_str(), selected: kind() == candidate, "{candidate}" } }
+        Dialog {
+            title: "New catalog entry",
+            on_close: move |_| onclose.call(()),
+            form {
+                class: "space-y-4",
+                onsubmit: move |event| {
+                    event.prevent_default();
+                    if stale { return; }
+                    let (kind, variant_of) = match action {
+                        ArtAction::Variant(id) => {
+                            let base = app_state.read().registry.artifact(id).map(|item| item.kind);
+                            let Some(kind) = base else {
+                                error.set(Some("The base item no longer exists.".into()));
+                                return;
+                            };
+                            (kind, Some(id))
+                        }
+                        ArtAction::Create(_) => (kind(), None),
+                    };
+                    let edit = CatalogEdit::Create {
+                        kind, name: name(), description: description(), variant_of,
+                    };
+                    match app_state.write().edit_catalog(edit) {
+                        Ok(_) => onclose.call(()),
+                        Err(message) => error.set(Some(message)),
+                    }
+                },
+                h2 { class: "text-lg font-semibold", "New catalog entry" }
+                if matches!(action, ArtAction::Create(_)) {
+                    label {
+                        class: "block text-xs text-zinc-400", "Kind"
+                        select {
+                            class: "setting-control w-full",
+                            value: kind().as_str(),
+                            oninput: move |event| {
+                                if let Ok(value) = event.value().parse::<ArtifactKind>() {
+                                    kind.set(value);
+                                }
+                            },
+                            for option in KINDS {
+                                option {
+                                    value: option.as_str(), selected: kind() == option,
+                                    "{option}"
+                                }
+                            }
                         }
                     }
                 }
-                if show_name {
-                    label { class: "studio-field", r#for: name_id.clone(),
-                        span { if adapter { "Adapter name or file" } else if create { "Name" } else if definition && !generate_image() { "Variant name" } else { "Variant name (optional)" } }
-                        input { id: name_id, onmounted: name_mount, class: "setting-control", autofocus: true,
-                            placeholder: if adapter { "portrait-style.safetensors" } else if definition && !generate_image() { "mara" } else { "Mara · harbor captain" },
-                            oninput: move |e| name.set(e.value()) }
-                    }
+                label { r#for: name_id.clone(), class: "block text-xs text-zinc-400", "Reference name" }
+                TextInput {
+                    id: Some(name_id.clone()), label: "Reference name", value: name(),
+                    placeholder: "e.g. mara", autofocus: true,
+                    oninput: move |value| name.set(value),
                 }
-                if !adapter {
-                    label { class: "studio-field", r#for: description_id.clone(),
-                        span { if matches!(action, ArtAction::Modify(_)) { "What should change?" } else if matches!(action, ArtAction::Regenerate(_)) { "Prompt override (optional)" } else { "Description" } }
-                        textarea { id: description_id, onmounted: description_mount, class: "studio-textarea", rows: "5", autofocus: !show_name,
-                            placeholder: if matches!(action, ArtAction::Modify(_) | ArtAction::Variant(_)) { "Change the coat to blue; keep the face, pose and background." } else { "Describe the subject, appearance and mood." },
-                            oninput: move |e| description.set(e.value()) }
-                    }
+                label { r#for: description_id.clone(), class: "block text-xs text-zinc-400", "Description" }
+                textarea {
+                    id: description_id, onmounted: description_mount,
+                    class: "setting-control min-h-28 w-full",
+                    oninput: move |event| description.set(event.value()),
                 }
+                if stale { p { role: "alert", "The open project changed. Close this form and try again." } }
                 if let Some(message) = error() { p { role: "alert", class: "studio-inline-error", "{message}" } }
-                if definition {
-                    label { class: "flex items-center gap-2 text-sm text-zinc-300",
-                        input { r#type: "checkbox", checked: generate_image(), onchange: move |event| generate_image.set(event.checked()) }
-                        "Generate an image now"
+                div {
+                    class: "flex justify-end gap-2",
+                    button {
+                        r#type: "button", class: "studio-button",
+                        onclick: move |_| onclose.call(()), "Cancel"
                     }
-                }
-                footer { class: "flex justify-end gap-2",
-                    button { r#type: "button", class: "studio-button", onclick: move |_| onclose.call(()), "Cancel" }
-                    button { r#type: "submit", class: "studio-button studio-button-primary", disabled, title: "Uses project settings; existing revisions are preserved", "{label}" }
+                    button {
+                        r#type: "submit", class: "studio-button studio-button-primary",
+                        disabled: stale || name().trim().is_empty() || app_state.read().operation_in_progress(),
+                        "Create catalog entry"
+                    }
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use storyfella_studio_core::registry::{ArtifactRegistry, CreateArtifact};
-    #[test]
-    fn forms_and_commands_produce_equivalent_intent_without_losing_punctuation() {
-        let op = operation(
-            ArtAction::Create(ArtifactKind::Story),
-            ArtifactKind::Story,
-            "Harbor story",
-            "A captain's \"last\" voyage.",
-        )
-        .unwrap();
-        let registry = ArtifactRegistry::new();
-        let typed = crate::commands::parse_command(
-            "/create story \"A captain's \\\"last\\\" voyage.\" --name \"Harbor story\"",
-            &registry,
-            &GenerationDefaults {
-                sizes: Default::default(),
-                steps: 25,
-                cfg_scale: agentkit_ai::native::sd::DEFAULT_CFG_SCALE,
-                sample_method: agentkit_ai::native::sd::DEFAULT_SAMPLE_METHOD.into(),
-                loras: Default::default(),
-            },
-        )
-        .unwrap();
-        assert_eq!(op, typed);
-    }
-    #[test]
-    fn form_targets_resolve_spaced_names_by_identity() {
-        let mut registry = ArtifactRegistry::new();
-        let id = registry
-            .create_artifact(
-                ArtifactKind::Character,
-                CreateArtifact {
-                    name: "Captain Mara".into(),
-                    description: "Captain".into(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        let op = operation(ArtAction::Regenerate(id), ArtifactKind::Character, "", "").unwrap();
-        let Operation::Regenerate { target, prompt, .. } = op else {
-            panic!("Wrong operation")
-        };
-        assert_eq!(registry.resolve(&target).unwrap(), id);
-        assert!(prompt.is_none());
-        assert!(operation(ArtAction::Modify(id), ArtifactKind::Character, "", " ").is_err());
     }
 }

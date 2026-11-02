@@ -2,7 +2,7 @@
 
 Storyfella is the workspace for story authoring and playback. The existing
 Dioxus application is **Storyfella Studio**; the `svs` CLI keeps its current
-commands and behavior. Writer and Canvas share persistent scene/beat associations
+commands and behavior. Writer and Assets share persistent scene/beat associations
 and authoring tools with the catalog-backed LSP. Language, compiler and story
 runtime are implemented; Studio preview and the standalone visual Dioxus Player
 share deterministic execution, exact artwork bindings and controls. See
@@ -62,7 +62,12 @@ The fixture stays under `.svs-e2e/`. [Playback documentation](docs/runtime.md)
 defines open inputs, fixed snapshots, keyboard controls and save/restore.
 Voice, expressive media and portable packaging/export remain later work.
 
-Storyfella Studio is a cross-platform Dioxus desktop application for planning, generating, arranging and previewing visual stories. The workflow includes authoritative source editing, the artifact canvas (characters, environments, objects, scenes with typed operations, variants, revisions), resident local Qwen-Image-2.1 generation, and sectioned runtime settings. The typed operation/planner layer is shared by the `svs` CLI and the canvas; source order drives scene/beat associations and basic playback.
+Storyfella Studio is a Dioxus desktop application for writing, arranging and
+previewing visual stories. It owns authoritative source editing, catalog
+definitions and saved artwork previews. Atelier owns image creation and editing;
+both apps use the same portable project. The independent `svs` CLI retains its
+typed operation/planner layer. Source order drives scene/beat associations and
+playback.
 
 The validated target is Linux with an NVIDIA GPU (CUDA). Image generation runs on a CUDA build of `stable-diffusion.cpp`'s `sd-server` serving Qwen-Image-2.1. The LLM endpoint is an external prerequisite and is never installed or bundled by this project.
 
@@ -81,51 +86,52 @@ findings from the app-wide usability audit.
 
 - **Projects** creates a fresh story and reopens paired `.sf`/`.db` projects.
 - **Writer** preserves exact drafts, reconciles valid scene/beat declarations with
-  Canvas identities, and supplies precise completion, navigation, diagnostics,
+  Assets identities, and supplies precise completion, navigation, diagnostics,
   resolved rename and conservative formatting.
 - **Preview / Player** share still artwork, dialogue/thought/narration, choices,
   manual advancement, pause, restart, scene jump and verified save/restore.
-- **Canvas** is the artifact workspace: a gallery grid at rest (variants stack
-  behind their base, in-flight work dimmed and badged) and an image-dominant
-  detail pane with an inspector rail, plus a slash-command composer
-  (`/create`, `/variant`, `/regenerate`, `/modify`, `/describe` — the same
-  typed vocabulary as the `svs` CLI). Undo/redo restores source and registry together.
-- **Image generation** starts the resident native Qwen-Image-2.1 `sd-server` on
-  demand, waits for the model to load, and leaves it resident for subsequent
-  requests. `regenerate` and `modify` (edits described in plain language) run
-  through the same pipelines as the CLI.
-- **Variants** are first-class artifacts (`c:mia-outfit`), created with the
-  `/variant` command or the detail-pane action; axes (outfit, weather, …)
-  are tags for organization.
-- **Settings** is four pages: **General** (appearance, autosave), **Models**
+- **Assets** browses catalog definitions, variations, saved images and read-only
+  revision history. Names/descriptions stay editable as story requirements;
+  undo/redo coordinates source and catalog changes.
+- **Open in Atelier** saves the current story and opens the intended asset with
+  its story context. Atelier owns image generation, editing and visual settings.
+  Ordinary linked Save updates the artwork in Studio automatically.
+- **Variations** are first-class catalog identities grouped under their base.
+  Studio can define them without generating images; Atelier makes their artwork.
+- **Settings** is four pages: **General** (Dark/Light/System appearance, autosave), **Models**
   (what the app uses), **Services** (how it runs) and **Storage** (where files
   live). **Models** gives the **Text (LLM)** and **Vision (LLM)** capabilities
   each a provider picker, a status dot and a **Model** dropdown fetched from the
   endpoint (with a refetch action); **Base URL**, **Model** and **API key** are
   editable for every provider — Text and Vision are the same card, so a managed
-  server is not a different shape. The image model's profile,
-  generation quality (steps, per-kind sizes) and LoRA bindings live here too. A
+  server is not a different shape. Shared model-file administration remains. A
   **Providers** section lists every configured chat provider and can add one
   (validated before it is written) or remove one you added. **Services** has the
   image engine's status and start/stop/restart/take-over actions, its runtime
-  endpoint, residency, prewarm, the model-files provisioning list, and each
+  endpoint, residency, the model-files provisioning list, and each
   managed chat server with **Start/Stop/Restart**. Edits save to the app or provider
   configuration file and apply immediately.
+
+In Models, **Use a separate Vision LLM** reveals Vision's provider settings.
+Turn it off to follow the Text LLM's provider, model, URL and key; that model must
+accept images. Turning it back on restores the separate selection. Appearance
+and this preference persist in Studio's app config; shared provider credentials
+stay in the inference registry.
 
 The shell deliberately uses a small reusable component vocabulary, low-contrast boundaries, and progressive disclosure instead of a dense card dashboard. Styling is primarily Tailwind CSS 4 utility classes in RSX, with a small shared CSS layer for global browser behavior and form controls.
 
 ### Current creative workflow
 
-1. Create artifacts with the composer: `/create character "Mia, a lighthouse keeper" --name mia`, `/create environment "a storm-tossed harbor" --name harbor`, `/create object "an antique brass lantern" --name lantern`.
-2. Iterate versions: `/variant c:mia "in yellow rain gear" --axis outfit` — variants appear under the base artifact and can be selected like any artifact.
-3. Generate images (Qwen-Image-2.1 provisioned): `/regenerate c:mia "make it warmer"` — the result is a new revision of the active image.
-4. Edit an image: `/modify c:mia "give her a short bob haircut"` — say what to change in plain language. The generation model is an instruction editor, so it keeps what you did not mention (face, pose, clothing, background); there is no region to select.
-5. Keep an edit: `/describe c:mia "Mia, a lighthouse keeper, short bob"` — edits produce revisions but never change what the artifact *is*, so the next `/modify` re-anchors to the description and an earlier change washes out. `describe` promotes a change to canonical; `/variant` turns one into its own artifact.
-6. Browse revisions in the detail pane; click any completed revision to show it; undo/redo in the header.
+1. Write the story in Studio. Source declarations and the New catalog entry form
+   define characters, places, props and illustrations without requiring images.
+2. Open an item or scene in Atelier to create or edit its artwork.
+3. Save the linked canvas normally. Studio refreshes its saved preview and asset
+   availability; existing compiled Preview bindings retain their exact revision.
+4. Continue writing and previewing in Studio. Reopen Atelier whenever artwork
+   needs revision; saved history remains available without image-editing controls.
 
-Because `modify` re-states the artifact's description as the list of things to hold constant, **descriptions are worth writing carefully** — they are the edit's contract. An edit that contradicts the description ("long dark hair" + "dye it auburn") is reconciled by the configured LLM planner; without one, a deterministic fallback keeps the description verbatim and the contradiction can show up in the image.
-
-The configured defaults favor Qwen's single quality profile — 25 steps, CFG 6.0, `euler`, and a 1024×1536 character canvas in this checkout. Qwen-Image-2.1 has no few-step turbo path, so iteration is slower than the retired Krea Turbo loop; the settings are editable per kind in Settings → Models.
+The independent `svs` CLI retains visual operations, planning and configured
+generation defaults. See [development](docs/development.md) for CLI commands.
 
 ## Project layout
 

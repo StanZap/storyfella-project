@@ -24,7 +24,7 @@ use crate::workspace::Profile;
         cargo xtask run -r                       build and launch a release binary\n  \
         cargo xtask run -l                       …logging the app to .svs-e2e/logs/\n  \
         cargo xtask plan config/plans/smoke.yaml\n  \
-        cargo xtask plan config/plans/tour.yaml --mode guide\n  \
+        cargo xtask plan config/plans/ui-tour.yaml --mode guide\n  \
         cargo xtask bundle --package-types appimage deb\n  \
         cargo xtask test"
 )]

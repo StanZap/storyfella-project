@@ -3,14 +3,14 @@
 //! One listener, one place. The alternative — an `onkeydown` per component —
 //! is how an app ends up with thirty handlers and no coherent answer to
 //! "what does `j` do right now". Here the answer comes from one place: the
-//! canvas has exactly two states, grid and detail, and which one it is in is
+//! Assets has exactly two states, grid and detail, and which one it is in is
 //! already recorded by whether an artifact is selected. No separate mode
 //! enum, because a second source of truth could disagree with the first.
 //!
 //! ## Why this is a bridge rather than `onkeydown`
 //!
 //! A key press has to be ignored while a text field has focus — typing
-//! `j` into the command bar must insert a `j`, not move the grid cursor.
+//! `j` into a search field must insert a `j`, not move the grid cursor.
 //! Dioxus events do not expose the focused element, so the filter lives in
 //! JavaScript, where `document.activeElement` does.
 //!
@@ -45,7 +45,7 @@ const KEY_BRIDGE: &str = r#"
         }, true);
         const NAV = ["j", "k", "h", "l", "g", "n", "/", "Enter", "Escape",
                      "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
-                     "s", "c", "[", "]", "v", "r", "m", "e", "f", "p"];
+                     "s", "a", "v", "p"];
         document.addEventListener("keydown", (event) => {
             const active = document.activeElement;
             const tag = active ? active.tagName : "";

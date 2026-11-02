@@ -3,7 +3,7 @@
 //! Left: the `.sf` source, highlighted. Right: the artifacts the cursor's
 //! scene references, resolved ones with their picture and pending ones as
 //! placeholders that offer to create them. Writing the story is what fills
-//! the canvas with work.
+//! the asset catalog with work.
 //!
 //! Uses the same tokens, AST and reference analysis as the external LSP.
 //! Unresolved assets remain pending, with a Create affordance.
@@ -26,7 +26,7 @@ use super::{
 
 /// The starter document, so the screen explains itself rather than opening
 /// on an empty box.
-pub const STARTER: &str = r#"# Write the story; the canvas fills with the work it needs.
+pub const STARTER: &str = r#"# Write the story; Assets lists the artwork it needs.
 
 story "Untitled"
 
@@ -194,12 +194,9 @@ fn mentions_in(
                             .iter()
                             .any(|d| d.code == "SF203" && d.span == r.name.span)
                     }),
-                    image: artifact.and_then(|a| {
-                        registry
-                            .latest_image(a.id)
-                            .and_then(|r| r.asset_path.as_deref())
-                            .and_then(generated_asset_url)
-                    }),
+                    image: artifact
+                        .and_then(AppState::display_image)
+                        .and_then(generated_asset_url),
                     kind: expected_kind,
                     artifact: artifact.map(|a| a.id),
                     name,
@@ -487,15 +484,15 @@ pub fn Writer(
         .story_scenes
         .iter()
         .find(|s| Some(&s.name) == here.scene.as_ref());
-    let in_scope_artwork: Vec<(String, Uuid)> = scene_artwork
+    let in_scope_artwork: Vec<(String, Uuid, ArtifactKind)> = scene_artwork
         .into_iter()
         .flat_map(|scene| {
-            std::iter::once((scene.name.clone(), scene.artifact_id)).chain(
+            std::iter::once((scene.name.clone(), scene.artifact_id, ArtifactKind::Scene)).chain(
                 scene
                     .beats
                     .iter()
                     .filter(|b| Some(&b.name) == here.beat.as_ref())
-                    .map(|b| (b.name.clone(), b.artifact_id)),
+                    .map(|b| (b.name.clone(), b.artifact_id, ArtifactKind::Beat)),
             )
         })
         .collect();
@@ -740,11 +737,18 @@ pub fn Writer(
                     }
                 }
                 div { class: "min-h-0 flex-1 space-y-5 overflow-y-auto p-3",
-                    for (name, id) in in_scope_artwork {
-                        button {
-                            class: "block rounded px-2 py-1 font-mono text-[11px] text-violet-300 hover:bg-white/[0.05]",
-                            onclick: move |_| { app_state.write().select_artifact(id); screen.set(super::AppScreen::Canvas); },
-                            "Open {name} artwork"
+                    if !in_scope_artwork.is_empty() {
+                        div { class: "space-y-1",
+                            for (name, id, kind) in in_scope_artwork {
+                                button {
+                                    class: "flex min-h-10 w-full items-center gap-3 rounded-lg border border-white/[0.06] px-3 py-2 text-left transition hover:bg-white/[0.05]",
+                                    title: "Open {name} in Assets",
+                                    onclick: move |_| { app_state.write().select_artifact(id); screen.set(super::AppScreen::Assets); },
+                                    super::icons::AssetIcon { kind, class: "size-4 shrink-0 text-zinc-400" }
+                                    span { class: "text-xs capitalize text-zinc-400", "{kind}" }
+                                    span { class: "min-w-0 truncate text-sm font-medium text-zinc-200", "{name}" }
+                                }
+                            }
                         }
                     }
                     if beat_mentions.is_empty() && scene_mentions.is_empty() {
@@ -774,7 +778,6 @@ pub fn Writer(
 
 #[component]
 fn MentionGroup(title: String, mentions: Vec<Mention>, app_state: Signal<AppState>) -> Element {
-    let composer = use_context::<Signal<String>>();
     let mut screen = use_context::<Signal<super::AppScreen>>();
     rsx! {
         section {
@@ -792,14 +795,19 @@ fn MentionGroup(title: String, mentions: Vec<Mention>, app_state: Signal<AppStat
 
                         div { class: "relative h-[52px] w-10 shrink-0 overflow-hidden rounded-md",
                             if let Some(url) = mention.image.clone() {
-                                img { class: "size-full object-cover ring-1 ring-inset ring-white/[0.12]", src: "{url}", alt: "{mention.name}" }
+                                super::artwork::ArtworkImage {
+                                    class: "size-full object-contain ring-1 ring-inset ring-white/[0.12]",
+                                    src: url, alt: mention.name.clone(),
+                                }
                             } else if mention.pending() {
                                 div { class: "grid size-full place-items-center rounded-md border border-dashed border-amber-400/35 text-lg font-light text-amber-400/60",
                                     "+"
                                 }
                             } else {
                                 div { class: "grid size-full place-items-center rounded-md bg-white/[0.05] text-zinc-700 ring-1 ring-inset ring-white/[0.07]",
-                                    Icon { name: IconName::Layers, class: "size-3.5" }
+                                    if let Some(kind) = mention.kind {
+                                        super::icons::AssetIcon { kind, class: "size-4" }
+                                    }
                                 }
                             }
                         }
@@ -821,7 +829,7 @@ fn MentionGroup(title: String, mentions: Vec<Mention>, app_state: Signal<AppStat
                         if mention.can_create {
                             button {
                                 class: "shrink-0 rounded-md bg-amber-400/15 px-2 py-1 text-[10px] font-semibold text-amber-300 transition hover:bg-amber-400/25",
-                                title: "Create a catalog entry; render its image on Canvas",
+                                title: "Create a catalog entry without generating an image",
                                 onclick: {
                                     let name = mention.name.clone();
                                     let kind = match mention.kind {
@@ -833,27 +841,17 @@ fn MentionGroup(title: String, mentions: Vec<Mention>, app_state: Signal<AppStat
                                 },
                                 "Create"
                             }
-                            button {
-                                class: "shrink-0 rounded-md bg-amber-400/15 px-2 py-1 text-[10px] font-semibold text-amber-300 transition hover:bg-amber-400/25",
-                                title: "Prefill the command bar to create it",
-                                onclick: {
-                                    let name = mention.name.clone();
-                                    let kind = mention.kind.unwrap_or(ArtifactKind::Character).as_str();
-                                    move |_| { super::cmdbar::prefill(composer, format!("/create {kind} --name {name} ")); screen.set(super::AppScreen::Canvas); }
-                                },
-                                "Render…"
-                            }
                         } else if !mention.pending() {
                             super::atelier::OpenInAtelier { target: mention.artifact, show_label: false }
                             button {
                                 class: "shrink-0 rounded-md px-2 py-1 text-[10px] text-zinc-600 transition hover:text-zinc-200",
-                                title: "Open in the canvas",
+                                title: "Open in Assets",
                                 onclick: {
                                     let id = mention.artifact;
                                     move |_| {
                                         if let Some(id) = id {
                                             app_state.write().select_artifact(id);
-                                            screen.set(super::AppScreen::Canvas);
+                                            screen.set(super::AppScreen::Assets);
                                         }
                                     }
                                 },

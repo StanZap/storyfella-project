@@ -1,12 +1,13 @@
 # Studio and Atelier responsibilities
 
-SF-PLAN-01 decision record · 2026-11-01. This specifies migration ownership;
-it does not claim the shared-project workflow is already implemented.
+SF-PLAN-01 decision record · 2026-11-01, updated for the SF-PLAN-07 cutover.
+The table records migration ownership and acceptance; implementation evidence is
+in the corresponding roadmap milestones.
 [ROADMAP](ROADMAP.md#0-current-direction-and-actionable-backlog) owns delivery status.
 
 Studio owns authored story meaning, source editing, references, asset availability,
 compilation and Preview. Atelier owns how artwork is made. Both use the same
-project and asset identities once SF-PLAN-02–06 land. Player consumes saved story
+project and asset identities through SF-PLAN-02–06. Player consumes saved story
 plans and resources without requiring either editor or an inference service.
 
 ## Current surfaces and destination
@@ -51,6 +52,17 @@ Story requirements, saved images and editable visual documents are separate:
   another editor.
 
 ## Cutover rule
+
+SF-PLAN-07 removes Studio's migrated image controls, visual command composer,
+operation reruns, revision selection and approved-package import UI. It retains
+source/catalog definitions, explicit variation definitions, names/descriptions,
+saved previews/history, readiness and contextual opening. Existing images,
+revisions, drafts, adapter metadata and provenance remain stored. Core/CLI visual
+operations and Atelier's standalone `.sfart` export retain actual callers.
+Studio keeps text-provider setup and machine service/file administration, but
+removes request size/steps/LoRA controls and image prewarm on project open.
+The earlier table's implementation paths describe the pre-cutover inventory;
+removed Studio controls are no longer alternative entry points.
 
 SF-PLAN-02 establishes portable project storage. SF-PLAN-03 establishes shared
 identities. SF-PLAN-04–06 then supply concurrent editing, contextual opening and

@@ -238,23 +238,25 @@ old artwork and create a new association. Reintroducing a removed name also
 creates new artwork. No proximity matching or automatic adoption of manual
 artifacts occurs. Reloading saved source after an unsaved rename/removal reattaches
 its saved UUID when its artwork is still present, retaining current revisions.
-Name collisions get a unique Canvas display key; the persisted
+Name collisions get a unique Assets display key; the persisted
 authored key remains exact. Detached artwork is still listed in the gallery and
-keeps its revisions and composition. Canvas labels detached scene/beat artwork.
+keeps its revisions and composition. Assets labels detached scene/beat artwork.
 
-Writer is the structure editor. Existing `/create scene`, `/create beat` and
-`/compose` commands create library artwork only; they never insert or reorder
-declarations. Canvas's Story sequence is derived from the association. Generation,
-composition, descriptions, variants and revision controls are artwork operations.
+Writer is the structure editor. Core/CLI `/create scene`, `/create beat` and
+`/compose` operations never insert or reorder source declarations. Studio's
+Assets derives its Story sequence from authoring associations and retains catalog
+definitions, names/descriptions, previews and read-only image history. Atelier
+owns image production and saved revision selection; Studio's guide host rejects
+visual operations before changes.
 Writer's scene/beat buttons open their associated artwork. Resolved references
 provide source origins and `Appears in` links. A missing asset can be created as a
-catalog entry immediately, with rendering as a separate action. Wrong kinds and
+catalog entry immediately, with Open in Atelier for artwork. Wrong kinds and
 ambiguity remain errors. One GUI-free catalog maps character/environment/object
 to Character/Location/Prop and exposes exact completed active revision bindings.
 
 Undo/redo snapshots source text together with the registry, preserving the current
 disk snapshot for conflict detection. External refreshes reconcile before saving
-the registry. Background artwork results merge their artifact changes with newer
+the registry. Background authoring operations merge their artifact changes with newer
 Writer associations; project switching and undo wait for the worker to finish.
 Save failures retain dirty state and revisions. Persisted association corruption
 is reported before opening rather than silently rebuilding UUIDs.

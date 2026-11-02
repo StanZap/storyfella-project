@@ -14,10 +14,8 @@
 //!   progress, and a pass/fail report is produced. This is the regression
 //!   suite — a plan that passes means the flows it covers still work.
 //!
-//! Checkpoints cannot be answered by a procedural run: an operation that
-//! stops to ask fails fast, because a plan cannot answer a question only a
-//! user can. `modify` no longer does: an instruction edit is unattended, so
-//! it runs in a plan (see `config/plans/edit.yaml`).
+//! Plans support authoring and saved playback. Visual production commands
+//! are rejected on load, before any plan step can change the project.
 
 use std::{
     path::{Path, PathBuf},
@@ -52,18 +50,13 @@ pub struct Step {
     pub soft: bool,
 }
 
-/// The closed step vocabulary. `Command`/`Compose` are the escape hatches
-/// into the full slash language the app owns (`/create character …`,
-/// `/variant …`, `/attach-lora …` — everything the composer accepts).
-/// `Compose` goes one step closer to the surface: it *types* the text
-/// into the canvas composer (visible, character by character) and submits
-/// it exactly like a user pressing Enter.
+/// Authoring and playback guides. Visual production commands are rejected.
 #[derive(Clone, Debug, PartialEq)]
 pub enum StepVerb {
     /// Switch screens (the rail actions).
     GoProjects,
     GoStory,
-    GoCanvas,
+    GoAssets,
     GoSettings,
     /// Start a new story (same path as the Projects screen form).
     CreateProject(String),
@@ -73,9 +66,9 @@ pub enum StepVerb {
     /// show full screens without waiting on a backend. Guide mode types its
     /// entire source in the Writer; Check mode applies it immediately.
     SampleProject,
-    /// Select an artifact by name — the canvas detail and inspector.
+    /// Select an artifact by name — the asset detail and inspector.
     Open(String),
-    /// Return the canvas to the grid.
+    /// Return Assets to the grid.
     Back,
     /// Narration with no action. A tour needs to be able to *say* something
     /// without pretending to do something — repeating a navigation step to
@@ -91,18 +84,7 @@ pub enum StepVerb {
     Cursor(String),
     /// Show or hide the command palette.
     Palette(bool),
-    /// Put an artifact into the rendering state, wait, then complete it
-    /// with its existing picture.
-    ///
-    /// **Demo-only.** No model runs and no new image is produced; this
-    /// exists so the in-flight UX — the dimmed tile, the badge, the busy
-    /// composer — can be seen without provisioning a backend. Never use it
-    /// in a plan that is asserting real generation.
-    SimulateRender(String),
-    /// Run one slash command through the composer's exact pipeline.
     Command(String),
-    /// Type into the canvas composer and submit it, like a user.
-    Compose(String),
     /// Assertions against app state.
     ExpectProject(String),
     ExpectArtifact {
@@ -152,7 +134,7 @@ impl StepVerb {
         match self {
             Self::GoProjects => "open Projects".to_owned(),
             Self::GoStory => "open Story".to_owned(),
-            Self::GoCanvas => "open Canvas".to_owned(),
+            Self::GoAssets => "open Assets".to_owned(),
             Self::GoSettings => "open Settings".to_owned(),
             Self::CreateProject(name) => format!("create story \"{name}\""),
             Self::OpenProject(name) => format!("open story \"{name}\""),
@@ -165,9 +147,7 @@ impl StepVerb {
             Self::Cursor(name) => format!("cursor to \"{name}\""),
             Self::Palette(true) => "open the palette".to_owned(),
             Self::Palette(false) => "close the palette".to_owned(),
-            Self::SimulateRender(name) => format!("show \"{name}\" rendering"),
             Self::Command(command) => command.clone(),
-            Self::Compose(text) => format!("type \"{text}\" and send"),
             Self::ExpectProject(name) => format!("story is \"{name}\""),
             Self::ExpectArtifact { name, .. } => format!("artifact \"{name}\" exists"),
             Self::ExpectArtifactCount { kind, count } => format!("{count} {kind}s exist"),
@@ -199,7 +179,7 @@ impl StepVerb {
         Ok(match action {
             "go_projects" => Self::GoProjects,
             "go_story" => Self::GoStory,
-            "go_canvas" => Self::GoCanvas,
+            "go_assets" => Self::GoAssets,
             "sample_project" => Self::SampleProject,
             "open" => Self::Open(text(&value)?),
             "back" => Self::Back,
@@ -213,12 +193,10 @@ impl StepVerb {
             "cursor" => Self::Cursor(text(&value)?),
             "type_story" => Self::TypeStory(text(&value)?),
             "palette" => Self::Palette(value.as_bool().unwrap_or(true)),
-            "simulate_render" => Self::SimulateRender(text(&value)?),
             "go_settings" => Self::GoSettings,
             "create_project" => Self::CreateProject(text(&value)?),
             "open_project" => Self::OpenProject(text(&value)?),
             "command" => Self::Command(text(&value)?),
-            "compose" => Self::Compose(text(&value)?),
             "expect_project" => Self::ExpectProject(text(&value)?),
             "open_project_file" => Self::OpenProjectFile(text(&value)?),
             "preview" => Self::Preview,
@@ -407,7 +385,17 @@ fn deserialize_typing_cps<'de, D: serde::Deserializer<'de>>(
 
 impl Plan {
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
-        serde_yaml::from_str(yaml).map_err(|error| format!("plan is not valid YAML: {error}"))
+        let plan: Self = serde_yaml::from_str(yaml)
+            .map_err(|error| format!("plan is not valid YAML: {error}"))?;
+        for step in &plan.steps {
+            if let StepVerb::Command(command) = &step.verb {
+                let operation = storyfella_studio_core::registry::slash::parse_slash(command)
+                    .map_err(|error| error.to_string())?;
+                commands::validate_studio_operations(&[operation])
+                    .map_err(|error| error.details)?;
+            }
+        }
+        Ok(plan)
     }
 }
 
@@ -661,12 +649,9 @@ impl RunReport {
 pub struct DriveContext {
     pub config: AppConfig,
     pub app_state: Signal<AppState>,
-    pub backend: Signal<storyfella_studio_core::registry::backend::CreativeBackend>,
     pub defaults: Signal<GenerationDefaults>,
     pub screen: Signal<AppScreen>,
     pub playback: Signal<storyfella_playback_ui::PlaybackModel>,
-    /// The canvas composer text — a `compose` step types into it visibly.
-    pub composer: Signal<String>,
     /// The two cursors and the palette, so a demo can show state rather
     /// than only describe it.
     pub writer_caret: crate::ui::WriterCaret,
@@ -876,8 +861,8 @@ async fn execute_step(
             ctx.screen.set(AppScreen::Writer);
             StepStatus::Passed
         }
-        StepVerb::GoCanvas => {
-            ctx.screen.set(AppScreen::Canvas);
+        StepVerb::GoAssets => {
+            ctx.screen.set(AppScreen::Assets);
             StepStatus::Passed
         }
         StepVerb::SampleProject => {
@@ -914,7 +899,7 @@ async fn execute_step(
             match id {
                 Some(id) => {
                     ctx.app_state.write().select_artifact(id);
-                    ctx.screen.set(AppScreen::Canvas);
+                    ctx.screen.set(AppScreen::Assets);
                     StepStatus::Passed
                 }
                 None => StepStatus::Failed {
@@ -951,7 +936,7 @@ async fn execute_step(
                 Some(index) => {
                     ctx.grid_cursor.0.clone().set(index);
                     ctx.app_state.write().clear_selection();
-                    ctx.screen.set(AppScreen::Canvas);
+                    ctx.screen.set(AppScreen::Assets);
                     StepStatus::Passed
                 }
                 None => StepStatus::Failed {
@@ -963,76 +948,6 @@ async fn execute_step(
             ctx.palette_open.clone().set(*open);
             StepStatus::Passed
         }
-        StepVerb::SimulateRender(name) => {
-            let id = ctx
-                .app_state
-                .read()
-                .registry
-                .artifacts
-                .iter()
-                .find(|artifact| artifact.name.eq_ignore_ascii_case(name))
-                .map(|artifact| artifact.id);
-            let Some(id) = id else {
-                return StepStatus::Failed {
-                    reason: format!("no artifact named {name:?}"),
-                };
-            };
-            // Reuse the artifact's current picture: nothing is generated,
-            // only the states around it are shown.
-            let existing = ctx
-                .app_state
-                .read()
-                .registry
-                .latest_image(id)
-                .and_then(|revision| revision.asset_path.clone());
-            let prompt = ctx
-                .app_state
-                .read()
-                .registry
-                .artifact(id)
-                .map(|artifact| artifact.description.clone())
-                .unwrap_or_default();
-
-            let revision = {
-                let mut state = ctx.app_state.write();
-                state.registry.start_revision(
-                    id,
-                    prompt,
-                    Some(4471),
-                    Some(storyfella_studio_core::registry::pipeline::DEFAULT_MODEL.to_owned()),
-                    storyfella_studio_core::registry::RevisionOrigin::Canon,
-                )
-            };
-            let Ok(revision) = revision else {
-                return StepStatus::Failed {
-                    reason: "could not start the demonstration revision".to_owned(),
-                };
-            };
-            if let Some(artifact) = ctx.app_state.write().registry.artifact_mut(id) {
-                if let Some(entry) = artifact
-                    .revisions
-                    .iter_mut()
-                    .find(|candidate| candidate.id == revision)
-                {
-                    entry.status = storyfella_studio_core::registry::RevisionStatus::Generating;
-                }
-            }
-            // Long enough to read the badge, short enough not to stall.
-            tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
-            match existing {
-                Some(path) => {
-                    let _ = ctx
-                        .app_state
-                        .write()
-                        .registry
-                        .finish_revision(id, revision, path);
-                }
-                None => {
-                    let _ = ctx.app_state.write().registry.cancel_revision(id, revision);
-                }
-            }
-            StepStatus::Passed
-        }
         StepVerb::GoSettings => {
             ctx.screen.set(AppScreen::Settings);
             StepStatus::Passed
@@ -1040,7 +955,7 @@ async fn execute_step(
         StepVerb::CreateProject(name) => {
             match commands::create_project(&ctx.config.project_dir, name, ctx.app_state) {
                 Ok(_) => {
-                    ctx.screen.set(AppScreen::Canvas);
+                    ctx.screen.set(AppScreen::Assets);
                     ui.error_report.set(None);
                     StepStatus::Passed
                 }
@@ -1052,7 +967,7 @@ async fn execute_step(
         StepVerb::OpenProject(name) => match find_project_by_name(&ctx.config.project_dir, name) {
             Some(path) => match commands::open_project(&path, ctx.app_state) {
                 Ok(()) => {
-                    ctx.screen.set(AppScreen::Canvas);
+                    ctx.screen.set(AppScreen::Assets);
                     StepStatus::Passed
                 }
                 Err(report) => StepStatus::Failed {
@@ -1064,41 +979,8 @@ async fn execute_step(
             },
         },
         StepVerb::Command(command) => {
-            let backend = (ctx.backend)();
             let defaults = ctx.defaults.read().clone();
-            match commands::run_slash_command(ctx.app_state, backend, defaults, ui.clone(), command)
-            {
-                Err(report) => StepStatus::Failed {
-                    reason: report.details.clone(),
-                },
-                Ok(()) => wait_for_op(ui, session).await,
-            }
-        }
-        StepVerb::Compose(text) => {
-            // Type the text into the composer character by character (the
-            // user sees it appear), pause briefly, then submit — clearing
-            // the composer first, exactly like the canvas submit handler.
-            let mut composer = ctx.composer;
-            ctx.screen.set(AppScreen::Canvas);
-            composer.set(String::new());
-            if !type_text(&session, text, |typed| composer.set(typed.to_owned())).await {
-                return StepStatus::Failed {
-                    reason: "the run was cancelled while typing".to_owned(),
-                };
-            }
-            let guide_mode = session
-                .read()
-                .as_ref()
-                .is_some_and(|s| s.mode == GuideMode::Guide);
-            if !wait_with_pause(&session, if guide_mode { 120 } else { 0 }).await {
-                return StepStatus::Failed {
-                    reason: "the run was cancelled before submission".to_owned(),
-                };
-            }
-            composer.with_mut(|current| current.clear());
-            let backend = (ctx.backend)();
-            let defaults = ctx.defaults.read().clone();
-            match commands::run_slash_command(ctx.app_state, backend, defaults, ui.clone(), text) {
+            match commands::run_slash_command(ctx.app_state, defaults, ui.clone(), command) {
                 Err(report) => StepStatus::Failed {
                     reason: report.details.clone(),
                 },
@@ -1238,7 +1120,7 @@ async fn execute_step(
                     .registry
                     .iter()
                     .find(|artifact| artifact.name.eq_ignore_ascii_case(image));
-                artifact.and_then(|artifact| state.display_image(artifact).map(str::to_owned))
+                artifact.and_then(|artifact| AppState::display_image(artifact).map(str::to_owned))
             };
             let Some(path) = path else {
                 return StepStatus::Failed {
@@ -1467,6 +1349,19 @@ mod tests {
         assert!(seen > 0, "no plans found to check");
     }
 
+    #[test]
+    fn plans_reject_visual_commands_before_running_any_steps() {
+        let error = Plan::from_yaml(
+            "name: forbidden\nsteps:\n  - create_project: untouched\n  - command: '/modify c:mara blue coat'\n",
+        ).unwrap_err();
+        assert!(error.contains("Atelier"));
+        for removed in ["compose", "simulate_render"] {
+            assert!(
+                Plan::from_yaml(&format!("name: removed\nsteps:\n  - {removed}: mara\n")).is_err()
+            );
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -1680,27 +1575,6 @@ steps:
     }
 
     #[test]
-    fn compose_steps_parse_like_user_typed_text() {
-        let plan = Plan::from_yaml(
-            r#"
-name: compose
-steps:
-  - compose: "/create character ada a keeper"
-    message: "Watch the composer."
-"#,
-        )
-        .expect("plan parses");
-        assert_eq!(
-            plan.steps[0].verb,
-            StepVerb::Compose("/create character ada a keeper".into())
-        );
-        assert_eq!(
-            plan.steps[0].message.as_deref(),
-            Some("Watch the composer.")
-        );
-    }
-
-    #[test]
     fn unknown_actions_are_rejected() {
         let error = Plan::from_yaml(
             r#"
@@ -1719,7 +1593,7 @@ steps:
             r#"
 name: bad
 steps:
-  - go_canvas: true
+  - go_assets: true
     go_projects: true
 "#,
         )

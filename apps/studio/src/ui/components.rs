@@ -10,6 +10,7 @@ use super::icons::{Icon, IconName};
 pub fn IconButton(
     label: String,
     icon: IconName,
+    #[props(default)] id: Option<String>,
     #[props(default)] disabled: bool,
     #[props(default)] active: bool,
     #[props(default)] show_label: bool,
@@ -27,6 +28,7 @@ pub fn IconButton(
     let active_class = if active { "is-active" } else { "" };
     rsx! {
         button {
+            id,
             r#type: "button",
             class: "{base_class} {active_class}",
             aria_label: label.clone(),
@@ -441,7 +443,7 @@ pub fn SearchSelect(
             if open() {
                 // Use the shared searchable-dialog behavior and focus contract.
                 Dialog { title: label.clone(), on_close: move |_| dismiss(),
-                div { class: "w-[min(420px,90vw)] overflow-hidden rounded-xl bg-[#17171d]",
+                div { class: "w-[min(420px,90vw)] overflow-hidden rounded-xl bg-[var(--studio-panel)]",
                     h2 { class: "px-3.5 pt-3 text-sm font-semibold", "{label}" }
                     input {
                         aria_label: "Filter {label}",

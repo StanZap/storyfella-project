@@ -22,6 +22,19 @@ pub fn App() -> Element {
         })
     });
     let app_state = use_signal(AppState::default);
+    let mut theme = use_signal(|| {
+        config_result
+            .peek()
+            .as_ref()
+            .map(|config| config.theme)
+            .unwrap_or_default()
+    });
+    use_effect(move || {
+        if let Ok(config) = &*config_result.read() {
+            theme.set(config.theme);
+        }
+    });
+    use_context_provider(|| theme);
     let details = use_signal(|| None::<storyfella_studio_core::errors::ReportedError>);
     use_context_provider(|| crate::ui::components::ErrorDetails(details));
     let retry_launch = plan_launch.clone();
@@ -37,6 +50,7 @@ pub fn App() -> Element {
     rsx! {
         document::Title { "Storyfella Studio" }
         document::Stylesheet { href: TAILWIND_CSS }
+        crate::ui::theme::ThemeHost { preference: theme() }
         match &*config_result.read() {
             Ok(config) => rsx! { Workspace { config: config.clone(), app_state, plan_launch } },
             Err(error) => {

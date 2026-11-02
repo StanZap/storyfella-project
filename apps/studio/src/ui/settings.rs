@@ -1,16 +1,15 @@
 use std::time::Duration;
 
 use dioxus::prelude::*;
+use uuid::Uuid;
 
 use agentkit_ai::deployments::chat::Client as ChatClient;
 use storyfella_studio_core::config::{
     AppConfig, ChatCapability, ChatEndpointField, ChatProvider, NewChatProvider,
-    NewChatProviderKind,
+    NewChatProviderKind, ThemePreference,
 };
 use storyfella_studio_core::errors::{CodedError, ReportedError};
-use storyfella_studio_core::registry::{
-    backend::CreativeBackend, discover_loras, GenerationDefaults, LoraBinding,
-};
+use storyfella_studio_core::registry::backend::CreativeBackend;
 use storyfella_studio_core::runtime::{
     check_all as check_services, image_artifacts, provision_image_model, CreativeRuntime,
     HealthStatus, ModelArtifactStatus, ServiceHealth, ServiceId, ServiceRecovery,
@@ -25,8 +24,6 @@ use super::{
 };
 
 #[derive(Clone, Copy)]
-pub struct PersistedDefaults(pub Signal<GenerationDefaults>);
-#[derive(Clone, Copy)]
 struct RefreshHealth(EventHandler<()>);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -40,7 +37,7 @@ enum SettingsSection {
 #[derive(Clone, Debug, PartialEq)]
 enum ModelListState {
     Empty,
-    Loading,
+    Loading(Uuid),
     Ready(Vec<String>),
     /// A managed `llama-server` that is not running: its models cannot be
     /// listed until the app starts it on demand.
@@ -135,11 +132,7 @@ mod tests {
 }
 
 #[component]
-pub fn Settings(
-    config: AppConfig,
-    backend: Signal<CreativeBackend>,
-    defaults: Signal<storyfella_studio_core::registry::GenerationDefaults>,
-) -> Element {
+pub fn Settings(config: AppConfig, backend: Signal<CreativeBackend>) -> Element {
     let runtime = backend.read().runtime();
     let mut section = use_signal(|| SettingsSection::Models);
     // The effective config, updated in place when a provider picker switches the
@@ -147,7 +140,7 @@ pub fn Settings(
     // the live choice without a restart.
     let mut config = use_signal(|| config);
     let health = use_signal(Vec::<ServiceHealth>::new);
-    let checking = use_signal(|| false);
+    let checking = use_signal(|| None::<Uuid>);
     let checked_at = use_signal(|| None::<String>);
     let mut error_report = use_context::<Signal<Option<ReportedError>>>();
     let text_models = use_signal(|| ModelListState::Empty);
@@ -301,6 +294,9 @@ pub fn Settings(
             checked_at,
         );
         fetch_models(&next, ChatCapability::Text, text_models);
+        if !next.separate_vision {
+            fetch_models(&next, ChatCapability::Vision, vision_models);
+        }
     };
 
     let switch_vision_runtime = runtime.clone();
@@ -342,7 +338,7 @@ pub fn Settings(
     };
 
     // Editing an endpoint field persists it, applies it in memory, rebuilds the
-    // planner client (so the canvas uses the new endpoint at once) and re-checks
+    // planner client (so writing uses the new endpoint at once) and re-checks
     // the services the change affects.
     let edit_runtime = runtime.clone();
     let on_edit_endpoint =
@@ -404,6 +400,19 @@ pub fn Settings(
         text_models,
         vision_models,
     };
+    let vision_mode_runtime = runtime.clone();
+    let on_separate_vision = move |separate: bool| {
+        let current = config.read().clone();
+        if let Err(error) = current.persist_separate_vision(separate) {
+            error_report.set(Some(error.report().log()));
+            return;
+        }
+        apply_config(
+            current.with_separate_vision(separate),
+            vision_mode_runtime.clone(),
+            targets,
+        );
+    };
     let provider_runtime = runtime.clone();
     let on_add_provider = move |provider: NewChatProvider| {
         let current = targets.config.read().clone();
@@ -443,8 +452,8 @@ pub fn Settings(
             }
             div { class: "min-h-0 overflow-y-auto px-10 py-9",
                 div { class: "mx-auto max-w-3xl",
-                    div { hidden: section() != SettingsSection::General, GeneralSettings {} }
-                    div { hidden: section() != SettingsSection::Models, ModelsSettings { config: config(), defaults, health, checking, checked_at, text_models, vision_models, on_check, on_text_provider, on_vision_provider, on_edit_endpoint, on_fetch_text, on_fetch_vision, on_add_provider, on_remove_provider } }
+                    div { hidden: section() != SettingsSection::General, GeneralSettings { config } }
+                    div { hidden: section() != SettingsSection::Models, ModelsSettings { config: config(), health, checking, checked_at, text_models, vision_models, on_check, on_text_provider, on_vision_provider, on_separate_vision, on_edit_endpoint, on_fetch_text, on_fetch_vision, on_add_provider, on_remove_provider } }
                     div { hidden: section() != SettingsSection::Services, ServicesSettings { config: config(), backend, health, checking, checked_at, busy, operation_error, chat_servers, chat_busy, on_check, on_operate, on_chat_operate } }
                     div { hidden: section() != SettingsSection::Storage, StorageSettings { config: config() } }
                 }
@@ -457,18 +466,19 @@ fn run_checks(
     runtime: CreativeRuntime,
     config: AppConfig,
     mut health: Signal<Vec<ServiceHealth>>,
-    mut checking: Signal<bool>,
+    mut checking: Signal<Option<Uuid>>,
     mut checked_at: Signal<Option<String>>,
 ) {
-    if checking() {
-        return;
-    }
-    checking.set(true);
+    let request = Uuid::new_v4();
+    checking.set(Some(request));
     spawn(async move {
         let services = check_services(&config, &runtime).await;
+        if *checking.peek() != Some(request) {
+            return;
+        }
         health.set(services);
         checked_at.set(Some(current_time_label()));
-        checking.set(false);
+        checking.set(None);
     });
 }
 
@@ -476,9 +486,6 @@ fn run_checks(
 /// provider is an empty list, not a failure. A managed `llama-server` that is
 /// not running cannot be listed, so it reports `OnDemand` rather than an error.
 fn fetch_models(config: &AppConfig, capability: ChatCapability, mut state: Signal<ModelListState>) {
-    if *state.read() == ModelListState::Loading {
-        return;
-    }
     let deployment = match capability {
         ChatCapability::Text => config.text.clone(),
         ChatCapability::Vision => config.vision.clone(),
@@ -491,9 +498,13 @@ fn fetch_models(config: &AppConfig, capability: ChatCapability, mut state: Signa
     // Listing is a quick probe, not a generation: cap it well below the
     // deployment's (often generous) request timeout.
     deployment.timeout = Duration::from_secs(5);
-    state.set(ModelListState::Loading);
+    let request = Uuid::new_v4();
+    state.set(ModelListState::Loading(request));
     spawn(async move {
         let result = ChatClient::new(deployment).list_models().await;
+        if *state.peek() != ModelListState::Loading(request) {
+            return;
+        }
         match result {
             Ok(mut ids) => {
                 ids.sort();
@@ -513,7 +524,7 @@ struct ConfigTargets {
     config: Signal<AppConfig>,
     backend: Signal<CreativeBackend>,
     health: Signal<Vec<ServiceHealth>>,
-    checking: Signal<bool>,
+    checking: Signal<Option<Uuid>>,
     checked_at: Signal<Option<String>>,
     text_models: Signal<ModelListState>,
     vision_models: Signal<ModelListState>,
@@ -541,7 +552,7 @@ struct ServiceSignals {
     busy: Signal<Option<ServiceId>>,
     operation_error: Signal<Option<ReportedError>>,
     health: Signal<Vec<ServiceHealth>>,
-    checking: Signal<bool>,
+    checking: Signal<Option<Uuid>>,
     checked_at: Signal<Option<String>>,
 }
 
@@ -602,9 +613,13 @@ fn SettingsNav(label: String, active: bool, onclick: EventHandler<MouseEvent>) -
 }
 
 #[component]
-fn GeneralSettings() -> Element {
+fn GeneralSettings(mut config: Signal<AppConfig>) -> Element {
     let autosave = use_context::<Signal<AutosaveMode>>();
     let mut autosave = autosave;
+    let mut theme = use_context::<Signal<ThemePreference>>();
+    let mut error_report = use_context::<Signal<Option<ReportedError>>>();
+    let theme_id = use_hook(|| format!("theme-{}", Uuid::new_v4()));
+    let restore_theme_id = theme_id.clone();
     rsx! {
         SectionHeading {
             eyebrow: "Application",
@@ -613,10 +628,28 @@ fn GeneralSettings() -> Element {
         }
         div { class: "border-y border-white/[0.06]",
             SettingRow { title: "Appearance", description: "Interface theme used throughout the app.",
-                p { class: "text-sm text-zinc-300", "Dark theme" }
-            }
-            SettingRow { title: "Background generation", description: "Continue queued jobs while you read or present other scenes.",
-                p { class: "text-sm text-zinc-300", "Jobs continue while you use other screens." }
+                select {
+                    id: theme_id.clone(),
+                    class: "setting-control", aria_label: "Interface theme",
+                    oninput: move |event| {
+                        let Some(next) = ThemePreference::ALL.into_iter()
+                            .find(|theme| theme.as_str() == event.value()) else { return; };
+                        let current = config.read().clone();
+                        match current.persist_theme(next) {
+                            Ok(()) => { config.write().theme = next; theme.set(next); }
+                            Err(error) => {
+                                document::eval(&format!(
+                                    "document.getElementById('{restore_theme_id}').value = {:?};",
+                                    current.theme.as_str(),
+                                ));
+                                error_report.set(Some(error.report().log()));
+                            }
+                        }
+                    },
+                    for choice in ThemePreference::ALL {
+                        option { value: choice.as_str(), selected: theme() == choice, "{choice.label()}" }
+                    }
+                }
             }
             SettingRow { title: "Autosave", description: "Save project changes locally as you work.", last: true,
                 select {
@@ -637,15 +670,15 @@ fn GeneralSettings() -> Element {
 #[component]
 fn ModelsSettings(
     config: AppConfig,
-    defaults: Signal<GenerationDefaults>,
     health: Signal<Vec<ServiceHealth>>,
-    checking: Signal<bool>,
+    checking: Signal<Option<Uuid>>,
     checked_at: Signal<Option<String>>,
     text_models: Signal<ModelListState>,
     vision_models: Signal<ModelListState>,
     on_check: EventHandler<MouseEvent>,
     on_text_provider: EventHandler<String>,
     on_vision_provider: EventHandler<String>,
+    on_separate_vision: EventHandler<bool>,
     on_edit_endpoint: EventHandler<(String, ChatEndpointField, String)>,
     on_fetch_text: EventHandler<()>,
     on_fetch_vision: EventHandler<()>,
@@ -670,7 +703,7 @@ fn ModelsSettings(
         CheckBar { checking, checked_at, on_check }
         ChatEndpointGroup {
             title: "Text (LLM)".to_owned(),
-            description: "Plans operation stacks and grounds edits.".to_owned(),
+            description: "Supports story writing assistance.".to_owned(),
             providers: chat_providers.clone(),
             provider_id: config.text_provider_id.clone().unwrap_or_default(),
             base_url: text.as_ref().map(|d| d.base_url.clone()).unwrap_or_default(),
@@ -683,24 +716,38 @@ fn ModelsSettings(
             on_commit: on_edit_endpoint,
             on_fetch: on_fetch_text,
         }
-        ChatEndpointGroup {
-            title: "Vision (LLM)".to_owned(),
-            description: "Reads images for `svs eval` and plan `expect_vision` steps.".to_owned(),
-            providers: chat_providers,
-            provider_id: config.vision_provider_id.clone().unwrap_or_default(),
-            base_url: vision.as_ref().map(|d| d.base_url.clone()).unwrap_or_default(),
-            model: vision.as_ref().map(|d| d.model.clone()).unwrap_or_default(),
-            api_key_set: vision.as_ref().is_some_and(|d| d.api_key.is_some()),
-            status: vision_status,
-            detail: vision_detail,
-            models: vision_models,
-            on_select_provider: on_vision_provider,
-            on_commit: on_edit_endpoint,
-            on_fetch: on_fetch_vision,
+        SettingRow {
+            title: "Use a separate Vision LLM",
+            description: if config.separate_vision {
+                "Choose a provider below for image understanding."
+            } else {
+                "Vision uses the Text LLM’s provider, URL, model and key. That model must support images."
+            },
+            Toggle { label: "Use a separate Vision LLM", enabled: config.separate_vision, onchange: on_separate_vision }
+        }
+        if config.separate_vision {
+            if config.vision_provider_id.is_some() && config.vision_provider_id == config.text_provider_id {
+                p { class: "mb-4 text-xs text-zinc-400", "This provider is also selected for Text. Choose another provider for independent settings." }
+            }
+            ChatEndpointGroup {
+                title: "Vision (LLM)".to_owned(),
+                description: "Reads images for `svs eval` and plan `expect_vision` steps.".to_owned(),
+                providers: chat_providers,
+                provider_id: config.vision_provider_id.clone().unwrap_or_default(),
+                base_url: vision.as_ref().map(|d| d.base_url.clone()).unwrap_or_default(),
+                model: vision.as_ref().map(|d| d.model.clone()).unwrap_or_default(),
+                api_key_set: vision.as_ref().is_some_and(|d| d.api_key.is_some()),
+                status: vision_status,
+                detail: vision_detail,
+                models: vision_models,
+                on_select_provider: on_vision_provider,
+                on_commit: on_edit_endpoint,
+                on_fetch: on_fetch_vision,
+            }
         }
         if let Some(image) = config.image.clone() {
-            ImageModelGroup { config: config.clone(), image, defaults, services }
-        } else { NativeImageNotice {} }
+            div { id: "image-models", ModelFiles { config: config.clone(), image } }
+        }
         ProvidersSection { config: config.clone(), on_add: on_add_provider, on_remove: on_remove_provider }
     }
 }
@@ -709,11 +756,11 @@ fn ModelsSettings(
 /// that re-probes them all.
 #[component]
 fn CheckBar(
-    checking: Signal<bool>,
+    checking: Signal<Option<Uuid>>,
     checked_at: Signal<Option<String>>,
     on_check: EventHandler<MouseEvent>,
 ) -> Element {
-    let is_checking = checking();
+    let is_checking = checking().is_some();
     rsx! {
         div { class: "mb-6 flex items-center justify-between",
             p { class: "text-[10px] text-zinc-600",
@@ -758,7 +805,7 @@ fn ServicesSettings(
     config: AppConfig,
     backend: Signal<CreativeBackend>,
     health: Signal<Vec<ServiceHealth>>,
-    checking: Signal<bool>,
+    checking: Signal<Option<Uuid>>,
     checked_at: Signal<Option<String>>,
     busy: Signal<Option<ServiceId>>,
     operation_error: Signal<Option<ReportedError>>,
@@ -782,7 +829,7 @@ fn ServicesSettings(
         if let Some(image) = config.image.clone() {
             ImageServiceCard { config: config.clone(), image: image.clone(), backend, services: services.clone(), busy, on_operate }
             div { id: "image-models", ModelFiles { config: config.clone(), image } }
-        } else { NativeImageNotice {} }
+        }
         ChatServers { config: config.clone(), running: chat_servers, busy: chat_busy, on_operate: on_chat_operate }
     }
 }
@@ -1057,7 +1104,7 @@ fn ProviderDialog(
                             "Cancel"
                         }
                         button {
-                            class: "rounded-lg bg-violet-500/80 px-3.5 py-2 text-[10px] font-medium text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40",
+                            class: "studio-button studio-button-primary disabled:cursor-not-allowed disabled:opacity-40",
                             disabled: !valid,
                             onclick: move |_| on_save.call(NewChatProvider {
                                 id: id().trim().to_owned(),
@@ -1147,30 +1194,34 @@ fn ChatEndpointGroup(
                     SearchSelect { label: provider_label, options: providers, value: provider_id.clone(), placeholder: "Select a provider".to_owned(), on_select: on_select_provider }
                 }
             }
-            EndpointField {
-                label: "Base URL".to_owned(),
-                description: String::new(),
-                value: base_url,
-                placeholder: "http://localhost:8080/v1".to_owned(),
-                masked: false,
-                on_commit: move |value| on_commit.call((base_id.clone(), ChatEndpointField::BaseUrl, value)),
-            }
-            SettingRow { title: "Model".to_owned(), description: String::new(),
-                ModelSelect {
-                    models,
-                    value: model,
-                    on_select: move |value| on_commit.call((model_id.clone(), ChatEndpointField::Model, value)),
-                    on_fetch,
+            if provider_id.is_empty() {
+                p { class: "py-4 text-xs text-zinc-400", "Select a provider above, or add one in Providers below, to configure this LLM." }
+            } else {
+                EndpointField {
+                    label: "Base URL".to_owned(),
+                    description: String::new(),
+                    value: base_url,
+                    placeholder: "http://localhost:8080/v1".to_owned(),
+                    masked: false,
+                    on_commit: move |value| on_commit.call((base_id.clone(), ChatEndpointField::BaseUrl, value)),
                 }
-            }
-            EndpointField {
-                label: "API key".to_owned(),
-                description: String::new(),
-                value: String::new(),
-                placeholder: if api_key_set { "•••••• (set)".to_owned() } else { "none".to_owned() },
-                masked: true,
-                last: true,
-                on_commit: move |value| on_commit.call((key_id.clone(), ChatEndpointField::ApiKey, value)),
+                SettingRow { title: "Model".to_owned(), description: String::new(),
+                    ModelSelect {
+                        models,
+                        value: model,
+                        on_select: move |value| on_commit.call((model_id.clone(), ChatEndpointField::Model, value)),
+                        on_fetch,
+                    }
+                }
+                EndpointField {
+                    label: "API key".to_owned(),
+                    description: String::new(),
+                    value: String::new(),
+                    placeholder: if api_key_set { "•••••• (set)".to_owned() } else { "none".to_owned() },
+                    masked: true,
+                    last: true,
+                    on_commit: move |value| on_commit.call((key_id.clone(), ChatEndpointField::ApiKey, value)),
+                }
             }
         }
         div { class: "h-8" }
@@ -1216,7 +1267,7 @@ fn ModelSelect(
     rsx! {
         div { class: "flex min-w-0 items-center justify-end gap-2",
             match &*models.read() {
-                ModelListState::Loading => rsx! {
+                ModelListState::Loading(_) => rsx! {
                     span { class: "text-[10px] text-zinc-600", "Loading models…" }
                 },
                 ModelListState::Failed(error) => rsx! {
@@ -1258,6 +1309,7 @@ fn ModelSelect(
             button {
                 class: "grid size-8 shrink-0 place-items-center rounded-lg bg-white/[0.05] text-zinc-500 transition hover:text-white",
                 aria_label: "Refetch models",
+                disabled: matches!(*models.read(), ModelListState::Loading(_)),
                 title: "Refetch models",
                 onclick: move |_| on_fetch.call(()),
                 Icon { name: IconName::Refresh, class: "size-3" }
@@ -1285,123 +1337,7 @@ fn service_of(health: &[ServiceHealth], id: ServiceId) -> (HealthStatus, String)
         .unwrap_or((HealthStatus::Idle, "Not checked yet".to_owned()))
 }
 
-#[component]
-fn NativeImageNotice() -> Element {
-    rsx! {
-        p { class: "border-y border-white/[0.06] py-4 text-xs leading-5 text-zinc-400",
-            "Studio's native image engine is not selected. Writing and playback work with your current providers. Use Atelier for hosted images, or select a native image provider in clipforge.toml to enable Studio's image controls."
-        }
-    }
-}
-
-/// The image model's identity and output: the served profile, the sampling
-/// steps, the per-kind canvas, and the adapters bound to it. Running the engine
-/// — its files, downloads, residency and start/stop — lives on the Services
-/// page.
-#[component]
-fn ImageModelGroup(
-    config: AppConfig,
-    image: agentkit_ai::deployments::ImageDeployment,
-    mut defaults: Signal<GenerationDefaults>,
-    services: Vec<ServiceHealth>,
-) -> Element {
-    let (status, detail) = service_of(&services, ServiceId::ImageGeneration);
-    let sizes = defaults.read().sizes;
-    let steps = defaults.read().steps;
-    let cfg_scale = defaults.read().cfg_scale;
-    let mut steps_error = use_signal(|| None::<String>);
-    let mut steps_draft = use_signal(|| steps.to_string());
-    let (steps_id, steps_mount) = super::text_input::use_text_value(steps_draft(), None);
-    // The lora dir shown here and the bindings share the same defaults.
-    let lora_dir = image.lora_dir.clone();
-    // Discovered adapters, reloadable: symlinked or newly dropped files
-    // appear after pressing the refresh icon next to the directory.
-    let mut discovered = use_signal(|| discover_loras(&lora_dir));
-    let scan_dir = lora_dir.clone();
-    let on_rescan = move |_event: MouseEvent| discovered.set(discover_loras(&scan_dir));
-    rsx! {
-        div { class: "flex items-start gap-3",
-            span { class: "mt-1 grid size-8 shrink-0 place-items-center rounded-xl bg-white/[0.035]", StatusDot { status } }
-            div { class: "min-w-0 flex-1",
-                h3 { class: "text-[15px] font-semibold text-zinc-100", "Image generation (t2i + edit)" }
-                p { class: "mt-0.5 text-[11px] leading-5 text-zinc-500", "Qwen-Image-2.1 — the profile, quality and adapters." }
-                p { class: "mt-0.5 text-[10px] text-zinc-600", "{detail}" }
-            }
-        }
-        div { class: "mt-4 border-y border-white/[0.06]",
-            SettingRow { title: "Model", description: String::new(),
-                input { class: "setting-control", value: "{image.architecture}", readonly: true }
-            }
-            SettingRow { title: "Steps per image", description: "Quality vs. speed of every generation. The default is 25 at CFG {cfg_scale:.1} (Qwen-Image-2.1); fewer steps is faster and rougher.",
-                div { class: "flex items-center gap-3",
-                    if let Some(error) = steps_error() {
-                        p { class: "truncate text-[9px] text-rose-300/80", "{error}" }
-                    }
-                    input {
-                        class: "setting-control w-20",
-                        r#type: "number",
-                        min: 1,
-                        max: 50,
-                        aria_label: "Steps per image",
-                        aria_invalid: steps_error().is_some(),
-                        id: steps_id,
-                        onmounted: steps_mount,
-                        oninput: move |event| steps_draft.set(event.value()),
-                        onchange: {
-                            let mut defaults = defaults;
-                            move |event| {
-                                let parsed = event.value().parse::<u32>().ok().filter(|steps| (1..=50).contains(steps));
-                                match parsed {
-                                    Some(steps) => {
-                                        steps_error.set(None);
-                                        defaults.write().steps = steps;
-                                        persist_defaults(defaults);
-                                    }
-                                    None => steps_error.set(Some("1–50".to_owned())),
-                                }
-                            }
-                        },
-                    }
-                }
-            }
-            SettingRow { title: "Character size", description: "Default canvas for character images (WxH, multiples of 32).",
-                SizeField { label: "512×768", value: sizes.character, defaults, kind: "character" }
-            }
-            SettingRow { title: "Environment size", description: String::new(),
-                SizeField { label: "1024×576", value: sizes.environment, defaults, kind: "environment" }
-            }
-            SettingRow { title: "Object size", description: String::new(),
-                SizeField { label: "768×768", value: sizes.object, defaults, kind: "object" }
-            }
-            SettingRow { title: "Scene size", description: String::new(),
-                SizeField { label: "1024×576", value: sizes.scene, defaults, kind: "scene" }
-            }
-            SettingRow { title: "Beat size", description: String::new(),
-                SizeField { label: "1024×576", value: sizes.beat, defaults, kind: "beat" }
-            }
-            SettingRow { title: "LoRA directory", description: "Adapters are discovered here (subfolders and symlinks included).", last: true,
-                div { class: "flex items-center justify-between gap-3",
-                    span { class: "truncate text-[11px] text-zinc-500", "{lora_dir.display()}" }
-                    div { class: "flex shrink-0 items-center gap-2",
-                        span { class: "rounded-md bg-violet-500/10 px-2 py-1 text-[9px] text-violet-300", "lora_dir" }
-                        button {
-                            class: "grid size-7 shrink-0 place-items-center rounded-lg bg-white/[0.05] text-zinc-500 transition hover:bg-white/[0.09] hover:text-white",
-                            aria_label: "Rescan the LoRA directory",
-                            title: "Rescan the LoRA directory",
-                            onclick: on_rescan,
-                            Icon { name: IconName::Refresh, class: "size-3" }
-                        }
-                    }
-                }
-            }
-        }
-        LoRASettings { defaults, discovered }
-    }
-}
-
-/// The resident image engine: its status and actions, the files it runs, and
-/// the launch-time choices. Its model, quality and adapters are on the Models
-/// page.
+/// Shared machine service controls; asset production stays in Atelier.
 #[component]
 fn ImageServiceCard(
     config: AppConfig,
@@ -1428,18 +1364,9 @@ fn ImageServiceCard(
             "document.getElementById('image-models')?.scrollIntoView({behavior: 'smooth', block: 'start'})",
         );
     };
-    let mut prewarm = use_context::<Signal<bool>>();
     let mut residency = use_context::<Signal<String>>();
     let mut error_report = use_context::<Signal<Option<ReportedError>>>();
     let refresh = use_context::<RefreshHealth>().0;
-    let persist_config = config.clone();
-    let on_prewarm = move |enabled: bool| {
-        if let Err(error) = persist_config.persist_prewarm(enabled) {
-            error_report.set(Some(error.report().log()));
-            return;
-        }
-        prewarm.set(enabled);
-    };
     // Changing residency is a launch-flag change: persist it, and restart the
     // shared server so the new mode takes effect now. The shared lifecycle
     // owner performs the restart; the app does not own the process.
@@ -1511,9 +1438,6 @@ fn ImageServiceCard(
             SettingRow { title: "Runtime endpoint", description: String::new(),
                 input { class: "setting-control", value: "http://{image.host}:{image.port}", readonly: true }
             }
-            SettingRow { title: "Prewarm on project open", description: "Start the resident server as soon as a project opens, so the first generation is not a multi-minute weight load. Leave it off while another local model shares the card.",
-                Toggle { label: "Prewarm on project open", enabled: prewarm(), onchange: on_prewarm }
-            }
             SettingRow { title: "Residency", description: "How the weights are held on the GPU. `resident` is fastest (measured peak ≈23 GiB); `lowvram` pages them from system RAM (`--offload-to-cpu`) for ≈9 GiB at t2i and ≈16 GiB at an edit, at +7% / +0.5% sampling time. A running server restarts into the new mode.", last: true,
                 select {
                     aria_label: "Image residency",
@@ -1531,97 +1455,6 @@ fn ImageServiceCard(
     }
 }
 
-/// Writes the live defaults back to the user config (line-preserving).
-fn persist_defaults(mut defaults: Signal<GenerationDefaults>) {
-    let mut baseline = consume_context::<PersistedDefaults>().0;
-    let mut error_report = consume_context::<Signal<Option<ReportedError>>>();
-    let snapshot = defaults.read().clone();
-    let path = match storyfella_studio_core::paths::config_path() {
-        Some(path) => path,
-        None => {
-            defaults.set(baseline());
-            error_report.set(Some(ReportedError::plain(
-                storyfella_studio_core::errors::ErrorCode::ConfigWrite,
-                "Could not resolve the app config path. Settings were not changed.",
-            )));
-            return;
-        }
-    };
-    if let Err(error) = AppConfig::persist_generation_defaults_to(path, &snapshot) {
-        defaults.set(baseline());
-        error_report.set(Some(error.report().log()));
-    } else {
-        baseline.set(snapshot);
-    }
-}
-
-/// The `WxH` size input for one artifact kind. Commits on Enter/blur; an
-/// invalid value shows a hint and keeps the last good default.
-#[component]
-fn SizeField(
-    label: String,
-    value: Option<(u32, u32)>,
-    mut defaults: Signal<GenerationDefaults>,
-    kind: &'static str,
-) -> Element {
-    let current = value
-        .map(|(width, height)| format!("{width}x{height}"))
-        .unwrap_or_default();
-    let kind_label = kind.to_owned();
-    let mut error = use_signal(|| None::<String>);
-    let mut draft = use_signal(|| current);
-    let (draft_id, draft_mount) = super::text_input::use_text_value(draft(), None);
-    rsx! {
-        div { class: "flex items-center gap-3",
-            if let Some(message) = error() {
-                p { class: "truncate text-[9px] text-rose-300/80", "{message}" }
-            }
-            input {
-                aria_label: "{kind} image size",
-                aria_invalid: error().is_some(),
-                class: "setting-control w-24",
-                placeholder: "{label}",
-                id: draft_id,
-                onmounted: draft_mount,
-                oninput: move |event| draft.set(event.value()),
-                onchange: {
-                    let mut defaults = defaults;
-                    move |event| {
-                        let value = event.value();
-                        let parsed = value.trim().replace('×', "x");
-                        let size = parsed
-                            .split_once('x')
-                            .and_then(|(width, height)| {
-                                let width = width.trim().parse::<u32>().ok()?;
-                                let height = height.trim().parse::<u32>().ok()?;
-                                storyfella_studio_core::registry::pipeline::is_valid_size(width, height)
-                                    .then_some((width, height))
-                            });
-                        match size {
-                            Some((width, height)) => {
-                                error.set(None);
-                                let mut settings = defaults.write();
-                                match kind_label.as_str() {
-                                    "character" => settings.sizes.character = Some((width, height)),
-                                    "environment" => settings.sizes.environment = Some((width, height)),
-                                    "object" => settings.sizes.object = Some((width, height)),
-                                    "scene" => settings.sizes.scene = Some((width, height)),
-                                    "beat" => settings.sizes.beat = Some((width, height)),
-                                    _ => {}
-                                }
-                                drop(settings);
-                                persist_defaults(defaults);
-                            }
-                            None => error.set(Some("WxH, multiples of 32".to_owned())),
-                        }
-                    }
-                },
-            }
-        }
-    }
-}
-
-/// A byte count in binary units (`1.5 GiB`).
 fn human_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut value = bytes as f64;
@@ -1831,168 +1664,6 @@ fn ModelFiles(config: AppConfig, image: agentkit_ai::deployments::ImageDeploymen
     }
 }
 
-/// Config-level adapter bindings: discovered files from `lora_dir` bound
-/// to per-kind defaults at one multiplier. The `discovered` signal is owned
-/// by [`ImageServiceCard`] — the refresh action lives next to the
-/// directory row.
-#[component]
-fn LoRASettings(
-    mut defaults: Signal<GenerationDefaults>,
-    discovered: Signal<Vec<String>>,
-) -> Element {
-    let bindings = defaults.read().loras.clone();
-    let multiplier = bindings.multiplier;
-    let files = discovered();
-    let mut binding_error = use_signal(|| None::<String>);
-    rsx! {
-        SectionHeading {
-            eyebrow: "Adapters",
-            title: "LoRAs",
-            description: "Bind adapters from the lora directory to kinds of work. Project bindings (/attach-lora on an artifact) always win over these defaults."
-        }
-        div { class: "mb-4 rounded-lg bg-white/[0.025] px-3 py-2.5 text-[10px] leading-4 text-zinc-600 ring-1 ring-inset ring-white/[0.05]",
-            {
-                let bound = bindings.kinds.character.is_some()
-                    || bindings.kinds.environment.is_some()
-                    || bindings.kinds.object.is_some();
-                let summary = if files.is_empty() {
-                    "No .safetensors adapters found in the LoRA directory. Drop adapter files there (or configure lora_dir in clipforge.toml) and they will appear here."
-                        .to_owned()
-                } else {
-                    format!(
-                        "Found {} adapter{}{}",
-                        files.len(),
-                        if files.len() == 1 { "" } else { "s" },
-                        if bound { " — bound below" } else { " — none bound yet" }
-                    )
-                };
-                rsx! { p { "{summary}" } }
-            }
-        }
-        div { class: "border-y border-white/[0.06]",
-            LoraBindingRow { slot: LoraSlot::Character, current: bindings.kinds.character.clone(), files: files.clone(), defaults }
-            LoraBindingRow { slot: LoraSlot::Environment, current: bindings.kinds.environment.clone(), files: files.clone(), defaults }
-            LoraBindingRow { slot: LoraSlot::Object, current: bindings.kinds.object.clone(), files: files.clone(), defaults }
-            SettingRow { title: "Binding weight", description: "Multiplier for the adapters above (per-artifact bindings carry their own).", last: true,
-                div { class: "flex items-center gap-3",
-                    if let Some(error) = binding_error() {
-                        p { class: "truncate text-[9px] text-rose-300/80", "{error}" }
-                    }
-                    input {
-                        class: "setting-control w-20",
-                        r#type: "number",
-                        step: "0.1",
-                        min: -2,
-                        max: 2,
-                        value: "{multiplier}",
-                        onchange: {
-                            let mut defaults = defaults;
-                            move |event| {
-                                let parsed = event.value().parse::<f32>().ok().filter(|m| (-2.0..=2.0).contains(m));
-                                match parsed {
-                                    Some(multiplier) => {
-                                        binding_error.set(None);
-                                        defaults.write().loras.multiplier = multiplier;
-                                        persist_defaults(defaults);
-                                    }
-                                    None => binding_error.set(Some("between -2 and 2".to_owned())),
-                                }
-                            }
-                        },
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Which use-case a LoRA binding row edits.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum LoraSlot {
-    Character,
-    Environment,
-    Object,
-}
-
-impl LoraSlot {
-    fn title(self) -> &'static str {
-        match self {
-            Self::Character => "Characters",
-            Self::Environment => "Environments",
-            Self::Object => "Objects",
-        }
-    }
-
-    fn description(self) -> &'static str {
-        match self {
-            Self::Character => "Applied to every character generation without a project binding.",
-            Self::Environment => {
-                "Applied to every environment generation without a project binding."
-            }
-            Self::Object => "Applied to every object generation without a project binding.",
-        }
-    }
-}
-
-/// One use-case row: a select of the discovered adapters plus "none".
-#[component]
-fn LoraBindingRow(
-    slot: LoraSlot,
-    current: Option<LoraBinding>,
-    files: Vec<String>,
-    mut defaults: Signal<GenerationDefaults>,
-) -> Element {
-    let current_file = current.map(|binding| binding.file).unwrap_or_default();
-    let title = slot.title().to_owned();
-    let description = slot.description().to_owned();
-    rsx! {
-        SettingRow { title, description,
-            select {
-                class: "setting-control",
-                // `oninput` — `onchange` never fires on <select> in Dioxus,
-                // and without a committed value the bound option reverts on
-                // the next render (the same pattern the model picker uses).
-                // The current binding is marked `selected` on the option
-                // itself — the select `value` property is unreliable on
-                // remount, so the option-level attribute is the source of
-                // truth for what is shown.
-                oninput: {
-                    let mut defaults = defaults;
-                    let slot = slot;
-                    move |event| {
-                        let value = event.value();
-                        let binding = if value.is_empty() {
-                            None
-                        } else {
-                            Some(LoraBinding { file: value })
-                        };
-                        let mut settings = defaults.write();
-                        match slot {
-                            LoraSlot::Character => settings.loras.kinds.character = binding,
-                            LoraSlot::Environment => settings.loras.kinds.environment = binding,
-                            LoraSlot::Object => settings.loras.kinds.object = binding,
-                        }
-                        drop(settings);
-                        persist_defaults(defaults);
-                    }
-                },
-                option {
-                    selected: current_file.is_empty(),
-                    value: "",
-                    "— none —"
-                }
-                for file in files.iter() {
-                    option {
-                        selected: current_file == *file,
-                        value: "{file}",
-                        "{file}"
-                    }
-                }
-            }
-        }
-    }
-}
-
 #[component]
 fn StorageSettings(config: AppConfig) -> Element {
     let application = config
@@ -2066,7 +1737,7 @@ fn Toggle(label: String, enabled: bool, onchange: EventHandler<bool>) -> Element
             aria_label: label,
             aria_checked: "{enabled}",
             onclick: move |_| onchange.call(!enabled),
-            span { class: "absolute left-0 top-0.5 size-4 rounded-full bg-white shadow-sm transition {knob}" }
+            span { class: "absolute left-0 top-0.5 size-4 rounded-full bg-[#fff] shadow-sm transition {knob}" }
         }
     }
 }

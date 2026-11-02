@@ -5,7 +5,7 @@ name = "storyfella-studio"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-description = "Plan, generate, and arrange visual stories."
+description = "Write, arrange, and preview visual stories."
 
 [features]
 default = ["desktop"]
@@ -20,9 +20,6 @@ storyfella-runtime.workspace = true
 storyfella-studio-core = { path = "../../crates/studio-core" }
 anyhow.workspace = true
 dioxus.workspace = true
-futures-util.workspace = true
-image.workspace = true
-parking_lot.workspace = true
 rfd.workspace = true
 serde.workspace = true
 serde_json.workspace = true

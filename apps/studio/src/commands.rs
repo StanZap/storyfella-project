@@ -1,19 +1,7 @@
-//! The intent seam — the app-owned action language.
-//!
-//! Everything a user can *do* to a project (create/open it, run slash
-//! operations) lives here, implemented once against the registry, state,
-//! and persistence layers. The canvas composer, the operation log rerun
-//! action, and the automation driver (`crate::driver`) all call the same
-//! entry points, so an action driven by the driver is indistinguishable
-//! from the same action typed by a user.
-//!
-//! Execution model: operations run on a blocking worker (its own tokio
-//! runtime) so a long generation never ties up the UI's async executor.
-//! The registry is written back on success **and** on failure (a failed
-//! revision is recorded; intermediates are kept); the stack stops at the
-//! first failure (fail-fast, ops already applied stay). Checkpoints resolve
-//! through [`ApprovalPolicy::auto`]: LLM draft text is accepted, and a
-//! degraded LLM step falls back to its deterministic path.
+//! Project persistence and guarded authoring operations for Studio guides.
+//! Definitions and source metadata stay in Studio; visual operations remain
+//! in shared core/CLI and are rejected at this host boundary. Workers execute
+//! allowed model-only operations with no image backend.
 
 use std::path::{Path, PathBuf};
 
@@ -24,17 +12,15 @@ use storyfella_studio_core::errors::{CodedError, ErrorCode, ReportedError};
 use storyfella_studio_core::persistence::ProjectDb;
 use storyfella_studio_core::project::ProjectFolder;
 use storyfella_studio_core::registry::{
-    backend::CreativeBackend,
     ops::{self, ExecuteOptions, OpOrigin, Operation},
-    pipeline::{ApprovalPolicy, GenerationOverrides, RunOptions},
+    pipeline::{ApprovalPolicy, RunOptions},
     slash::{self, is_slash_command},
     ArtifactRegistry, GenerationDefaults,
 };
 
 use crate::state::AppState;
 
-/// The running-state of an operation stack (canvas composer, operation log
-/// rerun, or the automation driver — all share this one signal shape).
+/// The running state of an authoring operation from a guide.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum OpActivity {
     #[default]
@@ -51,8 +37,7 @@ impl OpActivity {
 }
 
 /// The UI-facing surface an operation run reports through: activity and
-/// errors. The canvas owns one instance; the driver owns another (its
-/// failures land on its own error signal, never the global toast).
+/// errors. Driver failures land on its own error signal.
 #[derive(Clone)]
 pub struct ExecutionUi {
     pub activity: Signal<OpActivity>,
@@ -80,13 +65,13 @@ pub fn parse_command(
     if !is_slash_command(input) {
         return Err(ReportedError::plain(
             ErrorCode::AppCommandInvalid,
-            "Commands start with / — e.g. /create character <description>, /variant c:<ref> <description>",
+            "Authoring commands start with / — e.g. /describe c:mara A harbourmaster",
         ));
     }
     let operation = slash::parse_slash(input)
         .map_err(|error| ReportedError::plain(ErrorCode::AppCommandInvalid, error.to_string()))?;
-    // Static validation against the registry (ref resolution, kinds, active
-    // images) so errors surface before any backend work starts.
+    validate_studio_operations(std::slice::from_ref(&operation))?;
+    // Resolve references and kinds before starting the worker.
     ops::compile(registry, &operation, defaults).map_err(|error| error.report())?;
     Ok(operation)
 }
@@ -97,31 +82,32 @@ pub fn parse_command(
 /// completion is observed through `ui.activity`.
 pub fn run_slash_command(
     app_state: Signal<AppState>,
-    backend: CreativeBackend,
     defaults: GenerationDefaults,
     ui: ExecutionUi,
     input: &str,
 ) -> Result<(), ReportedError> {
     let operation = parse_command(input, &app_state.read().registry, &defaults)?;
-    run_operations(app_state, backend, vec![operation], defaults, ui);
+    run_operations(app_state, vec![operation], defaults, ui);
     Ok(())
 }
 
-/// Applies one or more operations: snapshot for undo, then execute each in
-/// order against the backend on a blocking worker (its own tokio runtime)
-/// so a long generation never ties up the UI's async executor.
+/// Execute authoring operations on a worker, then merge the result through
+/// AppState so concurrent source edits and undo remain coordinated.
 pub fn run_operations(
     mut app_state: Signal<AppState>,
-    backend: CreativeBackend,
     operations: Vec<Operation>,
     defaults: GenerationDefaults,
     mut ui: ExecutionUi,
 ) {
+    if let Err(report) = validate_studio_operations(&operations) {
+        ui.error_report.set(Some(report));
+        return;
+    }
     let summary = stack_summary(&operations);
     if app_state.read().operation_in_progress() {
         ui.error_report.set(Some(ReportedError::plain(
             ErrorCode::AppCommandInvalid,
-            "Wait for the current artwork operation to finish.",
+            "Wait for the current operation to finish.",
         )));
         return;
     }
@@ -133,7 +119,7 @@ pub fn run_operations(
     spawn(async move {
         let outcome = tokio::task::spawn_blocking(move || {
             let runtime = tokio::runtime::Runtime::new().expect("op worker runtime");
-            run_stack(&runtime, registry, &backend, &operations, &defaults)
+            run_stack(&runtime, registry, &operations, &defaults)
         })
         .await;
 
@@ -172,35 +158,32 @@ pub fn run_operations(
     });
 }
 
-/// Executes the stack on a blocking worker, returning the (possibly partially
-/// applied) registry and the outcome of the last operation attempted. A fresh
-/// seed per visual op keeps regenerate from being an exact replay; pass
-/// `--seed` on the CLI for golden runs.
+/// Execute authoring operations only, with no inference backend. Validate the
+/// entire batch first so a forbidden visual step cannot leave partial edits.
 fn run_stack(
     runtime: &tokio::runtime::Runtime,
     mut registry: ArtifactRegistry,
-    backend: &CreativeBackend,
     operations: &[Operation],
     defaults: &GenerationDefaults,
 ) -> (ArtifactRegistry, Result<ops::OpOutcome, ReportedError>) {
+    if let Err(error) = validate_studio_operations(operations) {
+        return (registry, Err(error));
+    }
     let mut result: Result<ops::OpOutcome, ReportedError> = Err(ReportedError::plain(
         ErrorCode::AppStackEmpty,
         "stack was empty",
     ));
     for operation in operations {
         let options = ExecuteOptions {
-            backend: Some(backend),
+            backend: None,
             run: RunOptions {
-                work_dir: std::env::temp_dir().join(format!("svs-canvas-{}", Uuid::new_v4())),
+                work_dir: storyfella_studio_core::paths::root()
+                    .join(".svs-e2e/authoring")
+                    .join(Uuid::new_v4().to_string()),
                 approvals: ApprovalPolicy::auto(),
-                seed: Some(random_seed()),
+                seed: None,
             },
-            generation: GenerationOverrides {
-                // The configured default step count (Settings → Models)
-                // shapes every canvas op.
-                steps: Some(defaults.steps),
-                ..Default::default()
-            },
+            generation: Default::default(),
             defaults,
             manual_text: None,
             origin: OpOrigin::User,
@@ -244,13 +227,28 @@ fn stack_summary(operations: &[Operation]) -> String {
     }
 }
 
-fn random_seed() -> u64 {
-    let id = Uuid::new_v4();
-    u64::from_be_bytes(id.as_bytes()[..8].try_into().expect("eight bytes"))
+/// Studio owns authoring metadata. CLI/core retain their independent visual
+/// operation vocabulary; a Studio guide cannot bypass this host boundary.
+pub(crate) fn validate_studio_operations(operations: &[Operation]) -> Result<(), ReportedError> {
+    if operations.iter().all(|operation| {
+        matches!(
+            operation,
+            Operation::Describe { .. }
+                | Operation::Create {
+                    kind: storyfella_studio_core::registry::ArtifactKind::Story
+                        | storyfella_studio_core::registry::ArtifactKind::Scene
+                        | storyfella_studio_core::registry::ArtifactKind::Beat,
+                    ..
+                }
+        )
+    }) {
+        return Ok(());
+    }
+    Err(ReportedError::plain(ErrorCode::AppCommandInvalid, "Visual production belongs to Atelier. Use Open in Atelier for image creation, editing and generation settings."))
 }
 
 /// Creates a portable folder for a new story (unique slug path) and saves
-/// the fresh registry into it before the screen switches to the canvas.
+/// the fresh registry into it before the screen switches to Assets.
 /// Returns the created path.
 pub fn create_project(
     project_dir: &Path,
@@ -380,7 +378,7 @@ fn ensure_project_idle(app_state: Signal<AppState>) -> Result<(), ReportedError>
     if app_state.read().has_description_drafts() {
         return Err(ReportedError::plain(
             ErrorCode::AppCommandInvalid,
-            "Apply or discard the description drafts in Canvas before switching projects.",
+            "Apply or discard the description drafts in Assets before switching projects.",
         ));
     }
     if app_state.read().operation_in_progress() {
@@ -476,6 +474,62 @@ pub fn unique_project_path(project_dir: &Path, name: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn studio_blocks_visual_operations_before_any_authoring_batch_is_applied() {
+        use storyfella_studio_core::registry::{
+            ops, slash, ArtifactKind, ArtifactRegistry, GenerationDefaults,
+        };
+        let defaults = GenerationDefaults {
+            sizes: Default::default(),
+            steps: 25,
+            cfg_scale: 6.0,
+            sample_method: "euler".into(),
+            loras: Default::default(),
+        };
+        let visual = slash::parse_slash("/create character --name mara A harbourmaster").unwrap();
+        // The independent CLI/core capability still exists.
+        assert!(matches!(
+            ops::compile(&ArtifactRegistry::default(), &visual, &defaults).unwrap(),
+            ops::CompiledOp::Pipeline(_)
+        ));
+        assert!(super::parse_command(
+            "/create character --name mara A harbourmaster",
+            &ArtifactRegistry::default(),
+            &defaults
+        )
+        .unwrap_err()
+        .details
+        .contains("Atelier"));
+        let metadata = ops::Operation::Create {
+            kind: ArtifactKind::Story,
+            name: Some("premise".into()),
+            description: "A story".into(),
+            size: None,
+            steps: None,
+            loras: vec![],
+        };
+        assert!(super::validate_studio_operations(std::slice::from_ref(&metadata)).is_ok());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let registry = ArtifactRegistry::default();
+        let (after, result) =
+            super::run_stack(&runtime, registry.clone(), &[metadata, visual], &defaults);
+        assert!(result.is_err());
+        assert_eq!(after, registry);
+        for command in [
+            "/regenerate c:mara",
+            "/modify c:mara a blue coat",
+            "/resize c:mara 512x768",
+            "/set c:mara --steps 8",
+            "/attach-lora c:mara example",
+            "/revert c:mara",
+        ] {
+            let operation = slash::parse_slash(command).unwrap();
+            assert!(
+                super::validate_studio_operations(&[operation]).is_err(),
+                "{command}"
+            );
+        }
+    }
     use super::unique_project_path;
     use dioxus::prelude::*;
     use std::path::PathBuf;

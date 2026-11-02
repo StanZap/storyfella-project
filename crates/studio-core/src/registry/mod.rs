@@ -20,7 +20,6 @@
 //!   replayed identically.
 
 pub mod backend;
-pub mod completion;
 pub mod ops;
 pub mod pipeline;
 pub mod slash;
@@ -48,8 +47,7 @@ pub enum ArtifactKind {
 }
 
 impl ArtifactKind {
-    /// Every kind, in declaration order. Used by completion so a new kind
-    /// shows up in the command bar without a second list to maintain.
+    /// Every kind, in declaration order, for the planner's operation schema.
     pub const ALL: [ArtifactKind; 7] = [
         ArtifactKind::Story,
         ArtifactKind::Scene,
@@ -148,19 +146,6 @@ pub enum VariantAxis {
 }
 
 impl VariantAxis {
-    /// Every axis, in declaration order — the `--axis` value set.
-    pub const ALL: [VariantAxis; 9] = [
-        VariantAxis::Outfit,
-        VariantAxis::Age,
-        VariantAxis::Body,
-        VariantAxis::Hair,
-        VariantAxis::Expression,
-        VariantAxis::TimeOfDay,
-        VariantAxis::Weather,
-        VariantAxis::Season,
-        VariantAxis::Mood,
-    ];
-
     pub fn as_str(&self) -> &'static str {
         match self {
             VariantAxis::Outfit => "outfit",
@@ -597,10 +582,9 @@ impl KindLoraBindings {
     }
 }
 
-/// Configurable generation behavior, built once from `config/studio.toml` and
-/// shared by the canvas ops and the CLI: the per-kind default sizes, the
-/// default step count, and the use-case LoRA bindings. The Settings screen
-/// edits and persists it; the canvas holds it in a context signal.
+/// Configurable CLI generation behavior loaded from the application config:
+/// per-kind sizes, sampling controls and use-case LoRA bindings. Studio keeps
+/// this shared operation contract for metadata-only guides, without image UI.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GenerationDefaults {
     pub sizes: SizeDefaults,

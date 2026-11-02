@@ -1,6 +1,7 @@
 {
   "private": true,
   "scripts": {
+    "test:ui": "node --test ui-js/*.test.cjs",
     "editor:build": "esbuild ui-js/writing-diff.js --bundle --format=iife --target=safari17 --minify --outfile=assets/writing-diff.js",
     "css:build": "./node_modules/.bin/tailwindcss -i ./tailwind.css -o ./assets/tailwind.css --minify",
     "css:watch": "./node_modules/.bin/tailwindcss -i ./tailwind.css -o ./assets/tailwind.css --watch"

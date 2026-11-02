@@ -1,5 +1,55 @@
 # Storyfella Studio design standard and UX audit
 
+### In-scope artwork links · 2026-11-02
+
+Scene and beat shortcuts are compact full-width rows with a shared type icon,
+type label and name. The whole row opens Assets; a tooltip explains the target.
+Repeated Open/artwork/View asset text is removed. The same AssetIcon vocabulary
+is used for gallery group headings and asset placeholders. Native visual
+verification remains with the user.
+
+### Appearance, shared Vision configuration and Assets naming · 2026-11-02
+
+General offers Dark, Light and System, persisted in `studio.toml`. Theme changes
+apply immediately to workspace surfaces, controls, dialogs and writing/review
+editors and native window appearance. System follows live OS appearance changes. Semantic colors preserve
+readable text, feedback and focus rings without resetting editor state. Artwork
+preview backgrounds remain an independent viewing preference. A failed setting
+write retains the previous selection/theme and reports the failure.
+
+Models exposes **Use a separate Vision LLM**. Off hides Vision's fields and
+routes image-understanding calls through the Text provider, URL, model and key;
+the selected model must accept images. On restores the separately configured
+Vision selection and exposes its fields. An existing distinct Vision setup stays
+enabled unless the user changes it. Credentials and provider definitions remain
+in the shared registry; the app preference does not overwrite them. A provider
+selected for both roles shares its settings, which the UI explains. Model lists
+and health checks discard responses for superseded requests.
+
+The former Canvas screen is **Assets**, including navigation, palette, tooltips,
+guide steps and the `g a` shortcut. Atelier still owns editable canvases. Earlier
+dated records below retain their original Canvas terminology. Automated evidence
+covers preference persistence, linked/separate Vision routing and System-mode
+changes; native visual verification remains with the user.
+
+### Inline metadata and transparent artwork previews · 2026-11-02
+
+Inspector names/descriptions display as text with a pencil action at the right
+of each label. Each enters editing independently. Enter/check confirms that
+field; Escape/close discards it. Shift+Enter inserts multiline text. Validation
+errors retain the editor and draft; Tab/blur never submit or discard. Native IME
+composition is respected, focus returns to the pencil, and confirmation cannot
+silently overwrite a displayed value changed by another edit. Description drafts
+retain normal Save/quit/conflict behavior; per-field confirmation leaves unrelated
+drafts untouched. Components are documented in [the catalog](docs/ui-components.md).
+
+Canvas, gallery, saved image history and Writer thumbnails use a light paper
+preview background so dark strokes on transparent PNGs remain visible. The Canvas
+Background selector offers Light, Dark and Checkerboard, shared for the Studio
+session. This is a viewing preference: source pixels, alpha, revisions and
+playback compositing are unchanged. Native visual acceptance is assigned to the
+user; keyboard bridge and scoped metadata regression tests cover the behavior.
+
 ### Atelier Save updates Studio artwork · 2026-11-01
 
 Ordinary Save and Save-and-close in a shared Atelier document also update its
@@ -923,6 +973,27 @@ motion; loading pulses and animated transitions need quiet alternatives. Keep
 full paths, prompts and descriptions available without depending on hover-only
 tooltips. Image crops must not misrepresent landscape artwork or transparent
 assets; use aspect-aware previews and accessible names.
+
+### Studio visual-production cutover · 2026-11-02
+
+SF-PLAN-07 leaves Studio's Canvas focused on catalog definitions, saved previews,
+read-only image history and story references. Names/descriptions and explicit
+variation definitions remain authoring actions. The shared Open in Atelier
+action owns visual creation/editing; ordinary linked Save refreshes Studio.
+No Studio control generates, edits, promotes, activates or reruns image revisions.
+The former image composer/import form and request size/steps/LoRA settings are
+removed, including their keyboard and guide entry points. The palette supports
+navigation and authoring actions; `/` opens it without changing screens.
+New definitions use the shared native input vocabulary and never invoke inference.
+Saved active-image selection is consistent across gallery, details and Writer.
+
+Existing images/history/provenance stay in projects. Machine service/model-file
+administration and Writer's writing assistant remain. The implementation records
+below describe their dated audit/remediation state; references to the removed
+Studio composer and production controls are historical. The user verified the
+Atelier Save → Studio refresh round trip before this cutover. Native verification
+of this simplified UI is pending; automated evidence belongs to SF-PLAN-07 in
+[the roadmap](docs/ROADMAP.md).
 
 ## 7. Audit scope and evidence
 

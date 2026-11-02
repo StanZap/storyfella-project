@@ -14,7 +14,7 @@
 //! scoped shortcut has no label, so a row cannot be half-added.
 
 /// Where a shortcut applies. A key can mean different things in different
-/// scopes — `j` walks tiles in the grid and revisions in detail — which is
+/// scopes — `j` walks tiles only in the grid — which is
 /// exactly why the scope is part of the record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
@@ -41,7 +41,7 @@ impl Scope {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Shortcut {
-    /// The stable name a control refers to, e.g. `"regenerate"`.
+    /// The stable name a control refers to, e.g. `"new-artifact"`.
     pub action: &'static str,
     /// As shown to a person: `⌃K`, `hjkl`, `[ ]`.
     pub keys: &'static str,
@@ -83,15 +83,15 @@ pub const SHORTCUTS: &[Shortcut] = &[
         scope: Scope::Global,
     },
     Shortcut {
-        action: "goto-canvas",
-        keys: "g c",
-        label: "Go to the canvas",
+        action: "goto-assets",
+        keys: "g a",
+        label: "Go to assets",
         scope: Scope::Global,
     },
     Shortcut {
-        action: "focus-bar",
+        action: "search-actions",
         keys: "/",
-        label: "Jump to the command bar",
+        label: "Open commands and navigation",
         scope: Scope::Global,
     },
     Shortcut {
@@ -133,39 +133,9 @@ pub const SHORTCUTS: &[Shortcut] = &[
         scope: Scope::Detail,
     },
     Shortcut {
-        action: "variant-step",
-        keys: "[ ]",
-        label: "Previous / next variant",
-        scope: Scope::Detail,
-    },
-    Shortcut {
         action: "new-variant",
         keys: "v",
         label: "New variant",
-        scope: Scope::Detail,
-    },
-    Shortcut {
-        action: "regenerate",
-        keys: "r",
-        label: "Regenerate",
-        scope: Scope::Detail,
-    },
-    Shortcut {
-        action: "modify",
-        keys: "m",
-        label: "Modify",
-        scope: Scope::Detail,
-    },
-    Shortcut {
-        action: "toggle-history",
-        keys: "e",
-        label: "Show or hide the history",
-        scope: Scope::Detail,
-    },
-    Shortcut {
-        action: "toggle-variants",
-        keys: "f",
-        label: "Show or hide the variants",
         scope: Scope::Detail,
     },
 ];
@@ -179,7 +149,7 @@ pub fn keys(action: &str) -> Option<&'static str> {
 }
 
 /// A control's tooltip: its own text, with the key appended when there is
-/// one. `tooltip("Regenerate", "regenerate")` → `"Regenerate · r"`.
+/// one. `tooltip("New asset", "new")` → `"New asset · n"`.
 pub fn tooltip(text: &str, action: &str) -> String {
     match keys(action) {
         Some(keys) => format!("{text} · {keys}"),
@@ -248,7 +218,7 @@ mod tests {
 
     #[test]
     fn tooltips_carry_the_key_when_there_is_one() {
-        assert_eq!(tooltip("Regenerate", "regenerate"), "Regenerate · r");
+        assert_eq!(tooltip("New asset", "new"), "New asset · n");
         // An action with no binding still gets a usable tooltip.
         assert_eq!(
             tooltip("Attach an adapter", "attach-lora"),

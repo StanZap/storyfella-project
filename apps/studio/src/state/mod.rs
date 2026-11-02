@@ -113,54 +113,6 @@ impl AppState {
         Ok(())
     }
 
-    pub fn import_artwork(
-        &mut self,
-        artwork: &storyfella_studio_core::artwork::ApprovedArtwork,
-        kind: storyfella_studio_core::registry::ArtifactKind,
-        asset_path: String,
-    ) -> Result<Uuid, String> {
-        use storyfella_studio_core::registry::{CreateArtifact, RevisionOrigin};
-        if self.operation_in_progress {
-            return Err("Wait for the current operation before importing artwork.".into());
-        }
-        if !kind.is_visual() || artwork.name.trim().is_empty() {
-            return Err(
-                "Choose a character, environment, object or illustration and enter a name.".into(),
-            );
-        }
-        if !std::path::Path::new(&asset_path).is_absolute() {
-            return Err("Imported artwork needs a stored image path.".into());
-        }
-        let mut registry = self.registry.clone();
-        let id = registry
-            .create_artifact(
-                kind,
-                CreateArtifact {
-                    name: artwork.name.trim().to_owned(),
-                    description: artwork.provenance.clone(),
-                    ..Default::default()
-                },
-            )
-            .map_err(|e| e.to_string())?;
-        let revision = registry
-            .start_revision(
-                id,
-                artwork.prompt.clone(),
-                None,
-                Some("Atelier · approved artwork".into()),
-                RevisionOrigin::Canon,
-            )
-            .map_err(|e| e.to_string())?;
-        registry
-            .finish_revision(id, revision, asset_path)
-            .map_err(|e| e.to_string())?;
-        self.snapshot_for_undo();
-        self.registry = registry;
-        self.has_unsaved_changes = true;
-        self.select_artifact(id);
-        self.reconcile_story();
-        Ok(id)
-    }
     pub fn description_draft(&self, id: Uuid) -> Option<&str> {
         self.description_drafts.get(&id).map(String::as_str)
     }
@@ -186,25 +138,47 @@ impl AppState {
     }
 
     pub fn apply_description_drafts(&mut self) -> Result<(), String> {
+        let ids: Vec<_> = self.description_drafts.keys().copied().collect();
+        self.apply_descriptions(&ids)
+    }
+
+    /// Inline confirmation applies only this field, leaving other drafts alone.
+    pub fn apply_description_draft(&mut self, id: Uuid) -> Result<(), String> {
+        self.apply_descriptions(&[id])
+    }
+
+    fn apply_descriptions(&mut self, ids: &[Uuid]) -> Result<(), String> {
+        if self.operation_in_progress {
+            return Err("Wait for the current operation before editing descriptions.".into());
+        }
         if self
             .description_drafts
-            .values()
+            .iter()
+            .filter(|(id, _)| ids.contains(id))
+            .map(|(_, text)| text)
             .any(|text| text.trim().is_empty())
         {
             return Err(
                 "Descriptions cannot be empty. Complete or discard the empty draft first.".into(),
             );
         }
-        if self.has_description_drafts() {
+        if ids
+            .iter()
+            .any(|id| self.description_drafts.contains_key(id))
+        {
             let mut registry = self.registry.clone();
-            for (id, text) in &self.description_drafts {
+            for (id, text) in self
+                .description_drafts
+                .iter()
+                .filter(|(id, _)| ids.contains(id))
+            {
                 registry
                     .set_description(*id, text.clone())
                     .map_err(|error| error.to_string())?;
             }
             self.snapshot_for_undo();
             self.registry = registry;
-            self.description_drafts.clear();
+            self.description_drafts.retain(|id, _| !ids.contains(id));
             self.has_unsaved_changes = true;
         }
         Ok(())
@@ -336,8 +310,8 @@ impl AppState {
         }
     }
 
-    /// Create the missing catalog entry immediately; rendering stays a Canvas
-    /// action. Recheck shared resolution to reject collisions and wrong kinds.
+    /// Create the missing catalog entry immediately; artwork is made in Atelier.
+    /// Recheck shared resolution to reject collisions and wrong kinds.
     pub fn create_pending_asset(
         &mut self,
         name: &str,
@@ -620,7 +594,7 @@ impl AppState {
         }
     }
 
-    /// Drops the selection, which is what returns the canvas to the grid.
+    /// Drops the selection, which is what returns Assets to the grid.
     pub fn clear_selection(&mut self) {
         self.selected_artifact_id = None;
     }
@@ -675,31 +649,9 @@ impl AppState {
         true
     }
 
-    /// Marks a revision as the artifact's active image. Only revisions that
-    /// produced an asset can be activated; the active revision is what
-    /// [`Self::display_image`] shows.
-    pub fn activate_revision(&mut self, artifact_id: Uuid, revision_id: Uuid) -> bool {
-        let Some(artifact) = self.registry.artifact_mut(artifact_id) else {
-            return false;
-        };
-        let Some(revision) = artifact
-            .revisions
-            .iter()
-            .find(|revision| revision.id == revision_id)
-        else {
-            return false;
-        };
-        if revision.asset_path.is_none() {
-            return false;
-        }
-        artifact.active_revision_id = Some(revision_id);
-        self.has_unsaved_changes = true;
-        true
-    }
-
     /// The image to show for an artifact: the active revision's asset when
     /// it has one, otherwise the latest completed revision.
-    pub fn display_image<'a>(&self, artifact: &'a Artifact) -> Option<&'a str> {
+    pub fn display_image(artifact: &Artifact) -> Option<&str> {
         let active = artifact
             .active_revision_id
             .and_then(|id| artifact.revisions.iter().find(|revision| revision.id == id))
@@ -913,44 +865,6 @@ mod tests {
         assert!(state.has_unsaved_changes);
         assert!(!state.can_undo());
     }
-    #[test]
-    fn approved_artwork_import_creates_a_completed_revision_with_undo_and_project_persistence() {
-        let artwork = storyfella_studio_core::artwork::ApprovedArtwork {
-            version: 1,
-            name: "Cabin".into(),
-            image: String::new(),
-            prompt: "Sunset".into(),
-            provenance: "Atelier · provider/model/prompt".into(),
-        };
-        let mut state = AppState::default();
-        assert!(state
-            .import_artwork(&artwork, ArtifactKind::Story, "/art/cabin.png".into())
-            .is_err());
-        assert!(state.registry.artifacts.is_empty());
-        assert!(!state.can_undo());
-        let id = state
-            .import_artwork(&artwork, ArtifactKind::Environment, "/art/cabin.png".into())
-            .unwrap();
-        assert!(state.has_unsaved_changes);
-        assert_eq!(state.selected_artifact_id, Some(id));
-        let revision = state.registry.latest_image(id).unwrap();
-        assert_eq!(
-            revision.status,
-            storyfella_studio_core::registry::RevisionStatus::Completed
-        );
-        assert_eq!(revision.prompt, "Sunset");
-        assert_eq!(revision.asset_path.as_deref(), Some("/art/cabin.png"));
-        let path =
-            std::env::temp_dir().join(format!("atelier-handoff-{}.db", uuid::Uuid::new_v4()));
-        let db = storyfella_studio_core::persistence::ProjectDb::open(&path).unwrap();
-        db.save_registry(&state.registry).unwrap();
-        assert_eq!(db.load().unwrap().registry.latest_image(id), Some(revision));
-        state.undo();
-        assert!(state.registry.artifact(id).is_none());
-        state.redo();
-        assert!(state.registry.latest_image(id).is_some());
-    }
-
     fn character_registry(name: &str) -> ArtifactRegistry {
         let mut registry = ArtifactRegistry::default();
         registry
@@ -1067,6 +981,54 @@ mod tests {
             state.registry.artifact(id).unwrap().description,
             "A test character"
         );
+    }
+
+    #[test]
+    fn confirming_one_description_leaves_other_drafts_and_artwork_untouched() {
+        let mut state = state_with("mia");
+        let id = state.registry.artifacts[0].id;
+        let revision = state
+            .registry
+            .start_revision(
+                id,
+                "Existing artwork".into(),
+                None,
+                None,
+                storyfella_studio_core::registry::RevisionOrigin::Canon,
+            )
+            .unwrap();
+        state
+            .registry
+            .finish_revision(id, revision, "/artwork/mia.png".into())
+            .unwrap();
+        let image = state.registry.artifact(id).unwrap().revisions.clone();
+        let missing = uuid::Uuid::from_u128(u128::MAX);
+        state.set_description_draft(missing, "Another unfinished field".into());
+        state.set_description_draft(id, "Confirmed description\nSecond line".into());
+        state.apply_description_draft(id).unwrap();
+        let item = state.registry.artifact(id).unwrap();
+        assert_eq!(item.description, "Confirmed description\nSecond line");
+        assert_eq!(item.revisions, image);
+        assert_eq!(item.active_revision_id, Some(revision));
+        assert!(state.description_draft(id).is_none());
+        assert_eq!(
+            state.description_draft(missing),
+            Some("Another unfinished field")
+        );
+        state.undo();
+        assert_eq!(
+            state.registry.artifact(id).unwrap().description,
+            "A test character"
+        );
+        assert_eq!(state.registry.artifact(id).unwrap().revisions, image);
+        state.set_description_draft(id, " ".into());
+        let registry = state.registry.clone();
+        assert!(state.apply_description_draft(id).is_err());
+        assert_eq!(state.registry, registry);
+        assert_eq!(state.description_draft(id), Some(" "));
+        state.discard_description_draft(id);
+        assert!(state.description_draft(id).is_none());
+        assert!(state.description_draft(missing).is_some());
     }
 
     #[test]
@@ -1329,46 +1291,6 @@ mod tests {
     }
 
     #[test]
-    fn activation_requires_a_revision_with_an_asset() {
-        let mut state = state_with("mia");
-        let mia = state.registry.artifacts[0].id;
-        let queued = state
-            .registry
-            .start_revision(
-                mia,
-                "first draft".to_owned(),
-                None,
-                None,
-                storyfella_studio_core::registry::RevisionOrigin::Canon,
-            )
-            .expect("revision should start");
-
-        assert!(
-            !state.activate_revision(mia, queued),
-            "a queued revision without an asset cannot be activated"
-        );
-
-        let completed = state
-            .registry
-            .start_revision(
-                mia,
-                "second draft".to_owned(),
-                None,
-                None,
-                storyfella_studio_core::registry::RevisionOrigin::Canon,
-            )
-            .expect("revision should start");
-        state
-            .registry
-            .finish_revision(mia, completed, "assets/generated/mia.png".to_owned())
-            .expect("revision should finish");
-        assert!(state.activate_revision(mia, completed));
-        let artifact = state.registry.artifact(mia).expect("artifact exists");
-        assert_eq!(artifact.active_revision_id, Some(completed));
-        assert!(state.has_unsaved_changes);
-    }
-
-    #[test]
     fn display_image_prefers_the_active_revision() {
         let mut state = state_with("mia");
         let mia = state.registry.artifacts[0].id;
@@ -1403,15 +1325,16 @@ mod tests {
 
         let artifact = state.registry.artifact(mia).expect("artifact exists");
         assert_eq!(
-            state.display_image(artifact),
+            AppState::display_image(artifact),
             Some("assets/generated/second.png"),
             "the latest completed revision is the display image"
         );
 
-        assert!(state.activate_revision(mia, first));
+        // Studio only observes this selection, which is saved by the artwork owner.
+        state.registry.artifact_mut(mia).unwrap().active_revision_id = Some(first);
         let artifact = state.registry.artifact(mia).expect("artifact exists");
         assert_eq!(
-            state.display_image(artifact),
+            AppState::display_image(artifact),
             Some("assets/generated/first.png"),
             "activating an older revision changes the display image"
         );

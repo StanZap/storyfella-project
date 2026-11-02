@@ -85,7 +85,7 @@ HTTP.
 │                   crate (asset import, job wait, health, error mapping)            │
 │                                                                                    │
 │  apps/studio/src/  — the Dioxus application                                       │
-│    ui/            Workspace shell, Canvas (artifact workspace), Settings           │
+│    ui/            Workspace shell, Assets (artifact workspace), Settings           │
 │    state/         AppState: registry, selection, undo/redo stacks                  │
 │                                                                                    │
 │  drives the shared owner:                                                         │
@@ -206,26 +206,32 @@ file name (either form is accepted).
 
 ## The prompt-to-revision flow
 
-The Canvas is the primary workspace. Commands reach it from four places that
-share one vocabulary: the `svs` CLI, the tokenized command bar, the `Ctrl+K`
-palette, and the inspector rail — every control in the rail emits the command
-a person would have typed, so the two cannot diverge. All of them parse
-through `crates/studio-core/src/registry/slash.rs`; model-only operations
+Studio's Assets browses definitions, saved images and read-only revision history.
+Definitions and reference-aware rename use `AppState::edit_catalog`; description
+drafts use its guarded save/undo path. Open in Atelier saves the authoring state
+and delivers the shared project/item identity. Atelier's ordinary linked Save
+publishes immutable image revisions and Studio refreshes them. There is no
+Studio image composer, generation inspector, revision activation, rerun or
+`.sfart` import UI. The palette exposes authoring/navigation actions only.
+Studio guide commands are restricted to descriptions and text-only creation,
+with batch preflight before changes and no inference backend.
+
+The independent `svs` CLI retains visual operations and the planner. Its Clap
+arguments build typed operations; the shared slash parser provides the script
+syntax used by Studio's restricted guides. Model-only operations
 (`compose`, `create` of text-only kinds) apply instantly, while visual
 `create`/`variant` (first image), `regenerate`, and `modify` run their
-pipeline against `CreativeBackend` in a spawned task.
+pipeline against `CreativeBackend`.
 
 ```text
-Composer: /create character Mia…  /variant c:mia …  /regenerate c:mia …
-    │  slash::parse_slash → Operation (compile validates against the registry)
+svs op: create character Mia… / variant c:mia … / regenerate c:mia …
+    │  CLI arguments → Operation (compile validates against the registry)
     ▼
 ops::execute (crates/studio-core/src/registry/ops.rs)
     ├─ Direct (compose / text-only create): registry mutation + log entry
     ├─ Create/Variant (visual): artifact + first-image pipeline (variants
     │    reference the base's active image)
     └─ Pipeline (regenerate/modify):
-         │  AppState::snapshot_for_undo (registry snapshot — undo basis)
-         ▼
        CreativeBackend::generate (crates/studio-core/src/registry/backend.rs)
          │  CreativeRuntime::ensure_profile_ready (cold start: sd-server)
          │  sd::Client::generate (POST /sdcpp/v1/img_gen)
@@ -235,9 +241,9 @@ ops::execute (crates/studio-core/src/registry/ops.rs)
        <asset_dir>/generated/<uuid>.png (the canonical asset path)
          ▼
        registry.finish_revision → completed revision + active image
-         │  has_unsaved_changes → autosave writes .sf and the SQLite registry snapshot
+         │  CLI persistence writes the registry and immutable resources
          ▼
-Artifact detail: image + revision history (served via /generated/<file>)
+Studio: read-only saved image + revision history (served via /generated/<file>)
 ```
 
 A `modify` is an **instruction edit**, not a regional one: `LoadImage →
@@ -322,7 +328,8 @@ runtime, the health probe, `model_setup`, and Settings read. Model storage
 defaults to the OS-local Storyfella data folder in both development and release
 builds; Settings can save an absolute override. A hosted or absent t2i default
 leaves the native deployment unset: Writer, playback and text-provider settings
-remain available, image prewarm is skipped, and native-only actions report
+remain available. Studio never prewarms image services on project open;
+native-only callers report
 SVS-CFG-110 without starting servers or downloading weights. Shared hosted
 defaults remain unchanged for Atelier. See
 [model storage](development.md#inference-settings).
@@ -332,9 +339,9 @@ defaults remain unchanged for Atelier. See
 - **The planner lives in `crates/studio-core/src/registry/`.** The typed operation set, the
   pipeline layer, the slash parser, and the `svs` CLI (see
   `docs/development.md`) are implemented; `crates/studio-core/src/llm/` is the client only,
-  driven through `CreativeBackend`. The Canvas free-form composer messages
-  are proposed as operation stacks (LLM → closed-vocabulary JSON → approval
-  modal → executed through the same worker machinery as slash commands).
+  driven through `CreativeBackend`. Visual operation stacks and free-form
+  planning remain CLI capabilities; Studio's Writer assistant uses the
+  separate writing workflow and reviewed source application.
 - **No Python and no ML framework.** There is no FastAPI vision runtime, no
   segmentation, and no Diffusers pipeline. Generation is the native
   `stable-diffusion.cpp` process; the text/vision endpoints are separate
@@ -374,13 +381,15 @@ under `.svs-e2e/`; see [development](development.md).
 
 ## Registry operations and pipelines
 
-Studio's current Canvas and the `svs` CLI consume the same typed operations from
-`crates/studio-core/src/registry/ops.rs`. The slash parser and completion services
-are views of that vocabulary; frontend code applies mutations through AppState.
+The `svs` CLI consumes typed operations from
+`crates/studio-core/src/registry/ops.rs`. The slash parser retains that vocabulary
+for scripts; its former editor-completion module has no callers and is removed.
+Studio creates definitions through the shared catalog API and applies authoring
+mutations through AppState. Guides accept only metadata operations.
 
 Visual create/variant operations generate their first image. Variants reference
 the base image. Modify loads the current image and applies a grounded instruction;
-its current Studio pipeline has no mask-compositing stage. Describe and revert
+its core pipeline has no mask-compositing stage. Describe and revert
 change registry state without generation. Draft can propose text or accept manual
 text. Compose records beat artwork relationships rather than editing authored
 scene/beat order. Writer remains the structure editor.

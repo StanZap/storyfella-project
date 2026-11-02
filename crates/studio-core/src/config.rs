@@ -156,22 +156,57 @@ pub struct NewChatProvider {
     pub model_path: Option<String>,
 }
 
+/// Studio appearance. System is resolved by the desktop host, never core.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemePreference {
+    #[default]
+    Dark,
+    Light,
+    System,
+}
+
+impl ThemePreference {
+    pub const ALL: [Self; 3] = [Self::Dark, Self::Light, Self::System];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Dark => "dark",
+            Self::Light => "light",
+            Self::System => "system",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Dark => "Dark",
+            Self::Light => "Light",
+            Self::System => "System",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppConfig {
+    pub theme: ThemePreference,
+    /// False routes Vision through Text while retaining the shared registry's
+    /// separate Vision selection for when the user enables it again.
+    pub separate_vision: bool,
+    configured_vision_provider_id: Option<String>,
     /// The `text` deployment resolved from the shared `clipforge.toml` — the
     /// planner's OpenAI-compatible endpoint, model, key and timeout. `None` when
     /// no provider serves `text`: the planner is a soft dependency, so the app
     /// still runs and its LLM steps degrade to manual input.
     pub text: Option<ChatDeployment>,
-    /// The `vision` deployment resolved from the shared `clipforge.toml` — what
-    /// `svs eval` and future vision steps call. `None` when no provider serves
-    /// `vision`.
+    /// Effective Vision deployment for `svs eval` and guide vision steps.
+    /// Resolves from the shared Vision selection in separate mode, or follows
+    /// Text otherwise. None when that selected deployment is unconfigured.
     pub vision: Option<ChatDeployment>,
     /// The provider id serving `text`, kept so Settings can persist a model
     /// choice under the right `[providers.<id>]` section. `None` when the
     /// capability is unconfigured.
     pub text_provider_id: Option<String>,
-    /// The provider id serving `vision`. `None` when unconfigured.
+    /// Effective Vision provider id (the Text id when linked).
     pub vision_provider_id: Option<String>,
     /// The provider id serving `t2i`, kept so Settings can persist the
     /// residency choice under the right `[providers.<id>]` section.
@@ -200,7 +235,7 @@ pub struct AppConfig {
     /// Where the GUI keeps `.svs-project.db` files (the Projects screen).
     pub project_dir: PathBuf,
     /// The app config file (see [`paths::config_path`]) — where the app's own
-    /// settings (generation defaults, prewarm) persist. `None` when the platform
+    /// configuration is stored. `None` when the platform
     /// has no config directory. The Settings screen shows it.
     pub app_config_path: Option<PathBuf>,
     /// The machine's shared AI configuration (see
@@ -209,12 +244,8 @@ pub struct AppConfig {
     /// has no config directory.
     pub ai_config_path: Option<PathBuf>,
     /// The configurable sizes, step count, and LoRA bindings that shape
-    /// every generation (editable in Settings, persisted to this file).
+    /// CLI generation, loaded from the application configuration file.
     pub generation_defaults: GenerationDefaults,
-    /// Start the resident generation server as soon as a project opens, so
-    /// the first generation is not a multi-minute weight load (`[runtime]
-    /// prewarm`). Off by default — it holds the card's VRAM from the outset.
-    pub prewarm: bool,
 }
 
 #[derive(Debug, Error)]
@@ -279,20 +310,28 @@ impl CodedError for ConfigError {
 #[derive(Debug, Deserialize)]
 struct FileConfig {
     #[serde(default)]
+    appearance: AppearanceConfig,
+    #[serde(default)]
+    models: ModelsConfig,
+    #[serde(default)]
     paths: PathOverrides,
     #[serde(default)]
     generation: GenerationFileConfig,
     #[serde(default)]
     lora: LoraFileConfig,
-    #[serde(default)]
-    runtime: RuntimeFileConfig,
 }
 
-/// `[runtime]` — how the app manages the native server processes.
 #[derive(Debug, Default, Deserialize)]
-struct RuntimeFileConfig {
+struct AppearanceConfig {
     #[serde(default)]
-    prewarm: bool,
+    theme: ThemePreference,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ModelsConfig {
+    /// Absent preserves existing Vision routing, including an unconfigured
+    /// capability. Provider credentials remain in the shared AI registry.
+    separate_vision: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -485,13 +524,21 @@ impl AppConfig {
         // The chat capabilities are optional: an unconfigured planner or vision
         // endpoint leaves the app fully usable, with those features degraded.
         let text = providers.chat_deployment(Capability::Text).ok();
-        let vision = providers.chat_deployment(Capability::Vision).ok();
+        let configured_vision = providers.chat_deployment(Capability::Vision).ok();
         let text_provider_id = providers
             .default_provider(Capability::Text)
             .map(str::to_owned);
-        let vision_provider_id = providers
+        let configured_vision_provider_id = providers
             .default_provider(Capability::Vision)
             .map(str::to_owned);
+        let same_provider = configured_vision_provider_id.is_some()
+            && configured_vision_provider_id == text_provider_id;
+        let separate_vision = file.models.separate_vision.unwrap_or(!same_provider);
+        let (vision, vision_provider_id) = if separate_vision {
+            (configured_vision, configured_vision_provider_id.clone())
+        } else {
+            (text.clone(), text_provider_id.clone())
+        };
         let image_provider_id = image
             .as_ref()
             .and_then(|_| providers.default_provider(Capability::T2i))
@@ -534,6 +581,9 @@ impl AppConfig {
             multiplier: file_lora.multiplier,
         };
         Ok(Self {
+            theme: file.appearance.theme,
+            separate_vision,
+            configured_vision_provider_id,
             text,
             vision,
             text_provider_id,
@@ -567,8 +617,44 @@ impl AppConfig {
                 sample_method: file.generation.sample_method,
                 loras: lora_bindings,
             },
-            prewarm: file.runtime.prewarm,
         })
+    }
+
+    /// Persist application preferences without rewriting unrelated settings.
+    fn persist_app_setting(
+        &self,
+        section: &str,
+        key: &str,
+        value: String,
+    ) -> Result<(), ConfigError> {
+        let path = self
+            .app_config_path
+            .as_deref()
+            .ok_or(ConfigError::PlatformDirectories)?;
+        let contents = read_config_contents(path)?;
+        let mut lines: Vec<_> = contents.lines().map(str::to_owned).collect();
+        write_key(&mut lines, section, key, Some(value));
+        write_config_file(path, lines.join("\n"))
+    }
+
+    pub fn persist_theme(&self, theme: ThemePreference) -> Result<(), ConfigError> {
+        self.persist_app_setting("appearance", "theme", format!("{:?}", theme.as_str()))
+    }
+
+    pub fn persist_separate_vision(&self, separate: bool) -> Result<(), ConfigError> {
+        self.persist_app_setting("models", "separate_vision", separate.to_string())
+    }
+
+    pub fn with_separate_vision(&self, separate: bool) -> Self {
+        let mut next = self.clone();
+        next.separate_vision = separate;
+        next.vision_provider_id = if separate {
+            next.configured_vision_provider_id.clone()
+        } else {
+            next.text_provider_id.clone()
+        };
+        next.vision = active_deployment(&next.chat_providers, &next.vision_provider_id);
+        next
     }
 
     /// Persists a chat provider's `capabilities` array to the shared AI config —
@@ -653,9 +739,15 @@ impl AppConfig {
         if capability == Capability::Text {
             next.text = Some(deployment);
             next.text_provider_id = Some(provider_id.to_owned());
+            if !next.separate_vision {
+                next.vision = next.text.clone();
+                next.vision_provider_id = next.text_provider_id.clone();
+            }
         } else {
             next.vision = Some(deployment);
             next.vision_provider_id = Some(provider_id.to_owned());
+            next.configured_vision_provider_id = Some(provider_id.to_owned());
+            next.separate_vision = true;
         }
         Some(next)
     }
@@ -797,109 +889,6 @@ impl AppConfig {
         write_config_file(path, lines.join("\n"))
     }
 
-    /// Persists the generation defaults (steps, per-kind sizes, LoRA bindings)
-    /// to the app config (see [`paths::config_path`]) — the Settings screen
-    /// writes here so the choices survive restarts. Line-preserving: only the
-    /// touched keys change.
-    pub fn persist_generation_defaults(&self) -> Result<(), ConfigError> {
-        let path = self
-            .app_config_path
-            .as_ref()
-            .ok_or(ConfigError::PlatformDirectories)?;
-        Self::persist_generation_defaults_to(path, &self.generation_defaults)
-    }
-
-    /// Testable variant of [`AppConfig::persist_generation_defaults`].
-    pub fn persist_generation_defaults_to(
-        path: impl AsRef<Path>,
-        defaults: &GenerationDefaults,
-    ) -> Result<(), ConfigError> {
-        let path = path.as_ref();
-        let contents = read_config_contents(path)?;
-        let mut lines: Vec<String> = contents.lines().map(str::to_owned).collect();
-
-        // Sizes are written quoted (TOML strings); the loader parses WxH.
-        let size_str = |size: Option<(u32, u32)>| {
-            size.map(|(width, height)| format!("{:?}", format!("{width}x{height}")))
-        };
-        write_key(
-            &mut lines,
-            "generation",
-            "steps",
-            Some(defaults.steps.to_string()),
-        );
-        write_key(
-            &mut lines,
-            "generation",
-            "cfg_scale",
-            Some(format!("{:?}", defaults.cfg_scale)),
-        );
-        write_key(
-            &mut lines,
-            "generation",
-            "sample_method",
-            Some(format!("{:?}", defaults.sample_method)),
-        );
-        write_key(
-            &mut lines,
-            "generation.sizes",
-            "character",
-            size_str(defaults.sizes.character),
-        );
-        write_key(
-            &mut lines,
-            "generation.sizes",
-            "environment",
-            size_str(defaults.sizes.environment),
-        );
-        write_key(
-            &mut lines,
-            "generation.sizes",
-            "object",
-            size_str(defaults.sizes.object),
-        );
-        write_key(
-            &mut lines,
-            "generation.sizes",
-            "scene",
-            size_str(defaults.sizes.scene),
-        );
-        write_key(
-            &mut lines,
-            "generation.sizes",
-            "beat",
-            size_str(defaults.sizes.beat),
-        );
-        let lora_file =
-            |binding: Option<&LoraBinding>| binding.map(|binding| format!("{:?}", binding.file));
-        write_key(
-            &mut lines,
-            "lora",
-            "character",
-            lora_file(defaults.loras.kinds.character.as_ref()),
-        );
-        write_key(
-            &mut lines,
-            "lora",
-            "environment",
-            lora_file(defaults.loras.kinds.environment.as_ref()),
-        );
-        write_key(
-            &mut lines,
-            "lora",
-            "object",
-            lora_file(defaults.loras.kinds.object.as_ref()),
-        );
-        write_key(
-            &mut lines,
-            "lora",
-            "multiplier",
-            Some(format!("{:?}", defaults.loras.multiplier)),
-        );
-
-        write_config_file(path, lines.join("\n"))
-    }
-
     /// Persists the image provider's residency to the shared AI config (see
     /// [`paths::clipforge_config_path`]) — the Settings control writes here so
     /// the choice survives restarts.
@@ -933,26 +922,6 @@ impl AppConfig {
             "residency",
             Some(format!("{residency:?}")),
         );
-        write_config_file(path, lines.join("\n"))
-    }
-
-    /// Persists the prewarm choice to the app config (see
-    /// [`paths::config_path`]), line-preserving like the other settings.
-    pub fn persist_prewarm(&self, enabled: bool) -> Result<(), ConfigError> {
-        let path = self
-            .app_config_path
-            .as_ref()
-            .ok_or(ConfigError::PlatformDirectories)?;
-        Self::persist_prewarm_to(path, enabled)
-    }
-
-    /// Testable variant of [`AppConfig::persist_prewarm`] targeting an
-    /// arbitrary path; creates the file when it does not exist yet.
-    pub fn persist_prewarm_to(path: impl AsRef<Path>, enabled: bool) -> Result<(), ConfigError> {
-        let path = path.as_ref();
-        let contents = read_config_contents(path)?;
-        let mut lines: Vec<String> = contents.lines().map(str::to_owned).collect();
-        write_key(&mut lines, "runtime", "prewarm", Some(enabled.to_string()));
         write_config_file(path, lines.join("\n"))
     }
 
@@ -1646,6 +1615,82 @@ fn parse_size_config(path: &Path, key: &str, value: &str) -> Result<(u32, u32), 
 mod tests {
     use super::*;
 
+    #[test]
+    fn theme_and_vision_preferences_preserve_separate_provider_settings() {
+        let directory = tempfile::tempdir().unwrap();
+        let app = directory.path().join("studio.toml");
+        let ai = directory.path().join("clipforge.toml");
+        fs::write(&app, "# keep app settings\n[paths]\ncache_dir = 'cache'\n").unwrap();
+        fs::write(&ai, TWO_TEXT_PROVIDERS).unwrap();
+        let config = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+        assert_eq!(config.theme, ThemePreference::Dark);
+        assert!(
+            config.separate_vision,
+            "preserve an existing distinct Vision selection"
+        );
+        config.persist_separate_vision(false).unwrap();
+        for theme in ThemePreference::ALL {
+            config.persist_theme(theme).unwrap();
+            let reloaded = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+            assert_eq!(reloaded.theme, theme);
+            assert!(!reloaded.separate_vision);
+            assert_eq!(reloaded.vision, reloaded.text);
+            let moved = reloaded
+                .with_text_provider("deepseek")
+                .unwrap()
+                .with_chat_endpoint("deepseek", ChatEndpointField::Model, "updated-model")
+                .unwrap()
+                .with_chat_endpoint("deepseek", ChatEndpointField::ApiKey, "test-session-key")
+                .unwrap();
+            assert_eq!(moved.vision, moved.text);
+            assert_eq!(moved.vision_provider_id.as_deref(), Some("deepseek"));
+            let restored = moved.with_separate_vision(true);
+            assert_eq!(restored.vision_provider_id, config.vision_provider_id);
+            assert_eq!(restored.vision, config.vision);
+            assert_ne!(restored.vision, restored.text);
+        }
+        config.persist_separate_vision(true).unwrap();
+        let restored = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+        assert_eq!(restored.vision, config.vision);
+        assert_eq!(fs::read_to_string(ai).unwrap(), TWO_TEXT_PROVIDERS);
+        let saved = fs::read_to_string(&app).unwrap();
+        assert!(saved.contains("# keep app settings"));
+        assert!(saved.contains("cache_dir = 'cache'"));
+        assert!(!saved.contains("test-session-key"));
+        assert_eq!(saved.matches("theme =").count(), 1);
+        assert_eq!(saved.matches("separate_vision =").count(), 1);
+        let blocked = directory.path().join("missing-parent").join("parent-file");
+        fs::write(blocked.parent().unwrap(), b"not a directory").unwrap();
+        let mut config = restored;
+        config.app_config_path = Some(blocked);
+        assert!(config.persist_theme(ThemePreference::Light).is_err());
+        assert!(config.persist_separate_vision(false).is_err());
+    }
+
+    #[test]
+    fn vision_links_only_when_selected_and_preserves_an_unconfigured_capability() {
+        let directory = tempfile::tempdir().unwrap();
+        let app = directory.path().join("studio.toml");
+        let ai = directory.path().join("clipforge.toml");
+        fs::write(&ai, "[defaults]\ntext = 'writer'\n[providers.writer]\nkind = 'openai'\ncapabilities = ['text']\nbase_url = 'http://localhost:8080/v1'\nmodel = 'writer'\n").unwrap();
+        let config = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+        assert!(config.separate_vision);
+        assert!(config.vision.is_none());
+        config.persist_separate_vision(false).unwrap();
+        let linked = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+        assert!(!linked.separate_vision);
+        assert_eq!(linked.vision, linked.text);
+        fs::write(&app, "[models]\nseparate_vision = true\n").unwrap();
+        let separate = AppConfig::load_split(Some(app.clone()), Some(ai)).unwrap();
+        assert!(separate.separate_vision);
+        assert!(separate.vision.is_none());
+        fs::write(&app, "[appearance]\ntheme = 'unknown'\n").unwrap();
+        assert!(matches!(
+            AppConfig::load_from(app),
+            Err(ConfigError::Parse { .. })
+        ));
+    }
+
     /// A registry with two `text` providers and one `vision` provider, so a
     /// capability switch has somewhere to go.
     const TWO_TEXT_PROVIDERS: &str = "[defaults]\n\
@@ -1719,89 +1764,6 @@ mod tests {
             .expect("fixture should write");
         let error = AppConfig::load_from(&path).expect_err("malformed sizes must be rejected");
         assert!(error.to_string().contains("sizes.character"), "{error}");
-    }
-
-    #[test]
-    fn generation_defaults_persist_and_round_trip() {
-        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("temp dir should create");
-        let path = dir.join("app.toml");
-        std::fs::write(&path, "# keep me\n[paths]\ncache_dir = \"cache\"\n")
-            .expect("fixture should write");
-
-        let mut defaults = GenerationDefaults {
-            sizes: Default::default(),
-            steps: 6,
-            cfg_scale: 7.0,
-            sample_method: "euler_a".to_owned(),
-            loras: Default::default(),
-        };
-        defaults.sizes.character = Some((384, 576));
-        defaults.loras.kinds.character = Some(LoraBinding {
-            file: "mia-v2.safetensors".into(),
-        });
-        defaults.loras.multiplier = 0.8;
-        AppConfig::persist_generation_defaults_to(&path, &defaults)
-            .expect("defaults should persist");
-
-        let reloaded = AppConfig::load_from(&path).expect("persisted file should load");
-        assert_eq!(reloaded.generation_defaults.steps, 6);
-        assert_eq!(reloaded.generation_defaults.cfg_scale, 7.0);
-        assert_eq!(reloaded.generation_defaults.sample_method, "euler_a");
-        assert_eq!(
-            reloaded.generation_defaults.sizes.character,
-            Some((384, 576))
-        );
-        assert_eq!(
-            reloaded
-                .generation_defaults
-                .loras
-                .kinds
-                .character
-                .map(|b| b.file)
-                .as_deref(),
-            Some("mia-v2.safetensors")
-        );
-        assert_eq!(reloaded.generation_defaults.loras.multiplier, 0.8);
-        // Untouched content survives.
-        let contents = std::fs::read_to_string(&path).expect("file should read");
-        assert!(contents.contains("# keep me"), "{contents}");
-        assert!(contents.contains("cache_dir = \"cache\""), "{contents}");
-    }
-
-    #[test]
-    fn persist_generation_defaults_adds_sections_when_missing() {
-        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("temp dir should create");
-        let path = dir.join("app.toml");
-        std::fs::write(&path, "[paths]\ncache_dir = \"cache\"\n").expect("fixture should write");
-
-        let mut defaults = GenerationDefaults {
-            sizes: Default::default(),
-            steps: 5,
-            cfg_scale: sd::DEFAULT_CFG_SCALE,
-            sample_method: sd::DEFAULT_SAMPLE_METHOD.to_owned(),
-            loras: Default::default(),
-        };
-        defaults.sizes.beat = Some((1024, 576));
-        defaults.loras.kinds.object = Some(LoraBinding {
-            file: "brass.safetensors".into(),
-        });
-        AppConfig::persist_generation_defaults_to(&path, &defaults)
-            .expect("defaults should persist");
-        let reloaded = AppConfig::load_from(&path).expect("persisted file should load");
-        assert_eq!(reloaded.generation_defaults.steps, 5);
-        assert_eq!(reloaded.generation_defaults.sizes.beat, Some((1024, 576)));
-        assert_eq!(
-            reloaded
-                .generation_defaults
-                .loras
-                .kinds
-                .object
-                .map(|b| b.file)
-                .as_deref(),
-            Some("brass.safetensors")
-        );
     }
 
     #[test]
@@ -1922,7 +1884,7 @@ api_key = 'test-kept-key'
         seed_shared_config(&base).unwrap();
         std::fs::write(
             &user,
-            "# retain this comment\n[providers.local]\napi_key_env = 'TEST_LOCAL_KEY'\n",
+            "# retain this comment\n[generation]\nsteps = 7\n[runtime]\nprewarm = true\n[providers.local]\napi_key_env = 'TEST_LOCAL_KEY'\n",
         )
         .unwrap();
         AppConfig::persist_chat_endpoint_to(
@@ -1932,7 +1894,6 @@ api_key = 'test-kept-key'
             "chosen-model",
         )
         .unwrap();
-        AppConfig::persist_prewarm_to(&user, true).unwrap();
         let model_dir = directory.join("existing models");
         AppConfig::persist_model_dir_to(&user, "qwen-image", &model_dir).unwrap();
         let config = AppConfig::load_layered(base.clone(), Some(user.clone())).unwrap();
@@ -1941,15 +1902,11 @@ api_key = 'test-kept-key'
             .clone();
         std::fs::create_dir_all(image_path.parent().unwrap()).unwrap();
         std::fs::write(&image_path, b"existing bytes stay in place").unwrap();
-        let mut defaults = config.generation_defaults.clone();
-        defaults.steps = 7;
-        AppConfig::persist_generation_defaults_to(&user, &defaults).unwrap();
         AppConfig::persist_image_residency_to(&user, "qwen-image", "lowvram").unwrap();
         let config = AppConfig::load_layered(base, Some(user.clone())).unwrap();
         assert_eq!(config.native_image().unwrap().model_dir, model_dir);
         assert_eq!(config.text.as_ref().unwrap().model, "chosen-model");
         assert_eq!(config.generation_defaults.steps, 7);
-        assert!(config.prewarm);
         assert!(crate::runtime::image_artifacts(&config)[0].is_present());
         assert_eq!(
             std::fs::read(&image_path).unwrap(),
@@ -1958,6 +1915,7 @@ api_key = 'test-kept-key'
         let saved = std::fs::read_to_string(user).unwrap();
         assert!(saved.contains("retain this comment"));
         assert!(saved.contains("TEST_LOCAL_KEY"));
+        assert!(saved.contains("prewarm = true"));
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -2503,24 +2461,15 @@ api_key = 'test-kept-key'
     }
 
     #[test]
-    fn a_nested_lora_binding_survives_the_persist_and_reload_cycle() {
+    fn existing_nested_lora_bindings_remain_available_to_cli_generation() {
         let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir should create");
         let path = dir.join("app.toml");
-        std::fs::write(&path, "[paths]\ncache_dir = \"cache\"\n").expect("fixture should write");
-
-        let mut defaults = GenerationDefaults {
-            sizes: Default::default(),
-            steps: 25,
-            cfg_scale: sd::DEFAULT_CFG_SCALE,
-            sample_method: sd::DEFAULT_SAMPLE_METHOD.to_owned(),
-            loras: Default::default(),
-        };
-        defaults.loras.kinds.character = Some(LoraBinding {
-            file: "characters/mia-v2.safetensors".into(),
-        });
-        AppConfig::persist_generation_defaults_to(&path, &defaults)
-            .expect("defaults should persist");
+        std::fs::write(
+            &path,
+            "[lora]\ncharacter = 'characters/mia-v2.safetensors'\n",
+        )
+        .expect("fixture should write");
         let reloaded = AppConfig::load_from(&path).expect("persisted file should load");
         assert_eq!(
             reloaded
@@ -2804,24 +2753,6 @@ api_key = 'test-kept-key'
         let contents = std::fs::read_to_string(&path).expect("read");
         assert_eq!(contents.matches("residency =").count(), 1, "{contents}");
         assert!(contents.contains("residency = \"resident\""), "{contents}");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn prewarm_persists_and_round_trips_through_the_file_config() {
-        let dir = std::env::temp_dir().join(format!("svs-prewarm-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        let path = dir.join("app.toml");
-
-        AppConfig::persist_prewarm_to(&path, true).expect("persist");
-        let parsed: FileConfig =
-            toml::from_str(&std::fs::read_to_string(&path).expect("read")).expect("parse");
-        assert!(parsed.runtime.prewarm);
-
-        AppConfig::persist_prewarm_to(&path, false).expect("persist");
-        let parsed: FileConfig =
-            toml::from_str(&std::fs::read_to_string(&path).expect("read")).expect("parse");
-        assert!(!parsed.runtime.prewarm);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

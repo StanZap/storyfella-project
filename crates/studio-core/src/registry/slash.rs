@@ -1,4 +1,4 @@
-//! Slash-command parsing: free text from the canvas prompt bar → typed
+//! Slash-command parsing: command text → typed
 //! operations (the closed vocabulary from [`crate::registry::ops`]).
 //!
 //! Supported syntax (the `svs` CLI flags map 1:1):
@@ -20,8 +20,8 @@
 //! bounds; without it, the artifact gets the kind default
 //! ([`ArtifactKind::default_size`]).
 //!
-//! Smart punctuation is normalized because the composer's text input
-//! (WebKit) autocorrects `--` to `—` and `"` to `“ ”`: em dashes become `--`,
+//! Smart punctuation is normalized for commands pasted from text editors:
+//! em dashes become `--`,
 //! en dashes `-`, curly quotes behave like straight ones. An unquoted token
 //! starting with a dash is an option — a lone dash (a prose separator) stays
 //! in the description, but an unknown option is rejected with the valid list
@@ -51,120 +51,64 @@ pub fn is_slash_command(input: &str) -> bool {
     input.trim_start().starts_with('/')
 }
 
-/// Serialize one argument without losing spaces, quotes or smart punctuation.
-/// Shared by UI-generated commands and completion insertion.
-pub fn quote_argument(value: &str) -> String {
-    if !value.is_empty()
-        && !value.starts_with('-')
-        && !value
-            .chars()
-            .any(|c| c.is_whitespace() || matches!(c, '\\' | '"' | '“' | '”' | '—' | '–'))
-    {
-        return value.to_owned();
-    }
-    let mut quoted = String::from("\"");
-    for c in value.chars() {
-        if matches!(c, '\\' | '"' | '“' | '”' | '—' | '–') {
-            quoted.push('\\');
-        }
-        quoted.push(c);
-    }
-    quoted.push('"');
-    quoted
-}
-
 /// One operation's grammar: the shape the parser expects and the flags it
 /// accepts.
 ///
-/// This is the single source of truth for three consumers — the parser's
-/// "unknown command" message, the command bar's signature help, and
-/// completion. A flag added to a `parse_*` function without being added
-/// here will not be offered, which is what the `flags_match_parsers` test
-/// guards against.
+/// The parser's diagnostic vocabulary. The flag contract is checked against
+/// accepted commands by `flags_match_parsers`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct OpSpec {
+struct OpSpec {
     /// Including the leading slash.
     pub name: &'static str,
-    /// Positional parameters after the operation itself.
-    pub params: &'static [&'static str],
     pub flags: &'static [&'static str],
-    pub summary: &'static str,
 }
 
-pub const OPS: &[OpSpec] = &[
+const OPS: &[OpSpec] = &[
     OpSpec {
         name: "/create",
-        params: &["<kind>", "<description>"],
         flags: &["--name", "--size", "--steps", "--lora"],
-        summary: "new artifact",
     },
     OpSpec {
         name: "/variant",
-        params: &["c:<ref>", "<description>"],
         flags: &["--name", "--axis", "--size", "--steps", "--lora"],
-        summary: "new look from a base",
     },
     OpSpec {
         name: "/regenerate",
-        params: &["c:<ref>", "[prompt]"],
         flags: &["--size", "--steps", "--lora"],
-        summary: "reroll from the description",
     },
     OpSpec {
         name: "/set",
-        params: &["c:<ref>"],
         flags: &["--steps", "--seed", "--size"],
-        summary: "stored generation defaults; renders nothing",
     },
     OpSpec {
         name: "/resize",
-        params: &["c:<ref>", "<WxH>"],
         flags: &[],
-        summary: "set the artifact canvas",
     },
     OpSpec {
         name: "/modify",
-        params: &["c:<ref>", "<instruction>"],
         flags: &["--size", "--steps", "--lora"],
-        summary: "instruction edit against the description",
     },
     OpSpec {
         name: "/describe",
-        params: &["c:<ref>", "<description>"],
         flags: &[],
-        summary: "make a look canonical",
     },
     OpSpec {
         name: "/revert",
-        params: &["c:<ref>"],
         flags: &[],
-        summary: "activate the previous image",
     },
     OpSpec {
         name: "/attach-lora",
-        params: &["c:<ref>", "<lora>"],
         flags: &["--multiplier"],
-        summary: "bind an adapter to an artifact",
     },
     OpSpec {
         name: "/lora-scale",
-        params: &["<lora>", "<multiplier>"],
         flags: &[],
-        summary: "change an adapter's weight",
     },
     OpSpec {
         name: "/lora-remove",
-        params: &["<lora>"],
         flags: &[],
-        summary: "detach an adapter",
     },
 ];
-
-/// Looks up an operation by name, with or without the leading slash.
-pub fn op_spec(name: &str) -> Option<&'static OpSpec> {
-    let name = name.strip_prefix('/').unwrap_or(name);
-    OPS.iter().find(|op| &op.name[1..] == name)
-}
 
 /// The vocabulary as a user-facing list, for error messages.
 fn op_list() -> String {
@@ -210,7 +154,7 @@ fn parse_create(tokens: &[Token]) -> Result<Operation, SlashError> {
         SlashError("create needs a kind: /create character <description>".to_owned())
     })?;
     let kind = ArtifactKind::from_str(&kind.text).map_err(SlashError)?;
-    let (description, flags) = split_flags(tokens, 2, &["--name", "--size", "--steps", "--lora"])?;
+    let (description, flags) = split_flags(tokens, 2)?;
     let name = flag_value(&flags, "--name").map(str::to_owned);
     let size = match flag_value(&flags, "--size") {
         Some(value) => Some(parse_size(value).map_err(SlashError)?),
@@ -239,11 +183,7 @@ fn parse_create(tokens: &[Token]) -> Result<Operation, SlashError> {
 
 fn parse_variant(tokens: &[Token]) -> Result<Operation, SlashError> {
     let target = parse_ref(tokens, "variant")?;
-    let (description, flags) = split_flags(
-        tokens,
-        2,
-        &["--name", "--axis", "--size", "--steps", "--lora"],
-    )?;
+    let (description, flags) = split_flags(tokens, 2)?;
     let name = flag_value(&flags, "--name").map(str::to_owned);
     let axis = match flag_value(&flags, "--axis") {
         Some(value) => Some(VariantAxis::from_str(value).map_err(SlashError)?),
@@ -277,7 +217,7 @@ fn parse_variant(tokens: &[Token]) -> Result<Operation, SlashError> {
 
 fn parse_describe(tokens: &[Token]) -> Result<Operation, SlashError> {
     let target = parse_ref(tokens, "describe")?;
-    let (description, _) = split_flags(tokens, 2, &[])?;
+    let (description, _) = split_flags(tokens, 2)?;
     if description.trim().is_empty() {
         return Err(SlashError(
             "describe needs a description: /describe c:<ref> <description>".to_owned(),
@@ -291,7 +231,7 @@ fn parse_describe(tokens: &[Token]) -> Result<Operation, SlashError> {
 
 fn parse_regenerate(tokens: &[Token]) -> Result<Operation, SlashError> {
     let target = parse_ref(tokens, "regenerate")?;
-    let (description, flags) = split_flags(tokens, 2, &["--size", "--steps", "--lora"])?;
+    let (description, flags) = split_flags(tokens, 2)?;
     let prompt = if description.trim().is_empty() {
         None
     } else {
@@ -345,7 +285,7 @@ fn parse_resize(tokens: &[Token]) -> Result<Operation, SlashError> {
 /// alone", `Some(None)` means "unpin it".
 fn parse_set(tokens: &[Token]) -> Result<Operation, SlashError> {
     let target = parse_ref(tokens, "set")?;
-    let (extra, flags) = split_flags(tokens, 2, &["--steps", "--seed", "--size"])?;
+    let (extra, flags) = split_flags(tokens, 2)?;
     let reset_size = match flag_value(&flags, "--size") {
         Some("auto") => true,
         None => false,
@@ -390,7 +330,7 @@ fn parse_set(tokens: &[Token]) -> Result<Operation, SlashError> {
 
 fn parse_modify(tokens: &[Token]) -> Result<Operation, SlashError> {
     let target = parse_ref(tokens, "modify")?;
-    let (description, flags) = split_flags(tokens, 2, &["--size", "--steps", "--lora"])?;
+    let (description, flags) = split_flags(tokens, 2)?;
     if description.trim().is_empty() {
         return Err(SlashError("modify needs a description".to_owned()));
     }
@@ -426,7 +366,7 @@ fn parse_attach_lora(tokens: &[Token]) -> Result<Operation, SlashError> {
                     .to_owned(),
             )
         })?;
-    let (_, flags) = split_flags(tokens, 3, &["--multiplier"])?;
+    let (_, flags) = split_flags(tokens, 3)?;
     let multiplier = match flag_value(&flags, "--multiplier") {
         Some(value) => Some(parse_multiplier(value).map_err(SlashError)?),
         None => None,
@@ -528,15 +468,19 @@ fn parse_ref(tokens: &[Token], command: &str) -> Result<Ref, SlashError> {
         })
 }
 
-/// Splits `tokens[start..]` into (description, flags). Tokens in `valid`
+/// Splits `tokens[start..]` into (description, flags). Known operation flags
 /// are consumed with the token that follows as their value; any other
 /// unquoted dash-prefixed token is rejected so a mistyped option can never
 /// silently become part of the description.
 fn split_flags(
     tokens: &[Token],
     start: usize,
-    valid: &[&str],
 ) -> Result<(String, HashMap<String, Vec<String>>), SlashError> {
+    let valid = tokens
+        .first()
+        .and_then(|token| OPS.iter().find(|op| op.name == token.text))
+        .map(|op| op.flags)
+        .ok_or_else(|| SlashError("unknown operation while parsing flags".into()))?;
     let mut description = Vec::new();
     let mut flags: HashMap<String, Vec<String>> = HashMap::new();
     let mut index = start;
@@ -621,92 +565,40 @@ fn parse_size(value: &str) -> Result<(u32, u32), String> {
     Ok((width, height))
 }
 
-/// A byte range into the original input.
-///
-/// Spans are what make an editing surface possible: highlighting, `c:`
-/// chips, completion and error underlines all need to know *where* a token
-/// sits, not just what it says. They index the input as typed — before
-/// smart-punctuation normalization — so `—` occupies its own three bytes
-/// even though its token text is `--`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Span {
-    pub start: usize,
-    pub end: usize,
-}
-
-impl Span {
-    pub fn empty_at(offset: usize) -> Self {
-        Self {
-            start: offset,
-            end: offset,
-        }
-    }
-
-    /// Whether `cursor` sits inside the span or at either edge. Both edges
-    /// count: a caret touching the end of a token is still "in" it, which is
-    /// what typing at the end of a word means.
-    pub fn contains(&self, cursor: usize) -> bool {
-        cursor >= self.start && cursor <= self.end
-    }
-
-    pub fn len(&self) -> usize {
-        self.end.saturating_sub(self.start)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.start == self.end
-    }
-}
-
 /// One token of the command line.
 #[derive(Clone, Debug)]
-pub struct Token {
+struct Token {
     pub text: String,
     /// Whether the token was wrapped in quotes (quoted tokens are content,
     /// never options, even when they start with a dash).
     pub quoted: bool,
-    /// Where the token sits in the original input, quotes included.
-    pub span: Span,
 }
 
 /// Splits on whitespace, grouping `"quoted segments"` (straight or curly
 /// quotes) into single tokens. Smart punctuation is normalized: `—` → `--`,
 /// `–` → `-`. Unbalanced quotes parse as plain text.
 ///
-/// This is the only tokenizer. The command bar highlights with it rather
-/// than carrying its own, so the two can never disagree about where a
-/// token starts or whether it was quoted.
-pub fn tokenize(input: &str) -> Vec<Token> {
+fn tokenize(input: &str) -> Vec<Token> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut quoted = false;
     let mut in_quotes = false;
     let mut escaped = false;
-    let mut start: Option<usize> = None;
-    let mut end = 0usize;
-
-    for (index, character) in input.char_indices() {
-        let after = index + character.len_utf8();
+    for character in input.chars() {
         // Inside quotes a backslash escapes the next character, so a
         // description can contain a quote. Without this the language cannot
         // express `a "storm" coat` at all.
         if escaped {
-            start.get_or_insert(index);
-            end = after;
             current.push(character);
             escaped = false;
             continue;
         }
         if character == '\\' && in_quotes {
-            start.get_or_insert(index);
-            end = after;
             escaped = true;
             continue;
         }
         match character {
             '"' | '“' | '”' => {
-                start.get_or_insert(index);
-                end = after;
                 if in_quotes {
                     in_quotes = false;
                     quoted = true;
@@ -715,13 +607,9 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                 }
             }
             '—' => {
-                start.get_or_insert(index);
-                end = after;
                 current.push_str("--");
             }
             '–' => {
-                start.get_or_insert(index);
-                end = after;
                 current.push('-');
             }
             character if character.is_whitespace() && !in_quotes => {
@@ -729,18 +617,11 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     tokens.push(Token {
                         text: std::mem::take(&mut current),
                         quoted,
-                        span: Span {
-                            start: start.unwrap_or(index),
-                            end,
-                        },
                     });
                     quoted = false;
                 }
-                start = None;
             }
             character => {
-                start.get_or_insert(index);
-                end = after;
                 current.push(character);
             }
         }
@@ -749,10 +630,6 @@ pub fn tokenize(input: &str) -> Vec<Token> {
         tokens.push(Token {
             text: current,
             quoted,
-            span: Span {
-                start: start.unwrap_or(end),
-                end,
-            },
         });
     }
     tokens
@@ -765,9 +642,7 @@ mod tests {
 
     #[test]
     fn quotes_can_be_escaped_inside_a_quoted_argument() {
-        // The inspector emits descriptions with `{:?}`, which escapes
-        // embedded quotes; without escape handling the text came back
-        // mangled as `\storm\`.
+        // Quoted descriptions can contain literal quotes without mangling.
         let tokens = tokenize(r#"/describe c:mara "a \"storm\" coat""#);
         let texts: Vec<&str> = tokens.iter().map(|token| token.text.as_str()).collect();
         assert_eq!(texts, ["/describe", "c:mara", r#"a "storm" coat"#]);
@@ -786,8 +661,7 @@ mod tests {
     #[test]
     fn flags_match_parsers() {
         // Every flag advertised in OPS must be one the parser accepts.
-        // Offering a flag that fails on submit would make completion a trap,
-        // and the two lists live in different places, so pin them together.
+        // Pin the diagnostic vocabulary to the actual accepted flags.
         let base = |op: &str| match op {
             "/create" => "/create character a description",
             "/variant" => "/variant c:x a description",
@@ -830,8 +704,7 @@ mod tests {
 
     #[test]
     fn every_operation_in_the_table_parses() {
-        // A name in OPS that parse_slash does not dispatch would be offered
-        // by completion and then fail as "unknown command".
+        // Every operation named in diagnostics must actually parse.
         for op in OPS {
             let error = parse_slash(op.name).unwrap_err();
             assert!(

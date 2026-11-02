@@ -73,7 +73,7 @@ pub fn GuideCard(mut session: Signal<Option<GuideSession>>) -> Element {
             let speed = active.speed;
             let typing_cps = active.typing_cps;
             rsx! {
-                div { class: "fixed bottom-6 right-6 z-40 w-[360px] overflow-hidden rounded-2xl bg-[#101014] shadow-[0_30px_90px_rgba(0,0,0,.55)] ring-1 ring-white/[0.09]",
+                div { class: "fixed bottom-6 right-6 z-40 w-[360px] overflow-hidden rounded-2xl bg-[var(--studio-panel)] shadow-[0_30px_90px_rgba(0,0,0,.55)] ring-1 ring-white/[0.09]",
                     div { class: "flex items-center justify-between border-b border-white/[0.06] px-4 py-3",
                         div { class: "flex min-w-0 items-center gap-2.5",
                             span { class: "size-2 shrink-0 animate-pulse rounded-full bg-violet-400" }
@@ -182,7 +182,7 @@ pub fn GuideCard(mut session: Signal<Option<GuideSession>>) -> Element {
                 }
             });
             rsx! {
-                div { class: "fixed bottom-6 right-6 z-40 w-[360px] overflow-hidden rounded-2xl bg-[#101014] shadow-[0_30px_90px_rgba(0,0,0,.55)] ring-1 ring-white/[0.09]",
+                div { class: "fixed bottom-6 right-6 z-40 w-[360px] overflow-hidden rounded-2xl bg-[var(--studio-panel)] shadow-[0_30px_90px_rgba(0,0,0,.55)] ring-1 ring-white/[0.09]",
                     div { class: "flex items-center justify-between border-b border-white/[0.06] px-4 py-3",
                         div { class: "min-w-0",
                             p { class: "truncate text-[11px] font-semibold text-zinc-100", "{active.plan.name}" }

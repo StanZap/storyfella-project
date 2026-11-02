@@ -67,8 +67,9 @@ format upgrade on opening.
 
 SF-PLAN-03 adds shared catalog operations against the same persisted identities.
 Cross-app refresh and conflict merging are implemented in SF-PLAN-04 below.
-Contextual launch and ordinary linked-canvas Save are implemented below. Studio's
-production controls remain through SF-PLAN-07.
+Contextual launch and ordinary linked-canvas Save are implemented below.
+SF-PLAN-07 removes Studio's visual production controls; Studio retains catalog
+definitions, descriptions, saved previews/history and Open in Atelier.
 
 Storage acceptance moves an adopted populated folder, removes the original
 source/images and reopens it: exact CRLF/Unicode source, project and artifact IDs,
@@ -222,7 +223,7 @@ real storage-worker test. Validation logs use `.svs-e2e/logs/catalog-sync-*`.
 
 ## Open in Atelier
 
-SF-PLAN-05 · 2026-11-01. Canvas details and resolved Writer references expose
+SF-PLAN-05 · 2026-11-01. Assets details and resolved Writer references expose
 **Open in Atelier**; the Writer toolbar also opens the current scene. The action
 saves source/catalog changes and description drafts through the normal guarded
 command before delivery. Save errors retain work and prevent launch. Standalone

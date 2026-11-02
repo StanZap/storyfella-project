@@ -394,11 +394,53 @@ language support can follow the initial shared-project workflow.
   Native acceptance (2026-11-02, user-reported): saving artwork in Atelier
   updates its image in Studio. This verifies the Save/refresh round trip;
   automated tests cover the failure and revision-preservation boundaries above.
-- [ ] **SF-PLAN-07 — Remove visual creation workflows from Studio.** Once the
+- [x] **SF-PLAN-07 — Remove visual creation workflows from Studio.** Once the
   shared workflow works, remove migrated controls and unused implementation.
   Review shared core and CLI callers before removing operations. Done when
   writing → Atelier → save → Studio preview works, existing project
   data is preserved and no creation controls lead to missing functionality.
+  Evidence (2026-11-02): Studio retains source/catalog definitions, explicit
+  variation definitions, reference-aware names, description drafts, saved
+  previews/history, readiness and Open in Atelier. Removed the visual composer,
+  image generation/edit/resize/adapter controls, promote/revert/rerun actions,
+  approved-package import UI and obsolete generation guides. Guide commands
+  preflight complete batches and run without an image backend; custom visual
+  guides fail on load before making edits. Unused slash editor completion,
+  request-setting persistence helpers, image prewarm and unused GUI dependencies
+  are removed. Existing source,
+  artwork, revisions, provenance and CLI configuration loading remain intact;
+  shared core/CLI visual operations and Atelier export retain their callers.
+  Shared machine service/model administration and Writer workflows remain.
+  Regression tests cover command rejection/batch atomicity, guide loading,
+  saved active-image selection and existing authoring/save/refresh contracts.
+  The user verified the Atelier Save → Studio image update before cutover;
+  final native verification of the simplified Studio UI remains assigned to them.
+  Workspace tests/all-target checks, strict Studio/core/xtask Clippy, formatting
+  and the Dioxus desktop build pass. Logs: `.svs-e2e/logs/studio-authoring-*`.
+  UI refinements (2026-11-02): reusable single-line/multiline inline metadata
+  fields replace permanent forms. Pencil starts editing, Enter confirms one
+  field, Escape discards and Shift+Enter inserts multiline text. Errors retain
+  drafts; description confirmation preserves other drafts and existing images.
+  Saved-artwork previews use a light matte with session-level Light/Dark/
+  Checkerboard choices, without changing image alpha or playback resources.
+  See [components](ui-components.md) and the current design record. Native
+  acceptance remains with the user; logs: `.svs-e2e/logs/inline-edit-*`.
+  Settings/naming refinements (2026-11-02): Canvas is now Assets throughout
+  Studio, guides and navigation (`g a`). General persists Dark/Light/System
+  appearance; System responds to OS changes and writing/review editors share
+  the palette. Models can link Vision to Text or show a separate configuration,
+  retaining existing provider settings and credentials. Core tests cover
+  persistence/reload, linked updates, restored independent settings and failed
+  writes; UI bridge tests cover live System changes. Native visual acceptance
+  remains with the user. Logs: `.svs-e2e/logs/themes-models-*`.
+  Workspace checks/tests, strict Studio/core Clippy, format, all five UI bridge
+  tests and the Dioxus desktop build pass. Native window appearance follows the
+  same Dark/Light/System preference.
+  In-scope links (2026-11-02) now use compact icon/type/name rows with one
+  whole-row target and no redundant action text. Shared `AssetIcon` covers all
+  seven catalog kinds and is reused for gallery headings and placeholders;
+  its API is in the component catalog. Native visual acceptance stays with
+  the user. Logs: `.svs-e2e/logs/asset-icons-*`.
 - [ ] **SF-PLAN-08 — Support multiple DSL source files.** Specify the entry point,
   modules/imports, shared definitions, resolution, ordering and cycle diagnostics
   before implementing a project graph. Extend Studio, compiler, CLI and LSP

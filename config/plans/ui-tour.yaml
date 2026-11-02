@@ -1,116 +1,23 @@
-# A narrated walk through the two screens, start to finish.
-#
-# Every step here *does* something you can see — a caret moves and the panel
-# re-derives, a focus ring travels, a tile goes into its rendering state, the
-# palette opens. Narration that needed no action uses `say`, so the app is
-# never faking activity to carry a line of text.
-#
-# Runs against the sample project, so nothing waits on a backend. The one
-# render is `simulate_render`: it shows the in-flight UX using the picture
-# the artifact already has. No model runs and no image is produced.
-#
-#   Guide mode — watch it drive the app and narrate each step.
-#   Check mode — exercise the same actions and report state assertions.
 name: "Story authoring walkthrough"
-description: "Follow a lighthouse story from its .sf source to asset references, the canvas, and character canon. About two minutes; no models needed."
-speed_ms: 3200
-typing_cps: 40
+description: "Source, references, saved artwork and asset definitions. No image generation."
+speed_ms: 900
+typing_cps: 80
 steps:
   - sample_project: true
-    message: "Watch the entire lighthouse story being typed from a blank Writer. The Typing slider controls its speed. Twelve base artifacts and five variants are sample fixtures; no model runs."
-    wait_ms: 5000
-
-  # ------------------------------------------------------------- the story
+    message: "Story writing and asset references stay in Studio. Visual production opens in Atelier."
   - go_story: true
-    message: "Open Story to see the editable .sf source. Scenes contain beats, dialogue, and directions. The scope and reference panels follow the caret."
-    wait_ms: 5000
-
-  - type_story: |2
-
-        beat signal
-          prop: brass_lantern
-          tam: "If the light goes out, follow my voice."
-    message: "Watch a new beat appear character by character. Adjust Typing in the guide card to change its speed; Pause stops typing as well as narration."
-    wait_ms: 4500
-
-  - caret: 9
-    message: "Move into the harbor's arrival beat. mara and tam resolve to existing character artifacts; resolved references can show an image when one exists."
-    wait_ms: 5000
-
-  - caret: 30
-    message: "Now move to the lighthouse scene. keeper_elias and lighthouse_tower are pending: the story names them, but their artifacts still need to be created."
-    wait_ms: 5000
-
-  - say: true
-    message: "You can write ahead of the artwork. The pending list gives each missing asset a Create action. Pause the guide whenever you want to inspect or edit something."
-    wait_ms: 5000
-
-  # ------------------------------------------------------------ the canvas
-  - go_canvas: true
-    message: "Open Canvas to work with the story's assets. Some tiles have a stand-in picture; others are placeholders waiting for artwork."
-    wait_ms: 5000
-
-  - cursor: "mara"
-    message: "Focus mara. Three variants stack behind her tile: oilskins, lantern light, and a younger version. Keyboard navigation moves the same focus ring."
-    wait_ms: 4500
-
-  - cursor: "isak"
-    message: "Focus isak to see the rendering badge and dimmed tile. This is a sample of the busy state, with no live generation job behind it."
-    wait_ms: 4500
-
-  - simulate_render: "mara"
-    message: "Watch mara enter and leave the rendering state. This simulation reuses the existing picture so you can judge progress feedback without loading a model."
-    wait_ms: 4500
-
-  # ------------------------------------------------------------ the detail
-  - open: "mara"
-    message: "Open mara's detail view. The picture and revision history sit beside the description and generation controls. The sample picture is a stand-in, not a character portrait."
-    wait_ms: 5000
-
-  - say: true
-    message: "CANON is the character's lasting description. Generation steps and a pinned seed are stored with the artifact, ready for the next image request."
-    wait_ms: 4500
-
-  - say: true
-    message: "Revision badges separate canon from experiments. An instruction edit tries a change; Promote makes an experiment part of canon. These sample revisions let you inspect the layout."
-    wait_ms: 5000
-
-  # ------------------------------------------------- one vocabulary, twice
-  - compose: "/set c:mara --steps 8"
-    message: "Type a real command to set mara's generation steps to 8. Watch the inspector update: the command bar and controls share the same artifact state."
-    wait_ms: 4500
-  - expect_no_error: true
-    wait_ms: 0
-
-  - compose: "/describe c:mara A harbourmaster in her fifties, silver crop, storm-grey oilskin"
-    message: "Now rewrite mara's canon description. This changes the saved character text; producing a new picture is a separate generation action."
-    wait_ms: 4500
-  - expect_no_error: true
-    wait_ms: 0
-
-  - back: true
-    message: "Return to the grid. You can move between the whole cast and an individual artifact without leaving the project."
-    wait_ms: 3500
-
+  - caret: 4
+    message: "Resolved references lead to their asset previews and Open in Atelier."
+  - go_assets: true
+  - open: mara
+    message: "Inspect saved artwork and authoring metadata. Image editing and generation belong to Atelier."
+  - command: "/describe c:mara A harbourmaster in her fifties, silver crop, storm-grey oilskin"
   - palette: true
-    message: "Open the command palette to browse actions and reach artifacts by name. This is another entry point into the same command vocabulary."
-    wait_ms: 4500
-
+    message: "The palette offers navigation, definitions and project actions."
   - palette: false
-    wait_ms: 1000
-
   - go_story: true
-    message: "Return to the story. Its text lives in a .sf file beside the project database; edits autosave, and Reload .sf and Save copy are available above the editor."
-    wait_ms: 5000
-
-  - caret: 17
-    message: "The handoff beat ties dialogue to brass_lantern. Canvas follows the valid source sequence; removed declarations keep their artwork detached. Preview plays stories whose referenced artwork is ready."
-    wait_ms: 5000
-
-  - expect_artifact: { name: "mara", kind: character }
-    wait_ms: 0
-  - expect_story_sequence: [harbor, harbor.arrival, harbor.handoff, counting_house, counting_house.the_ledger, lighthouse, lighthouse.climb, lighthouse.the_wreck, lighthouse.signal]
-    wait_ms: 0
+  - type_story: |2
+        beat signal
+          narrate: The lamp answers the sea.
+  - expect_artifact: { name: mara, kind: character }
   - expect_no_error: true
-    message: "Your turn: edit a line of dialogue, move the caret between beats, or inspect a variant in Canvas. Start with how the writing and asset references feel."
-    wait_ms: 6000

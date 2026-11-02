@@ -118,6 +118,7 @@ pub fn SearchInput(
     #[props(default)] controls: Option<String>,
     #[props(default)] title: Option<String>,
     #[props(default = "Cancel search".to_owned())] cancel_label: String,
+    #[props(default)] onkeydown: Option<EventHandler<KeyboardEvent>>,
 ) -> Element {
     let cancel = EventHandler::new(move |_| {
         if disabled {
@@ -139,6 +140,8 @@ pub fn SearchInput(
                     event.prevent_default();
                     event.stop_propagation();
                     cancel.call(());
+                } else if let Some(handler) = onkeydown {
+                    handler.call(event);
                 }
             })),
         }

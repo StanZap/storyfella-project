@@ -1,12 +1,12 @@
 mod actions;
 mod art_actions;
-mod artwork_import;
+mod artwork;
+pub mod assets;
 mod atelier;
-pub mod canvas;
 mod close;
-mod cmdbar;
 pub(crate) mod components;
 mod dialog;
+mod editable;
 pub mod gallery;
 mod guide;
 mod icons;
@@ -21,6 +21,7 @@ mod settings;
 pub mod shortcuts;
 mod sync;
 mod text_input;
+pub(crate) mod theme;
 pub mod writer;
 mod writing_assistant;
 mod writing_review;
@@ -36,7 +37,7 @@ use std::{
 use dioxus::prelude::*;
 
 use storyfella_studio_core::config::AppConfig;
-use storyfella_studio_core::errors::{CodedError, ReportedError};
+use storyfella_studio_core::errors::ReportedError;
 use storyfella_studio_core::registry::backend::CreativeBackend;
 
 use crate::{
@@ -45,7 +46,7 @@ use crate::{
     state::AppState,
 };
 
-use canvas::Canvas;
+use assets::Assets;
 use components::{ErrorDetailsHost, ErrorToast, IconButton};
 use guide::GuideCard;
 use icons::{Icon, IconName};
@@ -129,7 +130,7 @@ pub struct GridCursor(pub Signal<usize>);
 pub enum AppScreen {
     Projects,
     Writer,
-    Canvas,
+    Assets,
     Preview,
     Plans,
     Settings,
@@ -141,7 +142,7 @@ impl AppScreen {
 
     pub const ALL: [Self; 6] = [
         Self::Writer,
-        Self::Canvas,
+        Self::Assets,
         Self::Preview,
         Self::Projects,
         Self::Plans,
@@ -151,7 +152,7 @@ impl AppScreen {
         match self {
             Self::Projects => "Projects",
             Self::Writer => "Story",
-            Self::Canvas => "Canvas",
+            Self::Assets => "Assets",
             Self::Preview => "Preview",
             Self::Plans => "Plans",
             Self::Settings => "Settings",
@@ -161,7 +162,7 @@ impl AppScreen {
         match self {
             Self::Projects => IconName::Folder,
             Self::Writer => IconName::Book,
-            Self::Canvas => IconName::Image,
+            Self::Assets => IconName::Image,
             Self::Preview => IconName::Play,
             Self::Plans => IconName::Workflow,
             Self::Settings => IconName::Settings,
@@ -176,11 +177,9 @@ impl AppScreen {
 fn start_plan(
     config: AppConfig,
     app_state: Signal<AppState>,
-    backend: Signal<CreativeBackend>,
     defaults: Signal<storyfella_studio_core::registry::GenerationDefaults>,
     screen: Signal<AppScreen>,
     playback: Signal<storyfella_playback_ui::PlaybackModel>,
-    composer: Signal<String>,
     writer_caret: WriterCaret,
     grid_cursor: GridCursor,
     palette_open: Signal<bool>,
@@ -201,11 +200,9 @@ fn start_plan(
     let ctx = DriveContext {
         config,
         app_state,
-        backend,
         defaults,
         screen,
         playback,
-        composer,
         writer_caret,
         grid_cursor,
         palette_open,
@@ -219,8 +216,8 @@ pub fn Workspace(
     app_state: Signal<AppState>,
     #[props(default = None)] plan_launch: Option<PlanLaunch>,
 ) -> Element {
-    // Land on Projects so a story is opened before any canvas work — the
-    // canvas cannot save until a project file is bound.
+    // Land on Projects so a story is opened before working with assets — the
+    // asset catalog cannot save until a project file is bound.
     let mut screen = use_signal(|| AppScreen::Projects);
     let mut sidebar_visible = use_signal(|| true);
     use_context_provider(|| screen);
@@ -235,7 +232,7 @@ pub fn Workspace(
     }));
     let backend_config = config.clone();
     // The backend lives in a signal so the Settings model picker can swap
-    // the planner model and the canvas picks it up on the next op.
+    // the writing model; provider edits rebuild its client.
     let backend = use_signal(|| CreativeBackend::new(&backend_config));
     dioxus::desktop::use_asset_handler("generated", move |request, responder| {
         let path = registered_asset_path(&app_state.peek().registry, request.uri().path());
@@ -246,21 +243,8 @@ pub fn Workspace(
     let autosave = use_signal(AutosaveMode::default);
     use_context_provider(|| autosave);
 
-    // Generation defaults (steps, per-kind sizes, LoRA bindings): shared
-    // with the canvas ops and editable in Settings, which persists them.
+    // Shared operation defaults for authoring guides; no image production UI.
     let defaults = use_signal(|| config.generation_defaults.clone());
-    use_context_provider(|| defaults);
-    let persisted_defaults = use_signal(|| config.generation_defaults.clone());
-    use_context_provider(|| settings::PersistedDefaults(persisted_defaults));
-
-    // Prewarm: start the resident generation server when a project opens, so
-    // the first generation is not a multi-minute weight load. Editable in
-    // Settings, which persists it to the user config.
-    let prewarm = use_signal(|| config.prewarm);
-    use_context_provider(|| prewarm);
-
-    // Image residency (`resident`/`lowvram`): a launch-time choice, shared so
-    // Settings can change it; a running server restarts into the new mode.
     let image_residency = use_signal(|| {
         config
             .image
@@ -272,17 +256,14 @@ pub fn Workspace(
 
     // The app-wide error surface: every failure is reported here (coded
     // log + banner + details modal), whatever screen is showing.
-    let mut error_report = use_signal(|| None::<ReportedError>);
+    let error_report = use_signal(|| None::<ReportedError>);
     use_context_provider(|| error_report);
-
-    // The canvas composer text: owned here so the driver can type into it
-    // (the visible fidelity of a `compose` step), consumed by the canvas.
-    let composer = use_signal(String::new);
-    use_context_provider(|| composer);
 
     // Whether the command palette is showing. Owned here because the
     // shortcut that toggles it is app-wide.
     let palette_open = use_signal(|| false);
+    let artwork_background = use_signal(artwork::PreviewBackground::default);
+    use_context_provider(|| artwork_background);
     use_context_provider(|| palette_open);
 
     // The two cursors — the writer's caret line and the grid's keyboard
@@ -331,11 +312,9 @@ pub fn Workspace(
             start_plan(
                 hook_config,
                 app_state,
-                backend,
                 defaults,
                 screen,
                 playback,
-                composer,
                 writer_caret,
                 grid_cursor,
                 palette_open,
@@ -345,29 +324,6 @@ pub fn Workspace(
                 mode,
                 exit_on_done,
             );
-        });
-    });
-
-    // Prewarm on project open: once per opened project, when the toggle is on,
-    // start the resident server in the background. A failure is logged, not
-    // surfaced — the first generation would report the same error anyway.
-    let prewarm_backend = backend;
-    let native_image_selected = config.image.is_some();
-    let mut prewarmed_for = use_signal(|| None::<PathBuf>);
-    use_effect(move || {
-        let path = app_state.read().project_path.clone();
-        let Some(path) = path else {
-            return;
-        };
-        if !native_image_selected || !prewarm() || prewarmed_for() == Some(path.clone()) {
-            return;
-        }
-        prewarmed_for.set(Some(path));
-        let backend = prewarm_backend.read().clone();
-        spawn(async move {
-            if let Err(error) = backend.ensure_ready().await {
-                error_report.set(Some(error.report().log()));
-            }
         });
     });
 
@@ -424,8 +380,7 @@ pub fn Workspace(
         match press.key.as_str() {
             "/" => {
                 if app_state.read().project_path.is_some() {
-                    screen.set(AppScreen::Canvas);
-                    action_request.send(actions::StudioAction::FocusCommand);
+                    palette_open.set(true);
                 }
                 return;
             }
@@ -447,7 +402,7 @@ pub fn Workspace(
             }
             _ => {}
         }
-        // `g` then `s`/`c` switches screens, matching the tab hints. The
+        // `g` then `s`/`a` switches screens, matching the tab hints. The
         // pending `g` lives here because the pair spans two presses.
         if goto
             .peek()
@@ -459,8 +414,8 @@ pub fn Workspace(
                     screen.set(AppScreen::Writer);
                     return;
                 }
-                "c" if AppScreen::Canvas.available(app_state.read().project_path.is_some()) => {
-                    screen.set(AppScreen::Canvas);
+                "a" if AppScreen::Assets.available(app_state.read().project_path.is_some()) => {
+                    screen.set(AppScreen::Assets);
                     return;
                 }
                 _ => {}
@@ -484,11 +439,9 @@ pub fn Workspace(
             start_plan(
                 plans_config.clone(),
                 app_state,
-                backend,
                 defaults,
                 screen,
                 playback,
-                composer,
                 writer_caret,
                 grid_cursor,
                 palette_open,
@@ -501,14 +454,14 @@ pub fn Workspace(
         }
     };
 
-    let dispatch = actions::ActionDispatcher(EventHandler::new(move |action| match action {
+    let dispatch = EventHandler::new(move |action| match action {
         palette::Action::Navigate(destination) => {
             if destination.available(app_state.read().project_path.is_some()) {
                 screen.set(destination);
             }
         }
         palette::Action::Task(action) => {
-            screen.set(AppScreen::Canvas);
+            screen.set(AppScreen::Assets);
             action_request.send(action);
         }
         palette::Action::Save => save_current_project(app_state, error_report),
@@ -518,16 +471,11 @@ pub fn Workspace(
         palette::Action::Redo => {
             app_state.write().redo();
         }
-        palette::Action::Compose(command) => {
-            screen.set(AppScreen::Canvas);
-            cmdbar::prefill(composer, command);
-        }
         palette::Action::Open(id) => {
-            screen.set(AppScreen::Canvas);
+            screen.set(AppScreen::Assets);
             app_state.write().select_artifact(id);
         }
-    }));
-    use_context_provider(|| dispatch);
+    });
 
     let projects_home = screen() == AppScreen::Projects;
     let shell_rows = if projects_home {
@@ -536,7 +484,7 @@ pub fn Workspace(
         "grid-rows-[auto_minmax(0,1fr)_auto]"
     };
     rsx! {
-        main { class: "studio-shell grid h-screen {shell_rows} overflow-hidden bg-[#0b0b0e] font-sans text-zinc-100 selection:bg-violet-500/30",
+        main { class: "studio-shell grid h-screen {shell_rows} overflow-hidden bg-[var(--studio-bg)] font-sans text-zinc-100 selection:bg-violet-500/30",
             if !projects_home {
                 header { class: "studio-header",
                     IconButton {
@@ -562,7 +510,7 @@ pub fn Workspace(
                         hidden: !sidebar_visible(),
                         class: if sidebar_visible() { "studio-navigation" } else { "hidden" },
                         aria_label: "Workspace navigation",
-                        for destination in [AppScreen::Writer, AppScreen::Canvas, AppScreen::Preview] {
+                        for destination in [AppScreen::Writer, AppScreen::Assets, AppScreen::Preview] {
                             if destination.available(app_state.read().project_path.is_some()) {
                                 ScreenTab { destination, active: screen() == destination, onclick: move |_| screen.set(destination) }
                             }
@@ -578,12 +526,12 @@ pub fn Workspace(
                 div { class: "min-h-0 flex-1",
                 // Keep task owners and drafts alive while navigating. Hidden screens
                 // are excluded from focus and accessibility by the native attribute.
-                div { hidden: screen() != AppScreen::Projects, class: "h-full", Projects { config: config.clone(), app_state, on_open: move |_| screen.set(AppScreen::Canvas) } }
+                div { hidden: screen() != AppScreen::Projects, class: "h-full", Projects { config: config.clone(), app_state, on_open: move |_| screen.set(AppScreen::Assets) } }
                 div { hidden: screen() != AppScreen::Writer, class: "h-full", ProjectGate { open: app_state.read().project_path.is_some(), Writer { app_state, backend } } }
-                div { hidden: screen() != AppScreen::Canvas, class: "h-full", ProjectGate { open: app_state.read().project_path.is_some(), Canvas { app_state, backend, defaults, asset_directory: config.asset_dir.join("generated") } } }
+                div { hidden: screen() != AppScreen::Assets, class: "h-full", ProjectGate { open: app_state.read().project_path.is_some(), Assets { app_state } } }
                 div { hidden: screen() != AppScreen::Preview, class: "h-full", ProjectGate { open: app_state.read().project_path.is_some(), preview::Preview { app_state } } }
                 div { hidden: screen() != AppScreen::Plans, class: "h-full", Plans { on_run: on_run_plan, running: app_state.read().operation_in_progress() || session.read().as_ref().is_some_and(|run| matches!(run.state, driver::GuideState::Running)) } }
-                div { hidden: screen() != AppScreen::Settings, class: "h-full", Settings { config: config.clone(), backend, defaults } }
+                div { hidden: screen() != AppScreen::Settings, class: "h-full", Settings { config: config.clone(), backend } }
                 }
                 }
             }
@@ -591,7 +539,7 @@ pub fn Workspace(
             // Status bar: where the keyboard hints and counts live, so they
             // stop crowding the surfaces they describe.
             if !projects_home {
-                footer { class: "flex items-center gap-3 border-t border-white/[0.055] bg-[#101014] px-3 font-mono text-[10.5px] text-zinc-600",
+                footer { class: "flex items-center gap-3 border-t border-white/[0.055] bg-[var(--studio-panel)] px-3 font-mono text-[10.5px] text-zinc-600",
                     span { class: "rounded bg-violet-400/15 px-2 py-0.5 text-[10px] font-bold tracking-[0.08em] text-violet-300",
                         if app_state.read().operation_in_progress() { "Working…" } else if dirty { "Unsaved changes" } else if app_state.read().project_path.is_some() { "Saved" } else { "No project open" }
                     }
@@ -604,9 +552,9 @@ pub fn Workspace(
         }
         ErrorToast { error_report }
         ErrorDetailsHost {}
-        close::CloseGuard { config: config.clone(), app_state, composer }
+        close::CloseGuard { config: config.clone(), app_state }
         if palette_open() {
-            palette::Palette { app_state, open: palette_open, onpick: dispatch.0 }
+            palette::Palette { app_state, open: palette_open, onpick: dispatch }
         }
         {guide_overlay(session)}
     }

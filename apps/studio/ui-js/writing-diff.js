@@ -26,10 +26,10 @@ const storyLanguage = StreamLanguage.define({
   }
 });
 const colorStyle = HighlightStyle.define([
-  {tag: tags.keyword, color: "#c4b5fd", fontWeight: "600"},
-  {tag: tags.string, color: "#6ee7b7"},
-  {tag: tags.comment, color: "#52525b", fontStyle: "italic"},
-  {tag: tags.variableName, color: "#a1a1aa"}
+  {tag: tags.keyword, color: "var(--studio-code-keyword)", fontWeight: "600"},
+  {tag: tags.string, color: "var(--studio-code-string)"},
+  {tag: tags.comment, color: "var(--studio-code-comment)", fontStyle: "italic"},
+  {tag: tags.variableName, color: "var(--studio-muted)"}
 ]);
 const tokenEffect = StateEffect.define();
 const tokenField = StateField.define({
@@ -183,13 +183,13 @@ export function mount(parent, initial, send) {
       {key: "F7", run: () => navigate(1)}, {key: "Shift-F7", run: () => navigate(-1)}]),
     numbers, drawSelection(), highlightActiveLine(), EditorView.lineWrapping,
     storyLanguage, syntaxHighlighting(colorStyle), tokenField, EditorState.tabSize.of(2),
-    EditorView.theme({"&": {fontSize: "12.5px", color: "#a1a1aa", backgroundColor: "#0b0b0e"},
+    EditorView.theme({"&": {fontSize: "12.5px", color: "var(--studio-text)", backgroundColor: "var(--studio-bg)"},
       ".cm-scroller": {fontFamily: "var(--font-mono, monospace)", lineHeight: "1.75"},
       ".cm-content": {padding: "12px 0"}, ".cm-line": {padding: "0 16px"},
-      ".cm-cursor": {borderLeftColor: "#a78bfa"}, ".cm-activeLine": {backgroundColor: "#a78bfa0a"},
-      ".cm-gutters": {backgroundColor: "#0b0b0e", color: "#52525b", border: "none"},
+      ".cm-cursor": {borderLeftColor: "var(--studio-focus)"}, ".cm-activeLine": {backgroundColor: "#a78bfa0a"},
+      ".cm-gutters": {backgroundColor: "var(--studio-bg)", color: "var(--studio-muted)", border: "none"},
       ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {backgroundColor: "#a78bfa33"}
-    }, {dark: true})
+    })
   ];
   const rebuild = mode => {
     const text = modified?.state.doc.toString() ?? config.proposed;

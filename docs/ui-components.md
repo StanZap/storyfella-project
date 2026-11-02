@@ -7,11 +7,17 @@ components in `apps/studio/src/ui`; Atelier has its own GPUI vocabulary.
 
 ## Contextual app action
 
-The task-specific `atelier::OpenInAtelier` component is shared by Canvas details
+The task-specific `atelier::OpenInAtelier` component is shared by Assets details
 and Writer references/scene actions. Pass `target: Option<Uuid>` and optionally
 `show_label: false` for compact toolbars. It owns save prerequisites, busy state,
 local error Details and the handoff reply; consumers must not duplicate launch
 logic or bypass the guarded project save. Its tooltip names the save/open action.
+
+`art_actions::ArtActionDialog` is the shared definition form for new catalog
+items and explicit variations. It calls `AppState::edit_catalog`, without image
+generation controls or inference. `inspector::Inspector` edits story-facing
+descriptions and reference-aware names, preserving drafts and normal undo/save.
+Saved artwork/history is read-only in Studio; visual requests belong to Atelier.
 
 ## Single-line inputs
 
@@ -58,6 +64,9 @@ on its button calls `oninput("")`, then `oncancel(())`. Escape is consumed local
 decides whether cancellation closes the search row, and restores focus if it
 does. Disabled searches do not emit cancellation. Browser-provided duplicate
 search-clear buttons are suppressed by the shared stylesheet.
+An optional `onkeydown` handles other keys after the built-in Escape behavior;
+the palette uses it for result navigation without intercepting native button
+activation or Tab traversal.
 
 All three retain native typing, selection and editing undo through
 [`use_text_value`](../apps/studio/src/ui/text_input.rs). They do not use a
@@ -111,13 +120,63 @@ variant rather than copying its border, focus or action-positioning rules.
 These components are not replacements for multiline source editors, CodeMirror,
 numeric steppers or specialized token/completion editors.
 
+## Inline editable values
+
+Import `EditableText` and `EditableMultiline` from `super::editable`. Both show
+a label, plain value and a pencil action on the right. The pencil focuses an
+editor; Enter confirms and Escape discards. Check/close icon actions offer the
+same behavior with tooltips. Multiline uses Shift+Enter for a newline. Blur and
+Tab keep the draft open. Empty values show a placeholder (`Not set` by default).
+
+Both require `label: String`, `value: String` and
+`onconfirm: Callback<String, Result<(), String>>`. Return `Ok(())` after applying
+the change, or an error message to retain the draft and show a local error.
+Unchanged values close without calling `onconfirm`. Optional `disabled` and
+`placeholder` customize both variants; multiline also accepts `rows` (default 4).
+
+`EditableMultiline` supports `draft: Option<String>` to restore a draft when
+mounted, `oninput` to retain edits in the owner and `oncancel` to discard that
+field's retained draft. Inspector descriptions use AppState for conflict checks,
+quit protection and normal Save; inline confirmation applies only that item.
+Reference names use the existing catalog rename path and its coordinated undo.
+If the displayed value changes externally during editing, confirmation retains
+the local text and reports the conflict instead of overwriting the new value.
+
+The components share one editing implementation and the native text-value bridge.
+Native keyboard interception reads the current field value before confirmation,
+respects IME composition and preserves Tab/button activation. Focus returns to
+the pencil after confirmation/cancellation. Run `npm run test:ui` from
+`apps/studio` when changing this keyboard contract.
+
+## Artwork previews
+
+`artwork::ArtworkImage` renders saved artwork over a display-only background.
+Pass `src`, `alt` and sizing `class`. Use it for Assets, gallery, history and
+Writer thumbnails so transparent images remain visible against the dark shell.
+`PreviewBackgroundPicker` changes the workspace's `PreviewBackground` context:
+Light (default), Dark or Checkerboard. The preference lasts for the running
+Studio session and follows screen/asset navigation. It never changes PNG bytes,
+alpha, project revisions or story playback rendering.
+
 ## Other shared building blocks
+
+`icons::AssetIcon { kind, class }` maps every `ArtifactKind` to one shared icon:
+Story/book, Scene/clapperboard, Beat/pulse, Character/person, Environment/landscape,
+Object/cube and Illustration/image. Use it for type indicators and missing-image
+placeholders; keep visible type text or an accessible name beside decorative icons.
+
+Appearance styles use the `--studio-*` semantic variables and the shared Tailwind
+palette in `apps/studio/tailwind.css`. `theme::ThemeHost` resolves the persisted
+`ThemePreference` and follows OS changes in System mode. New surfaces should use
+these colors rather than fixed dark backgrounds. Fixed artwork pixels, preview
+mattes and deliberate solid button/thumbnail badge contrast stay independent.
+Run `npm run test:ui` from `apps/studio` for the appearance bridge contract too.
 
 Unless listed otherwise, import from `super::components`:
 
 | Component | Purpose / important options |
 | --- | --- |
-| `IconButton` | Shared named action. Required `label`, `icon`, `onclick`; supports `disabled`, `active`, `show_label`, `primary`, custom `tooltip`, `expanded` and `controls`. Its label supplies a tooltip by default. |
+| `IconButton` | Shared named action. Required `label`, `icon`, `onclick`; supports optional stable `id` for focus return, `disabled`, `active`, `show_label`, `primary`, custom `tooltip`, `expanded` and `controls`. Its label supplies a tooltip by default. |
 | `SearchSelect` / `SelectOption` | Searchable, keyboard-operated selection from discovered options; selected `value`, optional placeholder, `on_select`. The owner renders loading/unavailable states. Use a native select for a short fixed list. |
 | `SettingRow` | Accessible setting label/description, control slot and optional last-row treatment. |
 | `SectionHeading` | Consistent settings section eyebrow, title and description. |

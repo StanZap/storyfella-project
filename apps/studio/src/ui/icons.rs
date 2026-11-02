@@ -9,7 +9,6 @@ pub enum IconName {
     Check,
     Close,
     Copy,
-    Generate,
     Layers,
     List,
     Pause,
@@ -27,12 +26,34 @@ pub enum IconName {
     Search,
     Workflow,
     Sliders,
-    Upload,
     Edit,
-    Lock,
     Definition,
     References,
     Format,
+    Character,
+    Environment,
+    Object,
+    Scene,
+    Beat,
+}
+
+/// One visual vocabulary for catalog kinds across Studio.
+#[component]
+pub fn AssetIcon(
+    kind: storyfella_studio_core::registry::ArtifactKind,
+    #[props(default = "size-5".to_owned())] class: String,
+) -> Element {
+    use storyfella_studio_core::registry::ArtifactKind;
+    let name = match kind {
+        ArtifactKind::Story => IconName::Book,
+        ArtifactKind::Scene => IconName::Scene,
+        ArtifactKind::Beat => IconName::Beat,
+        ArtifactKind::Character => IconName::Character,
+        ArtifactKind::Environment => IconName::Environment,
+        ArtifactKind::Object => IconName::Object,
+        ArtifactKind::Illustration => IconName::Image,
+    };
+    rsx! { Icon { name, class } }
 }
 
 #[component]
@@ -45,7 +66,6 @@ pub fn Icon(name: IconName, #[props(default = "size-5".to_owned())] class: Strin
         IconName::Check => "m4 12.5 5 5L20 6.5",
         IconName::Close => "M6 6l12 12M18 6 6 18",
         IconName::Copy => "M8 8h12v12H8V8ZM4 16V4h12",
-        IconName::Generate => "M12 3v3m0 12v3M3 12h3m12 0h3M5.64 5.64l2.12 2.12m8.48 8.48 2.12 2.12m0-12.72-2.12 2.12M7.76 16.24l-2.12 2.12M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z",
         IconName::Layers => "m12 3 9 5-9 5-9-5 9-5Zm-9 10 9 5 9-5M3 17l9 5 9-5",
         IconName::List => "M4 6h16M4 12h16M4 18h10",
         IconName::Pause => "M7 5v14M17 5v14",
@@ -63,12 +83,15 @@ pub fn Icon(name: IconName, #[props(default = "size-5".to_owned())] class: Strin
         IconName::Search => "M21 21l-5-5M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14Z",
         IconName::Workflow => "M4 3h6v6H4V3Zm10 12h6v6h-6v-6ZM7 9v9h7M10 6h7v9",
         IconName::Sliders => "M4 7h7m4 0h5M4 17h2m4 0h10M11 4v6M6 14v6",
-        IconName::Upload => "M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5",
         IconName::Edit => "m4 16-1 5 5-1L20 8l-4-4L4 16Zm10-10 4 4",
-        IconName::Lock => "M6 10h12v11H6V10Zm3 0V6a3 3 0 0 1 6 0v4M12 14v3",
         IconName::Definition => "M14 3h7v7M21 3 10 14M10 3H3v18h18v-7",
         IconName::References => "M8 12h8M9 7H7a5 5 0 0 0 0 10h2M15 7h2a5 5 0 0 1 0 10h-2",
         IconName::Format => "M8 5h13M8 10h9M8 15h13M8 20h9M3 5h1M3 10h1M3 15h1M3 20h1",
+        IconName::Character => "M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0ZM4 21v-2a8 8 0 0 1 16 0v2",
+        IconName::Environment => "M3 20h18L15 8l-4 7-3-5-5 10ZM8 5h.01",
+        IconName::Object => "m12 3 9 5v9l-9 5-9-5V8l9-5Zm-9 5 9 5 9-5M12 13v9M7.5 5.5l9 5",
+        IconName::Scene => "M3 8h18v13H3V8Zm0 0V4l18-2v6M7 4l3 4M14 3l3 5",
+        IconName::Beat => "M3 12h4l3-8 4 16 3-8h4",
     };
 
     rsx! {
