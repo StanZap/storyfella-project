@@ -44,6 +44,7 @@ pub enum Page {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
+    StoryContext,
     Catalog,
     References,
     None,
@@ -170,11 +171,21 @@ pub struct CanvasTile {
     pub image: CanvasImage,
 }
 pub struct DrawingApp {
+    pub(crate) handoff_loading: bool,
+    pub(crate) handoff_checked: Instant,
+    pub(crate) handoff_open: Option<(
+        storyfella_studio_core::atelier::OpenRequest,
+        crate::story_context::StoryTarget,
+    )>,
     pub catalog: Option<crate::catalog_ui::CatalogState>,
     pub catalog_kind: storyfella_studio_core::registry::ArtifactKind,
     pub catalog_base: Option<uuid::Uuid>,
     pub catalog_error: Option<String>,
+    pub catalog_refresh_error: Option<String>,
     pub catalog_busy: bool,
+    pub catalog_conflict: Option<storyfella_studio_core::catalog::EditConflict>,
+    catalog_refresh_pending: Option<(u64, PathBuf)>,
+    catalog_refresh_at: Instant,
     pub catalog_name: Entity<InputState>,
     pub catalog_description: Entity<TextareaState>,
     pub project_tabs: Vec<crate::project_tabs::ProjectTab>,
@@ -561,11 +572,18 @@ impl DrawingApp {
             .zip(references.iter().cloned())
             .collect();
         let mut app = Self {
+            handoff_loading: false,
+            handoff_checked: Instant::now(),
+            handoff_open: None,
             catalog: None,
             catalog_kind: storyfella_studio_core::registry::ArtifactKind::Character,
             catalog_base: None,
             catalog_error: None,
+            catalog_refresh_error: None,
             catalog_busy: false,
+            catalog_conflict: None,
+            catalog_refresh_pending: None,
+            catalog_refresh_at: Instant::now(),
             catalog_name: input(String::new(), window, cx),
             catalog_description: cx
                 .new(|cx| TextareaState::new(window, cx).placeholder("Story-facing description")),
@@ -2844,9 +2862,42 @@ impl DrawingApp {
         while let Ok(event) = self.workers.events.try_recv() {
             refresh = true;
             match event {
+                Event::StoryContext(request, result) => {
+                    self.receive_story_context(request, result, window, cx)
+                }
+                Event::CatalogRefreshed {
+                    epoch,
+                    path,
+                    result,
+                } => {
+                    if self.catalog_refresh_pending.as_ref() == Some(&(epoch, path.clone())) {
+                        self.catalog_refresh_pending = None;
+                    }
+                    if epoch == self.epoch && self.shared_catalog_path().as_ref() == Some(&path) {
+                        match result {
+                            Ok(snapshot) => {
+                                self.catalog_refresh_error = None;
+                                if let Some(catalog) =
+                                    self.catalog.as_mut().filter(|c| c.path == path)
+                                {
+                                    if snapshot.registry_version
+                                        >= catalog.snapshot.registry_version
+                                    {
+                                        catalog.snapshot = snapshot;
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                self.catalog_refresh_error =
+                                    Some(format!("Could not refresh assets: {error:#}"))
+                            }
+                        }
+                    }
+                }
                 Event::CatalogSaved {
                     epoch,
                     path,
+                    details_saved,
                     result,
                 } => {
                     self.catalog_busy = false;
@@ -2858,17 +2909,22 @@ impl DrawingApp {
                                     .as_ref()
                                     .is_some_and(|catalog| catalog.path == path)
                             {
-                                self.catalog = Some(crate::catalog_ui::CatalogState {
-                                    path,
-                                    snapshot,
-                                    selected: Some(id),
-                                });
+                                if let Some(catalog) = &mut self.catalog {
+                                    catalog.snapshot = snapshot;
+                                }
                                 self.catalog_error = None;
+                                self.catalog_conflict = None;
+                                if details_saved {
+                                    self.select_catalog_item(id, window, cx);
+                                }
                                 self.message("Asset catalog saved", false);
                             }
                         }
                         Err(error) => {
                             if epoch == self.epoch {
+                                self.catalog_conflict = error
+                                    .downcast_ref::<storyfella_studio_core::catalog::EditConflict>()
+                                    .cloned();
                                 self.catalog_error = Some(format!("{error:#}"));
                             } else {
                                 self.report_error(
@@ -3568,6 +3624,29 @@ impl DrawingApp {
                     }
                     Err(e) => self.message(format!("Workflow: {e}"), true),
                 },
+            }
+        }
+        self.poll_story_context(window, cx);
+        if self.catalog_refresh_pending.is_none()
+            && !self.catalog_busy
+            && self.catalog_refresh_at.elapsed() >= Duration::from_secs(2)
+        {
+            self.catalog_refresh_at = Instant::now();
+            if let Some(path) = self
+                .shared_catalog_path()
+                .filter(|path| self.catalog.as_ref().is_some_and(|c| c.path == *path))
+            {
+                if self
+                    .workers
+                    .storage
+                    .send(Storage::RefreshCatalog {
+                        epoch: self.epoch,
+                        path: path.clone(),
+                    })
+                    .is_ok()
+                {
+                    self.catalog_refresh_pending = Some((self.epoch, path));
+                }
             }
         }
         if !self.render_pending

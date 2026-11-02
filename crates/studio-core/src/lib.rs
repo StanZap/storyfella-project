@@ -13,10 +13,12 @@
 //! site.
 
 pub mod artwork;
+pub mod atelier;
 pub mod authoring;
 pub mod catalog;
 pub mod config;
 pub mod errors;
+mod identity;
 pub mod llm;
 pub mod paths;
 pub mod persistence;

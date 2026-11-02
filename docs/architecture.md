@@ -297,9 +297,15 @@ otherwise the nearest ancestor of the working directory (then of the executable)
 holding the `config/plans` directory. Explicit relative runtime, model, cache, and
 asset paths resolve against that root, and unset values fall back to
 platform-appropriate application directories via the `directories` crate
-(`ProjectDirs::from("dev", "Smart Visual Sequencer", "Smart Visual Sequencer")`):
+(`ProjectDirs::from_path("dev.storyfella.studio".into())`, deliberately using
+the bundle ID as a flat namespace across platforms):
 models under the OS-local data dir, assets and project databases under the
 platform data dir, and cache under the platform cache dir.
+`identity.rs` performs a one-time copy from the former application directories
+before default config loading, retaining originals and refusing to overwrite
+existing destinations. SQLite backups and structured path updates preserve
+projects, artwork, recent links and writing-session recovery. See
+[application configuration migration](development.md#app-config).
 
 **AI config** is the machine's shared `clipforge.toml`
 (`paths::clipforge_config_path()`, via

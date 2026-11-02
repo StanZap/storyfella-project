@@ -331,7 +331,7 @@ language support can follow the initial shared-project workflow.
   artboard links and relocation. Native UI acceptance is assigned to the user.
   Reopen/Refresh supplies initial visibility; live sync/merging and normal
   canvas-save publication remain SF-PLAN-04–06.
-- [ ] **SF-PLAN-04 — Synchronization and simultaneous use.** Synchronize catalog
+- [x] **SF-PLAN-04 — Synchronization and simultaneous use.** Synchronize catalog
   items, requirements, work state and saved artwork in both directions. Assign
   write ownership for story sources, visual documents and shared metadata;
   choose change notification, conflict handling and refresh behavior. An
@@ -340,10 +340,37 @@ language support can follow the initial shared-project workflow.
   unsaved buffer. Done when creation from either app, renames, simultaneous edits,
   save failures and reopening preserve identities and work without silent
   overwrites or duplicate items.
-- [ ] **SF-PLAN-05 — Open Atelier from story context.** Carry the project, stable
+  Evidence (2026-11-01): [synchronization contract](shared-project.md#synchronization-and-concurrent-editing)
+  defines ownership, two-second background refresh, UUID/field merges, explicit
+  overlapping-field decisions and duplicate-identity recovery. Studio preserves
+  dirty source/drafts and rebases undo so it cannot remove external artwork.
+  Atelier refreshes its list independently of its form baseline; explicit
+  conflict decisions also check the saved version reviewed. Existing names are
+  renamed in Studio, including items not yet used by saved source. Schema v12
+  journals source intent with the catalog to recover interrupted paired saves;
+  unrelated source text blocks automatic recovery and can be preserved as a
+  separate file before an explicit retry. Shared artwork previews resolve
+  registered paths, including imports with matching filenames. Automated
+  acceptance covers independent/overlapping changes, drafts, rename ownership,
+  duplicate creation, undo/redo, stale decisions, failed commits, interrupted
+  source publication, worker events and reopening. Native two-app UI acceptance
+  remains assigned to the user. Ordinary linked-canvas Save is still SF-PLAN-06.
+- [x] **SF-PLAN-05 — Open Atelier from story context.** Carry the project, stable
   element identity and relevant authored context from a character, place, prop
   or scene in Studio. Reuse linked Atelier documents where appropriate. Done when
   the intended work opens without manual export/import or repeated descriptions.
+  Evidence (2026-11-01): [Open in Atelier](shared-project.md#open-in-atelier)
+  saves the current buffer/definitions, carries project/item UUIDs, descriptions
+  and relevant scene text, and opens a running or cold Atelier without requiring
+  installation in `/Applications`. The shared action appears in Canvas details,
+  Writer references and the current scene toolbar. Atelier reuses its tab and
+  linked artboard, embeds saved artwork on first attachment, preserves existing
+  edits/prompts and shows Story context. Completion replies expose failures in
+  Studio; mask-save failures block switching. Automated tests cover identity,
+  context, local delivery/lease/replies, worker preparation, image embedding,
+  repeated opening, retained drafts, atomic failure and save/reopen. Native
+  launch/focus acceptance remains assigned to the user. Image publication on
+  linked-canvas Save remains SF-PLAN-06.
 - [ ] **SF-PLAN-06 — Refresh Studio from Atelier saves.** Saving an asset-linked
   canvas persists its editable document and updates its image in the shared
   project. Refresh Studio's asset previews and availability automatically, with
@@ -679,6 +706,15 @@ The broader product and UX assessments still need the review tracked below.
   [development and regression scenarios](development.md)
   and the prototype acceptance notes below. Verify current behavior before
   promoting findings into TODOs and assign visual creation work to Atelier.
+  - [x] Studio application identity (2026-11-01): replace the deprecated platform
+    namespace with `dev.storyfella.studio`, matching the bundle ID. Migrate
+    settings/data/cache into absent destinations, retaining originals. Relocate
+    recent links, artwork paths and writing-session ownership without rewriting
+    authored text or changing identities. SQLite backups preserve committed WAL
+    pages; tests cover migration, retained drafts, failure/retry and existing
+    destination protection. Custom config overrides bypass default migration.
+    See [migration behavior](development.md#app-config). Native startup acceptance
+    remains assigned to the user.
   - [x] Project navigation availability (2026-11-01): hide Story, Canvas and
     Preview until a project is open; palette destinations and keyboard shortcuts
     obey the same prerequisite. Global navigation remains available. Regression

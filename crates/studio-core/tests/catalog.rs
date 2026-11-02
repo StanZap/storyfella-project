@@ -1,5 +1,6 @@
 use std::{fs, path::PathBuf};
 
+use catalog::EditResolution as Resolution;
 use storyfella_studio_core::{
     authoring::AssetCatalog,
     catalog::{self, CatalogEdit},
@@ -80,7 +81,8 @@ fn both_editors_share_identity_across_creation_variations_rename_artwork_and_rel
                 id: mara,
                 name: "captain_mara".into(),
                 description: "Captain".into()
-            }
+            },
+            Resolution::Check,
         )
         .is_err(),
         "Atelier must not invalidate source references owned by Studio"
@@ -95,6 +97,7 @@ fn both_editors_share_identity_across_creation_variations_rename_artwork_and_rel
             description: "Blue coat".into(),
             variant_of: Some(mara),
         },
+        Resolution::Check,
     )
     .unwrap();
     let (illustration, snapshot) = catalog::save_edit(
@@ -106,6 +109,7 @@ fn both_editors_share_identity_across_creation_variations_rename_artwork_and_rel
             description: "Full illustration".into(),
             variant_of: None,
         },
+        Resolution::Check,
     )
     .unwrap();
     let (tam, snapshot) = catalog::save_edit(
@@ -117,6 +121,7 @@ fn both_editors_share_identity_across_creation_variations_rename_artwork_and_rel
             description: "An independent character".into(),
             variant_of: None,
         },
+        Resolution::Check,
     )
     .unwrap();
     let image = fixture.path().join("image.png");
@@ -130,6 +135,7 @@ fn both_editors_share_identity_across_creation_variations_rename_artwork_and_rel
             id: coat,
             path: image,
         },
+        Resolution::Check,
     )
     .unwrap();
     let revision = snapshot.registry.artifact(coat).unwrap().active_revision_id;
@@ -138,9 +144,10 @@ fn both_editors_share_identity_across_creation_variations_rename_artwork_and_rel
         &snapshot,
         CatalogEdit::Describe {
             id: coat,
-            name: "mara_raincoat".into(),
+            name: "mara_coat".into(),
             description: "Updated requirement".into(),
         },
+        Resolution::Check,
     )
     .unwrap();
     assert_eq!(
@@ -208,6 +215,7 @@ fn stale_catalog_writes_and_invalid_edits_preserve_other_editors_work() {
             description: "Captain".into(),
             variant_of: None,
         },
+        Resolution::Check,
     )
     .unwrap();
     assert!(matches!(
@@ -239,7 +247,7 @@ fn stale_catalog_writes_and_invalid_edits_preserve_other_editors_work() {
             path: fixture.path().join("missing.png"),
         },
     ] {
-        assert!(catalog::save_edit(&atelier, &saved, edit).is_err());
+        assert!(catalog::save_edit(&atelier, &saved, edit, Resolution::Check).is_err());
         assert_eq!(studio.load().unwrap(), saved);
     }
 }

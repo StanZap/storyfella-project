@@ -60,8 +60,8 @@ pub struct StoredProject {
 /// SQLite-backed storage for one project (one registry per database).
 ///
 /// Synchronous, single writer connection behind a mutex — the access shape
-/// the desktop app needs (no async pool, no tokio involvement). WAL mode
-/// so readers never block the writer and vice versa.
+/// the desktop app needs (no async pool, no tokio involvement). WAL mode;
+/// full source/catalog reads briefly serialize with source publication.
 pub struct ProjectDb {
     conn: Mutex<Connection>,
     path: PathBuf,
@@ -69,7 +69,7 @@ pub struct ProjectDb {
 
 #[derive(Debug, Error)]
 pub enum StoreError {
-    #[error("the asset catalog changed in another editor; reopen the project before saving this older catalog snapshot")]
+    #[error("the asset catalog changed during saving; your work is retained, refresh and retry")]
     Conflict,
     #[error("could not access shared project resources: {0:#}")]
     Resources(#[from] anyhow::Error),
@@ -139,11 +139,24 @@ impl ProjectDb {
     /// migrates it to the latest schema, and seeds the single `projects`
     /// row on first creation.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
-        let path = path.as_ref().to_path_buf();
-        let conn = Connection::open(&path).map_err(|source| StoreError::Open {
-            path: path.clone(),
-            source,
-        })?;
+        Self::open_with_flags(path.as_ref(), rusqlite::OpenFlags::default())
+    }
+
+    /// Background refresh and saves must not recreate a moved/deleted database.
+    pub fn open_existing(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        Self::open_with_flags(
+            path.as_ref(),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+    }
+
+    fn open_with_flags(path: &Path, flags: rusqlite::OpenFlags) -> Result<Self, StoreError> {
+        let path = path.to_path_buf();
+        let conn =
+            Connection::open_with_flags(&path, flags).map_err(|source| StoreError::Open {
+                path: path.clone(),
+                source,
+            })?;
         let path = path.canonicalize().map_err(|source| StoreError::Path {
             path: path.clone(),
             source,
@@ -174,14 +187,125 @@ impl ProjectDb {
         self.persist_registry(registry, Some(version))
     }
 
+    /// Commit artwork and a recoverable source intent together. A failed source
+    /// publish leaves the exact old/new text in SQLite; load/retry completes it
+    /// only if disk still matches either side. No source rewrite precedes a
+    /// successful catalog commit.
+    pub fn save_authoring_checked(
+        &self,
+        registry: &ArtifactRegistry,
+        version: i64,
+        story: &mut StoryDocument,
+    ) -> Result<i64, StoreError> {
+        self.recover_source()?;
+        if story.path() != Some(source_path(&self.path).as_path()) {
+            return Err(StoreError::Story(StoryFileError::Unbound));
+        }
+        let registry = self.prepare_registry(registry)?;
+        let version = self.write_snapshot(&registry, Some(version), Some(story))?;
+        self.recover_source()?;
+        story.reload()?;
+        Ok(version)
+    }
+
+    fn recover_source(&self) -> Result<(), StoreError> {
+        let mut conn = self.conn.lock();
+        if self.pending_source(&conn)?.is_none() {
+            return Ok(());
+        }
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|source| StoreError::Save {
+                path: self.path.clone(),
+                source,
+            })?;
+        self.recover_source_in(&tx)?;
+        tx.commit().map_err(|source| StoreError::Save {
+            path: self.path.clone(),
+            source,
+        })
+    }
+
+    fn pending_source(&self, conn: &Connection) -> Result<Option<(String, String)>, StoreError> {
+        conn.query_row(
+            "SELECT before_source, after_source FROM source_write WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|source| StoreError::Load {
+            path: self.path.clone(),
+            source,
+        })
+    }
+
+    fn recover_source_in(&self, conn: &Connection) -> Result<(), StoreError> {
+        if let Some((before, after)) = self.pending_source(conn)? {
+            self.validate_identity(conn)?;
+            let mut story = StoryDocument::open(&source_path(&self.path))?;
+            if story.source() != after {
+                if story.source() != before {
+                    return Err(StoreError::Story(StoryFileError::Conflict {
+                        path: source_path(&self.path),
+                    }));
+                }
+                story.set_source(after);
+                story.save()?;
+            }
+            conn.execute("DELETE FROM source_write WHERE id = 1", [])
+                .map_err(|source| StoreError::Save {
+                    path: self.path.clone(),
+                    source,
+                })?;
+        }
+        Ok(())
+    }
+
+    /// Explicit recovery when an external source edit interrupted a paired
+    /// save. Preserve those exact bytes beside the source before completing
+    /// the already committed intent. Normal load never chooses this policy.
+    pub fn preserve_source_and_recover(&self) -> Result<Option<PathBuf>, StoreError> {
+        let mut conn = self.conn.lock();
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|source| StoreError::Save {
+                path: self.path.clone(),
+                source,
+            })?;
+        let mut preserved = None;
+        if let Some((before, after)) = self.pending_source(&tx)? {
+            self.validate_identity(&tx)?;
+            let mut story = StoryDocument::open(&source_path(&self.path))?;
+            if story.source() != before && story.source() != after {
+                let copy = self
+                    .path
+                    .with_extension(format!("conflict-{}.sf", Uuid::new_v4()));
+                story.save_copy(&copy)?;
+                preserved = Some(copy);
+                story.set_source(after);
+                story.save()?;
+            }
+        }
+        self.recover_source_in(&tx)?;
+        tx.commit().map_err(|source| StoreError::Save {
+            path: self.path.clone(),
+            source,
+        })?;
+        Ok(preserved)
+    }
+
     fn persist_registry(
         &self,
         registry: &ArtifactRegistry,
         expected: Option<i64>,
     ) -> Result<i64, StoreError> {
+        self.recover_source()?;
+        self.write_snapshot(&self.prepare_registry(registry)?, expected, None)
+    }
+
+    fn validate_identity(&self, conn: &Connection) -> Result<(), StoreError> {
         if let Some(folder) = crate::project::for_database(&self.path)? {
-            let id = single_project_id(&self.conn.lock())?;
-            if id != folder.id().to_string() {
+            if single_project_id(conn)? != folder.id().to_string() {
                 return Err(StoreError::Corrupt {
                     path: self.path.clone(),
                     column: "projects.id".into(),
@@ -189,10 +313,15 @@ impl ProjectDb {
                 });
             }
         }
-        self.write_snapshot(
-            &crate::project::prepare_registry(&self.path, registry)?,
-            expected,
-        )
+        Ok(())
+    }
+
+    fn prepare_registry(
+        &self,
+        registry: &ArtifactRegistry,
+    ) -> Result<ArtifactRegistry, StoreError> {
+        self.validate_identity(&self.conn.lock())?;
+        Ok(crate::project::prepare_registry(&self.path, registry)?)
     }
 
     /// Used only when adopting a saved project into a new portable folder.
@@ -226,6 +355,7 @@ impl ProjectDb {
         &self,
         registry: &ArtifactRegistry,
         expected: Option<i64>,
+        story: Option<&StoryDocument>,
     ) -> Result<i64, StoreError> {
         crate::authoring::validate_associations(registry).map_err(|value| StoreError::Corrupt {
             path: self.path.clone(),
@@ -423,6 +553,19 @@ impl ProjectDb {
             })?;
         }
 
+        if let Some(story) = story {
+            story.check_disk()?;
+            if story.is_dirty() {
+                tx.execute(
+                    "INSERT INTO source_write (id, before_source, after_source) VALUES (1, ?1, ?2)",
+                    params![story.saved_source(), story.source()],
+                )
+                .map_err(|source| StoreError::Save {
+                    path: self.path.clone(),
+                    source,
+                })?;
+            }
+        }
         tx.commit().map_err(|source| StoreError::Save {
             path: self.path.clone(),
             source,
@@ -434,11 +577,14 @@ impl ProjectDb {
     pub fn load(&self) -> Result<StoredProject, StoreError> {
         let mut connection = self.conn.lock();
         let conn = connection
-            .transaction()
+            // Source lives beside SQLite. Serialize its short snapshot read
+            // with cooperating source publishers, including pending recovery.
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|source| StoreError::Load {
                 path: self.path.clone(),
                 source,
             })?;
+        self.recover_source_in(&conn)?;
         let (row_id, row_name, registry_version) = conn
             .query_row(
                 "SELECT id, name, registry_version FROM projects ORDER BY rowid LIMIT 1",
@@ -817,13 +963,18 @@ impl ProjectDb {
             }
         })?;
         crate::project::resolve_registry(&self.path, project_id, &mut registry)?;
-        Ok(StoredProject {
+        let stored = StoredProject {
             registry_version,
             story: StoryDocument::open(&source_path(&self.path))?,
             id: project_id,
             name: row_name,
             registry,
-        })
+        };
+        conn.commit().map_err(|source| StoreError::Load {
+            path: self.path.clone(),
+            source,
+        })?;
+        Ok(stored)
     }
 
     fn configure(&self) -> Result<(), StoreError> {
@@ -988,8 +1139,16 @@ impl ProjectDb {
 /// databases; `schema_meta` records what has been applied.
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
-    SCHEMA_V9, SCHEMA_V10, SCHEMA_V11,
+    SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12,
 ];
+
+const SCHEMA_V12: &str = "
+CREATE TABLE source_write (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  before_source TEXT NOT NULL,
+  after_source TEXT NOT NULL
+);
+";
 
 /// Schema version 2 — the GUI carried the legacy `Project` model
 /// (storyboard + timeline) as JSON on the `projects` row until the canvas
@@ -1559,7 +1718,7 @@ mod tests {
         let original = db.load().unwrap();
         drop(db);
         let conn = Connection::open(&path).unwrap();
-        conn.execute_batch("ALTER TABLE projects DROP COLUMN registry_version; DELETE FROM schema_meta WHERE version >= 11;").unwrap();
+        conn.execute_batch("ALTER TABLE projects DROP COLUMN registry_version; DROP TABLE source_write; DELETE FROM schema_meta WHERE version >= 11;").unwrap();
         drop(conn);
         let db = ProjectDb::open(&path).unwrap();
         let stored = db.load().unwrap();
@@ -1581,6 +1740,105 @@ mod tests {
         db.save_registry_checked(&stored.registry, stored.registry_version)
             .unwrap();
         assert_eq!(db.load().unwrap().registry, stored.registry);
+        clean_up(&path);
+    }
+
+    #[test]
+    fn interrupted_authoring_publish_recovers_exact_source_with_its_catalog_and_never_replaces_unrelated_text(
+    ) {
+        let (path, db) = temp_db();
+        let mut registry = ArtifactRegistry::default();
+        let id = registry
+            .create_artifact(
+                crate::registry::ArtifactKind::Character,
+                crate::registry::CreateArtifact {
+                    name: "mara".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        db.save_registry(&registry).unwrap();
+        let baseline = db.load().unwrap();
+        let mut story = baseline.story.clone();
+        let text = "// 🌊\r\nscene harbor\r\n  cast: captain_mara\r\n";
+        story.set_source(text.into());
+        registry.artifact_mut(id).unwrap().name = "captain_mara".into();
+        // Simulate process exit after the catalog/intent commit and before the
+        // source publish. This is the actual production transaction boundary.
+        db.write_snapshot(&registry, Some(baseline.registry_version), Some(&story))
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(source_path(&path)).unwrap(),
+            baseline.story.source()
+        );
+        std::fs::write(source_path(&path), "unrelated external draft").unwrap();
+        assert!(matches!(
+            db.load(),
+            Err(StoreError::Story(StoryFileError::Conflict { .. }))
+        ));
+        assert_eq!(
+            std::fs::read_to_string(source_path(&path)).unwrap(),
+            "unrelated external draft"
+        );
+        assert!(db.pending_source(&db.conn.lock()).unwrap().is_some());
+        std::fs::write(source_path(&path), baseline.story.source()).unwrap();
+        drop(db);
+        let reopened = ProjectDb::open_existing(&path).unwrap();
+        let stored = reopened.load().unwrap();
+        assert_eq!(stored.story.source(), text);
+        assert_eq!(stored.registry.artifact(id).unwrap().name, "captain_mara");
+        assert!(reopened
+            .pending_source(&reopened.conn.lock())
+            .unwrap()
+            .is_none());
+        assert_eq!(reopened.load().unwrap(), stored);
+        let mut next_source = stored.story.clone();
+        next_source.set_source("// next accepted source\r\n".into());
+        reopened
+            .write_snapshot(
+                &stored.registry,
+                Some(stored.registry_version),
+                Some(&next_source),
+            )
+            .unwrap();
+        std::fs::write(source_path(&path), "// external 🌊\r\n").unwrap();
+        let preserved = reopened.preserve_source_and_recover().unwrap().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&preserved).unwrap(),
+            "// external 🌊\r\n"
+        );
+        assert_eq!(
+            reopened.load().unwrap().story.source(),
+            next_source.source()
+        );
+        assert!(reopened.preserve_source_and_recover().unwrap().is_none());
+        std::fs::remove_file(preserved).unwrap();
+        clean_up(&path);
+    }
+
+    #[test]
+    fn failed_catalog_commit_does_not_publish_source_or_leave_a_source_intent() {
+        let (path, db) = temp_db();
+        let baseline = db.load().unwrap();
+        let mut registry = baseline.registry.clone();
+        let id = registry
+            .create_artifact(
+                crate::registry::ArtifactKind::Character,
+                crate::registry::CreateArtifact {
+                    name: "mara".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        registry.artifact_mut(id).unwrap().parent_id = Some(Uuid::new_v4());
+        let mut story = baseline.story.clone();
+        story.set_source("scene unpublished\n  cast: mara\n".into());
+        assert!(db
+            .save_authoring_checked(&registry, baseline.registry_version, &mut story)
+            .is_err());
+        assert!(story.is_dirty());
+        assert_eq!(db.load().unwrap(), baseline);
+        assert!(db.pending_source(&db.conn.lock()).unwrap().is_none());
         clean_up(&path);
     }
 

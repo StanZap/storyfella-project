@@ -878,6 +878,7 @@ fn ArtifactDetail(
                         active: show_inspector(),
                         onclick: move |_| { let open = show_inspector(); show_inspector.set(!open); },
                     }
+                    super::atelier::OpenInAtelier { target: Some(artifact.id) }
                 }
             }
 

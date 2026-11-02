@@ -5,7 +5,16 @@ component catalog, not a backlog. [DESIGN.md](../DESIGN.md) owns interaction and
 visual rules; [ROADMAP](ROADMAP.md) owns planned work. These are Dioxus desktop
 components in `apps/studio/src/ui`; Atelier has its own GPUI vocabulary.
 
+## Contextual app action
+
+The task-specific `atelier::OpenInAtelier` component is shared by Canvas details
+and Writer references/scene actions. Pass `target: Option<Uuid>` and optionally
+`show_label: false` for compact toolbars. It owns save prerequisites, busy state,
+local error Details and the handoff reply; consumers must not duplicate launch
+logic or bypass the guarded project save. Its tooltip names the save/open action.
+
 ## Single-line inputs
+
 
 Import from `super::inputs` inside a sibling UI module. Implementation:
 [`inputs.rs`](../apps/studio/src/ui/inputs.rs). Composition is:

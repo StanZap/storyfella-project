@@ -403,18 +403,37 @@ pub fn save_project(mut app_state: Signal<AppState>) -> Result<(), ReportedError
         }
         return Ok(());
     };
+    if app_state.read().operation_in_progress() {
+        return Err(ReportedError::plain(
+            ErrorCode::StoreSave,
+            "Wait for the current operation before saving.",
+        ));
+    }
+    let db = ProjectDb::open_existing(&path).map_err(|error| error.report())?;
+    let stored = db.load().map_err(|error| error.report())?;
+    let mut refreshed = app_state.read().clone();
+    let result = refreshed.refresh_catalog(
+        stored,
+        storyfella_studio_core::catalog::sync::Resolution::Check,
+    );
+    if *app_state.peek() != refreshed {
+        app_state.set(refreshed);
+    }
+    result.map_err(|message| {
+        ReportedError::plain(
+            ErrorCode::StoreSave,
+            format!("{message}. Review the catalog conflict before saving."),
+        )
+    })?;
     let mut story = app_state.read().story.clone();
-    story.save().map_err(|error| error.report())?;
-    // A later registry-save failure must not make the successful source save
-    // look like an external edit on the next attempt.
+    let registry = app_state.read().registry.clone();
+    let version = app_state.read().registry_version;
+    let version = db
+        .save_authoring_checked(&registry, version, &mut story)
+        .map_err(|error| error.report())?;
     if app_state.read().story != story {
         app_state.write().adopt_story_document(story);
     }
-    let registry = app_state.read().registry.clone();
-    let version = app_state.read().registry_version;
-    let version = ProjectDb::open(&path)
-        .and_then(|db| db.save_registry_checked(&registry, version))
-        .map_err(|error| error.report())?;
     app_state.write().mark_saved(version);
     Ok(())
 }
@@ -537,8 +556,7 @@ mod tests {
             assert_eq!(state.read().description_draft(id), Some("Still editing"));
             state.write().discard_description_draft(id);
 
-            // Source success followed by DB failure must retain the new disk
-            // snapshot, keep the project dirty, and allow a normal retry.
+            // A DB failure must not publish source ahead of its catalog.
             let backup = directory.join("registry-backup.db");
             std::fs::rename(&project, &backup).unwrap();
             std::fs::create_dir(&project).unwrap();
@@ -546,11 +564,8 @@ mod tests {
                 .write()
                 .set_story_source("scene saved\n  end\n".into());
             assert!(super::save_project(state).is_err());
-            assert_eq!(
-                std::fs::read_to_string(&source).unwrap(),
-                "scene saved\n  end\n"
-            );
-            assert!(!state.read().story.is_dirty());
+            assert_eq!(std::fs::read_to_string(&source).unwrap(), "external edits");
+            assert!(state.read().story.is_dirty());
             assert!(state.read().has_unsaved_changes);
             std::fs::remove_dir(&project).unwrap();
             std::fs::rename(&backup, &project).unwrap();

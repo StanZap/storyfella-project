@@ -18,6 +18,7 @@ mod native_images;
 mod project_tabs;
 mod providers;
 mod queue;
+mod story_context;
 mod stroke_curve;
 mod tablet;
 #[cfg(test)]
@@ -53,21 +54,20 @@ fn main() {
             return;
         }
         Some(arg) => panic!("Unknown argument: {arg}"),
-        None => {
-            let base = std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("."));
-            #[cfg(target_os = "macos")]
-            let base = base.join("Library/Application Support");
-            #[cfg(not(target_os = "macos"))]
-            let base = base.join(".local/share");
-            base.join("Atelier")
-        }
+        None => storyfella_studio_core::atelier::data_dir(),
     };
     if let Err(error) = std::fs::create_dir_all(&data_dir) {
         eprintln!("Could not create Atelier data directory: {error}");
         return;
     }
+    let _instance = match storyfella_studio_core::atelier::Mailbox::new(&data_dir).claim() {
+        Ok(Some(lease)) => lease,
+        Ok(None) => return,
+        Err(error) => {
+            eprintln!("Could not claim Atelier instance: {error:#}");
+            return;
+        }
+    };
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {

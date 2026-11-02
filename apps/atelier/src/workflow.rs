@@ -289,7 +289,7 @@ impl Document {
     }
 }
 
-fn image_layer(
+pub(crate) fn image_layer(
     reference: Arc<Reference>,
     width: u32,
     height: u32,

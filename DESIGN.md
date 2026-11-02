@@ -1,5 +1,48 @@
 # Storyfella Studio design standard and UX audit
 
+### Open in Atelier · 2026-11-01
+
+The shared Open in Atelier action appears in Canvas details, resolved Writer
+references and the current scene toolbar. Its tooltip states that it saves
+first; standalone projects expose their shared-folder prerequisite. Busy state
+lasts through the receiving app's reply. Save/open failures retain work and
+offer local Details. Opening performs no generation or image publication.
+Atelier reuses the project tab and linked artboard, preserves existing edits
+and unsent prompts, and shows the relevant source in a Story context panel.
+New artboards embed saved artwork and prefill the description. A canvas toolbar
+action reopens context. Mask-save failures block handoff with actionable feedback.
+
+Automated identity, transport, worker and document tests cover the contract;
+native launch/focus and control acceptance remain assigned to the user. See
+[the handoff contract](docs/shared-project.md#open-in-atelier). Ordinary canvas
+save publication remains SF-PLAN-06.
+
+### Shared catalog synchronization · 2026-11-01
+
+Studio and Atelier refresh saved assets approximately every two seconds while
+preserving dirty source and form values. Independent fields merge; overlapping
+edits show local/saved values and require an explicit choice. Studio's persistent
+Review changes notice does not steal focus. Its shared dialog can keep either
+side for conflicts; duplicate identities require an explicit saved-catalog
+reload with the discarded catalog edits and project undo scope stated. Cancel
+keeps local work. Existing items are renamed in Studio, so an Atelier form never
+rewrites references in an unseen unsaved source buffer.
+
+Inspector drafts participate in conflict detection. Undo/redo retains external
+artwork and new items. Atelier's list refreshes separately from its form, and
+an image attachment does not clear an unrelated description draft. A failed
+refresh has persistent Retry/details. Interrupted source/catalog saves recover
+from durable intent; unrelated file text requires a confirmed preserve-copy
+action, and the copy location stays visible afterward. Registered artwork paths
+serve shared-project images as well as generated output.
+
+Automated acceptance covers merge/decision semantics, drafts, undo/redo, stale
+decisions, duplicate identities, failed commits, interrupted saves, exact source
+recovery and registered image paths. Workspace checks/tests, changed-package
+strict Clippy and runnable builds are the delivery checks. Native two-app
+interaction remains assigned to the user; linked-canvas Save publication is
+SF-PLAN-06. See [the contract](docs/shared-project.md#synchronization-and-concurrent-editing).
+
 ### Workspace sidebar toggle · 2026-11-01
 
 The workspace header starts with a sidebar toggle, followed by the current screen

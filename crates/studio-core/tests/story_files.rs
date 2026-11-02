@@ -204,7 +204,7 @@ fn v8_project(path: &std::path::Path, source: &str) {
     drop(current);
     fs::remove_file(source_path(path)).unwrap();
     let conn = Connection::open(path).unwrap();
-    conn.execute_batch("ALTER TABLE projects ADD COLUMN story_source TEXT NOT NULL DEFAULT ''; ALTER TABLE projects DROP COLUMN story_scenes_json; ALTER TABLE projects DROP COLUMN registry_version; DELETE FROM schema_meta WHERE version >= 9;").unwrap();
+    conn.execute_batch("ALTER TABLE projects ADD COLUMN story_source TEXT NOT NULL DEFAULT ''; ALTER TABLE projects DROP COLUMN story_scenes_json; ALTER TABLE projects DROP COLUMN registry_version; DROP TABLE source_write; DELETE FROM schema_meta WHERE version >= 9;").unwrap();
     conn.execute("UPDATE projects SET story_source = ?1", params![source])
         .unwrap();
 }

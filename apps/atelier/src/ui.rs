@@ -377,6 +377,25 @@ impl DrawingApp {
             Page::Artboards => self.artboards_workspace(cx).into_any_element(),
         };
         let side_panel = match self.panel {
+            Panel::StoryContext => Some(
+                side_panel_frame(
+                    "Story context",
+                    column().gap_3().child(label(
+                        self.doc
+                            .story_context
+                            .get(&self.doc.canvas_id)
+                            .cloned()
+                            .unwrap_or_default(),
+                    )),
+                    tool_button("story-context-close", "close", "Close story context").on_click(
+                        cx.listener(|this, _, _, cx| {
+                            this.panel = Panel::None;
+                            cx.notify();
+                        }),
+                    ),
+                )
+                .into_any_element(),
+            ),
             Panel::Catalog => Some(self.catalog_panel(cx)),
             Panel::Brushes => Some(self.brush_settings(cx)),
             Panel::Canvas => Some(self.canvas_settings(cx)),
@@ -834,6 +853,19 @@ impl DrawingApp {
         row()
             .h(px(46.))
             .px_4()
+            .when(
+                self.doc.story_context.contains_key(&self.doc.canvas_id),
+                |bar| {
+                    bar.child(
+                        tool_button("story-context", "info", "Story context").on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.panel = Panel::StoryContext;
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                },
+            )
             .child(
                 tool_button("canvas-back", "back", "Back to artboards").on_click(cx.listener(
                     |this, _, window, cx| {

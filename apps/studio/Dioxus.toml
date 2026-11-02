@@ -6,8 +6,7 @@ name = "Storyfella Studio"
 # Every key here is described by `dx config schema`. See `docs/development.md`
 # → Bundling for which of them actually reach the Linux artifacts.
 [bundle]
-# Bundle identity is separate from the existing platform config/data identity
-# retained in `crates/studio-core/src/paths.rs` to preserve user settings.
+# Platform settings/data use this same namespace; old data migrates on startup.
 identifier = "dev.storyfella.studio"
 publisher = "Storyfella"
 category = "Graphics"

@@ -10,8 +10,18 @@ reuses registry UUIDs for definitions, variations and independent illustrations.
 GUI registry saves use the loaded `StoredProject::registry_version`; preserve
 that optimistic check rather than replacing it with an unconditional snapshot.
 Source-used catalog names are renamed in Studio with their resolved references.
-See `docs/shared-project.md` and SF-PLAN-01–03. Live synchronization, contextual
-opening and ordinary canvas-save publication remain SF-PLAN-04–06. These user
+See `docs/shared-project.md` and SF-PLAN-01–04. Both apps refresh and merge shared
+catalog changes; overlapping fields require a decision. Studio owns existing
+names, source and authoring associations; Atelier owns editable documents.
+Studio saves source/catalog pairs through `save_authoring_checked`, whose v12
+source intent recovers interrupted publication without overwriting unrelated
+source text. Preserve these checks and rebase undo on external catalog updates.
+Contextual opening uses `studio-core::atelier`: a validated, versioned local
+inbox, per-Atelier-data-directory OS instance lease and completion replies.
+Studio's shared OpenInAtelier action saves before delivery. Atelier reuses tabs
+and linked artboards, retains prompt drafts and embeds existing artwork only on
+first attachment; story context stays separate from generated artwork. Ordinary
+canvas-save image publication remains SF-PLAN-06. These user
 project folders are separate from the `SVS_HOME` application-resource root;
 preserve its existing CLI/config resolution and standalone database behavior.
 
@@ -51,7 +61,9 @@ execution runtime. Clipforge and FineWineTTS remain separate repositories.
 See `docs/language.md`, `docs/compiler.md` and `docs/ROADMAP.md` §0 for implemented language scope
 and the remaining compiler, persistence and story-execution milestones.
 Keep `svs` CLI binaries, command behavior, `SVS_*` environment variables, error
-codes, databases, and platform data/config identities stable during this move.
+codes and databases stable during this move. Studio's platform data/config
+namespace is now `dev.storyfella.studio`; `identity.rs` migrates existing data
+once without overwriting a destination or removing originals.
 
 Atelier is a separate GPUI executable, not a Dioxus module. Use
 `cargo xtask atelier` (separate from Studio's `cargo xtask run` and the `svs`

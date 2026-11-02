@@ -1,6 +1,7 @@
 mod actions;
 mod art_actions;
 mod artwork_import;
+mod atelier;
 pub mod canvas;
 mod close;
 mod cmdbar;
@@ -18,6 +19,7 @@ pub mod preview;
 mod projects;
 mod settings;
 pub mod shortcuts;
+mod sync;
 mod text_input;
 pub mod writer;
 mod writing_assistant;
@@ -94,6 +96,9 @@ fn save_current_project(
     mut app_state: Signal<AppState>,
     mut error_report: Signal<Option<ReportedError>>,
 ) {
+    if app_state.read().operation_in_progress() {
+        return;
+    }
     let result = app_state.write().apply_description_drafts();
     if let Err(message) = result {
         error_report.set(Some(ReportedError::plain(
@@ -232,9 +237,9 @@ pub fn Workspace(
     // The backend lives in a signal so the Settings model picker can swap
     // the planner model and the canvas picks it up on the next op.
     let backend = use_signal(|| CreativeBackend::new(&backend_config));
-    let generated_asset_directory = config.asset_dir.join("generated");
     dioxus::desktop::use_asset_handler("generated", move |request, responder| {
-        serve_generated_asset(&generated_asset_directory, request, responder);
+        let path = registered_asset_path(&app_state.peek().registry, request.uri().path());
+        serve_generated_asset(path.as_deref(), responder);
     });
 
     // Autosave: the mode lives here and is shared with Settings via context.
@@ -372,6 +377,8 @@ pub fn Workspace(
         if autosave() == AutosaveMode::OnChange
             && app_state.read().project_path.is_some()
             && app_state.read().has_unsaved_changes
+            && app_state.read().catalog_conflict.is_none()
+            && !app_state.read().operation_in_progress()
         {
             persist_state(app_state, error_report);
         }
@@ -390,6 +397,8 @@ pub fn Workspace(
                 if autosave_loop() == AutosaveMode::EveryMinute
                     && app_state.read().project_path.is_some()
                     && app_state.read().has_unsaved_changes
+                    && app_state.read().catalog_conflict.is_none()
+                    && !app_state.read().operation_in_progress()
                 {
                     persist_state(app_state, error_report_loop);
                 }
@@ -542,7 +551,7 @@ pub fn Workspace(
                         span { class: "mx-2 h-5 w-px bg-white/10" }
                         IconButton { label: shortcuts::tooltip("Undo", "undo"), icon: IconName::Undo, disabled: !app_state.read().can_undo(), onclick: move |_| { app_state.write().undo(); } }
                         IconButton { label: shortcuts::tooltip("Redo", "redo"), icon: IconName::Redo, disabled: !app_state.read().can_redo(), onclick: move |_| { app_state.write().redo(); } }
-                        IconButton { label: shortcuts::tooltip("Save project", "save"), icon: IconName::Save, disabled: !dirty || app_state.read().project_path.is_none(), onclick: move |_| save_current_project(app_state, error_report) }
+                        IconButton { label: shortcuts::tooltip("Save project", "save"), icon: IconName::Save, disabled: !dirty || app_state.read().project_path.is_none() || app_state.read().operation_in_progress(), onclick: move |_| save_current_project(app_state, error_report) }
                     }
                 }
             }
@@ -564,7 +573,9 @@ pub fn Workspace(
                         }
                     }
                 }
-                div { class: "min-h-0 min-w-0 flex-1",
+                div { class: "flex min-h-0 min-w-0 flex-1 flex-col",
+                sync::CatalogSync { app_state }
+                div { class: "min-h-0 flex-1",
                 // Keep task owners and drafts alive while navigating. Hidden screens
                 // are excluded from focus and accessibility by the native attribute.
                 div { hidden: screen() != AppScreen::Projects, class: "h-full", Projects { config: config.clone(), app_state, on_open: move |_| screen.set(AppScreen::Canvas) } }
@@ -573,6 +584,7 @@ pub fn Workspace(
                 div { hidden: screen() != AppScreen::Preview, class: "h-full", ProjectGate { open: app_state.read().project_path.is_some(), preview::Preview { app_state } } }
                 div { hidden: screen() != AppScreen::Plans, class: "h-full", Plans { on_run: on_run_plan, running: app_state.read().operation_in_progress() || session.read().as_ref().is_some_and(|run| matches!(run.state, driver::GuideState::Running)) } }
                 div { hidden: screen() != AppScreen::Settings, class: "h-full", Settings { config: config.clone(), backend, defaults } }
+                }
                 }
             }
 
@@ -640,46 +652,99 @@ fn guide_overlay(session: Signal<Option<GuideSession>>) -> Option<Element> {
     })
 }
 
-/// Maps a stored asset path to the URL the `generated` asset handler
-/// serves (the handler serves `asset_dir/generated/<filename>`).
+/// An opaque lookup key for a registered revision path. Including the full
+/// path avoids collisions between imported images with the same filename.
 pub fn generated_asset_url(path: &str) -> Option<String> {
-    asset_url("generated", path)
+    use std::hash::{Hash, Hasher};
+    if path.is_empty() {
+        return None;
+    }
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hash);
+    Some(format!("/generated/{:016x}", hash.finish()))
 }
 
-fn asset_url(protocol: &str, path: &str) -> Option<String> {
-    Path::new(path)
-        .file_name()
-        .and_then(|filename| filename.to_str())
-        .map(|filename| format!("/{protocol}/{filename}"))
+fn registered_asset_path(
+    registry: &storyfella_studio_core::registry::ArtifactRegistry,
+    url: &str,
+) -> Option<PathBuf> {
+    registry
+        .artifacts
+        .iter()
+        .flat_map(|a| &a.revisions)
+        .filter_map(|r| r.asset_path.as_deref())
+        .find(|path| generated_asset_url(path).as_deref() == Some(url))
+        .map(PathBuf::from)
 }
 
-fn serve_generated_asset(
-    directory: &Path,
-    request: dioxus::desktop::AssetRequest,
-    responder: dioxus::desktop::RequestAsyncResponder,
-) {
+fn serve_generated_asset(path: Option<&Path>, responder: dioxus::desktop::RequestAsyncResponder) {
     use dioxus::desktop::wry::http::{Response, StatusCode};
 
-    let filename = request.uri().path().split('/').nth(2).unwrap_or_default();
-    let safe_filename = !filename.is_empty()
-        && filename
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '.'));
-    let path = if safe_filename {
-        directory.join(filename)
-    } else {
-        PathBuf::new()
+    let content_type = match path
+        .and_then(|path| path.extension())
+        .and_then(|extension| extension.to_str())
+    {
+        Some(extension)
+            if extension.eq_ignore_ascii_case("jpg") || extension.eq_ignore_ascii_case("jpeg") =>
+        {
+            "image/jpeg"
+        }
+        Some(extension) if extension.eq_ignore_ascii_case("webp") => "image/webp",
+        _ => "image/png",
     };
-    let response = match std::fs::read(path) {
-        Ok(bytes) => Response::builder()
+    let response = match path.map(std::fs::read).transpose() {
+        Ok(Some(bytes)) => Response::builder()
             .status(StatusCode::OK)
-            .header("Content-Type", "image/png")
+            .header("Content-Type", content_type)
             .header("Cache-Control", "no-store")
             .body(bytes),
-        Err(_) => Response::builder()
+        Ok(None) | Err(_) => Response::builder()
             .status(StatusCode::NOT_FOUND)
             .body(Vec::new()),
     }
     .unwrap_or_else(|_| Response::new(Vec::new()));
     responder.respond(response);
+}
+
+#[cfg(test)]
+mod asset_tests {
+    use super::*;
+    use storyfella_studio_core::registry::{
+        ArtifactKind, ArtifactRegistry, CreateArtifact, RevisionOrigin,
+    };
+
+    #[test]
+    fn artwork_urls_resolve_only_registered_paths_and_distinguish_matching_filenames() {
+        let mut registry = ArtifactRegistry::default();
+        let id = registry
+            .create_artifact(
+                ArtifactKind::Illustration,
+                CreateArtifact {
+                    name: "art".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        for path in ["/project/artwork/image.png", "/import/image.png"] {
+            let revision = registry
+                .start_revision(id, String::new(), None, None, RevisionOrigin::Canon)
+                .unwrap();
+            registry.finish_revision(id, revision, path.into()).unwrap();
+            let url = generated_asset_url(path).unwrap();
+            assert_eq!(
+                registered_asset_path(&registry, &url),
+                Some(PathBuf::from(path))
+            );
+        }
+        assert_ne!(
+            generated_asset_url("/project/artwork/image.png"),
+            generated_asset_url("/import/image.png")
+        );
+        assert!(registered_asset_path(&registry, "/generated/../../secrets").is_none());
+        assert!(registered_asset_path(
+            &registry,
+            &generated_asset_url("/unregistered/image.png").unwrap()
+        )
+        .is_none());
+    }
 }

@@ -520,19 +520,36 @@ to be run from the repository root. The platform `studio.toml` is created with
 
 The app config is one platform-local file, `studio.toml`, in the platform
 application config directory resolved by `directories::ProjectDirs`
-(`paths::config_path()`) — on Linux `~/.config/smartvisualsequencer/studio.toml`
+(`paths::config_path()`) — on Linux `~/.config/dev.storyfella.studio/studio.toml`
 (`$XDG_CONFIG_HOME`), on macOS
-`~/Library/Application Support/dev.Smart-Visual-Sequencer.Smart-Visual-Sequencer/studio.toml`,
-and on Windows `%APPDATA%\Smart Visual Sequencer\Smart Visual Sequencer\config\studio.toml`.
+`~/Library/Application Support/dev.storyfella.studio/studio.toml`,
+and on Windows `%APPDATA%\dev.storyfella.studio\config\studio.toml`.
 `$SVS_USER_CONFIG` overrides the path, which is how tests and scratch roots keep
 it out of the picture. There is no repository base file: when the platform config
 directory exists and the file is absent, `AppConfig::load()` creates it, and every
 key it does not set falls back to the built-in code defaults.
 
+Studio uses its bundle identifier, `dev.storyfella.studio`, as the flat platform
+namespace for configuration, data and cache. On first startup after the rename,
+it copies existing application directories into absent destinations, retaining
+originals as backups. It updates recent-project links, explicit settings paths,
+stored artwork references and writing-session owner paths within those roots.
+External project locations, source text, stable IDs and request provenance stay
+unchanged. SQLite's backup API includes committed WAL data; separate WAL/SHM files
+are not copied over a restored database. A failed root copy is not published and
+can be retried. Existing destinations are never merged or overwritten.
+
+Close Studio and Atelier before starting the rebuilt Studio, then reopen shared
+projects from their new location in both apps. The old directories are backups;
+ongoing edits there do not synchronize with the migrated copies. An explicit
+`SVS_USER_CONFIG` bypasses this default-directory migration for isolated/custom
+setups. Shared `clipforge.toml`, inference state, model storage and Atelier's own
+application identity are separate and remain in their existing locations.
+
 The created file is seeded so the character canvas is the full Qwen portrait:
 
 ```toml
-# ~/.config/smartvisualsequencer/studio.toml
+# ~/.config/dev.storyfella.studio/studio.toml
 [generation.sizes]
 character = "1024x1536"
 ```

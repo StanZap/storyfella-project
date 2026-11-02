@@ -81,6 +81,18 @@ impl StoryDocument {
         self.source != self.saved_source
     }
 
+    /// Validate the exact source snapshot before committing a catalog/source
+    /// pair. The catalog transaction serializes cooperating Studio writers.
+    pub(crate) fn check_disk(&self) -> Result<(), StoryFileError> {
+        let path = self.path.as_deref().ok_or(StoryFileError::Unbound)?;
+        if read(path)? != self.saved_source {
+            return Err(StoryFileError::Conflict {
+                path: path.to_owned(),
+            });
+        }
+        Ok(())
+    }
+
     /// Preserve a draft before resolving a disk conflict, without changing
     /// this document's path or saved snapshot. Never overwrite another file.
     pub fn save_copy(&self, path: &Path) -> Result<(), StoryFileError> {

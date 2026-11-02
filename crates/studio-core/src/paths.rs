@@ -32,11 +32,8 @@ use directories::{BaseDirs, ProjectDirs};
 
 /// The `directories` identity every platform path the app resolves shares: the
 /// config, cache, and data (assets/projects) directories.
-/// Retain the original identity across the Storyfella workspace rename so
-/// existing user settings, project databases, and assets remain discoverable.
-pub const APP_QUALIFIER: &str = "dev";
-pub const APP_ORGANIZATION: &str = "Smart Visual Sequencer";
-pub const APP_APPLICATION: &str = "Smart Visual Sequencer";
+/// Use the bundle identifier as a flat namespace on every platform.
+pub const APP_ID: &str = "dev.storyfella.studio";
 
 /// The app config file's name, inside the platform application config directory.
 pub const CONFIG_FILE: &str = "studio.toml";
@@ -81,7 +78,7 @@ pub fn root() -> PathBuf {
 }
 
 /// The app config file — `studio.toml` in the platform application *config*
-/// directory (on Linux `~/.config/smartvisualsequencer/studio.toml`).
+/// directory (on Linux `~/.config/dev.storyfella.studio/studio.toml`).
 ///
 /// `$SVS_USER_CONFIG` overrides the location when set and non-empty, which lets
 /// tests and scratch runs point it at a temporary file. `None` when it is unset
@@ -104,7 +101,7 @@ pub fn plans_dir() -> PathBuf {
 /// The platform application directories, or `None` where the platform has no
 /// home directory. One identity for every `ProjectDirs` the app builds.
 pub fn project_dirs() -> Option<ProjectDirs> {
-    ProjectDirs::from(APP_QUALIFIER, APP_ORGANIZATION, APP_APPLICATION)
+    ProjectDirs::from_path(APP_ID.into())
 }
 
 /// The machine's shared AI configuration file — `clipforge.toml` at the
@@ -236,7 +233,7 @@ mod tests {
         assert_eq!(path, dirs.config_dir().join(CONFIG_FILE));
         #[cfg(target_os = "linux")]
         assert!(
-            path.ends_with("smartvisualsequencer/studio.toml"),
+            path.ends_with("dev.storyfella.studio/studio.toml"),
             "{path:?}"
         );
     }

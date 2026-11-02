@@ -219,6 +219,8 @@ pub struct AppConfig {
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
+    #[error("could not migrate Studio's application data: {0:#}")]
+    Identity(#[from] anyhow::Error),
     #[error("could not determine platform application directories")]
     PlatformDirectories,
     #[error("failed to read {path}: {source}")]
@@ -264,7 +266,7 @@ impl CodedError for ConfigError {
             Self::PlatformDirectories => ErrorCode::ConfigPlatformDirectories,
             Self::Read { .. } => ErrorCode::ConfigRead,
             Self::Parse { .. } => ErrorCode::ConfigParse,
-            Self::Write { .. } => ErrorCode::ConfigWrite,
+            Self::Write { .. } | Self::Identity(_) => ErrorCode::ConfigWrite,
             Self::InvalidSize { .. } => ErrorCode::ConfigInvalidSize,
             Self::MalformedSize { .. } => ErrorCode::ConfigMalformedSize,
             Self::Serialize { .. } => ErrorCode::ConfigSerialize,
@@ -364,6 +366,9 @@ impl AppConfig {
     /// and the inference settings from the machine's shared `clipforge.toml`
     /// (created with Storyfella's defaults when absent).
     pub fn load() -> Result<Self, ConfigError> {
+        if std::env::var_os(paths::APP_CONFIG_ENV).is_none_or(|value| value.is_empty()) {
+            crate::identity::migrate()?;
+        }
         let app = paths::config_path();
         let ai = paths::clipforge_config_path();
         migrate_legacy_settings(app.as_deref(), ai.as_deref())?;

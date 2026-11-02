@@ -2207,7 +2207,7 @@ fn shared_story_folder_relocates_with_its_editable_document_and_artwork() {
 }
 
 #[test]
-fn shared_catalog_worker_creates_items_and_document_links_survive_save_rename_and_move() {
+fn shared_catalog_worker_refreshes_items_and_document_links_survive_save_rename_and_move() {
     use storyfella_studio_core::{
         catalog::{AssetLink, CatalogEdit},
         persistence::ProjectDb,
@@ -2233,6 +2233,7 @@ fn shared_catalog_worker_creates_items_and_document_links_survive_save_rename_an
             epoch: 7,
             path: folder.database(),
             snapshot,
+            resolution: storyfella_studio_core::catalog::EditResolution::Check,
             edit: CatalogEdit::Create {
                 kind: ArtifactKind::Character,
                 name: "mara".into(),
@@ -2261,9 +2262,10 @@ fn shared_catalog_worker_creates_items_and_document_links_survive_save_rename_an
             epoch: 7,
             path: folder.database(),
             snapshot,
+            resolution: storyfella_studio_core::catalog::EditResolution::Check,
             edit: CatalogEdit::Describe {
                 id,
-                name: "captain_mara".into(),
+                name: "mara".into(),
                 description: "Updated story requirement".into(),
             },
         })
@@ -2276,16 +2278,122 @@ fn shared_catalog_worker_creates_items_and_document_links_survive_save_rename_an
             assert_eq!(same, id);
             assert_eq!(stored.story.source(), source);
         }
-        _ => panic!("Catalog rename should preserve identity"),
+        _ => panic!("Catalog edit should preserve identity"),
     }
+    let db = ProjectDb::open_existing(folder.database()).unwrap();
+    let mut renamed = db.load().unwrap();
+    renamed.registry.artifact_mut(id).unwrap().name = "captain_mara".into();
+    db.save_registry_checked(&renamed.registry, renamed.registry_version)
+        .unwrap();
+    workers
+        .storage
+        .send(Storage::RefreshCatalog {
+            epoch: 7,
+            path: folder.database(),
+        })
+        .unwrap();
+    match workers.events.recv_timeout(Duration::from_secs(5)).unwrap() {
+        Event::CatalogRefreshed {
+            epoch: 7,
+            path,
+            result: Ok(stored),
+        } => {
+            assert_eq!(path, folder.database());
+            assert_eq!(stored.registry.artifact(id).unwrap().name, "captain_mara");
+        }
+        _ => panic!("Refresh must retain its captured project identity"),
+    }
+    drop(db);
     std::fs::rename(folder.root(), root.join("moved")).unwrap();
     let moved = ProjectFolder::open(&root.join("moved")).unwrap();
     let document = crate::document::load(&moved.atelier_document().unwrap()).unwrap();
     assert_eq!(document.asset_links[0].asset_id, id);
     let stored = ProjectDb::open(moved.database()).unwrap().load().unwrap();
     assert_eq!(stored.registry.artifact(id).unwrap().name, "captain_mara");
+    assert_eq!(
+        stored.registry.artifact(id).unwrap().description,
+        "Updated story requirement"
+    );
     let mut invalid = document.clone();
     invalid.asset_links.push(invalid.asset_links[0].clone());
     assert!(invalid.validate().is_err());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn studio_handoff_reuses_artboard_preserves_prompt_and_drawing_and_embeds_existing_artwork() {
+    use storyfella_studio_core::{
+        atelier::OpenRequest,
+        catalog::{self, CatalogEdit},
+        project::ProjectFolder,
+        registry::{ArtifactKind, ArtifactRegistry},
+    };
+    let root = temporary("studio-handoff");
+    std::fs::create_dir_all(&root).unwrap();
+    let image = root.join("source.png");
+    image::RgbaImage::from_pixel(64, 64, image::Rgba([12, 34, 56, 255]))
+        .save(&image)
+        .unwrap();
+    let mut registry = ArtifactRegistry::default();
+    let id = catalog::apply(
+        &mut registry,
+        CatalogEdit::Create {
+            kind: ArtifactKind::Character,
+            name: "mara".into(),
+            description: "Captain in blue".into(),
+            variant_of: None,
+        },
+    )
+    .unwrap();
+    catalog::apply(&mut registry, CatalogEdit::ImportImage { id, path: image }).unwrap();
+    let source = "scene harbor\n  cast: mara\n  beat first\n    mara: Hello\n";
+    let folder = ProjectFolder::create(&root.join("story"), "Harbor", &registry, source).unwrap();
+    let mut request = OpenRequest::prepare(&folder.database(), source, id).unwrap();
+    let workers = worker::start();
+    workers
+        .storage
+        .send(Storage::StoryContext(request.clone()))
+        .unwrap();
+    let target = match workers.events.recv_timeout(Duration::from_secs(5)).unwrap() {
+        Event::StoryContext(received, Ok(target)) => {
+            assert_eq!(received.id, request.id);
+            target
+        }
+        _ => panic!("Handoff should resolve on the storage worker"),
+    };
+    let mut doc = crate::document::load(&target.path).unwrap();
+    let canvas = target.apply(&mut doc, &request).unwrap();
+    assert_eq!(doc.asset_links[0].asset_id, id);
+    assert!(doc.layers[0].image.is_some());
+    assert!(!doc.layers[0].candidate);
+    let prompt = format!("canvas:{canvas}:full");
+    assert_eq!(doc.prompt_drafts[&prompt], "Captain in blue");
+    doc.layers[0].name = "My edited layer".into();
+    doc.prompt_drafts
+        .insert(prompt.clone(), "My unsent prompt".into());
+    request.description = "Updated description".into();
+    request.context = "Updated context".into();
+    assert_eq!(target.apply(&mut doc, &request).unwrap(), canvas);
+    assert_eq!(doc.layers[0].name, "My edited layer");
+    assert_eq!(doc.prompt_drafts[&prompt], "My unsent prompt");
+    assert_eq!(doc.asset_links.len(), 1);
+    assert_eq!(doc.story_context[&canvas], "Updated context");
+    crate::document::save(&target.path, &doc).unwrap();
+    let reopened = crate::document::load(&target.path).unwrap();
+    assert_eq!(reopened.asset_links, doc.asset_links);
+    assert_eq!(reopened.story_context, doc.story_context);
+    assert_eq!(reopened.prompt_drafts[&prompt], "My unsent prompt");
+    assert!(crate::story_context::prepare_target(&request)
+        .unwrap()
+        .artwork
+        .is_none());
+    assert_eq!(
+        std::fs::read_to_string(folder.root().join("story.sf")).unwrap(),
+        source
+    );
+    let before = serde_json::to_value(&doc).unwrap();
+    request.context = "a".repeat(131_073);
+    assert!(target.apply(&mut doc, &request).is_err());
+    assert_eq!(serde_json::to_value(&doc).unwrap(), before);
     std::fs::remove_dir_all(root).unwrap();
 }

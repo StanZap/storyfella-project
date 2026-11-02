@@ -127,6 +127,8 @@ impl CanvasArtboard {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Document {
     #[serde(default)]
+    pub story_context: std::collections::BTreeMap<u32, String>,
+    #[serde(default)]
     pub asset_links: Vec<storyfella_studio_core::catalog::AssetLink>,
     pub version: u32,
     pub title: String,
@@ -160,6 +162,7 @@ fn show_references() -> bool {
 impl Default for Document {
     fn default() -> Self {
         Self {
+            story_context: Default::default(),
             asset_links: Vec::new(),
             version: 2,
             title: "Untitled project".into(),
@@ -235,6 +238,35 @@ impl Document {
             self.canvas_created = true;
         }
         Ok(())
+    }
+
+    /// One linked artboard per requested identity. Reopening never recreates
+    /// the artwork or replaces an unsent production prompt.
+    pub fn ensure_story_artboard(
+        &mut self,
+        id: uuid::Uuid,
+        context: String,
+        description: String,
+    ) -> Result<u32> {
+        let canvas = if let Some(link) = self.asset_links.iter().find(|link| link.asset_id == id) {
+            link.canvas_id
+        } else {
+            self.create_canvas()?;
+            self.asset_links
+                .push(storyfella_studio_core::catalog::AssetLink {
+                    asset_id: id,
+                    canvas_id: self.canvas_id,
+                });
+            self.prompt_drafts
+                .entry(format!("canvas:{}:full", self.canvas_id))
+                .or_insert(description);
+            self.canvas_id
+        };
+        if canvas == self.canvas_id {
+            self.canvas_created = true;
+        }
+        self.story_context.insert(canvas, context);
+        Ok(canvas)
     }
 
     pub fn embedded_image_bytes(&self) -> usize {
@@ -318,6 +350,12 @@ impl Document {
                 .iter()
                 .all(|link| canvas_ids.contains(&link.canvas_id) && linked.insert(link.canvas_id)),
             "Invalid asset-to-artboard links"
+        );
+        ensure!(
+            self.story_context
+                .iter()
+                .all(|(id, text)| canvas_ids.contains(id) && text.len() <= 131_072),
+            "Invalid story context"
         );
         ensure!(
             self.references.len() <= 128

@@ -499,6 +499,7 @@ pub fn Writer(
             )
         })
         .collect();
+    let atelier_target = scene_artwork.map(|scene| scene.artifact_id);
     let (beat_mentions, scene_mentions) = mentions_in(&analysis, at, &registry);
     let pending = beat_mentions
         .iter()
@@ -671,6 +672,7 @@ pub fn Writer(
                         IconButton { label: "Rename scene or beat", icon: IconName::Edit, disabled: rename_symbol.is_none(), onclick: move |_| {
                             if let Some(name) = rename_symbol.clone() { rename_target.set(Some((offset, name))); }
                         } }
+                        super::atelier::OpenInAtelier { target: atelier_target, show_label: false }
                         div { class: "ml-auto flex flex-wrap items-center gap-3",
                             div { role: "status",
                                 IconButton { label: problem_label, icon: IconName::List, show_label: true,
@@ -842,6 +844,7 @@ fn MentionGroup(title: String, mentions: Vec<Mention>, app_state: Signal<AppStat
                                 "Render…"
                             }
                         } else if !mention.pending() {
+                            super::atelier::OpenInAtelier { target: mention.artifact, show_label: false }
                             button {
                                 class: "shrink-0 rounded-md px-2 py-1 text-[10px] text-zinc-600 transition hover:text-zinc-200",
                                 title: "Open in the canvas",

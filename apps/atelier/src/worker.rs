@@ -20,9 +20,19 @@ pub struct ProjectPreview {
     pub note: String,
 }
 pub enum Event {
+    StoryContext(
+        storyfella_studio_core::atelier::OpenRequest,
+        Result<crate::story_context::StoryTarget>,
+    ),
+    CatalogRefreshed {
+        epoch: u64,
+        path: PathBuf,
+        result: Result<storyfella_studio_core::persistence::StoredProject>,
+    },
     CatalogSaved {
         epoch: u64,
         path: PathBuf,
+        details_saved: bool,
         result: Result<(
             uuid::Uuid,
             storyfella_studio_core::persistence::StoredProject,
@@ -61,11 +71,17 @@ pub enum Event {
     ServerStatus(crate::native_images::ServerStatus),
 }
 pub enum Storage {
+    StoryContext(storyfella_studio_core::atelier::OpenRequest),
+    RefreshCatalog {
+        epoch: u64,
+        path: PathBuf,
+    },
     CatalogEdit {
         epoch: u64,
         path: PathBuf,
         snapshot: storyfella_studio_core::persistence::StoredProject,
         edit: storyfella_studio_core::catalog::CatalogEdit,
+        resolution: storyfella_studio_core::catalog::EditResolution,
     },
     CloseProject {
         doc: Document,
@@ -139,19 +155,43 @@ pub fn start() -> Workers {
     std::thread::spawn(move || {
         while let Ok(command) = queue.recv() {
             let event = match command {
+                Storage::StoryContext(request) => {
+                    let result = crate::story_context::prepare_target(&request);
+                    Event::StoryContext(request, result)
+                }
+                Storage::RefreshCatalog { epoch, path } => {
+                    let result = (|| {
+                        Ok(
+                            storyfella_studio_core::persistence::ProjectDb::open_existing(&path)?
+                                .load()?,
+                        )
+                    })();
+                    Event::CatalogRefreshed {
+                        epoch,
+                        path,
+                        result,
+                    }
+                }
                 Storage::CatalogEdit {
                     epoch,
                     path,
                     snapshot,
                     edit,
+                    resolution,
                 } => {
+                    let details_saved = !matches!(
+                        &edit,
+                        storyfella_studio_core::catalog::CatalogEdit::ImportImage { .. }
+                    );
                     let result = (|| {
-                        let db = storyfella_studio_core::persistence::ProjectDb::open(&path)?;
-                        storyfella_studio_core::catalog::save_edit(&db, &snapshot, edit)
+                        let db =
+                            storyfella_studio_core::persistence::ProjectDb::open_existing(&path)?;
+                        storyfella_studio_core::catalog::save_edit(&db, &snapshot, edit, resolution)
                     })();
                     Event::CatalogSaved {
                         epoch,
                         path,
+                        details_saved,
                         result,
                     }
                 }

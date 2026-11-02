@@ -98,12 +98,18 @@ and the `project_json` storyboard column (schema v3) were removed with the
 models they carried, and the `masks` table (schema v8) was dropped with the
 mask edit path). Schema v9 exports `projects.story_source` to `.sf` before
 dropping the column. Schema v10 adds ordered scene/beat name-to-UUID associations
-in `projects.story_scenes_json`; source remains exclusively in `.sf`.
+in `projects.story_scenes_json`; `.sf` is the authoritative source.
 The `svs` CLI persists artwork to `.svs-project.db`.
 Schema v11 adds the independent illustration kind and a registry version for
 checked GUI writes. The artifact-table rebuild retains existing graph rows and
 checks foreign keys before commit. A loaded `StoredProject` carries that version;
 GUI writers commit against it and preserve newer work on a stale-write error.
+Schema v12 adds transient `source_write` intent: Studio commits its catalog and
+exact before/after source together, then publishes `.sf` and clears the intent.
+Load/retry recovers an interruption only against a matching file; unrelated
+source text requires explicit preserve-copy recovery. GUI catalog refresh uses
+UUID/field three-way merging, retaining drafts and rebasing undo. See the
+[concurrency contract](shared-project.md#synchronization-and-concurrent-editing).
 Catalog entries reuse artifact UUIDs; source requirements, saved image revisions
 and Atelier's asset/artboard links remain separate. See the
 [shared catalog contract](shared-project.md#shared-asset-catalog).
@@ -181,7 +187,9 @@ file beside the original, flush it, and replace it with a rename. A save first
 compares disk text with the document's last saved snapshot. If both disk and
 Writer have changed, it reports `SVS-STO-110`, keeps the local draft, and leaves
 the external file untouched. A clean Writer refreshes external edits when saving.
-Opening a project also loads current disk text; there is no background file watcher.
+Opening a project also loads current disk text. Background polling refreshes
+clean source and shared catalog state approximately every two seconds; a dirty
+Writer buffer retains its disk conflict guard.
 
 Writer → Save copy saves local text to a new file without changing the open
 project or overwriting an existing file. Writer → Reload .sf reads disk text,
@@ -189,11 +197,11 @@ asking for confirmation before discarding local edits. Failed reads leave the
 editor intact. A missing source in an upgraded project is an error rather than
 an empty draft that could erase the story.
 
-The source file and SQLite registry snapshot are separate writes. If source
-saving succeeds but registry saving fails, Studio keeps the new source snapshot
-and the project's dirty flag, so retrying does not mistake its own save for an
-external edit. A failed source save prevents the registry save. Switching projects
-first saves pending changes; a failure leaves the current project open.
+Studio validates source before committing the catalog/source intent. A failed
+catalog commit publishes no source. A failed source publish leaves a durable
+intent and the editor's work intact; load/retry completes publication or exposes
+preserve-copy recovery. Switching projects first saves pending changes; a
+failure leaves the current project open.
 
 ### Migration from SQLite drafts
 

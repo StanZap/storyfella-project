@@ -4,6 +4,7 @@ use storyfella_language::analyze;
 use storyfella_studio_core::authoring::{reconcile, AssetCatalog};
 use uuid::Uuid;
 
+use storyfella_studio_core::catalog::sync::{self, Conflict, Resolution};
 use storyfella_studio_core::persistence::StoredProject;
 use storyfella_studio_core::registry::{Artifact, ArtifactRegistry, RevisionStatus};
 use storyfella_studio_core::story::StoryDocument;
@@ -28,6 +29,10 @@ pub struct AppState {
     /// project is created or opened from the Projects screen).
     pub project_path: Option<PathBuf>,
     pub registry_version: i64,
+    saved_registry: ArtifactRegistry,
+    project_id: Option<Uuid>,
+    incoming_catalog: Option<StoredProject>,
+    pub catalog_conflict: Option<Conflict>,
     pub has_unsaved_changes: bool,
     pub selected_artifact_id: Option<Uuid>,
     /// Exact Writer text, bound `.sf` path and disk snapshot for conflict checks.
@@ -207,6 +212,10 @@ impl AppState {
     /// Replaces the in-memory state with a snapshot loaded from disk.
     /// The caller is responsible for saving before navigating away.
     pub fn open_project(&mut self, stored: StoredProject, path: PathBuf) {
+        self.project_id = Some(stored.id);
+        self.saved_registry = stored.registry.clone();
+        self.incoming_catalog = None;
+        self.catalog_conflict = None;
         self.registry_version = stored.registry_version;
         self.saved_associations = stored.registry.story_scenes.clone();
         self.registry = stored.registry;
@@ -459,8 +468,142 @@ impl AppState {
 
     pub fn mark_saved(&mut self, registry_version: i64) {
         self.registry_version = registry_version;
+        self.saved_registry = self.registry.clone();
         self.saved_associations = self.registry.story_scenes.clone();
         self.has_unsaved_changes = false;
+    }
+
+    /// Refresh catalog fields without replacing source, inspector drafts or an
+    /// active generation. Every undo state receives the same external delta.
+    pub fn refresh_catalog(
+        &mut self,
+        stored: StoredProject,
+        resolution: Resolution,
+    ) -> Result<(), String> {
+        if self.project_id != Some(stored.id) {
+            return Err(
+                "The project identity changed on disk. Open the intended project again.".into(),
+            );
+        }
+        if self.operation_in_progress {
+            return Ok(());
+        }
+        if stored.registry_version < self.registry_version {
+            return Ok(());
+        }
+        let mut with_drafts = self.registry.clone();
+        for (id, text) in &self.description_drafts {
+            if let Some(item) = with_drafts.artifact_mut(*id) {
+                item.description = text.clone();
+            }
+        }
+        // Inspector drafts participate in conflict detection even though normal
+        // autosave must leave them unapplied and editable.
+        let preview = sync::merge(
+            &self.saved_registry,
+            &with_drafts,
+            &stored.registry,
+            resolution,
+        );
+        match preview {
+            Ok(_) => {}
+            Err(conflict) => {
+                let message = conflict.to_string();
+                self.catalog_conflict = Some(conflict);
+                self.incoming_catalog = Some(stored);
+                return Err(message);
+            }
+        }
+        let mut merged = sync::merge(
+            &self.saved_registry,
+            &self.registry,
+            &stored.registry,
+            resolution,
+        )
+        .map_err(|error| error.to_string())?;
+        self.description_drafts.retain(|id, text| {
+            let before = self.saved_registry.artifact(*id).map(|a| &a.description);
+            let saved = stored.registry.artifact(*id).map(|a| &a.description);
+            if saved == Some(text) {
+                return false;
+            }
+            if resolution != Resolution::Check && before != saved {
+                if resolution == Resolution::Local {
+                    if let Some(item) = merged.artifact_mut(*id) {
+                        item.description = text.clone();
+                    }
+                }
+                return false;
+            }
+            true
+        });
+        for stack in [&mut self.undo_stack, &mut self.redo_stack] {
+            // A structurally incompatible historical snapshot cannot safely be
+            // restored. Keep the other undo steps, including their source text.
+            stack.retain_mut(|snapshot| {
+                match sync::merge(
+                    &self.saved_registry,
+                    &snapshot.registry,
+                    &stored.registry,
+                    Resolution::Saved,
+                ) {
+                    Ok(registry) => {
+                        snapshot.registry = registry;
+                        true
+                    }
+                    Err(_) => false,
+                }
+            });
+        }
+        self.registry = merged;
+        self.project_name = stored.name;
+        self.registry_version = stored.registry_version;
+        self.saved_associations = stored.registry.story_scenes.clone();
+        self.saved_registry = stored.registry;
+        // External catalog changes never request a source edit. A clean source
+        // may follow its owner on disk; a dirty buffer keeps its conflict guard.
+        let source_changed = !self.story.is_dirty() && self.story.source() != stored.story.source();
+        if source_changed {
+            self.story = stored.story;
+        }
+        self.catalog_conflict = None;
+        self.incoming_catalog = None;
+        self.prune_selection();
+        if source_changed {
+            self.reconcile_story();
+        }
+        self.has_unsaved_changes = self.story.is_dirty() || self.registry != self.saved_registry;
+        Ok(())
+    }
+
+    pub fn resolve_catalog_conflict(&mut self, resolution: Resolution) -> Result<(), String> {
+        if self.operation_in_progress {
+            return Err("Wait for the current operation before resolving catalog changes.".into());
+        }
+        let stored = self
+            .incoming_catalog
+            .clone()
+            .ok_or("Refresh the catalog first")?;
+        self.refresh_catalog(stored, resolution)
+    }
+
+    /// Explicit discard for a duplicate identity or broken relationship. The
+    /// confirmation names the catalog/undo loss; authored text and drafts stay.
+    pub fn use_saved_catalog(&mut self) -> Result<(), String> {
+        if self.operation_in_progress {
+            return Err("Wait for the current operation before reloading the catalog.".into());
+        }
+        let stored = self
+            .incoming_catalog
+            .clone()
+            .ok_or("Refresh the catalog first")?;
+        self.registry = stored.registry.clone();
+        self.saved_registry = stored.registry.clone();
+        self.description_drafts
+            .retain(|id, _| self.registry.artifact(*id).is_some());
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.refresh_catalog(stored, Resolution::Saved)
     }
 
     fn authoring_snapshot(&self) -> AuthoringSnapshot {
@@ -585,6 +728,191 @@ impl AppState {
 mod tests {
     use super::{AppState, StoryDocument};
     use storyfella_studio_core::registry::{ArtifactKind, ArtifactRegistry, CreateArtifact};
+
+    fn sync_state() -> (AppState, storyfella_studio_core::persistence::StoredProject) {
+        let stored = storyfella_studio_core::persistence::StoredProject {
+            registry_version: 1,
+            id: uuid::Uuid::new_v4(),
+            name: "Shared".into(),
+            registry: character_registry("mara"),
+            story: StoryDocument::default(),
+        };
+        let mut state = AppState::default();
+        state.open_project(stored.clone(), "shared.db".into());
+        (state, stored)
+    }
+
+    #[test]
+    fn catalog_refresh_keeps_dirty_source_and_undo_cannot_remove_external_artwork() {
+        use super::Resolution;
+        let (mut state, mut stored) = sync_state();
+        let id = state.registry.artifacts[0].id;
+        state.set_story_source("// unsaved 🌊\r\n".into());
+        state
+            .edit_catalog(storyfella_studio_core::catalog::CatalogEdit::Describe {
+                id,
+                name: "mara".into(),
+                description: "Local details".into(),
+            })
+            .unwrap();
+        let revision = stored
+            .registry
+            .start_revision(
+                id,
+                "Artwork".into(),
+                None,
+                None,
+                storyfella_studio_core::registry::RevisionOrigin::Canon,
+            )
+            .unwrap();
+        stored
+            .registry
+            .finish_revision(id, revision, "/image.png".into())
+            .unwrap();
+        let added = stored
+            .registry
+            .create_artifact(
+                ArtifactKind::Object,
+                CreateArtifact {
+                    name: "lamp".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        stored.registry_version += 1;
+        state
+            .refresh_catalog(stored.clone(), Resolution::Check)
+            .unwrap();
+        assert_eq!(state.story.source(), "// unsaved 🌊\r\n");
+        assert_eq!(
+            state.registry.artifact(id).unwrap().description,
+            "Local details"
+        );
+        assert_eq!(
+            state.registry.artifact(id).unwrap().active_revision_id,
+            Some(revision)
+        );
+        assert!(state.has_unsaved_changes);
+        while state.undo() {
+            assert_eq!(
+                state.registry.artifact(id).unwrap().active_revision_id,
+                Some(revision)
+            );
+            assert!(state.registry.artifact(added).is_some());
+        }
+        while state.redo() {
+            assert_eq!(
+                state.registry.artifact(id).unwrap().active_revision_id,
+                Some(revision)
+            );
+            assert!(state.registry.artifact(added).is_some());
+        }
+        assert_eq!(state.story.source(), "// unsaved 🌊\r\n");
+    }
+
+    #[test]
+    fn unapplied_description_drafts_conflict_before_autosave_and_require_an_explicit_choice() {
+        use super::Resolution;
+        for resolution in [Resolution::Saved, Resolution::Local] {
+            let (mut state, mut stored) = sync_state();
+            let id = state.registry.artifacts[0].id;
+            state.set_description_draft(id, "My retained draft".into());
+            stored.registry.artifact_mut(id).unwrap().description = "Atelier details".into();
+            stored.registry_version += 1;
+            let original = state.registry.clone();
+            assert!(state
+                .refresh_catalog(stored.clone(), Resolution::Check)
+                .is_err());
+            assert_eq!(state.registry, original);
+            assert_eq!(state.description_draft(id), Some("My retained draft"));
+            assert!(state.catalog_conflict.is_some());
+            state.resolve_catalog_conflict(resolution).unwrap();
+            assert!(state.catalog_conflict.is_none());
+            assert!(!state.has_description_drafts());
+            assert_eq!(
+                state.registry.artifact(id).unwrap().description,
+                if resolution == Resolution::Local {
+                    "My retained draft"
+                } else {
+                    "Atelier details"
+                }
+            );
+            assert_eq!(state.has_unsaved_changes, resolution == Resolution::Local);
+        }
+    }
+
+    #[test]
+    fn refresh_waits_for_generation_rejects_another_project_and_ignores_old_results() {
+        use super::Resolution;
+        let (mut state, mut stored) = sync_state();
+        stored.registry_version += 1;
+        stored.registry.artifacts[0].description = "External".into();
+        state.begin_operation();
+        let before = state.clone();
+        assert!(state.resolve_catalog_conflict(Resolution::Saved).is_err());
+        assert!(state.use_saved_catalog().is_err());
+        assert_eq!(state, before);
+        state
+            .refresh_catalog(stored.clone(), Resolution::Check)
+            .unwrap();
+        assert_eq!(state, before);
+        state.cancel_operation();
+        state
+            .refresh_catalog(stored.clone(), Resolution::Check)
+            .unwrap();
+        let before = state.clone();
+        stored.registry_version -= 1;
+        stored.registry.artifacts[0].description = "Obsolete".into();
+        state
+            .refresh_catalog(stored.clone(), Resolution::Check)
+            .unwrap();
+        assert_eq!(state, before);
+        stored.id = uuid::Uuid::new_v4();
+        assert!(state.refresh_catalog(stored, Resolution::Check).is_err());
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn duplicate_creation_recovery_uses_saved_identity_without_rewriting_source() {
+        use super::Resolution;
+        let (mut state, mut stored) = sync_state();
+        state.set_story_source("// keep my writing\n".into());
+        state
+            .edit_catalog(storyfella_studio_core::catalog::CatalogEdit::Create {
+                kind: ArtifactKind::Object,
+                name: "lamp".into(),
+                description: String::new(),
+                variant_of: None,
+            })
+            .unwrap();
+        let saved_id = stored
+            .registry
+            .create_artifact(
+                ArtifactKind::Object,
+                CreateArtifact {
+                    name: "lamp".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        stored.registry_version += 1;
+        assert!(state.refresh_catalog(stored, Resolution::Check).is_err());
+        assert!(state.catalog_conflict.as_ref().unwrap().requires_reload);
+        state.use_saved_catalog().unwrap();
+        assert_eq!(state.story.source(), "// keep my writing\n");
+        assert_eq!(
+            state
+                .registry
+                .artifacts
+                .iter()
+                .filter(|a| a.name == "lamp")
+                .count(),
+            1
+        );
+        assert!(state.registry.artifact(saved_id).is_some());
+        assert!(state.has_unsaved_changes);
+        assert!(!state.can_undo());
+    }
     #[test]
     fn approved_artwork_import_creates_a_completed_revision_with_undo_and_project_persistence() {
         let artwork = storyfella_studio_core::artwork::ApprovedArtwork {

@@ -1,4 +1,4 @@
-//! `svs` — the Smart Visual Sequencer operation CLI.
+//! `svs` — the Storyfella operation CLI.
 //!
 //! Drives the artifact registry + pipeline API without the Dioxus UI:
 //! typed operations (`svs op …`), serialized operation stacks (`svs stack
@@ -46,7 +46,7 @@ mod story;
 #[command(
     name = "svs",
     version,
-    about = "Drive Smart Visual Sequencer operations from the command line"
+    about = "Drive Storyfella operations from the command line"
 )]
 struct Cli {
     /// SQLite project database (created on first use).

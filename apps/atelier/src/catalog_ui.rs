@@ -22,6 +22,8 @@ use crate::{
 pub struct CatalogState {
     pub path: PathBuf,
     pub snapshot: StoredProject,
+    /// The form's baseline stays fixed while its list refreshes around it.
+    pub edit_snapshot: StoredProject,
     pub selected: Option<Uuid>,
 }
 
@@ -52,6 +54,7 @@ impl DrawingApp {
             let snapshot = ProjectDb::open(folder.database())?.load()?;
             Ok(CatalogState {
                 path,
+                edit_snapshot: snapshot.clone(),
                 snapshot,
                 selected: None,
             })
@@ -64,9 +67,11 @@ impl DrawingApp {
                     .is_some_and(|old| old.path == catalog.path);
                 if same_project {
                     catalog.selected = self.catalog.as_ref().and_then(|old| old.selected);
+                    catalog.edit_snapshot = self.catalog.as_ref().unwrap().edit_snapshot.clone();
                 }
                 self.catalog = Some(catalog);
                 self.catalog_error = None;
+                self.catalog_refresh_error = None;
                 if !same_project {
                     self.new_catalog_item(window, cx);
                 }
@@ -80,8 +85,11 @@ impl DrawingApp {
     fn new_catalog_item(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(catalog) = &mut self.catalog {
             catalog.selected = None;
+            catalog.edit_snapshot = catalog.snapshot.clone();
         }
         self.catalog_base = None;
+        self.catalog_conflict = None;
+        self.catalog_error = None;
         self.catalog_name
             .update(cx, |s, cx| s.set_value("", window, cx));
         self.catalog_description
@@ -89,7 +97,12 @@ impl DrawingApp {
         cx.notify();
     }
 
-    fn select_catalog_item(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn select_catalog_item(
+        &mut self,
+        id: Uuid,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(catalog) = &mut self.catalog else {
             return;
         };
@@ -104,11 +117,18 @@ impl DrawingApp {
             s.set_value(item.description.clone(), window, cx)
         });
         catalog.selected = Some(id);
+        catalog.edit_snapshot = catalog.snapshot.clone();
         self.catalog_error = None;
+        self.catalog_conflict = None;
         cx.notify();
     }
 
-    fn submit_catalog_edit(&mut self, edit: CatalogEdit, cx: &mut Context<Self>) {
+    fn submit_catalog_edit(
+        &mut self,
+        edit: CatalogEdit,
+        resolution: catalog::EditResolution,
+        cx: &mut Context<Self>,
+    ) {
         if self.catalog_busy {
             return;
         }
@@ -124,8 +144,9 @@ impl DrawingApp {
             .send(Storage::CatalogEdit {
                 epoch: self.epoch,
                 path: catalog.path.clone(),
-                snapshot: catalog.snapshot.clone(),
+                snapshot: catalog.edit_snapshot.clone(),
                 edit,
+                resolution,
             })
             .is_ok();
         self.catalog_error = if self.catalog_busy {
@@ -158,6 +179,7 @@ impl DrawingApp {
                                 id,
                                 path: paths[0].clone(),
                             },
+                            catalog::EditResolution::Check,
                             cx,
                         ),
                         Ok(Ok(_)) => {}
@@ -251,8 +273,13 @@ impl DrawingApp {
                 },
             )));
         }
+        content = if let Some(item) = selected.and_then(|id| catalog.snapshot.registry.artifact(id))
+        {
+            content.child(label(format!("{} · Rename in Studio", item.name)))
+        } else {
+            content.child(field("Reference name", &self.catalog_name))
+        };
         content = content
-            .child(field("Reference name", &self.catalog_name))
             .child(label("Description"))
             .child(Textarea::new(&self.catalog_description).h(px(90.)));
         if let Some(base) = self
@@ -287,7 +314,7 @@ impl DrawingApp {
                             variant_of: this.catalog_base,
                         },
                     };
-                    this.submit_catalog_edit(edit, cx);
+                    this.submit_catalog_edit(edit, catalog::EditResolution::Check, cx);
                 })),
         );
         if let Some(id) = selected {
@@ -328,6 +355,14 @@ impl DrawingApp {
                         .on_click(cx.listener(move |this, _, _, cx| {
                             let canvas_id = this.doc.canvas_id;
                             this.history.checkpoint(&this.doc);
+                            if !this
+                                .doc
+                                .asset_links
+                                .iter()
+                                .any(|link| link.canvas_id == canvas_id && link.asset_id == id)
+                            {
+                                this.doc.story_context.remove(&canvas_id);
+                            }
                             this.doc
                                 .asset_links
                                 .retain(|link| link.canvas_id != canvas_id);
@@ -346,6 +381,55 @@ impl DrawingApp {
         }
         if let Some(error) = &self.catalog_error {
             content = content.child(label(error.clone()).text_color(rgb(0x9a3412)));
+        }
+        if let Some(error) = &self.catalog_refresh_error {
+            content = content.child(label(error.clone()).text_color(rgb(0x9a3412)));
+        }
+        if let Some(conflict) = &self.catalog_conflict {
+            for field in &conflict.conflict.fields {
+                content = content.child(label(field.label.clone()));
+                if !conflict.conflict.requires_reload {
+                    content = content
+                        .child(label(format!("Yours: {}", field.local)))
+                        .child(label(format!("Saved: {}", field.saved)));
+                }
+            }
+            if !conflict.conflict.requires_reload {
+                let saved_version = conflict.saved_version;
+                content = content.child(
+                    Button::new("catalog-keep-mine")
+                        .small()
+                        .label("Keep my conflicting details")
+                        .disabled(disabled)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let Some(id) = this.catalog.as_ref().and_then(|c| c.selected) else {
+                                return;
+                            };
+                            let name = this.catalog_name.read(cx).value().to_string();
+                            let description = this.catalog_description.read(cx).value().to_string();
+                            this.submit_catalog_edit(
+                                CatalogEdit::Describe {
+                                    id,
+                                    name,
+                                    description,
+                                },
+                                catalog::EditResolution::KeepDraft { saved_version },
+                                cx,
+                            );
+                        })),
+                );
+            }
+            if let Some(id) = selected {
+                content = content.child(
+                    Button::new("catalog-use-saved")
+                        .small()
+                        .label("Discard draft and load saved details")
+                        .disabled(disabled)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.select_catalog_item(id, window, cx)
+                        })),
+                );
+            }
         }
         if self.catalog_busy {
             content = content.child(label("Saving catalog…"));

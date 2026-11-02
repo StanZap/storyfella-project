@@ -49,14 +49,14 @@ pub fn App() -> Element {
                             .filter(|path| path.exists())
                             .or_else(storyfella_studio_core::paths::config_path)
                     }
-                    ConfigError::PlatformDirectories => None,
+                    ConfigError::PlatformDirectories | ConfigError::Identity(_) => None,
                 };
                 rsx! {
                 main { class: "studio-startup",
                   div { class: "studio-startup-content",
                     p { class: "studio-startup-brand", "Storyfella Studio" }
-                    h1 { class: "studio-startup-title", "Studio couldn't open its settings" }
-                    p { class: "studio-startup-message", "Your stories are safe. Check the configuration file, then try again. Technical details are available below." }
+                    h1 { class: "studio-startup-title", if matches!(error, ConfigError::Identity(_)) { "Studio couldn't migrate its data" } else { "Studio couldn't open its settings" } }
+                    p { class: "studio-startup-message", if matches!(error, ConfigError::Identity(_)) { "Your original data is preserved. Review the details, correct the problem, then try again." } else { "Your stories are safe. Check the configuration file, then try again. Technical details are available below." } }
                     crate::ui::components::RecoveryNotice { title: error.code().message(), message: error.code().hint(), alert: true,
                         if let Some(repair_path) = repair_path {
                             button { class: "studio-button studio-button-primary", onclick: move |_| open_error.set(crate::ui::components::open_path(&repair_path).err()), "Open configuration" }

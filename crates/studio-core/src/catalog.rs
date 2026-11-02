@@ -11,6 +11,22 @@ use crate::{
     registry::{ArtifactKind, ArtifactRegistry, CreateArtifact, RevisionOrigin},
 };
 
+pub mod sync;
+
+#[derive(Clone, Copy, Debug)]
+pub enum EditResolution {
+    Check,
+    KeepDraft { saved_version: i64 },
+}
+
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("{conflict}")]
+pub struct EditConflict {
+    pub saved_version: i64,
+    #[source]
+    pub conflict: sync::Conflict,
+}
+
 pub const KINDS: [ArtifactKind; 4] = [
     ArtifactKind::Character,
     ArtifactKind::Environment,
@@ -121,32 +137,43 @@ fn validate_name(registry: &ArtifactRegistry, id: Option<Uuid>, name: &str) -> R
     Ok(name.to_owned())
 }
 
-/// An editor must save against the snapshot it actually displayed. The source
-/// document and unrelated artwork remain untouched on a stale write or error.
+/// Merge the submitted form against its displayed baseline. Independent edits
+/// survive; overlapping fields retain the form and fail without writing.
 pub fn save_edit(
     db: &ProjectDb,
     snapshot: &StoredProject,
     edit: CatalogEdit,
+    resolution: EditResolution,
 ) -> Result<(Uuid, StoredProject)> {
     let current = db.load()?;
     ensure!(
         current.id == snapshot.id,
         "This catalog snapshot belongs to another project"
     );
+    let resolution = match resolution {
+        EditResolution::Check => sync::Resolution::Check,
+        EditResolution::KeepDraft { saved_version } => {
+            ensure!(saved_version == current.registry_version, "The saved details changed again. Review the latest conflict before choosing which draft to keep");
+            sync::Resolution::Local
+        }
+    };
     if let CatalogEdit::Describe { id, name, .. } = &edit {
-        if current
+        if snapshot
             .registry
             .artifact(*id)
             .is_some_and(|item| item.name != name.trim())
         {
-            let renamed =
-                rename_references(&current.registry, current.story.source(), *id, name.trim())?;
-            ensure!(renamed == current.story.source(), "This item is used in the story. Rename it in Studio so its source references keep the same identity");
+            anyhow::bail!("Rename existing items in Studio so saved and unsaved story references keep the same identity");
         }
     }
     let mut registry = snapshot.registry.clone();
     let id = apply(&mut registry, edit)?;
-    db.save_registry_checked(&registry, snapshot.registry_version)?;
+    let registry = sync::merge(&snapshot.registry, &registry, &current.registry, resolution)
+        .map_err(|conflict| EditConflict {
+            saved_version: current.registry_version,
+            conflict,
+        })?;
+    db.save_registry_checked(&registry, current.registry_version)?;
     Ok((id, db.load()?))
 }
 
