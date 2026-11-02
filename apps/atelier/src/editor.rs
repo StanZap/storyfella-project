@@ -456,7 +456,9 @@ impl DrawingApp {
         self.doc.layers.push(Layer {
             name: reference.name.clone(),
             visible: true,
+            locked: false,
             opacity: 1.,
+            group: None,
             candidate: false,
             strokes: vec![],
             image: Some(document::ImageLayer {

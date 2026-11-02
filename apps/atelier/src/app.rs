@@ -49,10 +49,16 @@ pub enum Panel {
     References,
     None,
     Canvas,
+    Export,
     Settings,
     Help,
     Brushes,
     Activity,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DockView {
+    Layers,
+    References,
 }
 
 fn aspect_index(width: u32, height: u32) -> usize {
@@ -170,6 +176,12 @@ pub struct CanvasTile {
     pub height: u32,
     pub image: CanvasImage,
 }
+pub(crate) struct ArtboardResizeDrag {
+    start: gpui_kit::Point<Pixels>,
+    original: Document,
+    handle: (i8, i8),
+    scale: f32,
+}
 pub struct DrawingApp {
     pub(crate) handoff_loading: bool,
     pub(crate) handoff_checked: Instant,
@@ -238,6 +250,7 @@ pub struct DrawingApp {
     pub moving_image: bool,
     pub last_image_point: Option<DocPoint>,
     pub scaling_layer: bool,
+    pub(crate) artboard_resize_drag: Option<ArtboardResizeDrag>,
     pub hover: Option<gpui_kit::Point<Pixels>>,
     pub bounds: Rc<Cell<Bounds<Pixels>>>,
     pub tiles: std::collections::HashMap<crate::canvas_renderer::TileKey, CanvasTile>,
@@ -255,6 +268,8 @@ pub struct DrawingApp {
     pub panel: Panel,
     pub show_drawing_composer: bool,
     pub dock: bool,
+    pub dock_view: DockView,
+    pub selected_layers: Vec<usize>,
     pub show_layer_properties: bool,
     pub show_reference_tools: bool,
     pub grid: bool,
@@ -263,6 +278,8 @@ pub struct DrawingApp {
     pub favorite_filter: bool,
     pub tracing: bool,
     pub scale_art: bool,
+    pub aspect_locked: bool,
+    pub resize_anchor: (u8, u8),
     pub transparent: bool,
     pub jpeg: bool,
     pub jpeg_quality: u8,
@@ -571,6 +588,7 @@ impl DrawingApp {
             .cloned()
             .zip(references.iter().cloned())
             .collect();
+        let selected_layers = vec![doc.active_layer];
         let mut app = Self {
             handoff_loading: false,
             handoff_checked: Instant::now(),
@@ -671,6 +689,7 @@ impl DrawingApp {
             moving_image: false,
             last_image_point: None,
             scaling_layer: false,
+            artboard_resize_drag: None,
             hover: None,
             bounds: Rc::new(Cell::new(Bounds::default())),
             tiles: std::collections::HashMap::new(),
@@ -682,7 +701,9 @@ impl DrawingApp {
             image_return_page: Page::Library,
             panel: Panel::None,
             dock: true,
-            show_layer_properties: false,
+            dock_view: DockView::Layers,
+            selected_layers,
+            show_layer_properties: true,
             show_reference_tools: false,
             grid: false,
             guides: false,
@@ -690,6 +711,8 @@ impl DrawingApp {
             favorite_filter: false,
             tracing: false,
             scale_art: false,
+            aspect_locked: false,
+            resize_anchor: (1, 1),
             transparent: false,
             jpeg: false,
             jpeg_quality: 90,
@@ -1053,6 +1076,7 @@ impl DrawingApp {
         self.last_pan = None;
         self.last_image_point = None;
         self.scaling_layer = false;
+        self.artboard_resize_drag = None;
     }
     pub fn size(&self) -> f32 {
         if self.tool == Tool::Eraser {
@@ -1084,6 +1108,7 @@ impl DrawingApp {
     }
     pub(crate) fn sync_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_layer_controls(window, cx);
+        self.selected_layers = vec![self.doc.active_layer];
         self.prompt_target = self
             .doc
             .active_prompt_target
@@ -1293,30 +1318,67 @@ impl DrawingApp {
     pub fn apply_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = (|| -> anyhow::Result<()> {
             let width = self.width.read(cx).value().parse::<u32>()?;
-            let height = self.height.read(cx).value().parse::<u32>()?;
+            let height = if self.aspect_locked {
+                ((width as f64 * self.doc.height as f64 / self.doc.width as f64).round() as u32)
+                    .max(1)
+            } else {
+                self.height.read(cx).value().parse::<u32>()?
+            };
             document::validate_size(width, height)?;
             self.checkpoint();
-            self.doc.resize(width, height, self.scale_art)?;
-            let title = self.title.read(cx).value().trim().to_owned();
-            let layer_name = self.layer_name.read(cx).value().trim().to_owned();
-            if !layer_name.is_empty() {
-                self.doc.layers[self.doc.active_layer].name = layer_name;
-            }
-            self.doc.title = if title.is_empty() {
-                "Untitled project".into()
-            } else {
-                title
-            };
+            self.doc
+                .resize(width, height, self.scale_art, self.resize_anchor)?;
             Ok(())
         })();
         match result {
             Ok(()) => {
                 self.changed();
                 self.view = Viewport::default();
-                self.panel = Panel::None;
                 self.sync_inputs(window, cx);
             }
             Err(e) => self.message(format!("Canvas: {e}"), true),
+        }
+    }
+    pub fn fit_artboard_to_artwork(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut bounds: Option<(f32, f32, f32, f32)> = None;
+        let mut probe = self.doc.clone();
+        for index in 0..probe.layers.len() {
+            let layer = &probe.layers[index];
+            if !layer.visible || layer.opacity <= 0. || layer.candidate {
+                continue;
+            }
+            probe.active_layer = index;
+            if let Some((left, top, right, bottom)) = probe.layer_bounds() {
+                bounds = Some(match bounds {
+                    Some((x0, y0, x1, y1)) => {
+                        (x0.min(left), y0.min(top), x1.max(right), y1.max(bottom))
+                    }
+                    None => (left, top, right, bottom),
+                });
+            }
+        }
+        let Some((left, top, right, bottom)) = bounds else {
+            self.message("There is no visible artwork to fit", true);
+            return;
+        };
+        let padding = 24.;
+        let width = ((right - left).ceil() + padding * 2.).max(64.) as u32;
+        let height = ((bottom - top).ceil() + padding * 2.).max(64.) as u32;
+        let result = (|| -> anyhow::Result<()> {
+            document::validate_size(width, height)?;
+            self.checkpoint();
+            self.doc.resize(width, height, false, (0, 0))?;
+            self.doc.translate_artwork(padding - left, padding - top);
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                self.changed();
+                self.view = Viewport::default();
+                self.sync_inputs(window, cx);
+                self.message("Artboard fit to visible artwork", false);
+            }
+            Err(error) => self.message(format!("Could not fit artboard: {error}"), true),
         }
     }
     pub fn new_document(&mut self, _: &mut Window, cx: &mut Context<Self>) {
@@ -1445,12 +1507,109 @@ impl DrawingApp {
         self.doc.layers.push(Layer {
             name: format!("Layer {}", self.doc.layers.len() + 1),
             visible: true,
+            locked: false,
             opacity: 1.,
+            group: None,
             candidate: false,
             strokes: vec![],
             image: None,
         });
         self.doc.active_layer = self.doc.layers.len() - 1;
+        self.selected_layers = vec![self.doc.active_layer];
+        self.changed();
+    }
+
+    pub fn select_layer(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if index >= self.doc.layers.len() {
+            return;
+        }
+        self.finish_stroke();
+        self.doc.active_layer = index;
+        self.selected_layers = vec![index];
+        self.sync_inputs(window, cx);
+        cx.notify();
+    }
+
+    pub fn toggle_layer_selection(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.selected_layers.contains(&index) {
+            self.selected_layers.retain(|selected| *selected != index);
+        } else if index < self.doc.layers.len() {
+            self.selected_layers.push(index);
+            self.selected_layers.sort_unstable();
+        }
+        cx.notify();
+    }
+
+    pub fn toggle_layer_lock(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.doc.layers.len() {
+            return;
+        }
+        self.checkpoint();
+        self.doc.layers[index].locked = !self.doc.layers[index].locked;
+        self.changed();
+        cx.notify();
+    }
+
+    pub fn rename_active_layer(&mut self, cx: &mut Context<Self>) {
+        let name = self.layer_name.read(cx).value().trim().to_owned();
+        if name.is_empty() || name.len() > 128 {
+            self.message("Layer names must contain 1–128 characters", true);
+            return;
+        }
+        if self.doc.layers[self.doc.active_layer].name != name {
+            self.checkpoint();
+            self.doc.layers[self.doc.active_layer].name = name;
+            self.changed();
+        }
+        cx.notify();
+    }
+
+    pub fn group_selected_layers(&mut self) {
+        let selected: Vec<_> = self
+            .selected_layers
+            .iter()
+            .copied()
+            .filter(|index| *index < self.doc.layers.len())
+            .collect();
+        if selected.len() < 2 {
+            self.message("Select at least two layers to group", true);
+            return;
+        }
+        let used: std::collections::HashSet<String> = self
+            .doc
+            .layers
+            .iter()
+            .filter_map(|layer| layer.group.clone())
+            .collect();
+        let mut number = 1;
+        while used.contains(&format!("Group {number}")) {
+            number += 1;
+        }
+        let group = format!("Group {number}");
+        self.checkpoint();
+        for index in selected {
+            self.doc.layers[index].group = Some(group.clone());
+        }
+        self.changed();
+    }
+
+    pub fn ungroup_selected_layers(&mut self) {
+        let selected: Vec<_> = self
+            .selected_layers
+            .iter()
+            .copied()
+            .filter(|index| *index < self.doc.layers.len())
+            .collect();
+        if !selected
+            .iter()
+            .any(|index| self.doc.layers[*index].group.is_some())
+        {
+            return;
+        }
+        self.checkpoint();
+        for index in selected {
+            self.doc.layers[index].group = None;
+        }
         self.changed();
     }
 
@@ -1469,6 +1628,13 @@ impl DrawingApp {
     }
 
     pub fn apply_layer_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.doc.layers[self.doc.active_layer].locked {
+            self.message(
+                "Unlock this layer before changing its position or opacity",
+                false,
+            );
+            return;
+        }
         let values: Option<Vec<f32>> = [
             &self.layer_dx,
             &self.layer_dy,
@@ -1507,6 +1673,7 @@ impl DrawingApp {
             self.checkpoint();
             self.doc.layers.remove(self.doc.active_layer);
             self.doc.active_layer = self.doc.active_layer.min(self.doc.layers.len() - 1);
+            self.selected_layers = vec![self.doc.active_layer];
             self.changed();
         }
     }
@@ -1517,6 +1684,7 @@ impl DrawingApp {
             self.checkpoint();
             self.doc.layers.swap(i, next);
             self.doc.active_layer = next;
+            self.selected_layers = vec![next];
             self.changed();
         }
     }
@@ -1538,6 +1706,64 @@ impl DrawingApp {
             ),
             size(px(w * scale), px(h * scale)),
         )
+    }
+    fn artboard_resize_handle(&self, position: gpui_kit::Point<Pixels>) -> Option<(i8, i8)> {
+        if self.view.turns != 0 || self.view.mirror {
+            return None;
+        }
+        let paper = self.paper_bounds();
+        let centers = [
+            (-1, -1, paper.origin),
+            (
+                0,
+                -1,
+                point(paper.origin.x + paper.size.width / 2., paper.origin.y),
+            ),
+            (
+                1,
+                -1,
+                point(paper.origin.x + paper.size.width, paper.origin.y),
+            ),
+            (
+                -1,
+                0,
+                point(paper.origin.x, paper.origin.y + paper.size.height / 2.),
+            ),
+            (
+                1,
+                0,
+                point(
+                    paper.origin.x + paper.size.width,
+                    paper.origin.y + paper.size.height / 2.,
+                ),
+            ),
+            (
+                -1,
+                1,
+                point(paper.origin.x, paper.origin.y + paper.size.height),
+            ),
+            (
+                0,
+                1,
+                point(
+                    paper.origin.x + paper.size.width / 2.,
+                    paper.origin.y + paper.size.height,
+                ),
+            ),
+            (
+                1,
+                1,
+                point(
+                    paper.origin.x + paper.size.width,
+                    paper.origin.y + paper.size.height,
+                ),
+            ),
+        ];
+        centers.into_iter().find_map(|(x, y, center)| {
+            (f32::from(position.x - center.x).abs() <= 10.
+                && f32::from(position.y - center.y).abs() <= 10.)
+                .then_some((x, y))
+        })
     }
     pub fn doc_point(&self, p: gpui_kit::Point<Pixels>) -> Option<DocPoint> {
         let bounds = self.paper_bounds();
@@ -1594,12 +1820,37 @@ impl DrawingApp {
         window.focus(&self.focus, cx);
         self.finish_stroke();
         self.tablet.drain();
+        if self.panel == crate::app::Panel::Canvas && event.button == MouseButton::Left {
+            if let Some(handle) = self.artboard_resize_handle(event.position) {
+                let viewport = self.bounds.get();
+                let scale = self.view.scale(
+                    (viewport.size.width.into(), viewport.size.height.into()),
+                    (self.doc.width, self.doc.height),
+                );
+                self.history.checkpoint(&self.doc);
+                self.artboard_resize_drag = Some(ArtboardResizeDrag {
+                    start: event.position,
+                    original: self.doc.clone(),
+                    handle,
+                    scale,
+                });
+                return;
+            }
+            return;
+        }
         if self.selecting_generation_region && event.button == MouseButton::Left {
             if let Some(point) = self.doc_point(event.position) {
                 self.region_drag = Some(point);
                 self.generation_region = Some((point, point));
                 cx.notify();
             }
+            return;
+        }
+        if event.button == MouseButton::Left
+            && (self.tool != Tool::Hand || self.moving_image)
+            && self.doc.layers[self.doc.active_layer].locked
+        {
+            self.message("This layer is locked", false);
             return;
         }
         if self.tool == Tool::Hand && self.moving_image && event.button == MouseButton::Left {
@@ -1656,6 +1907,61 @@ impl DrawingApp {
         }
     }
     pub fn pointer_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        if let Some(drag) = &self.artboard_resize_drag {
+            let (dx, dy) = (
+                f32::from(event.position.x - drag.start.x) / drag.scale,
+                f32::from(event.position.y - drag.start.y) / drag.scale,
+            );
+            let (x_handle, y_handle) = drag.handle;
+            let mut width = if x_handle == 0 {
+                drag.original.width
+            } else {
+                (drag.original.width as f32 + dx * x_handle as f32)
+                    .round()
+                    .clamp(64., document::MAX_EDGE as f32) as u32
+            };
+            let mut height = if y_handle == 0 {
+                drag.original.height
+            } else {
+                (drag.original.height as f32 + dy * y_handle as f32)
+                    .round()
+                    .clamp(64., document::MAX_EDGE as f32) as u32
+            };
+            if self.aspect_locked {
+                let ratio = drag.original.width as f32 / drag.original.height as f32;
+                if x_handle != 0 {
+                    height = (width as f32 / ratio).round().max(64.) as u32;
+                } else {
+                    width = (height as f32 * ratio).round().max(64.) as u32;
+                }
+                width = width.min(document::MAX_EDGE);
+                height = height.min(document::MAX_EDGE);
+            }
+            if width as u64 * height as u64 <= document::MAX_PIXELS {
+                let anchor = (
+                    if x_handle < 0 {
+                        2
+                    } else if x_handle > 0 {
+                        0
+                    } else {
+                        1
+                    },
+                    if y_handle < 0 {
+                        2
+                    } else if y_handle > 0 {
+                        0
+                    } else {
+                        1
+                    },
+                );
+                self.doc = drag.original.clone();
+                if self.doc.resize(width, height, false, anchor).is_ok() {
+                    self.changed();
+                    cx.notify();
+                }
+            }
+            return;
+        }
         if self.region_drag.is_some() {
             if let Some(anchor) = self.region_drag {
                 self.generation_region = Some((anchor, self.clamped_doc_point(event.position)));
@@ -3395,7 +3701,9 @@ impl DrawingApp {
                         }
                     }
                     Err(error) => {
-                        let message = format!("Mask save failed: {error:#}. Check disk space and retry saving the mask.");
+                        let message = format!(
+                            "Mask save failed: {error:#}. Check disk space and retry saving the mask."
+                        );
                         self.mask_save_error = Some(message.clone());
                         self.closing = false;
                         self.opening_image = None;

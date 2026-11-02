@@ -774,7 +774,9 @@ mod tests {
                 candidate: false,
                 name: "Top".into(),
                 visible: true,
+                locked: false,
                 opacity: 0.5,
+                group: None,
                 strokes: vec![line(490., 200., Brush::Ink)],
                 image: None,
             });
@@ -891,7 +893,7 @@ mod tests {
                     0 => doc.rotate(),
                     1 => doc.flip(),
                     _ => {
-                        doc.resize(192, 192, true).unwrap();
+                        doc.resize(192, 192, true, (1, 1)).unwrap();
                     }
                 }
                 let reused = renderer.export(&doc, true).unwrap();
@@ -1130,7 +1132,9 @@ mod tests {
                         candidate: false,
                         name: "Shading".into(),
                         visible: true,
+                        locked: false,
                         opacity: 0.7,
+                        group: None,
                         strokes: vec![],
                         image: None,
                     });

@@ -63,7 +63,11 @@ pub struct Stroke {
 pub struct Layer {
     pub name: String,
     pub visible: bool,
+    #[serde(default)]
+    pub locked: bool,
     pub opacity: f32,
+    #[serde(default)]
+    pub group: Option<String>,
     /// Pending AI results can be previewed but never enter artwork exports.
     #[serde(default)]
     pub candidate: bool,
@@ -113,7 +117,9 @@ impl CanvasArtboard {
             layers: vec![Layer {
                 name: "Sketch".into(),
                 visible: true,
+                locked: false,
                 opacity: 1.,
+                group: None,
                 candidate: false,
                 strokes: vec![],
                 image: None,
@@ -174,7 +180,9 @@ impl Default for Document {
             layers: vec![Layer {
                 name: "Sketch".into(),
                 visible: true,
+                locked: false,
                 opacity: 1.,
+                group: None,
                 candidate: false,
                 strokes: vec![],
                 image: None,
@@ -432,8 +440,15 @@ impl Document {
         }
         Ok(())
     }
-    pub fn resize(&mut self, width: u32, height: u32, scale_art: bool) -> Result<()> {
+    pub fn resize(
+        &mut self,
+        width: u32,
+        height: u32,
+        scale_art: bool,
+        anchor: (u8, u8),
+    ) -> Result<()> {
         validate_size(width, height)?;
+        ensure!(anchor.0 <= 2 && anchor.1 <= 2, "Invalid resize anchor");
         if scale_art {
             let sx = width as f32 / self.width as f32;
             let sy = height as f32 / self.height as f32;
@@ -455,10 +470,47 @@ impl Document {
                     }
                 }
             }
+        } else {
+            let anchor_offset = |old: u32, new: u32, position: u8| {
+                let fraction = match position {
+                    0 => 0.,
+                    1 => 0.5,
+                    _ => 1.,
+                };
+                (new as f32 - old as f32) * fraction
+            };
+            let dx = anchor_offset(self.width, width, anchor.0);
+            let dy = anchor_offset(self.height, height, anchor.1);
+            for layer in &mut self.layers {
+                if let Some(image) = &mut layer.image {
+                    image.transform[4] += dx;
+                    image.transform[5] += dy;
+                }
+                for stroke in &mut layer.strokes {
+                    for point in std::sync::Arc::make_mut(&mut stroke.points) {
+                        point.x += dx;
+                        point.y += dy;
+                    }
+                }
+            }
         }
         self.width = width;
         self.height = height;
         Ok(())
+    }
+    pub fn translate_artwork(&mut self, dx: f32, dy: f32) {
+        for layer in &mut self.layers {
+            if let Some(image) = &mut layer.image {
+                image.transform[4] += dx;
+                image.transform[5] += dy;
+            }
+            for stroke in &mut layer.strokes {
+                for point in std::sync::Arc::make_mut(&mut stroke.points) {
+                    point.x += dx;
+                    point.y += dy;
+                }
+            }
+        }
     }
     pub fn rotate(&mut self) {
         let h = self.height as f32;

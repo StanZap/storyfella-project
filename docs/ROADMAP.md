@@ -796,6 +796,27 @@ The broader product and UX assessments still need the review tracked below.
     opening and project-folder adoption; remove the permanent form and sample
     creation from home. Manual UI acceptance is assigned to the user; see
     [interaction contract](../DESIGN.md#minimal-projects-home--2026-11-01).
+  - [ ] **Atelier contextual creative workspace.** Keep primary tools in the
+    left rail; show a compact floating action bar only during an active
+    operation (for example Apply/Cancel for crop, or generation actions for a
+    selection). Put selection transform values, align/distribute, flip and
+    snapping in the top contextual toolbar. Add a dedicated Artboard tool with
+    on-canvas resize handles and an inspector for dimensions, aspect lock,
+    bounds-versus-scale behavior, anchor, background and fit-to-artwork. Make
+    artboard changes undoable and independent of export sizing. Replace the
+    combined Layers & references dock with a focused Layers inspector featuring
+    image thumbnails, visibility, lock, selection, reorder, opacity/blend,
+    rename, grouping and add/delete actions; keep References in its own view.
+    Add Crop and View tools (fit, actual size, grid, guides and snapping), and
+    expose mask/image editing controls contextually. Make the generation
+    composer compact and selection-aware, with advanced model/sampling controls
+    behind a settings affordance. Keep export as file format/quality/destination
+    only. Stage delivery: Artboard resize workflow and separation from export;
+    Layers inspector; selection transform and align/distribute; crop/view;
+    contextual image generation and editing. Preserve existing project data,
+    candidate review, undo and generation routing. Verify each stage with
+    workspace checks and manual UI acceptance against the approved Atelier
+    concept images (2026-11-02).
 - [ ] **SF-PLAN-12 — Extend workspace language tooling.** Add workspace navigation
   and concrete code actions once the multi-file contract in SF-PLAN-08 is defined.
   Done when Studio and external editors agree on analysis, rename touches only

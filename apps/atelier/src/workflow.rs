@@ -303,7 +303,9 @@ pub(crate) fn image_layer(
     Ok(Layer {
         name: reference.name.clone(),
         visible: true,
+        locked: false,
         opacity: 1.,
+        group: None,
         candidate,
         strokes: vec![],
         image: Some(ImageLayer {

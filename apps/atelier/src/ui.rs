@@ -1,5 +1,5 @@
 use crate::{
-    app::{DrawingApp, Page, Panel, Picker},
+    app::{DockView, DrawingApp, Page, Panel, Picker},
     document::{Brush, Tool},
     providers::Provider,
     viewport::Viewport,
@@ -103,50 +103,82 @@ fn separator() -> Div {
     div().h(px(1.)).w_full().bg(rgb(BORDER)).my_2()
 }
 pub(crate) fn icon(name: &str) -> Icon {
-    let path=match name {
-        "pencil"=>"<path d='m15 4 5 5M4 15l11-11a3 3 0 0 1 5 5L9 20l-6 1z'/>",
-        "brush"=>"<path d='m14 3 7 7-9 9-7-7zM5 12l-3 9 9-3M14 3l-3 3'/>",
-        "eraser"=>"<path d='m15 3 6 6-10 12H6l-4-4zM7 12l6 6M11 21h10'/>",
-        "hand"=>"<path d='M8 13V6a2 2 0 0 1 4 0v6-8a2 2 0 0 1 4 0v8-6a2 2 0 0 1 4 0v10c0 5-3 7-7 7-3 0-5-2-7-5l-3-5a2 2 0 0 1 3-2z'/>",
-        "image"=>"<rect x='3' y='3' width='18' height='18' rx='3'/><circle cx='8' cy='8' r='1'/><path d='m3 17 6-6 4 4 3-3 5 5'/>",
-        "timer"=>"<circle cx='12' cy='14' r='8'/><path d='M9 2h6M12 6V2m6 5 2-2M12 10v5'/>",
-        "save"=>"<path d='M5 3h12l4 4v14H3V3zM7 3v6h10V3M7 21v-7h10v7'/>",
-        "export"=>"<path d='M12 16V3m-4 4 4-4 4 4M5 13H3v8h18v-8h-2'/>",
-        "download"=>"<path d='M12 3v13m-4-4 4 4 4-4M3 16v5h18v-5'/>",
-        "back"=>"<path d='m10 5-7 7 7 7M3 12h18'/>",
-        "layers"=>"<path d='m12 3 10 5-10 5L2 8zM2 12l10 5 10-5M2 16l10 5 10-5'/>",
-        "package"=>"<path d='m12 2 9 5v10l-9 5-9-5V7zM3 7l9 5 9-5M12 12v10M7 4l10 5'/>",
-        "compare"=>"<rect x='3' y='3' width='18' height='18' rx='2'/><path d='M12 3v18M6 12h3M15 12h3'/>",
-        "mask"=>"<rect x='3' y='3' width='18' height='18' rx='2' stroke-dasharray='3 3'/><path d='m7 16 9-9M7 11l4-4M12 17l5-5'/>",
-        "mask-rect"=>"<rect x='4' y='5' width='16' height='14' rx='1' stroke-dasharray='3 3'/>",
-        "reference"=>"<rect x='3' y='3' width='13' height='13' rx='2'/><path d='M8 21h13V8M3 12l4-4 4 4 2-2 3 3'/>",
-        "info"=>"<circle cx='12' cy='12' r='9'/><path d='M12 11v6M12 7h.01'/>",
-        "open"=>"<path d='M3 7V4h6l3 3h9v3M3 10h18l-3 11H3z'/>",
-        "more"=>"<circle cx='5' cy='12' r='1'/><circle cx='12' cy='12' r='1'/><circle cx='19' cy='12' r='1'/>",
-        "plus"=>"<path d='M12 5v14M5 12h14'/>","minus"=>"<path d='M5 12h14'/>",
-        "undo"=>"<path d='m9 4-6 6 6 6M3 10h12a6 6 0 0 1 0 12'/>",
-        "redo"=>"<path d='m15 4 6 6-6 6M21 10H9a6 6 0 0 0 0 12'/>",
-        "rotate"=>"<path d='M20 10a8 8 0 1 0-2 8M20 3v7h-7'/>",
-        "flip"=>"<path d='M12 3v18M8 6 3 12l5 6zM16 6l5 6-5 6z'/>",
-        "fit"=>"<path d='M3 9V3h6M15 3h6v6M21 15v6h-6M9 21H3v-6'/>",
-        "grid"=>"<rect x='3' y='3' width='18' height='18' rx='2'/><path d='M9 3v18M15 3v18M3 9h18M3 15h18'/>",
-        "values"=>"<circle cx='12' cy='12' r='9'/><path d='M12 3v18' /><path d='M12 3a9 9 0 0 1 0 18' fill='currentColor'/>",
-        "smooth"=>"<path d='M2 15c3 0 3-6 6-6s3 6 6 6 3-6 6-6h2'/>",
-        "eye"=>"<path d='M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z'/><circle cx='12' cy='12' r='3'/>",
-        "eye-off"=>"<path d='m3 3 18 18M9 5h3c6 0 10 7 10 7l-3 4M6 6l-4 6s4 7 10 7h3'/>",
-        "heart"=>"<path d='M12 21 3 12a6 6 0 0 1 9-8 6 6 0 0 1 9 8z'/>",
-        "settings"=>"<path d='M4 6h16M4 12h16M4 18h16'/><circle cx='8' cy='6' r='2' fill='white'/><circle cx='16' cy='12' r='2' fill='white'/><circle cx='10' cy='18' r='2' fill='white'/>",
-        "panel"=>"<rect x='3' y='3' width='18' height='18' rx='2'/><path d='M15 3v18'/>",
-        "play"=>"<path d='m7 3 14 9-14 9z'/>","pause"=>"<path d='M8 4v16M16 4v16'/>",
-        "trash"=>"<path d='M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7'/>",
-        "up"=>"<path d='m6 14 6-6 6 6'/>","down"=>"<path d='m6 10 6 6 6-6'/>",
-        "check"=>"<path d='m4 12 5 5L20 6'/>","close"=>"<path d='m5 5 14 14M19 5 5 19'/>",
-        "copy"=>"<rect x='8' y='8' width='13' height='13' rx='2'/><path d='M16 8V3H3v13h5'/>",
-        "sparkle"=>"<path d='m12 3 3 6 6 3-6 3-3 6-3-6-6-3 6-3z'/>",
-        "alert"=>"<path d='m12 3 10 18H2z'/><path d='M12 9v5M12 17h.01'/>",
-        "activity"=>"<circle cx='12' cy='12' r='9'/><path d='M12 7v5l3 2'/>",
-        "help"=>"<circle cx='12' cy='12' r='9'/><path d='M9 9a3 3 0 1 1 5 2c-2 1-2 1-2 3M12 17h.01'/>",
-        _=>"<circle cx='12' cy='12' r='8'/>",
+    let path = match name {
+        "pencil" => "<path d='m15 4 5 5M4 15l11-11a3 3 0 0 1 5 5L9 20l-6 1z'/>",
+        "brush" => "<path d='m14 3 7 7-9 9-7-7zM5 12l-3 9 9-3M14 3l-3 3'/>",
+        "eraser" => "<path d='m15 3 6 6-10 12H6l-4-4zM7 12l6 6M11 21h10'/>",
+        "hand" => {
+            "<path d='M8 13V6a2 2 0 0 1 4 0v6-8a2 2 0 0 1 4 0v8-6a2 2 0 0 1 4 0v10c0 5-3 7-7 7-3 0-5-2-7-5l-3-5a2 2 0 0 1 3-2z'/>"
+        }
+        "image" => {
+            "<rect x='3' y='3' width='18' height='18' rx='3'/><circle cx='8' cy='8' r='1'/><path d='m3 17 6-6 4 4 3-3 5 5'/>"
+        }
+        "timer" => "<circle cx='12' cy='14' r='8'/><path d='M9 2h6M12 6V2m6 5 2-2M12 10v5'/>",
+        "save" => "<path d='M5 3h12l4 4v14H3V3zM7 3v6h10V3M7 21v-7h10v7'/>",
+        "export" => "<path d='M12 16V3m-4 4 4-4 4 4M5 13H3v8h18v-8h-2'/>",
+        "download" => "<path d='M12 3v13m-4-4 4 4 4-4M3 16v5h18v-5'/>",
+        "back" => "<path d='m10 5-7 7 7 7M3 12h18'/>",
+        "layers" => "<path d='m12 3 10 5-10 5L2 8zM2 12l10 5 10-5M2 16l10 5 10-5'/>",
+        "package" => "<path d='m12 2 9 5v10l-9 5-9-5V7zM3 7l9 5 9-5M12 12v10M7 4l10 5'/>",
+        "compare" => {
+            "<rect x='3' y='3' width='18' height='18' rx='2'/><path d='M12 3v18M6 12h3M15 12h3'/>"
+        }
+        "mask" => {
+            "<rect x='3' y='3' width='18' height='18' rx='2' stroke-dasharray='3 3'/><path d='m7 16 9-9M7 11l4-4M12 17l5-5'/>"
+        }
+        "mask-rect" => "<rect x='4' y='5' width='16' height='14' rx='1' stroke-dasharray='3 3'/>",
+        "reference" => {
+            "<rect x='3' y='3' width='13' height='13' rx='2'/><path d='M8 21h13V8M3 12l4-4 4 4 2-2 3 3'/>"
+        }
+        "info" => "<circle cx='12' cy='12' r='9'/><path d='M12 11v6M12 7h.01'/>",
+        "open" => "<path d='M3 7V4h6l3 3h9v3M3 10h18l-3 11H3z'/>",
+        "more" => {
+            "<circle cx='5' cy='12' r='1'/><circle cx='12' cy='12' r='1'/><circle cx='19' cy='12' r='1'/>"
+        }
+        "plus" => "<path d='M12 5v14M5 12h14'/>",
+        "minus" => "<path d='M5 12h14'/>",
+        "undo" => "<path d='m9 4-6 6 6 6M3 10h12a6 6 0 0 1 0 12'/>",
+        "redo" => "<path d='m15 4 6 6-6 6M21 10H9a6 6 0 0 0 0 12'/>",
+        "rotate" => "<path d='M20 10a8 8 0 1 0-2 8M20 3v7h-7'/>",
+        "flip" => "<path d='M12 3v18M8 6 3 12l5 6zM16 6l5 6-5 6z'/>",
+        "fit" => "<path d='M3 9V3h6M15 3h6v6M21 15v6h-6M9 21H3v-6'/>",
+        "grid" => {
+            "<rect x='3' y='3' width='18' height='18' rx='2'/><path d='M9 3v18M15 3v18M3 9h18M3 15h18'/>"
+        }
+        "values" => {
+            "<circle cx='12' cy='12' r='9'/><path d='M12 3v18' /><path d='M12 3a9 9 0 0 1 0 18' fill='currentColor'/>"
+        }
+        "smooth" => "<path d='M2 15c3 0 3-6 6-6s3 6 6 6 3-6 6-6h2'/>",
+        "eye" => {
+            "<path d='M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z'/><circle cx='12' cy='12' r='3'/>"
+        }
+        "eye-off" => "<path d='m3 3 18 18M9 5h3c6 0 10 7 10 7l-3 4M6 6l-4 6s4 7 10 7h3'/>",
+        "heart" => "<path d='M12 21 3 12a6 6 0 0 1 9-8 6 6 0 0 1 9 8z'/>",
+        "settings" => {
+            "<path d='M4 6h16M4 12h16M4 18h16'/><circle cx='8' cy='6' r='2' fill='white'/><circle cx='16' cy='12' r='2' fill='white'/><circle cx='10' cy='18' r='2' fill='white'/>"
+        }
+        "lock" => {
+            "<rect x='4' y='10' width='16' height='11' rx='2'/><path d='M8 10V7a4 4 0 1 1 8 0v3M12 14v3'/>"
+        }
+        "unlock" => {
+            "<rect x='4' y='10' width='16' height='11' rx='2'/><path d='M8 10V7a4 4 0 0 1 8 0M12 14v3'/>"
+        }
+        "panel" => "<rect x='3' y='3' width='18' height='18' rx='2'/><path d='M15 3v18'/>",
+        "play" => "<path d='m7 3 14 9-14 9z'/>",
+        "pause" => "<path d='M8 4v16M16 4v16'/>",
+        "trash" => "<path d='M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7'/>",
+        "up" => "<path d='m6 14 6-6 6 6'/>",
+        "down" => "<path d='m6 10 6 6 6-6'/>",
+        "check" => "<path d='m4 12 5 5L20 6'/>",
+        "close" => "<path d='m5 5 14 14M19 5 5 19'/>",
+        "copy" => "<rect x='8' y='8' width='13' height='13' rx='2'/><path d='M16 8V3H3v13h5'/>",
+        "sparkle" => "<path d='m12 3 3 6 6 3-6 3-3 6-3-6-6-3 6-3z'/>",
+        "alert" => "<path d='m12 3 10 18H2z'/><path d='M12 9v5M12 17h.01'/>",
+        "activity" => "<circle cx='12' cy='12' r='9'/><path d='M12 7v5l3 2'/>",
+        "help" => {
+            "<circle cx='12' cy='12' r='9'/><path d='M9 9a3 3 0 1 1 5 2c-2 1-2 1-2 3M12 17h.01'/>"
+        }
+        _ => "<circle cx='12' cy='12' r='8'/>",
     };
     Icon::default().data(format!("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'>{path}</svg>").as_bytes())
 }
@@ -398,7 +430,8 @@ impl DrawingApp {
             ),
             Panel::Catalog => Some(self.catalog_panel(cx)),
             Panel::Brushes => Some(self.brush_settings(cx)),
-            Panel::Canvas => Some(self.canvas_settings(cx)),
+            Panel::Canvas => Some(self.artboard_settings(cx)),
+            Panel::Export => Some(self.export_settings(cx)),
             Panel::Settings => Some(self.provider_settings(cx)),
             Panel::Help => Some(self.help(cx)),
             Panel::Activity => Some(self.activity_panel(cx).into_any_element()),
@@ -559,15 +592,8 @@ impl DrawingApp {
                     )
                     .child(
                         tool_button("export", "export", "Export PNG / JPG").on_click(cx.listener(
-                            |this, _, window, cx| {
-                                this.layer_name.update(cx, |s, cx| {
-                                    s.set_value(
-                                        this.doc.layers[this.doc.active_layer].name.clone(),
-                                        window,
-                                        cx,
-                                    )
-                                });
-                                this.panel = Panel::Canvas;
+                            |this, _, _, cx| {
+                                this.panel = Panel::Export;
                                 cx.notify();
                             },
                         )),
@@ -878,6 +904,28 @@ impl DrawingApp {
                 )),
             )
             .child(
+                tool_button(
+                    "artboard-inspector",
+                    "grid",
+                    "Artboard dimensions and resize",
+                )
+                .atelier_selected(self.panel == Panel::Canvas, cx)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.width.update(cx, |s, cx| {
+                        s.set_value(this.doc.width.to_string(), window, cx)
+                    });
+                    this.height.update(cx, |s, cx| {
+                        s.set_value(this.doc.height.to_string(), window, cx)
+                    });
+                    this.panel = if this.panel == Panel::Canvas {
+                        Panel::None
+                    } else {
+                        Panel::Canvas
+                    };
+                    cx.notify();
+                })),
+            )
+            .child(
                 tool_button("undo", "undo", "Undo · ⌘Z")
                     .disabled(!self.history.can_undo())
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -965,21 +1013,33 @@ impl DrawingApp {
                     "dock",
                     "panel",
                     if self.panel == Panel::Activity {
-                        "Show Layers and References"
+                        "Show layer inspector"
                     } else {
-                        "Toggle panels"
+                        "Toggle layer inspector"
                     },
                 )
                 .atelier_selected(self.dock && self.panel != Panel::Activity, cx)
                 .on_click(cx.listener(|this, _, _, cx| {
                     if this.panel == Panel::Activity {
                         this.panel = Panel::None;
+                        this.dock_view = DockView::Layers;
                         this.dock = true;
                     } else {
+                        this.dock_view = DockView::Layers;
                         this.dock = !this.dock;
                     }
                     cx.notify();
                 })),
+            )
+            .child(
+                tool_button("references-view", "reference", "Open References inspector")
+                    .atelier_selected(self.dock && self.dock_view == DockView::References, cx)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.panel = Panel::None;
+                        this.dock_view = DockView::References;
+                        this.dock = true;
+                        cx.notify();
+                    })),
             )
     }
     fn canvas(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -996,6 +1056,8 @@ impl DrawingApp {
         let brush = self.size();
         let tool = self.tool;
         let guides = self.guides;
+        let artboard_tool =
+            self.panel == Panel::Canvas && self.view.turns == 0 && !self.view.mirror;
         let region = self.generation_region;
         let gizmo = (self.moving_image && self.tool == Tool::Hand)
             .then(|| self.doc.layer_bounds())
@@ -1020,7 +1082,11 @@ impl DrawingApp {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
+                    let resized_artboard = this.artboard_resize_drag.is_some();
                     this.finish_stroke();
+                    if resized_artboard {
+                        this.sync_inputs(window, cx);
+                    }
                     this.finish_drawing_region(cx);
                     this.restore_prompt(window, cx);
                     cx.notify();
@@ -1029,7 +1095,11 @@ impl DrawingApp {
             .on_mouse_up_out(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
+                    let resized_artboard = this.artboard_resize_drag.is_some();
                     this.finish_stroke();
+                    if resized_artboard {
+                        this.sync_inputs(window, cx);
+                    }
                     this.finish_drawing_region(cx);
                     this.restore_prompt(window, cx);
                     cx.notify();
@@ -1100,6 +1170,46 @@ impl DrawingApp {
                                             false,
                                         );
                                     }
+                                }
+                            }
+                        }
+                        if artboard_tool {
+                            for handle in [
+                                (0., 0.),
+                                (vw / 2., 0.),
+                                (vw, 0.),
+                                (0., vh / 2.),
+                                (vw, vh / 2.),
+                                (0., vh),
+                                (vw / 2., vh),
+                                (vw, vh),
+                            ] {
+                                let center = point(
+                                    paper.origin.x + px(handle.0 * scale),
+                                    paper.origin.y + px(handle.1 * scale),
+                                );
+                                let bounds = Bounds::new(
+                                    point(center.x - px(5.), center.y - px(5.)),
+                                    size(px(10.), px(10.)),
+                                );
+                                window.paint_quad(fill(bounds, rgb(0xffffff)));
+                                let mut outline = PathBuilder::stroke(px(1.5));
+                                outline.move_to(bounds.origin);
+                                outline.line_to(point(
+                                    bounds.origin.x + bounds.size.width,
+                                    bounds.origin.y,
+                                ));
+                                outline.line_to(point(
+                                    bounds.origin.x + bounds.size.width,
+                                    bounds.origin.y + bounds.size.height,
+                                ));
+                                outline.line_to(point(
+                                    bounds.origin.x,
+                                    bounds.origin.y + bounds.size.height,
+                                ));
+                                outline.close();
+                                if let Ok(outline) = outline.build() {
+                                    window.paint_path(outline, rgb(WINE));
                                 }
                             }
                         }
@@ -1302,14 +1412,13 @@ impl DrawingApp {
             )
     }
     fn dock_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let content = column()
-            .gap_4()
-            .child(self.layer_panel(cx))
-            .child(separator())
-            .child(self.reference_panel(cx));
+        let (title, content) = match self.dock_view {
+            DockView::Layers => ("Layers", self.layer_panel(cx)),
+            DockView::References => ("References", self.reference_panel(cx)),
+        };
         side_panel_frame(
-            "Layers & references",
-            content,
+            title,
+            column().gap_4().child(content),
             tool_button("close-inspector", "close", "Close panel").on_click(cx.listener(
                 |this, _, window, cx| {
                     this.dock = false;
@@ -1591,16 +1700,45 @@ impl DrawingApp {
 
     fn layer_panel(&self, cx: &mut Context<Self>) -> Div {
         let selected = &self.doc.layers[self.doc.active_layer];
+        let can_ungroup = self.selected_layers.iter().any(|index| {
+            self.doc
+                .layers
+                .get(*index)
+                .is_some_and(|layer| layer.group.is_some())
+        });
         let mut layers = column().gap_2().child(
             row()
                 .child(div().font_weight(FontWeight::MEDIUM).child("Layers"))
                 .child(label(self.doc.layers.len().to_string()))
                 .child(div().flex_1())
                 .child(
+                    Button::new("group-layers")
+                        .ghost()
+                        .small()
+                        .label("Group")
+                        .disabled(self.selected_layers.len() < 2)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.group_selected_layers();
+                            cx.notify();
+                        })),
+                )
+                .when(can_ungroup, |header| {
+                    header.child(
+                        Button::new("ungroup-layers")
+                            .ghost()
+                            .small()
+                            .label("Ungroup")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.ungroup_selected_layers();
+                                cx.notify();
+                            })),
+                    )
+                })
+                .child(
                     tool_button("add-layer", "plus", "Add layer").on_click(cx.listener(
                         |this, _, window, cx| {
                             this.add_layer();
-                            this.sync_layer_controls(window, cx);
+                            this.sync_inputs(window, cx);
                             cx.notify();
                         },
                     )),
@@ -1612,47 +1750,104 @@ impl DrawingApp {
             .max_h(px(232.))
             .overflow_y_scroll();
         for (i, layer) in self.doc.layers.iter().enumerate().rev() {
-            list = list.child(
-                row()
-                    .gap_1()
+            let thumbnail = layer.image.as_ref().and_then(|image| {
+                self.doc
+                    .references
+                    .iter()
+                    .position(|reference| reference.image == image.reference.image)
+                    .and_then(|index| self.references.get(index).cloned())
+                    .or_else(|| {
+                        self.library
+                            .iter()
+                            .find(|(reference, _)| reference.image == image.reference.image)
+                            .map(|(_, preview)| preview.clone())
+                    })
+            });
+            let mut layer_row = row()
+                .gap_1()
+                .rounded_md()
+                .when(i == self.doc.active_layer, |r| r.bg(rgb(0xf1e6eb)))
+                .child(
+                    tool_button(
+                        format!("layer-select-{i}"),
+                        if self.selected_layers.contains(&i) {
+                            "check"
+                        } else {
+                            "circle"
+                        },
+                        "Include layer in group selection",
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_layer_selection(i, cx);
+                    })),
+                )
+                .child(
+                    tool_button(
+                        format!("layer-visible-{i}"),
+                        if layer.visible { "eye" } else { "eye-off" },
+                        "Toggle layer visibility",
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.checkpoint();
+                        this.doc.layers[i].visible = !this.doc.layers[i].visible;
+                        this.changed();
+                        cx.notify();
+                    })),
+                )
+                .child(
+                    tool_button(
+                        format!("layer-lock-{i}"),
+                        if layer.locked { "lock" } else { "unlock" },
+                        if layer.locked {
+                            "Unlock layer"
+                        } else {
+                            "Lock layer"
+                        },
+                    )
+                    .atelier_selected(layer.locked, cx)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_layer_lock(i, cx);
+                    })),
+                );
+            layer_row = layer_row.child(if let Some(thumbnail) = thumbnail {
+                img(thumbnail)
+                    .w(px(36.))
+                    .h(px(36.))
+                    .object_fit(ObjectFit::Contain)
+                    .into_any_element()
+            } else {
+                div()
+                    .w(px(36.))
+                    .h(px(36.))
                     .rounded_md()
-                    .when(i == self.doc.active_layer, |r| r.bg(rgb(0xf1e6eb)))
-                    .child(
-                        tool_button(
-                            format!("layer-visible-{i}"),
-                            if layer.visible { "eye" } else { "eye-off" },
-                            "Toggle layer visibility",
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.checkpoint();
-                            this.doc.layers[i].visible = !this.doc.layers[i].visible;
-                            this.changed();
-                            cx.notify();
-                        })),
-                    )
-                    .child(
-                        div().flex_1().min_w_0().overflow_hidden().child(
-                            Button::new(format!("layer-{i}"))
-                                .ghost()
-                                .small()
-                                .w_full()
-                                .label(layer.name.clone())
-                                .atelier_selected(i == self.doc.active_layer, cx)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.finish_stroke();
-                                    this.doc.active_layer = i;
-                                    this.sync_layer_controls(window, cx);
-                                    this.layer_name.update(cx, |s, cx| {
-                                        s.set_value(this.doc.layers[i].name.clone(), window, cx)
-                                    });
-                                    cx.notify();
-                                })),
-                        ),
-                    )
-                    .when(layer.candidate, |r| {
-                        r.child(label("Review").text_color(rgb(AMBER)).pr_2())
-                    }),
-            );
+                    .bg(rgb(0xf7f3f5))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("layers"))
+                    .into_any_element()
+            });
+            layer_row = layer_row
+                .child(
+                    div().flex_1().min_w_0().overflow_hidden().child(
+                        Button::new(format!("layer-{i}"))
+                            .ghost()
+                            .small()
+                            .w_full()
+                            .label(layer.name.clone())
+                            .atelier_selected(i == self.doc.active_layer, cx)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.select_layer(i, window, cx);
+                            })),
+                    ),
+                )
+                .when_some(layer.group.as_ref(), |r, group| {
+                    r.child(label(format!("Group · {group}")))
+                })
+                .when(layer.candidate, |r| {
+                    r.child(label("Review").text_color(rgb(AMBER)).pr_2())
+                });
+            list = list.child(layer_row);
         }
         layers = layers.child(list).child(
             row()
@@ -1767,6 +1962,17 @@ impl DrawingApp {
                 .pt_2()
                 .child(
                     row()
+                        .child(field("Layer name", &self.layer_name).flex_1())
+                        .child(
+                            tool_button("rename-layer", "check", "Apply layer name").on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.rename_active_layer(cx);
+                                }),
+                            ),
+                        ),
+                )
+                .child(
+                    row()
                         .child(field("Move X (px)", &self.layer_dx).flex_1())
                         .child(field("Move Y (px)", &self.layer_dy).flex_1()),
                 )
@@ -1780,16 +1986,18 @@ impl DrawingApp {
                         .child(
                             tool_button("layer-up", "up", "Move layer up")
                                 .disabled(self.doc.active_layer + 1 >= self.doc.layers.len())
-                                .on_click(cx.listener(|this, _, _, cx| {
+                                .on_click(cx.listener(|this, _, window, cx| {
                                     this.move_layer(true);
+                                    this.sync_inputs(window, cx);
                                     cx.notify();
                                 })),
                         )
                         .child(
                             tool_button("layer-down", "down", "Move layer down")
                                 .disabled(self.doc.active_layer == 0)
-                                .on_click(cx.listener(|this, _, _, cx| {
+                                .on_click(cx.listener(|this, _, window, cx| {
                                     this.move_layer(false);
+                                    this.sync_inputs(window, cx);
                                     cx.notify();
                                 })),
                         )
@@ -1798,7 +2006,7 @@ impl DrawingApp {
                                 .disabled(self.doc.layers.len() == 1)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.delete_layer();
-                                    this.sync_layer_controls(window, cx);
+                                    this.sync_inputs(window, cx);
                                     cx.notify();
                                 })),
                         )
@@ -2679,10 +2887,9 @@ impl DrawingApp {
             ));
         self.side_panel("Brushes", content, cx).into_any_element()
     }
-    fn canvas_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn artboard_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let content = column()
-            .child(field("Project title", &self.title))
-            .child(field("Active layer name", &self.layer_name))
+            .child(label(format!("Artboard {}", self.doc.canvas_id + 1)))
             .child(
                 row().children(
                     [
@@ -2713,6 +2920,25 @@ impl DrawingApp {
                     .child(field("Height (px)", &self.height).flex_1()),
             )
             .child(
+                Button::new("aspect-lock")
+                    .ghost()
+                    .small()
+                    .icon(icon("lock"))
+                    .label(if self.aspect_locked {
+                        format!(
+                            "Aspect locked · {:.3}",
+                            self.doc.width as f32 / self.doc.height as f32
+                        )
+                    } else {
+                        "Lock current aspect ratio".into()
+                    })
+                    .atelier_selected(self.aspect_locked, cx)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.aspect_locked = !this.aspect_locked;
+                        cx.notify();
+                    })),
+            )
+            .child(
                 Button::new("scale-art")
                     .ghost()
                     .small()
@@ -2726,6 +2952,38 @@ impl DrawingApp {
                         cx.notify();
                     })),
             )
+            .child(label(if self.scale_art {
+                "Anchor is used when changing bounds; scaling keeps the top-left origin."
+            } else {
+                "Keep content anchored while changing canvas bounds"
+            }))
+            .child(column().gap_1().children((0..3).map(|y| {
+                row().gap_1().children((0..3).map(|x| {
+                    let anchor = (x as u8, y as u8);
+                    Button::new(format!("resize-anchor-{x}-{y}"))
+                        .ghost()
+                        .small()
+                        .w(px(44.))
+                        .label(if (x, y) == (1, 1) { "•" } else { "○" })
+                        .disabled(self.scale_art)
+                        .accessibility_label(match (x, y) {
+                            (0, 0) => "Anchor top left",
+                            (1, 0) => "Anchor top center",
+                            (2, 0) => "Anchor top right",
+                            (0, 1) => "Anchor center left",
+                            (1, 1) => "Anchor center",
+                            (2, 1) => "Anchor center right",
+                            (0, 2) => "Anchor bottom left",
+                            (1, 2) => "Anchor bottom center",
+                            _ => "Anchor bottom right",
+                        })
+                        .atelier_selected(self.resize_anchor == anchor, cx)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.resize_anchor = anchor;
+                            cx.notify();
+                        }))
+                }))
+            })))
             .child(
                 Button::new("apply-canvas")
                     .primary()
@@ -2748,12 +3006,7 @@ impl DrawingApp {
                                 this.doc.rotate();
                                 this.changed();
                                 this.view = Viewport::default();
-                                this.width.update(cx, |s, cx| {
-                                    s.set_value(this.doc.width.to_string(), window, cx)
-                                });
-                                this.height.update(cx, |s, cx| {
-                                    s.set_value(this.doc.height.to_string(), window, cx)
-                                });
+                                this.sync_inputs(window, cx);
                                 cx.notify();
                             })),
                     )
@@ -2772,7 +3025,29 @@ impl DrawingApp {
                     ),
             )
             .child(separator())
-            .child("Export")
+            .child(label("Export size follows the artboard dimensions."))
+            .child(
+                Button::new("fit-artwork")
+                    .ghost()
+                    .small()
+                    .label("Fit artboard to artwork")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.fit_artboard_to_artwork(window, cx);
+                        cx.notify();
+                    })),
+            );
+        self.side_panel("Artboard", content, cx).into_any_element()
+    }
+
+    fn export_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        let content = column()
+            .child(field("Project title", &self.title))
+            .child(label(format!(
+                "{} × {} px",
+                self.doc.width, self.doc.height
+            )))
+            .child(separator())
+            .child("File export")
             .child(
                 row()
                     .child(
@@ -2846,6 +3121,23 @@ impl DrawingApp {
                     ),
             )
             .child(
+                Button::new("save-project-title")
+                    .ghost()
+                    .small()
+                    .label("Apply project title")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let title = this.title.read(cx).value().trim().to_owned();
+                        this.checkpoint();
+                        this.doc.title = if title.is_empty() {
+                            "Untitled project".into()
+                        } else {
+                            title
+                        };
+                        this.changed();
+                        cx.notify();
+                    })),
+            )
+            .child(
                 Button::new("save-as")
                     .ghost()
                     .small()
@@ -2861,8 +3153,7 @@ impl DrawingApp {
                         cx.reveal_path(&this.data_dir.join("sessions"));
                     })),
             );
-        self.side_panel("Canvas & project", content, cx)
-            .into_any_element()
+        self.side_panel("Export", content, cx).into_any_element()
     }
     fn lora_editor(&self, cx: &mut Context<Self>) -> Div {
         let discovered = crate::native_images::available_loras(&self.settings);

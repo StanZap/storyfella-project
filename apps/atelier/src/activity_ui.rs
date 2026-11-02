@@ -176,7 +176,7 @@ impl DrawingApp {
                 }
                 self.pick(Picker::Import, window, cx);
             }
-            Task::Export => self.panel = Panel::Canvas,
+            Task::Export => self.panel = Panel::Export,
             Task::Library => self.refresh_library(),
             Task::Settings => self.panel = Panel::Settings,
             Task::Open => self.pick(Picker::Open, window, cx),

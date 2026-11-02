@@ -1108,7 +1108,7 @@ fn image_layers_paint_erase_transform_and_survive_undo_and_save() {
     let transformed = document::raster(&project, 128, true).unwrap();
     assert_eq!(transformed.dimensions(), (96, 128));
     assert_eq!(transformed.get_pixel(60, 48).0, [0, 80, 255, 255]);
-    project.resize(192, 256, true).unwrap();
+    project.resize(192, 256, true, (1, 1)).unwrap();
     assert_eq!(
         document::raster(&project, 256, true)
             .unwrap()
@@ -1402,7 +1402,9 @@ fn eraser_removes_only_active_layer_and_reveals_lower_layer() {
         candidate: false,
         name: "Top".into(),
         visible: true,
+        locked: false,
         opacity: 1.,
+        group: None,
         strokes: vec![stroke(Tool::Pencil, 48.), stroke(Tool::Eraser, 48.)],
         image: None,
     });
@@ -1470,9 +1472,9 @@ fn document_transform_preserves_strokes_and_resize_modes() {
     doc.flip();
     doc.flip();
     assert_eq!(doc.layers[0].strokes[0].points, original);
-    doc.resize(256, 192, false).unwrap();
+    doc.resize(256, 192, false, (0, 0)).unwrap();
     assert_eq!(doc.layers[0].strokes[0].points, original);
-    doc.resize(128, 96, true).unwrap();
+    doc.resize(128, 96, true, (1, 1)).unwrap();
     assert_eq!(doc.layers[0].strokes[0].points[0], Point { x: 5., y: 24. });
     assert_eq!(doc.layers[0].strokes[0].size, 6.);
 }
@@ -2098,7 +2100,7 @@ fn pressure_changes_width_and_pigment_and_survives_project_round_trip() {
     assert_eq!(raster, document::raster(&restored, 128, true).unwrap());
     restored.rotate();
     restored.flip();
-    restored.resize(128, 96, true).unwrap();
+    restored.resize(128, 96, true, (1, 1)).unwrap();
     assert_eq!(*restored.layers[0].strokes[0].pressures, vec![0.1, 1.]);
 }
 #[test]
