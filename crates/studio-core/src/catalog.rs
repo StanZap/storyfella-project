@@ -13,6 +13,95 @@ use crate::{
 
 pub mod sync;
 
+/// Full-resolution accepted canvas bytes. The displayed revision is the write
+/// guard; metadata changes elsewhere need not prevent an artwork-only save.
+pub struct SavedCanvas {
+    pub asset_id: Uuid,
+    pub canvas_id: u32,
+    pub expected_revision: Option<Uuid>,
+    pub png: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CanvasPublication {
+    pub asset_id: Uuid,
+    pub canvas_id: u32,
+    pub revision_id: Uuid,
+}
+
+pub fn save_canvases(
+    folder: &crate::project::ProjectFolder,
+    canvases: &[SavedCanvas],
+) -> Result<Vec<CanvasPublication>> {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+    use std::io::Write;
+    let db = ProjectDb::open_existing(folder.database())?;
+    let stored = db.load()?;
+    ensure!(
+        stored.id == folder.id(),
+        "The artwork belongs to another project"
+    );
+    let mut registry = stored.registry.clone();
+    let mut publications = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for canvas in canvases {
+        ensure!(
+            seen.insert(canvas.asset_id),
+            "More than one artboard is linked to the same asset. Keep one link before saving"
+        );
+        image::load_from_memory_with_format(&canvas.png, image::ImageFormat::Png)
+            .context("Invalid saved canvas PNG")?;
+        let mut signature = format!("Atelier canvas {} sha256:", canvas.canvas_id);
+        for byte in Sha256::digest(&canvas.png) {
+            write!(&mut signature, "{byte:02x}")?;
+        }
+        let item = registry
+            .artifact(canvas.asset_id)
+            .context("A linked asset no longer exists; your canvas document is saved")?;
+        let active = item.active_revision_id;
+        let unchanged = item.revisions.iter().find(|revision| {
+            Some(revision.id) == active && revision.model.as_deref() == Some(&signature)
+        });
+        let revision_id = if let Some(revision) = unchanged {
+            revision.id
+        } else {
+            ensure!(active == canvas.expected_revision, "Saved artwork changed in another editor. Your canvas document is saved. Review the other image and relink the artboard in Assets before retrying Save");
+            let revision = registry.start_revision(
+                canvas.asset_id,
+                "Saved Atelier artboard".into(),
+                None,
+                Some(signature),
+                RevisionOrigin::Canon,
+            )?;
+            let path = folder.resolve(&format!("artwork/{revision}.png"))?;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)?;
+            file.write_all(&canvas.png)?;
+            file.sync_all()?;
+            registry.finish_revision(
+                canvas.asset_id,
+                revision,
+                path.to_str()
+                    .context("Artwork path is not UTF-8")?
+                    .to_owned(),
+            )?;
+            revision
+        };
+        publications.push(CanvasPublication {
+            asset_id: canvas.asset_id,
+            canvas_id: canvas.canvas_id,
+            revision_id,
+        });
+    }
+    if registry != stored.registry {
+        db.save_registry_checked(&registry, stored.registry_version)?;
+    }
+    Ok(publications)
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum EditResolution {
     Check,

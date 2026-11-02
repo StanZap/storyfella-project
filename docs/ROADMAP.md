@@ -371,12 +371,29 @@ language support can follow the initial shared-project workflow.
   repeated opening, retained drafts, atomic failure and save/reopen. Native
   launch/focus acceptance remains assigned to the user. Image publication on
   linked-canvas Save remains SF-PLAN-06.
-- [ ] **SF-PLAN-06 — Refresh Studio from Atelier saves.** Saving an asset-linked
+- [x] **SF-PLAN-06 — Refresh Studio from Atelier saves.** Saving an asset-linked
   canvas persists its editable document and updates its image in the shared
   project. Refresh Studio's asset previews and availability automatically, with
   no export, import, approval or publishing step. Preserve exact saved revision
   bindings for compiled story snapshots. Done when a save updates the intended
   asset in Studio with both apps open and survives reopening.
+  Evidence (2026-11-01): ordinary Save and Save-and-close of the shared Atelier
+  document persist editable work, render accepted linked artboards at full
+  resolution with alpha, and commit immutable image revisions as one guarded
+  catalog batch. Studio's existing live refresh updates thumbnails/readiness;
+  compiled playback snapshots retain their previous exact revision bindings.
+  Identical pixels reuse the current revision. A failed render/catalog write
+  retains the editable file; retries after interrupted metadata writes do not
+  duplicate revisions. Concurrent image changes fail visibly without overwriting
+  them; Assets relink/unlink provides recovery. Undo/redo keeps publication
+  baselines current. Recovery/navigation snapshots and Save As copies do not
+  publish. Automated tests cover multiple linked artboards, dimensions/alpha,
+  excluded candidates, missing artwork, repeated Save, interrupted retry,
+  undo/redo, conflicts/batch atomicity, pinned playback and reopen. Native Metal
+  Save → Studio UI acceptance remains assigned to the user.
+  Native acceptance (2026-11-02, user-reported): saving artwork in Atelier
+  updates its image in Studio. This verifies the Save/refresh round trip;
+  automated tests cover the failure and revision-preservation boundaries above.
 - [ ] **SF-PLAN-07 — Remove visual creation workflows from Studio.** Once the
   shared workflow works, remove migrated controls and unused implementation.
   Review shared core and CLI callers before removing operations. Done when

@@ -226,7 +226,7 @@ impl ProjectFolder {
         Ok(portable)
     }
 
-    fn resolve(&self, value: &str) -> Result<PathBuf> {
+    pub(crate) fn resolve(&self, value: &str) -> Result<PathBuf> {
         let path = Path::new(value);
         ensure!(
             !value.is_empty() && path.components().all(|c| matches!(c, Component::Normal(_))),

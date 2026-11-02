@@ -370,6 +370,12 @@ impl DrawingApp {
                                 asset_id: id,
                                 canvas_id,
                             });
+                            let base = this
+                                .catalog
+                                .as_ref()
+                                .and_then(|catalog| catalog.snapshot.registry.artifact(id))
+                                .and_then(|item| item.active_revision_id);
+                            this.doc.artwork_bases.insert(canvas_id, base);
                             this.changed();
                             this.message(
                                 "Artboard linked to asset · Save retains this link",
@@ -381,6 +387,29 @@ impl DrawingApp {
         }
         if let Some(error) = &self.catalog_error {
             content = content.child(label(error.clone()).text_color(rgb(0x9a3412)));
+        }
+        if self
+            .doc
+            .asset_links
+            .iter()
+            .any(|link| link.canvas_id == self.doc.canvas_id)
+        {
+            content = content.child(
+                Button::new("catalog-unlink")
+                    .ghost()
+                    .small()
+                    .label("Unlink current artboard")
+                    .disabled(disabled)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.history.checkpoint(&this.doc);
+                        let canvas = this.doc.canvas_id;
+                        this.doc.asset_links.retain(|link| link.canvas_id != canvas);
+                        this.doc.artwork_bases.remove(&canvas);
+                        this.doc.story_context.remove(&canvas);
+                        this.changed();
+                        cx.notify();
+                    })),
+            );
         }
         if let Some(error) = &self.catalog_refresh_error {
             content = content.child(label(error.clone()).text_color(rgb(0x9a3412)));

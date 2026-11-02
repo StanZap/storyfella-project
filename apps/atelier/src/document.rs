@@ -127,6 +127,8 @@ impl CanvasArtboard {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Document {
     #[serde(default)]
+    pub artwork_bases: std::collections::BTreeMap<u32, Option<uuid::Uuid>>,
+    #[serde(default)]
     pub story_context: std::collections::BTreeMap<u32, String>,
     #[serde(default)]
     pub asset_links: Vec<storyfella_studio_core::catalog::AssetLink>,
@@ -162,6 +164,7 @@ fn show_references() -> bool {
 impl Default for Document {
     fn default() -> Self {
         Self {
+            artwork_bases: Default::default(),
             story_context: Default::default(),
             asset_links: Vec::new(),
             version: 2,
@@ -513,7 +516,7 @@ impl History {
     }
     pub fn undo(&mut self, doc: &mut Document) -> bool {
         if let Some(mut previous) = self.undo.pop() {
-            Self::retain_prompt_drafts(doc, &mut previous);
+            Self::retain_editor_state(doc, &mut previous);
             self.redo.push(std::mem::replace(doc, previous));
             true
         } else {
@@ -522,7 +525,7 @@ impl History {
     }
     pub fn redo(&mut self, doc: &mut Document) -> bool {
         if let Some(mut next) = self.redo.pop() {
-            Self::retain_prompt_drafts(doc, &mut next);
+            Self::retain_editor_state(doc, &mut next);
             self.undo.push(std::mem::replace(doc, next));
             true
         } else {
@@ -535,7 +538,19 @@ impl History {
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }
-    fn retain_prompt_drafts(current: &mut Document, replacement: &mut Document) {
+    fn retain_editor_state(current: &mut Document, replacement: &mut Document) {
+        // Image publication is a disk baseline, not undoable canvas content.
+        for link in &replacement.asset_links {
+            if current
+                .asset_links
+                .iter()
+                .any(|old| old.canvas_id == link.canvas_id && old.asset_id == link.asset_id)
+            {
+                if let Some(base) = current.artwork_bases.get(&link.canvas_id) {
+                    replacement.artwork_bases.insert(link.canvas_id, *base);
+                }
+            }
+        }
         // Canvas undo must not roll back text owned by the prompt editor.
         std::mem::swap(&mut current.prompt_drafts, &mut replacement.prompt_drafts);
         std::mem::swap(

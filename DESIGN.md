@@ -1,5 +1,21 @@
 # Storyfella Studio design standard and UX audit
 
+### Atelier Save updates Studio artwork · 2026-11-01
+
+Ordinary Save and Save-and-close in a shared Atelier document also update its
+linked images in Studio. No export, approval or publication action is required.
+Save persists editable work first; render/catalog failures keep the project dirty
+and show the existing save failure with recovery details. Retry preserves image
+identity and avoids duplicate unchanged revisions. A concurrent outside image
+change blocks overwrite; Assets can relink after reviewing that image, or unlink
+an artboard. Undo/redo retains the latest publication baseline. Recovery and
+navigation snapshots and Save As copies preserve editable work without changing
+the shared image. Pending candidates and empty artboards stay unavailable until
+accepted artwork exists. Automated save/persistence tests pass; native Metal
+rendering and the visible cross-app refresh remain user acceptance.
+User acceptance (2026-11-02): Atelier Save updates the image in Studio. Remaining
+edge-case native checks are not implied by that reported round trip.
+
 ### Open in Atelier · 2026-11-01
 
 The shared Open in Atelier action appears in Canvas details, resolved Writer
@@ -15,7 +31,7 @@ action reopens context. Mask-save failures block handoff with actionable feedbac
 Automated identity, transport, worker and document tests cover the contract;
 native launch/focus and control acceptance remain assigned to the user. See
 [the handoff contract](docs/shared-project.md#open-in-atelier). Ordinary canvas
-save publication remains SF-PLAN-06.
+save publication is covered by SF-PLAN-06 above.
 
 ### Shared catalog synchronization · 2026-11-01
 

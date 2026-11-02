@@ -67,8 +67,7 @@ format upgrade on opening.
 
 SF-PLAN-03 adds shared catalog operations against the same persisted identities.
 Cross-app refresh and conflict merging are implemented in SF-PLAN-04 below.
-Contextual launch is implemented below; canvas-save publication remains
-SF-PLAN-06. Studio's
+Contextual launch and ordinary linked-canvas Save are implemented below. Studio's
 production controls remain through SF-PLAN-07.
 
 Storage acceptance moves an adopted populated folder, removes the original
@@ -188,8 +187,7 @@ bound to the saved version shown in the conflict; another intervening save
 requires reviewing again. Normal submissions automatically merge independent
 changes, then use SQLite's optimistic commit check to catch a race after the
 read. Attaching an image refreshes availability without clearing an unrelated
-details draft. Normal document saves still only save the editable document;
-automatic linked-canvas image publication remains SF-PLAN-06.
+details draft. Ordinary linked-canvas image publication is described below.
 
 ### Paired source/catalog recovery
 
@@ -265,4 +263,46 @@ source preservation, instance leases, FIFO/cancel/replies, invalid input, artwor
 embedding, retained edits/prompts, repeated opening, atomic validation failure
 and reopening. Logs use `.svs-e2e/logs/atelier-open-*`. Native cold launch,
 running-instance focus, project switching and visible controls remain manual
-acceptance assigned to the user. Linked-canvas Save publication is SF-PLAN-06.
+acceptance assigned to the user. Linked-canvas Save publication follows below.
+
+## Linked canvas saves
+
+SF-PLAN-06 · 2026-11-01. Ordinary Save (including Save-and-close) of
+`atelier/main.atelier` saves the editable document, then renders all linked
+artboards with accepted visible artwork at their full dimensions, preserving
+alpha. Pending candidate layers are excluded. Blank/candidate-only artboards
+remain pending. Studio's existing catalog poll refreshes saved images and
+availability automatically. Running compiled previews keep their pinned
+revisions until the existing explicit apply/recompile action.
+
+The GUI-free `catalog::save_canvases` checks project/item identities and each
+artboard's last displayed image revision, writes immutable PNG resources and
+commits the batch with the catalog version guard. Descriptions/source remain
+untouched. Canvas/pixel signatures reuse the active revision on unchanged Save;
+older revisions and their original bytes remain available for compiled plans.
+`.atelier` documents retain per-canvas `artwork_bases`, initialized by Open in
+Atelier or Assets → Link current artboard. Successful save replies advance those
+baselines even if editing continued during saving. Undo/redo preserves current
+baselines while reverting editable canvas content.
+
+Editable work is durable before rendering/publication. Any later failure stays
+visible through the existing save-error/retry flow. If registry publication
+succeeded but saving its document metadata failed, retrying the unchanged
+snapshot recognizes the active signature and finishes metadata without adding a
+revision. Unreferenced immutable resources may remain after a failed batch;
+existing resources are never replaced. An outside image change blocks a stale
+save. Review it and use Assets → Link current artboard before retrying, or Unlink
+current artboard to retain only editable work. Multiple artboards linked to the
+same asset require removing the ambiguous links before publishing a batch.
+
+Recovery autosaves, navigation/session snapshots and Save As copies save editable
+documents only. They do not publish half-finished work. Only the canonical shared
+document publishes images; standalone Atelier saves retain their existing behavior.
+
+Deterministic tests exercise the real save/publication pipeline with the CPU
+renderer: multiple artboards, alpha/dimensions, excluded candidates, blank states,
+unchanged retries, render failures, external-image conflicts, atomic batches,
+undo/redo, pinned playback resources and reopened documents. The macOS path uses
+the existing full-resolution Metal export renderer on the storage worker. Native
+Save → automatic Studio refresh remains manual acceptance assigned to the user.
+Logs use `.svs-e2e/logs/canvas-save-*`.

@@ -21,7 +21,10 @@ inbox, per-Atelier-data-directory OS instance lease and completion replies.
 Studio's shared OpenInAtelier action saves before delivery. Atelier reuses tabs
 and linked artboards, retains prompt drafts and embeds existing artwork only on
 first attachment; story context stays separate from generated artwork. Ordinary
-canvas-save image publication remains SF-PLAN-06. These user
+Save/Save-and-close publishes accepted linked artboards through `shared_save` and
+`catalog::save_canvases`, preserving immutable revisions and checking each
+artboard's displayed image baseline. Recovery, navigation and Save As copies
+save editable work without publishing images. These user
 project folders are separate from the `SVS_HOME` application-resource root;
 preserve its existing CLI/config resolution and standalone database behavior.
 

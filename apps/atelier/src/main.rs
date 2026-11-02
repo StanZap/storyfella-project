@@ -18,6 +18,7 @@ mod native_images;
 mod project_tabs;
 mod providers;
 mod queue;
+mod shared_save;
 mod story_context;
 mod stroke_curve;
 mod tablet;

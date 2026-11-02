@@ -54,6 +54,7 @@ pub enum Event {
     Projects(Result<Vec<ProjectPreview>>),
     Raster(u64, Result<crate::canvas_renderer::TileBatch>),
     Saved {
+        publications: Vec<storyfella_studio_core::catalog::CanvasPublication>,
         revision: u64,
         epoch: u64,
         path: PathBuf,
@@ -203,7 +204,7 @@ pub fn start() -> Workers {
                 } => Event::ProjectClosed {
                     epoch,
                     revision,
-                    result: document::save(&path, &doc).map(|_| path),
+                    result: crate::shared_save::save(&path, &doc).map(|_| path),
                 },
                 Storage::WorkspaceRecovery(directory, projects) => {
                     Event::WorkspaceSaved(crate::project_tabs::save_session(&directory, projects))
@@ -343,13 +344,25 @@ pub fn start() -> Workers {
                     revision,
                     epoch,
                     automatic,
-                } => Event::Saved {
-                    result: document::save(&path, &doc),
-                    path,
-                    revision,
-                    epoch,
-                    automatic,
-                },
+                } => {
+                    let saved = if automatic {
+                        document::save(&path, &doc).map(|_| Vec::new())
+                    } else {
+                        crate::shared_save::save(&path, &doc)
+                    };
+                    let (result, publications) = match saved {
+                        Ok(publications) => (Ok(()), publications),
+                        Err(error) => (Err(error), Vec::new()),
+                    };
+                    Event::Saved {
+                        result,
+                        publications,
+                        path,
+                        revision,
+                        epoch,
+                        automatic,
+                    }
+                }
                 Storage::Export(doc, path, transparent, quality, scope) => {
                     #[cfg(target_os = "macos")]
                     let result = objc2::rc::autoreleasepool(|_| {

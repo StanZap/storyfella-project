@@ -11,6 +11,7 @@ use std::{
 use storyfella_studio_core::atelier::{Mailbox, OpenRequest};
 
 pub(crate) struct StoryTarget {
+    pub base_revision: Option<uuid::Uuid>,
     pub path: PathBuf,
     pub artwork: Option<(crate::document::Layer, u32, u32)>,
 }
@@ -31,6 +32,9 @@ impl StoryTarget {
             request.context.clone(),
             request.description.clone(),
         )?;
+        next.artwork_bases
+            .entry(canvas)
+            .or_insert(self.base_revision);
         if fresh {
             if let Some((layer, width, height)) = &self.artwork {
                 next.width = *width;
@@ -81,7 +85,14 @@ pub(crate) fn prepare_target(request: &OpenRequest) -> Result<StoryTarget> {
     } else {
         None
     };
-    Ok(StoryTarget { path, artwork })
+    Ok(StoryTarget {
+        base_revision: stored
+            .registry
+            .artifact(request.artifact_id)
+            .and_then(|item| item.active_revision_id),
+        path,
+        artwork,
+    })
 }
 
 impl DrawingApp {

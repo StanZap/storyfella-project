@@ -3079,6 +3079,7 @@ impl DrawingApp {
                     }
                 }
                 Event::Saved {
+                    publications,
                     revision,
                     epoch,
                     path,
@@ -3093,6 +3094,17 @@ impl DrawingApp {
                     }
                     match result {
                         Ok(()) => {
+                            if epoch == self.epoch {
+                                crate::shared_save::apply_publications(
+                                    &mut self.doc,
+                                    &publications,
+                                );
+                            }
+                            if let Some(tab) =
+                                self.project_tabs.iter_mut().find(|tab| tab.epoch == epoch)
+                            {
+                                crate::shared_save::apply_publications(&mut tab.doc, &publications);
+                            }
                             let scope = crate::activity::Scope::Project(epoch);
                             let task = if automatic {
                                 crate::activity::Task::Recovery
