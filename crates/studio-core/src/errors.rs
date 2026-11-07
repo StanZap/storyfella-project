@@ -504,8 +504,8 @@ impl ErrorCode {
             Self::LlmRequest => (
                 "SVS-LLM-102",
                 "LLM request failed",
-                "The request to the LLM endpoint failed. Check that it is \
-                 running and the Base URL in Settings is correct.",
+                "The request to the LLM endpoint failed. Check that the provider \
+                 is running and its connection is configured in Clipforge.",
             ),
             Self::LlmStatus => (
                 "SVS-LLM-103",

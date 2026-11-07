@@ -181,6 +181,7 @@ Unless listed otherwise, import from `super::components`:
 | `SettingRow` | Accessible setting label/description, control slot and optional last-row treatment. |
 | `SectionHeading` | Consistent settings section eyebrow, title and description. |
 | `StatusDot` | Shared `HealthStatus` color indicator; pair with text that explains the status. |
+| `Toggle` | Accessible labelled switch with a centered thumb and a 24px minimum hit target. |
 | `EmptyVisual` | Icon, title and description for an empty workspace region. |
 | `RecoveryNotice` | Local recovery title/message, optional `alert`, action slot. |
 | `ErrorDetailsButton` | Opens a supplied `ReportedError` directly in the shared technical report. |

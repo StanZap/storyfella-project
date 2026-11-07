@@ -1,11 +1,12 @@
 # Application workflows
 
 Studio can open with a hosted image default or a text-only provider registry.
-Writer assistance needs only the selected text provider. Native image setup is
-optional; without a selected native t2i deployment, Studio skips image prewarm
-and hides native setup controls. Native-only requests report SVS-CFG-110 before
-starting a server or provisioning weights. Shared hosted defaults remain
-available to Atelier and are not rewritten.
+Writer assistance needs only the selected text provider. Studio's Models page
+stores its text and vision choices locally and can refresh the shared provider
+catalog after setup in Clipforge. Image setup belongs outside Studio. Native-only
+shared-core requests report SVS-CFG-110 before starting a server or provisioning
+weights when no native image deployment is selected. Shared hosted defaults
+remain available to Atelier and are not rewritten.
 
 Studio and Atelier consume the public `agentkit-workflow` runner and durable
 controller. Storyfella does not own another graph scheduler or model transport.

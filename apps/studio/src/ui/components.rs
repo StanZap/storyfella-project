@@ -95,13 +95,39 @@ pub fn StatusDot(status: HealthStatus) -> Element {
     rsx! { span { class } }
 }
 
+/// A labelled switch with a centered thumb and a minimum 24px hit target.
+#[component]
+pub fn Toggle(
+    label: String,
+    #[props(default)] title: String,
+    enabled: bool,
+    onchange: EventHandler<bool>,
+) -> Element {
+    let track = if enabled {
+        "bg-violet-500/70"
+    } else {
+        "bg-zinc-800"
+    };
+    let thumb = if enabled { "left-[22px]" } else { "left-0.5" };
+    rsx! {
+        button {
+            class: "relative h-6 min-h-6 w-10 shrink-0 rounded-full {track} transition disabled:cursor-not-allowed disabled:opacity-40",
+            role: "switch", aria_label: label, aria_checked: "{enabled}", title,
+            onclick: move |_| onchange.call(!enabled),
+            span { class: "absolute top-1/2 size-4 -translate-y-1/2 rounded-full bg-[#fff] shadow-sm transition-[left] {thumb}" }
+        }
+    }
+}
+
 #[component]
 pub fn SectionHeading(eyebrow: String, title: String, description: String) -> Element {
     rsx! {
         header { class: "mb-7 max-w-2xl",
             p { class: "mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-violet-400", "{eyebrow}" }
             h2 { class: "text-2xl font-semibold tracking-[-0.025em] text-zinc-100", "{title}" }
-            p { class: "mt-2 text-sm leading-6 text-zinc-500", "{description}" }
+            if !description.is_empty() {
+                p { class: "mt-2 text-sm leading-6 text-zinc-500", "{description}" }
+            }
         }
     }
 }

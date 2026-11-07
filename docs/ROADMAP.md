@@ -16,6 +16,13 @@ framework defects or missing reusable capabilities. Docgraph's integration is a
 reference for application-owned workflows, tool adapters, run persistence and
 streaming presentation, not domain code to copy into Storyfella.
 
+Clipforge manages the shared provider catalog, credentials, model availability
+and services. Each consuming app owns its model selections and setup experience
+for its own capabilities. Apps use Agentkit for shared execution and do not need
+Clipforge running during inference. SF-PLAN-31 tracks Studio's move away from
+shared provider administration and shared-setting writes. Historical implementation notes below describe what was
+built at the time, not the target ownership.
+
 - [x] **SF-PLAN-27 — Consolidate reusable inference in Agentkit.** Coordinate the
   migration of Clipforge's reusable inference layer into optional Agentkit
   capabilities: model provisioning/verification, managed native server lifecycle,
@@ -211,8 +218,8 @@ streaming presentation, not domain code to copy into Storyfella.
   The Settings provider selector also remains available for a single configured
   endpoint, enabling first-provider assignment. LM Studio text setup and a
   minimal completion were verified locally with the already-loaded Gemma model.
-- [ ] **SF-PLAN-29 — Controlled model downloads through Agentkit.** Extend
-  Agentkit's model provisioning with typed download state, progress events and
+- [ ] **SF-PLAN-29 — Controlled model downloads through Agentkit.** Provide
+  reusable model provisioning with typed download state, progress events and
   explicit Pause, Resume and Cancel controls. Report current-file and aggregate
   bytes, totals and verification state; expose transfer rate/ETA only when known.
   Pausing releases the active network request and retains partial files; resuming
@@ -221,15 +228,52 @@ streaming presentation, not domain code to copy into Storyfella.
   completed verified files. Discarding partial files is a separate explicit
   action. Validate range responses and handle servers ignoring ranges,
   already-complete partial files, checksum failures and disk/write errors without
-  accepting corrupt artifacts or silently appending incompatible data. Apps own
-  the controls and presentation and consume this one framework implementation.
-  Done when a real host shows progress and can pause/resume/cancel a model
-  download without exiting, restart and resume retained work, and recover from
+  accepting corrupt artifacts or silently appending incompatible data. Clipforge
+  manages shared model availability; an app may expose download controls only
+  for a model setup flow it owns, consuming this one framework implementation.
+  Studio's image download controls are not a target: visual production belongs
+  to Atelier, and SF-PLAN-31 removes those controls. Validate the real host in
+  the application that owns the relevant provisioning flow. Done when a real
+  host shows progress and can pause/resume/cancel a model download without
+  exiting, restart and resume retained work, and recover from
   failed transfers. Cover stalled connections, interruption, range handling,
   verification and cancellation with offline protocol tests. Current provisioning
-  already reports per-file progress and can recover partial downloads on rerun;
-  it has no explicit pause/resume/cancel API. Starting Qwen generation in Atelier
-  does not automatically provision missing model weights.
+  now exposes typed pause/resume/cancel controls, verification state, per-file
+  and aggregate progress through Agentkit. Studio's image-download UI has been
+  removed under SF-PLAN-31. Offline
+  protocol tests cover
+  stalled-request cancellation, pause/resume range reconnection, invalid range
+  fallback, complete partial files and checksum recovery. Live pause/resume and
+  restart acceptance remains open. Validate fallback responses and protect
+  downloads and partial-file deletion from concurrent operations. Starting Qwen
+  generation in Atelier does not automatically provision missing model weights.
+  Whether an Atelier setup flow initiates provisioning is a separate app decision.
+- [ ] **SF-PLAN-31 — Align Studio model settings with app ownership.** Replace
+  Models and Services with a single Models page for Studio's text and vision
+  selections, status and actionable missing-setup feedback. Persist Studio's
+  provider and model choices in its application configuration; do not change
+  shared provider definitions, capabilities, credentials or defaults when a
+  Studio selection changes. Clipforge manages shared providers, credentials,
+  model availability and services; Studio offers a way to open Clipforge and
+  refresh the available choices afterward. Remove Studio's provider editing,
+  image-model downloads and image-service administration, retaining shared
+  core and CLI capabilities required by their real callers. Keep ordinary story
+  editing available when providers are absent or offline. Preserve existing
+  user configuration and resolve current selections safely on upgrade.
+  Done when choices survive restart independently of other apps, Clipforge
+  changes become visible on refresh without losing valid Studio choices, missing
+  or unavailable models have clear recovery, and Studio has no Services page
+  or image-setup controls. Cover configuration migration, independent selections,
+  refresh, missing providers, and writing/vision routing with deterministic tests,
+  then verify the single-page setup flow in the native app.
+  Implementation in progress: Studio Settings now has one Models page with
+  Clipforge handoff and refresh; text/vision selections persist in Studio's app
+  configuration. Image setup, provider editing and the Services page are removed
+  from Studio. The user reviewed the Settings layout; full native acceptance
+  and routing/refresh coverage remain open.
+  Offline model discovery shows an actionable error code and refresh in the model
+  row; the Settings regression test covers the unavailable state.
+  Cleanup remains for superseded provider-administration helpers in Studio core.
 
 **Delivery order:** start SF-PLAN-27 early, before expanding the former Clipforge
 inference implementation. Establish the image contract in SF-PLAN-25 as part of
@@ -242,9 +286,9 @@ Task IDs remain stable and are not an execution sequence.
 | Owner | Target responsibility |
 | --- | --- |
 | Agentkit | Chat/vision/image capability contracts, provider adapters, optional native deployment management, workflow execution and reactive sessions. |
-| Clipforge | Application, CLI and MCP surfaces consuming Agentkit for model setup, server management and experimentation; its clipping/conversion utilities remain app-owned. |
-| Studio / Storyfella | Story context, DSL-aware tools, writing/narrative workflows, asset catalog and editor interactions. |
-| Atelier | Canvas tools and application-defined creative workflows using Agentkit; normal save updates shared project assets. |
+| Clipforge | Shared provider connections, credentials, model availability and service management; its clipping/conversion utilities remain app-owned. |
+| Studio / Storyfella | Studio's text/vision model choices and setup, story context, DSL-aware tools, writing workflows, asset catalog and editor interactions. |
+| Atelier | Atelier's image model choices and setup, canvas tools and creative workflows using Agentkit; normal save updates shared project assets. |
 | Docgraph | Independent framework consumer able to adopt image capabilities for its own document features. |
 
 The shared foundation enables more than individual chat calls. Studio workflows

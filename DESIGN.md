@@ -26,6 +26,15 @@ in the shared registry; the app preference does not overwrite them. A provider
 selected for both roles shares its settings, which the UI explains. Model lists
 and health checks discard responses for superseded requests.
 
+When a provider cannot be reached, the model row shows an actionable error code
+and refresh button on one line. The code opens the themed error report. The row
+does not offer unverified model choices or change height for explanatory text.
+Models keeps explanatory copy out of the rows; status, linked Vision behavior,
+and the provider refresh action have tooltips. **Refresh providers** reloads the
+shared catalog and rechecks availability and model lists.
+The refresh action shares the Models heading row. Vision's heading stays visible
+with its separate-model switch on the right; its fields appear when enabled.
+
 The former Canvas screen is **Assets**, including navigation, palette, tooltips,
 guide steps and the `g a` shortcut. Atelier still owns editable canvases. Earlier
 dated records below retain their original Canvas terminology. Automated evidence
@@ -358,6 +367,13 @@ strict Clippy for all four changed Rust packages pass; vendored Cocoa warnings
 remain unchanged.
 
 ### Hosted configuration and Studio startup · 2026-11-01
+
+Current direction (SF-PLAN-31): Studio Settings has one Models page for its
+text and vision choices, saved in Studio's application configuration. Provider
+connections, credentials, model availability and services are managed in
+Clipforge; Studio offers a handoff and refresh. Studio does not expose image
+model setup or a Services page. The implementation and acceptance are tracked
+in the roadmap; the historical record below describes the earlier interface.
 
 A valid shared hosted image default (including Replicate), or a text-only
 registry, allows Studio to open. Writer, playback and text-provider Settings

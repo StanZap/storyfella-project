@@ -202,9 +202,8 @@ pub struct AppConfig {
     /// Resolves from the shared Vision selection in separate mode, or follows
     /// Text otherwise. None when that selected deployment is unconfigured.
     pub vision: Option<ChatDeployment>,
-    /// The provider id serving `text`, kept so Settings can persist a model
-    /// choice under the right `[providers.<id>]` section. `None` when the
-    /// capability is unconfigured.
+    /// The Studio-selected text provider id, or the shared default when no
+    /// Studio selection has been saved.
     pub text_provider_id: Option<String>,
     /// Effective Vision provider id (the Text id when linked).
     pub vision_provider_id: Option<String>,
@@ -218,13 +217,9 @@ pub struct AppConfig {
     pub image: Option<ImageDeployment>,
     /// Every configured provider that serves a chat capability — `openai` or
     /// `llamacpp` — in id order, with the endpoint each resolves to. Both the
-    /// text and vision pickers choose from this one list: any chat provider
-    /// can be assigned to either capability, and the assignment records the
-    /// capability (see [`AppConfig::with_text_provider`]).
+    /// text and vision pickers choose from this one list.
     pub chat_providers: Vec<ChatProvider>,
-    /// The provider ids the shared `clipforge.toml` defines. Settings may remove
-    /// a chat provider among these; the seeded image provider is required and is
-    /// not offered for removal.
+    /// The provider ids the shared `clipforge.toml` defines.
     pub user_providers: Vec<String>,
     pub cache_dir: PathBuf,
     /// The shared native-server state directory (see [`paths::state_dir`]) —
@@ -332,6 +327,10 @@ struct ModelsConfig {
     /// Absent preserves existing Vision routing, including an unconfigured
     /// capability. Provider credentials remain in the shared AI registry.
     separate_vision: Option<bool>,
+    text_provider: Option<String>,
+    text_model: Option<String>,
+    vision_provider: Option<String>,
+    vision_model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -523,14 +522,27 @@ impl AppConfig {
         };
         // The chat capabilities are optional: an unconfigured planner or vision
         // endpoint leaves the app fully usable, with those features degraded.
-        let text = providers.chat_deployment(Capability::Text).ok();
-        let configured_vision = providers.chat_deployment(Capability::Vision).ok();
-        let text_provider_id = providers
-            .default_provider(Capability::Text)
-            .map(str::to_owned);
-        let configured_vision_provider_id = providers
-            .default_provider(Capability::Vision)
-            .map(str::to_owned);
+        let chat_providers = chat_providers(&providers);
+        let text_provider_id = file.models.text_provider.clone().or_else(|| {
+            providers
+                .default_provider(Capability::Text)
+                .map(str::to_owned)
+        });
+        let configured_vision_provider_id = file.models.vision_provider.clone().or_else(|| {
+            providers
+                .default_provider(Capability::Vision)
+                .map(str::to_owned)
+        });
+        let mut text = active_deployment(&chat_providers, &text_provider_id);
+        let mut configured_vision =
+            active_deployment(&chat_providers, &configured_vision_provider_id);
+        if let (Some(deployment), Some(model)) = (&mut text, &file.models.text_model) {
+            deployment.model = model.clone();
+        }
+        if let (Some(deployment), Some(model)) = (&mut configured_vision, &file.models.vision_model)
+        {
+            deployment.model = model.clone();
+        }
         let same_provider = configured_vision_provider_id.is_some()
             && configured_vision_provider_id == text_provider_id;
         let separate_vision = file.models.separate_vision.unwrap_or(!same_provider);
@@ -543,7 +555,6 @@ impl AppConfig {
             .as_ref()
             .and_then(|_| providers.default_provider(Capability::T2i))
             .map(str::to_owned);
-        let chat_providers = chat_providers(&providers);
 
         let dirs = paths::project_dirs().ok_or(ConfigError::PlatformDirectories)?;
         let data_dir = dirs.data_dir();
@@ -643,6 +654,39 @@ impl AppConfig {
 
     pub fn persist_separate_vision(&self, separate: bool) -> Result<(), ConfigError> {
         self.persist_app_setting("models", "separate_vision", separate.to_string())
+    }
+
+    /// Save a Studio-owned provider and model selection without editing the
+    /// shared provider registry. Changing provider clears the old model choice.
+    pub fn persist_model_selection(
+        &self,
+        capability: ChatCapability,
+        provider: &str,
+        model: Option<&str>,
+    ) -> Result<(), ConfigError> {
+        let path = self
+            .app_config_path
+            .as_deref()
+            .ok_or(ConfigError::PlatformDirectories)?;
+        let contents = read_config_contents(path)?;
+        let mut lines: Vec<_> = contents.lines().map(str::to_owned).collect();
+        let (provider_key, model_key) = match capability {
+            ChatCapability::Text => ("text_provider", "text_model"),
+            ChatCapability::Vision => ("vision_provider", "vision_model"),
+        };
+        write_key(
+            &mut lines,
+            "models",
+            provider_key,
+            Some(toml::Value::String(provider.to_owned()).to_string()),
+        );
+        write_key(
+            &mut lines,
+            "models",
+            model_key,
+            model.map(|value| toml::Value::String(value.to_owned()).to_string()),
+        );
+        write_config_file(path, lines.join("\n"))
     }
 
     pub fn with_separate_vision(&self, separate: bool) -> Self {
@@ -1717,6 +1761,61 @@ mod tests {
          capabilities = [\"vision\"]\n\
          base_url = \"http://localhost:8080/v1\"\n\
          model = \"google/gemma-4-e4b\"\n";
+
+    #[test]
+    fn studio_model_selections_do_not_modify_shared_providers() {
+        let directory = tempfile::tempdir().unwrap();
+        let app = directory.path().join("studio.toml");
+        let ai = directory.path().join("clipforge.toml");
+        fs::write(&ai, TWO_TEXT_PROVIDERS).unwrap();
+        let config = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+        config
+            .persist_model_selection(ChatCapability::Text, "deepseek", Some("chosen-model"))
+            .unwrap();
+        let selected = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+        assert_eq!(selected.text_provider_id.as_deref(), Some("deepseek"));
+        assert_eq!(selected.text.as_ref().unwrap().model, "chosen-model");
+        assert_eq!(fs::read_to_string(&ai).unwrap(), TWO_TEXT_PROVIDERS);
+        selected
+            .persist_model_selection(ChatCapability::Vision, "deepseek", Some("vision-model"))
+            .unwrap();
+        selected.persist_separate_vision(true).unwrap();
+        let separate = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+        assert_eq!(separate.text.as_ref().unwrap().model, "chosen-model");
+        assert_eq!(separate.vision.as_ref().unwrap().model, "vision-model");
+        separate.persist_separate_vision(false).unwrap();
+        let linked = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+        assert_eq!(linked.vision, linked.text);
+        linked.persist_separate_vision(true).unwrap();
+        let restored = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+        assert_eq!(restored.vision.as_ref().unwrap().model, "vision-model");
+        let updated_registry = TWO_TEXT_PROVIDERS
+            .replace("text = \"local\"", "text = \"vision\"")
+            .replace(
+                "capabilities = [\"vision\"]",
+                "capabilities = [\"vision\", \"text\"]",
+            )
+            .replace("https://api.deepseek.com/v1", "https://new.example/v1");
+        fs::write(&ai, updated_registry).unwrap();
+        let refreshed = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+        assert_eq!(refreshed.text_provider_id.as_deref(), Some("deepseek"));
+        assert_eq!(refreshed.text.as_ref().unwrap().model, "chosen-model");
+        assert_eq!(
+            refreshed.text.as_ref().unwrap().base_url,
+            "https://new.example/v1"
+        );
+        selected
+            .persist_model_selection(ChatCapability::Text, "local", None)
+            .unwrap();
+        let changed = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+        assert_eq!(changed.text.as_ref().unwrap().model, "prism-ml/bonsai-27b");
+        changed
+            .persist_model_selection(ChatCapability::Text, "missing", None)
+            .unwrap();
+        let missing = AppConfig::load_split(Some(app), Some(ai)).unwrap();
+        assert_eq!(missing.text_provider_id.as_deref(), Some("missing"));
+        assert!(missing.text.is_none());
+    }
 
     #[test]
     fn generation_defaults_parse_from_the_file() {
