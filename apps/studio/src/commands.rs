@@ -423,6 +423,9 @@ pub fn save_project(mut app_state: Signal<AppState>) -> Result<(), ReportedError
             format!("{message}. Review the catalog conflict before saving."),
         )
     })?;
+    if let Some(sources) = app_state.write().additional_sources.as_mut() {
+        sources.save().map_err(|error| error.report())?;
+    }
     let mut story = app_state.read().story.clone();
     let registry = app_state.read().registry.clone();
     let version = app_state.read().registry_version;
@@ -677,6 +680,74 @@ mod tests {
         let mut dom = VirtualDom::new_with_props(
             PersistenceProbe,
             PersistenceProbeProps {
+                directory: directory.clone(),
+            },
+        );
+        dom.rebuild_in_place();
+        drop(dom);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[component]
+    fn MultiFilePersistenceProbe(directory: PathBuf) -> Element {
+        let mut state = use_signal(crate::state::AppState::default);
+        use_hook(move || {
+            super::create_project(&directory, "Multi", state).unwrap();
+            let root = state
+                .read()
+                .story
+                .path()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .to_owned();
+            let chapter = root.join("chapter.sf");
+            state.write().create_additional_source(&chapter).unwrap();
+            state
+                .write()
+                .set_additional_source("chapter.sf", "scene first\n  end\n".into())
+                .unwrap();
+            super::save_project(state).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&chapter).unwrap(),
+                "scene first\n  end\n"
+            );
+            assert!(!state.read().has_unsaved_changes);
+            state
+                .write()
+                .set_additional_source("chapter.sf", "scene local\n  end\n".into())
+                .unwrap();
+            std::fs::write(&chapter, "scene external\n  end\n").unwrap();
+            assert!(super::save_project(state).is_err());
+            assert_eq!(
+                std::fs::read_to_string(&chapter).unwrap(),
+                "scene external\n  end\n"
+            );
+            assert_eq!(
+                state
+                    .read()
+                    .additional_sources
+                    .as_ref()
+                    .unwrap()
+                    .get("chapter.sf")
+                    .unwrap()
+                    .source(),
+                "scene local\n  end\n"
+            );
+            assert!(state.read().has_unsaved_changes);
+        });
+        rsx! {}
+    }
+
+    #[test]
+    fn multi_file_save_preserves_conflicted_chapter_drafts() {
+        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.svs-e2e/tests")
+            .join(format!("multi-file-commands-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut dom = VirtualDom::new_with_props(
+            MultiFilePersistenceProbe,
+            MultiFilePersistenceProbeProps {
                 directory: directory.clone(),
             },
         );

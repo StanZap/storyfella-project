@@ -1,5 +1,33 @@
 # Storyfella Studio design standard and UX audit
 
+### Initial visual directions
+
+The shared playback stage renders close framing, a tense overlay and
+monochrome artwork, with explicit normal/reset values. Effects are scoped to a
+scene; unknown directions remain visible as unsupported. Runtime restart and
+restore are tested. An isolated Studio check verified close framing, tense
+overlay and monochrome artwork together, including clipping without an extra
+scrollbar. Broader direction and staging acceptance remains open.
+
+### Multi-file Preview foundation
+
+Preview compiles open drafts with saved included files. The explorer lists
+sources and assets, keeps independent drafts, creates linked chapters, and
+shows project diagnostics. Preview opens the originating file when its
+snapshot is current; scene, beat and asset renames preserve identities across
+files. An isolated native check covered chapter creation, writing, preview,
+return to source, scene rename and undo/redo. File rename/removal, other editor
+services, accessibility and narrow-window acceptance remain open.
+
+### Studio Preview without artwork · 2026-11-07
+
+Valid stories play in Studio with missing or unreadable artwork. Missing active
+locations, characters and props appear as translucent labelled placeholders in
+approximate positions; a visible notice identifies the approximation. Preview
+also reports unsupported visual directions that it skips. Named character
+instances render in groups with scale, depth and optional precise positioning;
+native visual acceptance remains tracked by SF-PLAN-18–19.
+
 ### In-scope artwork links · 2026-11-02
 
 Scene and beat shortcuts are compact full-width rows with a shared type icon,

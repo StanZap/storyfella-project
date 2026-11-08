@@ -58,7 +58,7 @@ cargo run -p storyfella-player -- .svs-e2e/inputs/playback/lantern.sf
 cargo xtask plan config/plans/playback.yaml --mode guide --log
 ```
 
-The fixture stays under `.svs-e2e/`. [Playback documentation](docs/runtime.md)
+The fixture stays under `.svs-e2e/`. [Playback documentation](docs/ROADMAP.md#story-execution-and-playback-reference)
 defines open inputs, fixed snapshots, keyboard controls and save/restore.
 Voice, expressive media and portable packaging/export remain later work.
 

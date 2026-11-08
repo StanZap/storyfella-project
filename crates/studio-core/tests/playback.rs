@@ -139,3 +139,129 @@ fn allow_missing_assets_keeps_text_playback_available() {
         } if text.value == "Welcome to Bellwater"
     )));
 }
+
+#[test]
+fn workspace_playback_branches_across_files_and_restores() {
+    use std::collections::BTreeMap;
+    use storyfella_compiler::SourceWorkspace;
+    let workspace = SourceWorkspace {
+        entry: "story.sf".into(),
+        files: BTreeMap::from([
+            (
+                "story.sf".into(),
+                "include \"start.sf\"\ninclude \"end.sf\"\n".into(),
+            ),
+            ("start.sf".into(), "scene start\n  goto finish\n".into()),
+            (
+                "end.sf".into(),
+                "scene finish\n  narrate: The end\n  end\n".into(),
+            ),
+        ]),
+    };
+    let registry = storyfella_studio_core::registry::ArtifactRegistry::new();
+    let (mut session, mapping) =
+        PlaybackSession::compile_workspace(&workspace, &registry, AssetPolicy::Preview).unwrap();
+    let source = session.runtime.current().source;
+    assert_eq!(mapping.original_span(source).unwrap().0, "end.sf");
+    let saved = session.runtime.save();
+    session.dispatch(Command::Advance).unwrap();
+    assert_eq!(session.runtime.state().phase, Phase::Complete);
+    session.restore(saved).unwrap();
+    assert_eq!(session.runtime.state().phase, Phase::Text);
+}
+
+#[test]
+fn standalone_player_opens_multi_file_project_from_disk() {
+    let dir = directory();
+    std::fs::create_dir_all(&dir).unwrap();
+    let entry = dir.join("story.sf");
+    std::fs::write(&entry, "include \"first.sf\"\ninclude \"last.sf\"\n").unwrap();
+    std::fs::write(dir.join("first.sf"), "scene start\n  goto finish\n").unwrap();
+    std::fs::write(
+        dir.join("last.sf"),
+        "scene finish\n  narrate: Done\n  end\n",
+    )
+    .unwrap();
+    storyfella_studio_core::persistence::ProjectDb::open(dir.join("story.db")).unwrap();
+    let mut session = PlaybackSession::open(&entry, None).unwrap();
+    assert_eq!(session.runtime.state().phase, Phase::Text);
+    session.dispatch(Command::Advance).unwrap();
+    assert_eq!(session.runtime.state().phase, Phase::Complete);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn preview_reports_unresolved_and_unreadable_active_artwork() {
+    let dir = directory();
+    let (source, registry) = storyfella_studio_core::playback::fixture::create(&dir).unwrap();
+    let location = registry
+        .artifacts
+        .iter()
+        .find(|a| a.name == "harbor_dock")
+        .unwrap();
+    std::fs::remove_file(location.revisions[0].asset_path.as_ref().unwrap()).unwrap();
+    let mut registry = registry;
+    let character = registry
+        .artifacts
+        .iter_mut()
+        .find(|a| a.name == "mara")
+        .unwrap();
+    character.revisions.clear();
+    let source = source.replace("  beat arrival", "  shot: wide, dawn\n  beat arrival");
+    let session =
+        PlaybackSession::compile_with_policy(&source, &registry, AssetPolicy::Preview).unwrap();
+    let missing = session
+        .missing_uses()
+        .iter()
+        .map(|asset| asset.name.value.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(missing, ["harbor_dock", "mara"]);
+    assert!(session
+        .active_visuals()
+        .iter()
+        .any(|v| v.binding.name == "brass_lantern"));
+    assert_eq!(
+        session
+            .runtime
+            .plan()
+            .readiness
+            .unsupported_directions
+            .len(),
+        1
+    );
+    assert!(
+        PlaybackSession::compile_with_policy(&source, &registry, AssetPolicy::AllowMissing)
+            .is_err()
+    );
+    assert!(PlaybackSession::compile_with_policy(
+        "scene harbor\nscene harbor\n",
+        &registry,
+        AssetPolicy::Preview
+    )
+    .is_err());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn relocated_shared_project_opens_from_folder_or_manifest_with_chapters_and_artwork() {
+    use storyfella_studio_core::project::ProjectFolder;
+    let dir = directory();
+    let (_, registry) =
+        storyfella_studio_core::playback::fixture::create(&dir.join("inputs")).unwrap();
+    let original = dir.join("original");
+    let entry = "story \"Travel\"\ninclude \"chapter.sf\"\n";
+    ProjectFolder::create(&original, "Travel", &registry, entry).unwrap();
+    std::fs::write(original.join("chapter.sf"), "scene harbor\n  location: harbor_dock\n  stage: lead, mara, left, 100, 1, 25, 0\n  mara: Hello\n").unwrap();
+    let moved = dir.join("moved");
+    std::fs::rename(&original, &moved).unwrap();
+    let folder = PlaybackSession::open(&moved, None).unwrap();
+    let manifest = PlaybackSession::open(&moved.join("storyfella.toml"), None).unwrap();
+    assert_eq!(folder.runtime.plan(), manifest.runtime.plan());
+    assert_eq!(folder.runtime.staged()[0].position, Some((25, 0)));
+    assert_eq!(folder.visuals.len(), 2);
+    assert!(folder
+        .visuals
+        .iter()
+        .all(|image| image.image_url.starts_with("data:image/png;base64,")));
+    std::fs::remove_dir_all(dir).unwrap();
+}

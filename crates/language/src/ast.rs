@@ -27,6 +27,13 @@ pub enum DirectionKind {
     Mood,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StageGroup {
+    Left,
+    Center,
+    Right,
+}
+
 /// Children are ordered exactly as authored. Comments/trivia live in the token stream.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Node {
@@ -53,6 +60,21 @@ pub enum NodeKind {
     Asset {
         kind: AssetKind,
         names: Vec<Name>,
+    },
+    Stage {
+        instance: Name,
+        asset: Name,
+        group: StageGroup,
+        scale: u16,
+        depth: u16,
+        position: Option<(u8, u8)>,
+    },
+    Swap {
+        instance: Name,
+        asset: Name,
+    },
+    Hide {
+        instance: Name,
     },
     Direction {
         kind: DirectionKind,

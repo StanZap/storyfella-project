@@ -30,6 +30,93 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn additional_sources_keep_independent_drafts_and_refuse_conflicts() {
+    let fixture = Fixture::new();
+    let entry = fixture.source("scene entry\n  end\n");
+    fs::write(fixture.0.join("one.sf"), "scene one\n  end\n").unwrap();
+    fs::write(fixture.0.join("two.sf"), "scene two\n  end\n").unwrap();
+    let mut sources = storyfella_studio_core::story::AdditionalSources::new(&entry).unwrap();
+    sources.open("one.sf").unwrap();
+    sources.open("two.sf").unwrap();
+    sources
+        .set_source("one.sf", "scene revised_one\n  end\n".into())
+        .unwrap();
+    sources
+        .set_source("two.sf", "scene revised_two\n  end\n".into())
+        .unwrap();
+    fs::write(fixture.0.join("two.sf"), "scene external\n  end\n").unwrap();
+    assert!(sources.save().is_err());
+    assert_eq!(
+        fs::read_to_string(fixture.0.join("one.sf")).unwrap(),
+        "scene one\n  end\n"
+    );
+    assert_eq!(
+        sources.get("two.sf").unwrap().source(),
+        "scene revised_two\n  end\n"
+    );
+    assert!(sources.is_dirty());
+    assert!(sources.open("../outside.sf").is_err());
+    assert!(sources.open("story.sf").is_err());
+}
+
+#[test]
+fn clean_chapters_refresh_but_dirty_drafts_survive_external_changes() {
+    let fixture = Fixture::new();
+    let entry = fixture.source("include \"chapter.sf\"\n");
+    let chapter = fixture.0.join("chapter.sf");
+    fs::write(&chapter, "scene original\n  end\n").unwrap();
+    let mut sources = storyfella_studio_core::story::AdditionalSources::new(&entry).unwrap();
+    sources.open("chapter.sf").unwrap();
+    fs::write(&chapter, "scene external\n  end\n").unwrap();
+    assert!(sources.overrides().is_empty());
+    assert_eq!(
+        sources.open("chapter.sf").unwrap().source(),
+        "scene external\n  end\n"
+    );
+    sources
+        .set_source("chapter.sf", "scene draft\n  end\n".into())
+        .unwrap();
+    fs::write(&chapter, "scene newer\n  end\n").unwrap();
+    assert_eq!(
+        sources.open("chapter.sf").unwrap().source(),
+        "scene draft\n  end\n"
+    );
+    assert!(sources.save().is_err());
+    assert_eq!(fs::read_to_string(chapter).unwrap(), "scene newer\n  end\n");
+}
+
+#[test]
+fn creating_additional_sources_never_replaces_or_escapes() {
+    let fixture = Fixture::new();
+    let entry = fixture.source("scene entry\n  end\n");
+    let mut sources = storyfella_studio_core::story::AdditionalSources::new(&entry).unwrap();
+    let chapter = fixture.0.join("chapter.sf");
+    assert_eq!(sources.create(&chapter).unwrap(), "chapter.sf");
+    fs::write(&chapter, "existing text").unwrap();
+    assert!(sources.create(&chapter).is_err());
+    assert_eq!(fs::read_to_string(chapter).unwrap(), "existing text");
+    assert!(sources.create(&fixture.0.join("../outside.sf")).is_err());
+    assert!(sources.create(&fixture.0.join("bad\"name.sf")).is_err());
+}
+
+#[test]
+fn workspace_loader_uses_unsaved_entry_and_reads_only_referenced_sources() {
+    let fixture = Fixture::new();
+    let entry = fixture.source("scene saved\n  end\n");
+    fs::write(fixture.0.join("chapter.sf"), "scene chapter\n  end\n").unwrap();
+    fs::write(fixture.0.join("unrelated.sf"), [0xff]).unwrap();
+    let drafts = std::collections::BTreeMap::from([
+        ("story.sf".into(), "include \"chapter.sf\"\n".into()),
+        ("chapter.sf".into(), "scene unsaved_chapter\n  end\n".into()),
+    ]);
+    let workspace = storyfella_studio_core::story::load_source_workspace(&entry, &drafts).unwrap();
+    let expanded = workspace.expand().unwrap();
+    assert!(expanded.source.contains("scene unsaved_chapter"));
+    assert!(!workspace.files.contains_key("unrelated.sf"));
+    assert_eq!(fs::read_to_string(entry).unwrap(), "scene saved\n  end\n");
+}
+
+#[test]
 fn associations_and_fixture_revisions_survive_save_reopen_and_rejected_snapshots() {
     use storyfella_studio_core::{
         authoring::{reconcile, AssetCatalog},

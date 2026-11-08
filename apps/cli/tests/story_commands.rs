@@ -73,9 +73,39 @@ fn neutral_story_check_and_compile_work_without_config_or_database() {
 }
 
 #[test]
+fn multi_file_story_compiles_and_reports_original_file_locations() {
+    let fixture = Fixture::new();
+    fixture.write("story.sf", "include \"first.sf\"\ninclude \"second.sf\"\n");
+    fixture.write("first.sf", "scene beginning\n  goto ending\n");
+    fixture.write("second.sf", "scene ending\n  narrate: 🌊\n  end\n");
+    let plan = fixture.json(&["story", "compile", "story.sf"], true);
+    assert_eq!(plan["entry"], "beginning");
+    assert_eq!(plan["scenes"][1]["id"], "ending");
+    fixture.write("plan.json", &plan.to_string());
+    fixture.write("commands.json", "[\"Advance\"]");
+    let trace = fixture.json(&["story", "trace", "plan.json", "commands.json"], true);
+    assert!(trace
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| event.get("Completed").is_some()));
+    fixture.write("first.sf", "scene beginning\n  goto missing\n");
+    let report = fixture.json(&["story", "check", "story.sf"], false);
+    let diagnostic = report["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["code"] == "SF202")
+        .unwrap();
+    assert_eq!(diagnostic["file"], "first.sf");
+    assert_eq!(diagnostic["start"]["line"], 1);
+    assert_eq!(diagnostic["start"]["character"], 7);
+}
+
+#[test]
 fn draft_plan_preserves_missing_assets_and_directions_but_readiness_gate_fails() {
     let fixture = Fixture::new();
-    let text = "scene harbor\n  shot: wide\n  mara: Hello\n";
+    let text = "scene harbor\n  shot: wide, dawn\n  mara: Hello\n";
     fixture.write("story.sf", text);
     let report = fixture.json(&["story", "check", "story.sf"], true);
     assert_eq!(report["valid"], true);
@@ -88,7 +118,7 @@ fn draft_plan_preserves_missing_assets_and_directions_but_readiness_gate_fails()
     );
     assert_eq!(
         plan["readiness"]["unsupported_directions"][0]["text"]["value"],
-        "wide"
+        "wide, dawn"
     );
     let blocked = fixture.json(&["story", "compile", "story.sf", "--require-ready"], false);
     assert_eq!(blocked["valid"], true);
@@ -116,7 +146,10 @@ fn binding_file_is_snapshotted_exactly_and_does_not_create_readiness_for_directi
         plan["scenes"][0]["instructions"][0]["kind"]["Speech"]["speaker"]["binding"],
         binding
     );
-    fixture.write("story.sf", "scene harbor\n  mood: tense\n  Mara: Hello\n");
+    fixture.write(
+        "story.sf",
+        "scene harbor\n  mood: foreboding\n  Mara: Hello\n",
+    );
     let blocked = fixture.json(
         &[
             "story",

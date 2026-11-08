@@ -6,10 +6,10 @@ use storyfella_runtime::AssetPolicy;
 use storyfella_studio_core::playback::PlaybackSession;
 
 #[derive(Clone, Parser)]
-#[command(about = "Play a Storyfella .sf/.db project pair or compiled JSON plan")]
+#[command(about = "Play a Storyfella project, .sf/.db pair or compiled JSON plan")]
 struct Options {
     input: Option<PathBuf>,
-    /// Resource database for a compiled JSON plan with pinned artwork.
+    /// Resource project or database for a compiled JSON plan with pinned artwork.
     #[arg(long)]
     project: Option<PathBuf>,
     /// Play despite missing or unreadable artwork, using black placeholders.
@@ -61,7 +61,7 @@ async fn open_story(mut model: Signal<PlaybackModel>, allow_missing_assets: bool
     let window = dioxus::desktop::window().window.clone();
     let Some(input) = rfd::AsyncFileDialog::new()
         .set_parent(window.as_ref())
-        .add_filter("Storyfella story", &["sf", "db", "json"])
+        .add_filter("Storyfella story", &["sf", "db", "json", "toml"])
         .pick_file()
         .await
     else {
@@ -79,7 +79,7 @@ async fn open_story(mut model: Signal<PlaybackModel>, allow_missing_assets: bool
                 let Some(file) = rfd::AsyncFileDialog::new()
                     .set_parent(window.as_ref())
                     .set_title("Choose the plan's artwork project")
-                    .add_filter("Project database", &["db"])
+                    .add_filter("Storyfella project", &["db", "toml"])
                     .pick_file()
                     .await
                 else {

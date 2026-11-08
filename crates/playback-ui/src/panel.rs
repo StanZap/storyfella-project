@@ -6,9 +6,46 @@ use crate::{
     PlaybackModel,
 };
 use dioxus::prelude::*;
-use storyfella_compiler::InstructionKind;
-use storyfella_language::{AssetKind, Source, Span};
+use storyfella_compiler::{InstructionKind, VisualDirection};
+use storyfella_language::{AssetKind, Source, Span, StageGroup};
 use storyfella_runtime::{Command, Phase};
+
+fn stage_class(presentation: storyfella_runtime::Presentation) -> String {
+    format!(
+        "sf-stage{}{}{}",
+        if presentation.shot == Some(VisualDirection::Close) {
+            " sf-shot-close"
+        } else {
+            ""
+        },
+        if presentation.mood == Some(VisualDirection::Tense) {
+            " sf-mood-tense"
+        } else {
+            ""
+        },
+        if presentation.style == Some(VisualDirection::Monochrome) {
+            " sf-style-monochrome"
+        } else {
+            ""
+        },
+    )
+}
+
+fn actor_position(group: StageGroup, slot: usize) -> f32 {
+    let anchor = match group {
+        StageGroup::Left => 20.0,
+        StageGroup::Center => 50.0,
+        StageGroup::Right => 80.0,
+    };
+    let offset = if slot == 0 {
+        0.0
+    } else if slot % 2 == 1 {
+        -(slot.div_ceil(2) as f32) * 8.0
+    } else {
+        (slot / 2) as f32 * 8.0
+    };
+    anchor + offset
+}
 
 #[component]
 pub fn PlaybackPanel(
@@ -44,13 +81,50 @@ pub fn PlaybackPanel(
         .unwrap_or("Storyfella Player");
     let paused = session.is_some_and(|s| s.runtime.state().paused);
     let phase = session.map(|s| s.runtime.state().phase);
+    let presentation = session
+        .map(|s| s.runtime.presentation())
+        .unwrap_or_default();
+    let stage_class = stage_class(presentation);
     let visuals = session.map(|s| s.active_visuals()).unwrap_or_default();
+    let missing = if on_apply.is_some() {
+        session.map(|s| s.missing_uses()).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let staged = session.map(|s| s.runtime.staged()).unwrap_or_default();
+    let staging_used = session.is_some_and(|s| s.runtime.has_staging());
+    let missing_location = missing
+        .iter()
+        .find(|asset| asset.kind == AssetKind::Location);
+    let missing_objects: Vec<_> = missing
+        .iter()
+        .filter(|asset| {
+            asset.kind != AssetKind::Location
+                && !staged.iter().any(|actor| {
+                    actor.asset.kind == asset.kind
+                        && actor
+                            .asset
+                            .name
+                            .value
+                            .eq_ignore_ascii_case(&asset.name.value)
+                })
+        })
+        .collect();
+    let ignored_directions = session.is_some_and(|s| {
+        on_apply.is_some() && !s.runtime.plan().readiness.unsupported_directions.is_empty()
+    });
     let location = visuals
         .iter()
         .find(|v| v.binding.kind == AssetKind::Location);
     // With no location, keep the available artwork intact rather than treating
     // a portrait or prop as a landscape. Every active asset remains inspectable.
-    let backdrop = location.copied().or_else(|| visuals.first().copied());
+    let backdrop = location.copied().or_else(|| {
+        if staging_used {
+            None
+        } else {
+            visuals.first().copied()
+        }
+    });
     let speaker = match current.map(|i| &i.kind) {
         Some(InstructionKind::Speech { speaker, .. }) => speaker.binding.as_ref(),
         _ => None,
@@ -91,17 +165,52 @@ pub fn PlaybackPanel(
                     }
                 }
             }
-            div { class: "sf-stage", tabindex: "0", aria_label: "Story stage",
+            div { class: "{stage_class}", tabindex: "0", aria_label: "Story stage",
+                if let Some(asset) = missing_location {
+                    div { class: "sf-placeholder-location", "Location · {asset.name.value} · missing artwork" }
+                }
                 if let Some(backdrop) = backdrop {
-                    img { class: if location.is_some() { "sf-backdrop" } else { "sf-backdrop sf-backdrop-contained" },
-                        src: "{backdrop.image_url}", alt: "{backdrop.binding.name}" }
-                } else {
+                    div { class: "sf-backdrop-frame",
+                        img { class: if location.is_some() { "sf-backdrop" } else { "sf-backdrop sf-backdrop-contained" },
+                            src: "{backdrop.image_url}", alt: "{backdrop.binding.name}" }
+                    }
+                } else if missing_location.is_none() {
                     div { class: "sf-missing-backdrop", aria_label: "Artwork unavailable", "Artwork unavailable" }
+                }
+                if let Some(session) = session {
+                    div { class: "sf-actors", aria_label: "Characters on stage",
+                        for actor in staged.iter() {
+                            { let x = actor.position.map(|(x, _)| f32::from(x)).unwrap_or_else(|| actor_position(actor.group, actor.slot));
+                              let y = actor.position.map(|(_, y)| y).unwrap_or(0);
+                              let style = format!("left:{x}%;bottom:{y}%;height:{}%;z-index:{};", f32::from(actor.scale) * 0.72, actor.depth);
+                              let visual = actor.asset.binding.as_ref().and_then(|binding| session.visuals.iter().find(|visual| &visual.binding == binding));
+                              rsx! {
+                                  if let Some(visual) = visual {
+                                      img { key: "{actor.instance}", class: "sf-actor", style: "{style}", src: "{visual.image_url}", alt: "{actor.asset.name.value}" }
+                                  } else {
+                                      div { key: "{actor.instance}", class: "sf-actor sf-staged-missing", style: "{style}", "{actor.asset.name.value} · missing artwork" }
+                                  }
+                              }
+                            }
+                        }
+                    }
+                }
+                if !missing_objects.is_empty() {
+                    div { class: "sf-placeholders", aria_label: "Missing artwork; positions are approximate",
+                        for asset in missing_objects {
+                            div { class: if asset.kind == AssetKind::Character { "sf-placeholder sf-placeholder-character" } else { "sf-placeholder sf-placeholder-prop" },
+                                span { if asset.kind == AssetKind::Character { "Character" } else { "Prop" } }
+                                strong { "{asset.name.value}" }
+                            }
+                        }
+                    }
                 }
                 if let Some(session) = session {
                     div { class: "sf-scene-label",
                         "{session.runtime.plan().scenes[session.runtime.state().scene].id.0}"
                         if let Some(beat) = &session.runtime.state().beat { " · {beat.name}" }
+                        if !missing.is_empty() { div { class: "sf-preview-note", "Missing artwork · positions are approximate" } }
+                        if ignored_directions { div { class: "sf-preview-note", "Unsupported visual directions are ignored in preview" } }
                     }
                 }
                 section { class: if phase == Some(Phase::Choice) { "sf-reading sf-reading-choice" } else { "sf-reading" }, aria_label: "Current story",
@@ -213,5 +322,37 @@ pub fn PlaybackPanel(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn staged_groups_space_instances_around_their_anchor() {
+        assert_eq!(actor_position(StageGroup::Left, 0), 20.0);
+        assert_eq!(actor_position(StageGroup::Center, 1), 42.0);
+        assert_eq!(actor_position(StageGroup::Center, 2), 58.0);
+        assert_eq!(actor_position(StageGroup::Right, 0), 80.0);
+    }
+
+    #[test]
+    fn stage_uses_the_shared_runtime_effects_and_resets() {
+        let active = storyfella_runtime::Presentation {
+            shot: Some(VisualDirection::Close),
+            mood: Some(VisualDirection::Tense),
+            style: Some(VisualDirection::Monochrome),
+        };
+        assert_eq!(
+            stage_class(active),
+            "sf-stage sf-shot-close sf-mood-tense sf-style-monochrome"
+        );
+        let reset = storyfella_runtime::Presentation {
+            shot: Some(VisualDirection::Wide),
+            mood: Some(VisualDirection::Neutral),
+            style: Some(VisualDirection::Normal),
+        };
+        assert_eq!(stage_class(reset), "sf-stage");
     }
 }

@@ -54,7 +54,7 @@ it, so the boundary stays visible at every call site.
 
 `storyfella-language`, `storyfella-compiler` and `storyfella-lsp` are implemented.
 `storyfella-runtime` is implemented with a real CLI trace caller; see
-`docs/runtime.md`. Do not add empty crates or workspace members.
+`docs/ROADMAP.md#story-execution-and-playback-reference`. Do not add empty crates or workspace members.
 Language analysis and compilation must remain independent of Studio, GUI
 frameworks, and inference backends. The story runtime owns execution, state,
 and timing; Studio preview and Player consume the same runtime. The LSP
@@ -257,7 +257,7 @@ error-code registry (item 7) are implemented and validated:
   source/registry undo are implemented. Shared Writer completion/navigation,
   compiler diagnostics, rename, formatting, and catalog-backed LSP semantic
   tokens, shared headless execution, Studio preview and the visual Player are
-  implemented. See `docs/runtime.md`; `docs/ROADMAP.md` §12 remains
+  implemented. See `docs/ROADMAP.md#story-execution-and-playback-reference`; `docs/ROADMAP.md` §12 remains
   authoritative.
 
 # Validation

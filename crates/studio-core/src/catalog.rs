@@ -317,6 +317,11 @@ pub fn reconcile_declarations(registry: &mut ArtifactRegistry, source: &str, liv
                     ));
                 }
             }
+            if let storyfella_language::NodeKind::Stage { asset, .. }
+            | storyfella_language::NodeKind::Swap { asset, .. } = &node.kind
+            {
+                output.push((ArtifactKind::Character, asset.value.clone(), node.span.end));
+            }
             declarations(&node.children, output);
         }
     }

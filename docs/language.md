@@ -14,6 +14,16 @@ enables the same behavior with `--allow-missing-assets`.
 
 ## File encoding and layout
 
+The CLI also supports an initial multi-file compilation slice: a top-level
+`include "chapter.sf"` expands that file at the directive's position. Paths are
+relative to the containing file, must stay inside the entry file's folder, and
+may not use `.` or `..` components. A file can be included once; cycles and
+missing files are errors. CLI diagnostics identify the original file. Studio
+Preview can play open unsaved drafts together with saved included files. Studio's
+explorer opens existing sources, but Writer diagnostics and LSP do not yet
+fully support this project syntax. Compiled plans retain an
+expanded source snapshot rather than a durable multi-file source map.
+
 - Source is UTF-8.
 - LF and CRLF line endings are accepted and preserved.
 - Indentation uses spaces only, exactly two spaces per level.
@@ -143,15 +153,50 @@ invalid drafts retain the previous catalog. See [shared catalog](shared-project.
 Dialogue and thought use a character reference. Narration has no speaker and
 does not require a character asset.
 
+### Character staging
+
+    scene harbor
+      location: dock
+      stage: lead, mara, left, 125, 4
+      stage: friend, tam, right, 100, 2, 73, 12
+      mara: Hello.
+      swap: lead, mara_smile
+      narrate: Mara smiles.
+      hide: friend
+
+`stage` takes an instance name, character artwork name, group (`left`, `center`,
+`right`), scale percentage (25–300), and depth (0–999). Higher depth appears in
+front. Optional `x, y` values (0–100) position the image's bottom center as a
+percentage of the character stage: x from the left and y up from the bottom.
+Use these to control spacing and overlap. Without them, members receive stable
+automatic slots around their group anchor; adding or hiding another character
+does not move them. Reusing an instance in `stage` updates its placement.
+`swap` changes an existing instance's
+artwork without changing its placement, size or depth; `hide` removes it. Both
+require an instance already staged in that scene. Staging persists across dialogue
+and beats and resets on entering a scene, including a jump back to that scene.
+Save/restore reconstructs it by replay. Studio creates pending character catalog
+entries for these artwork names; missing art is labeled in Preview. Prepare
+swappable PNGs with matching dimensions and framing for consistent results.
+Automatic variation compatibility checks are not yet supported.
+
 ### Directions
 
     style: watercolor at dusk
     shot: wide, low angle
     mood: uneasy but hopeful
 
-Directions are retained with source spans, but the current runtime does not
-execute them. They currently make a plan not ready for strict visual playback.
-Generators should omit them unless the target host explicitly supports them.
+The shared Preview and Player support these exact values (case-insensitive):
+
+- `shot: wide` uses the normal framing; `shot: close` enlarges the backdrop.
+- `mood: tense` adds a dark warm overlay; `mood: neutral` restores the default.
+- `style: monochrome` removes colour from the backdrop, staged characters and portrait;
+  `style: normal` restores colour.
+
+Each effect lasts until replaced or the next scene begins. Restart and saved
+state restore replay it deterministically. Other values remain in the plan and
+block strict playback; Studio Preview skips them with a notice. These are
+presentation effects on existing artwork, not new image generation.
 
 ### Choices
 
@@ -214,11 +259,11 @@ visual validation globally.
 
 Playback contract:
 
-1. The runtime has strict and allow-missing asset policies.
+1. The runtime has strict, allow-missing and Studio Preview policies.
 2. Strict visual playback keeps current resource validation.
 3. Allow-missing validation permits pending asset uses.
-4. Unresolved asset uses omit themselves from the active visual set rather
-   than panic or require a fake revision.
+4. Unresolved asset uses remain available to Studio Preview as named placeholders
+   without a fake revision; they do not enter the pinned visual set.
 5. Preserve the authored speaker name and kind for dialogue when its artwork is
    absent; show the name without a portrait.
 6. Render a neutral text stage when no visual is available. Text, thought,
@@ -227,8 +272,9 @@ Playback contract:
 7. In text-only mode, skip `style`, `shot`, and `mood` only with a visible
    informational notice, or reject them with a precise diagnostic. Never imply
    that they affected presentation.
-8. Studio Preview starts with the allow-missing policy when the source is
-   structurally valid but artwork is pending.
+8. Studio Preview permits missing artwork and skips unsupported visual directions
+   with a visible notice when the source is structurally valid. Placeholder
+   unstaged placeholder positions are approximate.
 9. Player exposes `--allow-missing-assets`; in this mode it does not request an
    artwork project for compiled plans and uses placeholders instead.
 10. Tests prove that the same source executes before assets exist
@@ -277,13 +323,14 @@ unique choice labels. Generate only names matching `NAME`.
       end
 
 This is structurally valid even if `mara` and `tam` have no catalog entries.
-It becomes playable text-only once asset-independent playback is implemented.
+Studio Preview can play it before the artwork is available.
 
 ## Explicitly unsupported in version 1
 
 - variables or expressions;
 - conditions and loops;
-- imports or includes;
+- imports or includes in the single-document parser and external LSP; Studio,
+  the CLI and Player resolve the initial workspace include syntax separately;
 - functions or macros;
 - multiline blocks or heredocs;
 - automatic timing or duration units;

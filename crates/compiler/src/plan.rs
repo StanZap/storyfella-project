@@ -1,7 +1,31 @@
 use serde::{Deserialize, Serialize};
-use storyfella_language::{AssetKind, DirectionKind, Name, Span, Text};
+use storyfella_language::{AssetKind, DirectionKind, Name, Span, StageGroup, Text};
 
 pub const PLAN_VERSION: u32 = 1;
+
+/// Supported visual effects. Unknown authored text remains an explicit
+/// readiness requirement rather than being silently interpreted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VisualDirection {
+    Wide,
+    Close,
+    Neutral,
+    Tense,
+    Normal,
+    Monochrome,
+}
+
+pub fn visual_direction(kind: DirectionKind, text: &str) -> Option<VisualDirection> {
+    match (kind, text.trim().to_ascii_lowercase().as_str()) {
+        (DirectionKind::Shot, "wide") => Some(VisualDirection::Wide),
+        (DirectionKind::Shot, "close") => Some(VisualDirection::Close),
+        (DirectionKind::Mood, "neutral") => Some(VisualDirection::Neutral),
+        (DirectionKind::Mood, "tense") => Some(VisualDirection::Tense),
+        (DirectionKind::Style, "normal") => Some(VisualDirection::Normal),
+        (DirectionKind::Style, "monochrome") => Some(VisualDirection::Monochrome),
+        _ => None,
+    }
+}
 
 /// Authored scene names give stable identities across reordering and text edits.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -62,6 +86,21 @@ pub enum InstructionKind {
         kind: AssetKind,
         assets: Vec<AssetUse>,
     },
+    Stage {
+        instance: Name,
+        asset: AssetUse,
+        group: StageGroup,
+        scale: u16,
+        depth: u16,
+        position: Option<(u8, u8)>,
+    },
+    Swap {
+        instance: Name,
+        asset: AssetUse,
+    },
+    Hide {
+        instance: Name,
+    },
     Direction {
         kind: DirectionKind,
         text: Text,
@@ -104,8 +143,8 @@ pub struct PendingAsset {
     pub name: Name,
 }
 
-/// Shot/style/mood execution is deferred in language-plan milestone 5.
-/// Retain the exact requests and block readiness until their semantics are implemented.
+/// Retain unrecognized direction requests and block strict playback until
+/// their semantics are implemented.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnsupportedDirection {
     pub kind: DirectionKind,

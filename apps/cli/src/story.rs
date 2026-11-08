@@ -2,7 +2,9 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
 use serde::Serialize;
 use std::path::PathBuf;
-use storyfella_compiler::{compile_analysis, Compilation, Readiness};
+use storyfella_compiler::{
+    compile_analysis, Compilation, ExpandedWorkspace, Readiness, SourceWorkspace,
+};
 use storyfella_language::{Diagnostic, Position, Source};
 use storyfella_studio_core::authoring::{AssetCatalog, CatalogEntry};
 
@@ -31,9 +33,11 @@ pub enum StoryCommand {
 }
 
 #[derive(Serialize)]
-struct PositionedDiagnostic<'a> {
+struct PositionedDiagnostic {
     #[serde(flatten)]
-    diagnostic: &'a Diagnostic,
+    diagnostic: Diagnostic,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file: Option<String>,
     start: Position,
     end: Position,
 }
@@ -43,10 +47,14 @@ struct CheckReport<'a> {
     valid: bool,
     ready: bool,
     readiness: Option<&'a Readiness>,
-    diagnostics: Vec<PositionedDiagnostic<'a>>,
+    diagnostics: Vec<PositionedDiagnostic>,
 }
 
-fn check_report<'a>(result: &'a Compilation, source: &Source) -> CheckReport<'a> {
+fn check_report<'a>(
+    result: &'a Compilation,
+    source: &Source,
+    workspace: Option<(&SourceWorkspace, &ExpandedWorkspace)>,
+) -> CheckReport<'a> {
     CheckReport {
         valid: result.plan.is_some() && !result.has_errors(),
         ready: result.ready(),
@@ -54,10 +62,26 @@ fn check_report<'a>(result: &'a Compilation, source: &Source) -> CheckReport<'a>
         diagnostics: result
             .diagnostics
             .iter()
-            .map(|diagnostic| PositionedDiagnostic {
-                diagnostic,
-                start: source.position(diagnostic.span.start).unwrap(),
-                end: source.position(diagnostic.span.end).unwrap(),
+            .map(|diagnostic| {
+                let mut diagnostic = diagnostic.clone();
+                if let Some((snapshot, expanded)) = workspace {
+                    if let Some((path, span)) = expanded.original_span(diagnostic.span) {
+                        let original = Source::new(&snapshot.files[path]);
+                        diagnostic.span = span;
+                        return PositionedDiagnostic {
+                            start: original.position(span.start).unwrap(),
+                            end: original.position(span.end).unwrap(),
+                            file: Some(path.to_owned()),
+                            diagnostic,
+                        };
+                    }
+                }
+                PositionedDiagnostic {
+                    start: source.position(diagnostic.span.start).unwrap(),
+                    end: source.position(diagnostic.span.end).unwrap(),
+                    diagnostic,
+                    file: None,
+                }
             })
             .collect(),
     }
@@ -102,12 +126,42 @@ pub fn run(command: StoryCommand) -> Result<()> {
         None => Vec::new(),
     };
     let catalog = AssetCatalog::from_entries(entries).map_err(anyhow::Error::msg)?;
-    let analysis = storyfella_language::analyze(&text, &catalog.assets);
+    let multi_file = text.lines().any(|line| line.starts_with("include "));
+    let workspace = if multi_file {
+        let canonical_entry = args.path.canonicalize()?;
+        let entry = canonical_entry
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("story filename is not UTF-8")?;
+        let drafts = std::collections::BTreeMap::from([(entry.to_owned(), text.clone())]);
+        Some(
+            storyfella_studio_core::story::load_source_workspace(&args.path, &drafts)
+                .map_err(anyhow::Error::msg)?,
+        )
+    } else {
+        None
+    };
+    let expanded = workspace
+        .as_ref()
+        .map(|workspace| {
+            workspace.expand().map_err(|error| {
+                anyhow::anyhow!("{}:{}: {}", error.path, error.span.start, error.message)
+            })
+        })
+        .transpose()?;
+    let source_text = expanded
+        .as_ref()
+        .map_or(text.as_str(), |expanded| expanded.source.as_str());
+    let analysis = storyfella_language::analyze(source_text, &catalog.assets);
     let result = compile_analysis(&analysis, &catalog.bindings);
     if !emit_plan || result.has_errors() || (args.require_ready && !result.ready()) {
         println!(
             "{}",
-            serde_json::to_string_pretty(&check_report(&result, &Source::new(text)))?
+            serde_json::to_string_pretty(&check_report(
+                &result,
+                &Source::new(source_text),
+                workspace.as_ref().zip(expanded.as_ref())
+            ))?
         );
     } else {
         println!(
@@ -133,7 +187,7 @@ mod tests {
             "scene start\n  choice \"🌊\"\n    option \"🌊\": unknown\n    option \"🌊\": start\n";
         let result = storyfella_compiler::compile(text, &[]);
         let source = Source::new(text);
-        let report = check_report(&result, &source);
+        let report = check_report(&result, &source, None);
         let diagnostic = report
             .diagnostics
             .iter()

@@ -153,13 +153,14 @@ const STAND_IN_IMAGES: &[&str] = &[concat!(
 )];
 
 /// Copies a stand-in into the generated-asset directory under a fresh name
-/// and returns that filename, which is what a revision stores.
+/// and returns its absolute path for shared-project image publication.
 fn install_image(asset_dir: &Path, source: &str) -> Option<String> {
     let generated = asset_dir.join("generated");
     std::fs::create_dir_all(&generated).ok()?;
     let filename = format!("{}.png", uuid::Uuid::new_v4());
-    std::fs::copy(source, generated.join(&filename)).ok()?;
-    Some(filename)
+    let destination = generated.join(&filename);
+    std::fs::copy(source, &destination).ok()?;
+    Some(destination.canonicalize().ok()?.to_str()?.to_owned())
 }
 
 /// A registry with characters, environments, objects and variants, plus the
@@ -319,6 +320,30 @@ pub fn project(asset_dir: &Path) -> (ArtifactRegistry, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sample_images_can_be_saved_in_a_shared_project() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.svs-e2e/tests")
+            .join(format!("sample-shared-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (registry, _) = project(&dir);
+        let image = registry
+            .artifacts
+            .iter()
+            .flat_map(|artifact| &artifact.revisions)
+            .find_map(|revision| revision.asset_path.as_ref())
+            .expect("sample has an image");
+        assert!(Path::new(image).is_absolute() && Path::new(image).is_file());
+        storyfella_studio_core::project::ProjectFolder::create(
+            &dir.join("project"),
+            "Sample",
+            &registry,
+            "",
+        )
+        .unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn the_sample_project_builds() {

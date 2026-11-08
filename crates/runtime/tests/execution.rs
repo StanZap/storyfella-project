@@ -165,6 +165,35 @@ fn missing_assets_can_run_with_blackbox_policy() {
 }
 
 #[test]
+fn preview_skips_directions_and_tracks_missing_uses_across_restore_and_scenes() {
+    let source = "scene harbor\n  location: dock\n  cast: mara, tam\n  shot: wide, dawn\n  mara: Hello\n  tam: Welcome\n  choice \"Where?\"\n    option \"Leave\": road\n    option \"Stay\": harbor\nscene road\n  prop: lantern\n  narrate: Onward\n  end\n";
+    let plan = compile(source, &[]).plan.unwrap();
+    assert!(Runtime::start_with_policy(plan.clone(), AssetPolicy::AllowMissing).is_err());
+    assert!(Runtime::start(plan.clone()).is_err());
+    let (mut runtime, _) = Runtime::start_with_policy(plan.clone(), AssetPolicy::Preview).unwrap();
+    let names = |runtime: &Runtime| {
+        runtime
+            .active_uses()
+            .iter()
+            .map(|a| a.name.value.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&runtime), ["dock", "mara", "tam"]);
+    runtime.dispatch(Command::Advance).unwrap();
+    assert_eq!(names(&runtime), ["dock", "mara", "tam"]);
+    let saved = runtime.save();
+    let restored = Runtime::restore_with_policy(plan, saved, AssetPolicy::Preview).unwrap();
+    assert_eq!(names(&restored), names(&runtime));
+    runtime.dispatch(Command::Advance).unwrap();
+    runtime
+        .dispatch(Command::SelectChoice { index: 0 })
+        .unwrap();
+    assert_eq!(names(&runtime), ["lantern"]);
+    runtime.dispatch(Command::Restart).unwrap();
+    assert_eq!(names(&runtime), ["dock", "mara", "tam"]);
+}
+
+#[test]
 fn rejects_imported_plan_corruption_unready_plans_and_save_mismatches() {
     let p = plan(STORY);
     let (runtime, _) = Runtime::start(p.clone()).unwrap();
@@ -197,7 +226,7 @@ fn rejects_imported_plan_corruption_unready_plans_and_save_mismatches() {
         .unwrap_err()
         .to_string()
         .contains("pending"));
-    assert!(Runtime::start(plan("scene a\n  shot: wide\n"))
+    assert!(Runtime::start(plan("scene a\n  shot: wide, dawn\n"))
         .unwrap_err()
         .to_string()
         .contains("unsupported"));
@@ -213,4 +242,106 @@ fn rejects_imported_plan_corruption_unready_plans_and_save_mismatches() {
     saved.commands.push(Command::SelectChoice { index: 999 });
     assert!(Runtime::restore(p, saved).is_err());
     assert!(serde_json::from_str::<storyfella_runtime::SavedState>("{}").is_err());
+}
+
+#[test]
+fn supported_visual_directions_persist_reset_and_restore() {
+    use storyfella_compiler::VisualDirection;
+    let source = "scene first\n  shot: close\n  mood: tense\n  style: monochrome\n  narrate: One\n  shot: wide\n  mood: neutral\n  style: normal\n  narrate: Again\n  goto second\nscene second\n  narrate: Two\n  end\n";
+    let story = plan(source);
+    let (mut runtime, _) = Runtime::start(story.clone()).unwrap();
+    assert_eq!(runtime.presentation().shot, Some(VisualDirection::Close));
+    assert_eq!(runtime.presentation().mood, Some(VisualDirection::Tense));
+    assert_eq!(
+        runtime.presentation().style,
+        Some(VisualDirection::Monochrome)
+    );
+    let saved = runtime.save();
+    runtime.dispatch(Command::Advance).unwrap();
+    assert_eq!(runtime.presentation().shot, Some(VisualDirection::Wide));
+    assert_eq!(runtime.presentation().mood, Some(VisualDirection::Neutral));
+    assert_eq!(runtime.presentation().style, Some(VisualDirection::Normal));
+    runtime.dispatch(Command::Advance).unwrap();
+    assert_eq!(runtime.presentation(), Default::default());
+    let restored = Runtime::restore(story, saved).unwrap();
+    assert_eq!(restored.presentation().shot, Some(VisualDirection::Close));
+    assert_eq!(restored.presentation().mood, Some(VisualDirection::Tense));
+    assert_eq!(
+        restored.presentation().style,
+        Some(VisualDirection::Monochrome)
+    );
+    runtime.dispatch(Command::Restart).unwrap();
+    assert_eq!(runtime.presentation().shot, Some(VisualDirection::Close));
+}
+
+#[test]
+fn staged_instances_swap_without_moving_and_restore_across_scenes() {
+    use storyfella_language::StageGroup;
+    let source = "scene first\n  stage: lead, mara, left, 125, 4\n  stage: friend, mara, right, 85, 2\n  narrate: One\n  swap: lead, smile\n  hide: friend\n  narrate: Two\n  goto second\nscene second\n  narrate: Three\n  end\n";
+    let bindings = ["mara", "smile"].map(|name| AssetBinding {
+        id: name.into(),
+        name: name.into(),
+        kind: AssetKind::Character,
+        revision: "v1".into(),
+    });
+    let story = compile(source, &bindings).plan.unwrap();
+    let (mut runtime, _) = Runtime::start(story.clone()).unwrap();
+    assert_eq!(runtime.staged().len(), 2);
+    let saved = runtime.save();
+    runtime.dispatch(Command::Advance).unwrap();
+    assert_eq!(runtime.staged().len(), 1);
+    let lead = &runtime.staged()[0];
+    assert_eq!(lead.asset.name.value, "smile");
+    assert_eq!(
+        (lead.group, lead.scale, lead.depth),
+        (StageGroup::Left, 125, 4)
+    );
+    let restored = Runtime::restore(story, saved).unwrap();
+    assert_eq!(restored.staged().len(), 2);
+    runtime.dispatch(Command::Advance).unwrap();
+    assert!(runtime.staged().is_empty());
+}
+
+#[test]
+fn hiding_last_character_preserves_explicit_staging_until_scene_change() {
+    let source = "scene first\n  stage: lead, mara, center, 100, 0\n  hide: lead\n  mara: Hello\n  goto second\nscene second\n  narrate: Next\n";
+    let binding = AssetBinding {
+        id: "mara".into(),
+        name: "mara".into(),
+        kind: AssetKind::Character,
+        revision: "v1".into(),
+    };
+    let plan = compile(source, &[binding]).plan.unwrap();
+    let (mut runtime, _) = Runtime::start(plan.clone()).unwrap();
+    assert!(runtime.has_staging());
+    assert!(runtime.staged().is_empty());
+    let restored = Runtime::restore(plan, runtime.save()).unwrap();
+    assert!(restored.has_staging());
+    runtime.dispatch(Command::Advance).unwrap();
+    assert!(!runtime.has_staging());
+}
+
+#[test]
+fn authored_positions_and_automatic_slots_remain_stable() {
+    let source = "scene start\n  stage: first, mara, left, 100, 1, 24, 13\n  stage: second, mara, left, 100, 2\n  narrate: One\n  hide: first\n  stage: third, mara, left, 100, 3\n  swap: second, smile\n  narrate: Two\n";
+    let bindings = ["mara", "smile"].map(|name| AssetBinding {
+        id: name.into(),
+        name: name.into(),
+        kind: AssetKind::Character,
+        revision: "v1".into(),
+    });
+    let plan = compile(source, &bindings).plan.unwrap();
+    let (mut runtime, _) = Runtime::start(plan.clone()).unwrap();
+    assert_eq!(runtime.staged()[0].position, Some((24, 13)));
+    let second = runtime.staged()[1].slot;
+    runtime.dispatch(Command::Advance).unwrap();
+    let current = runtime
+        .staged()
+        .iter()
+        .find(|actor| actor.instance == "second")
+        .unwrap();
+    assert_eq!(current.slot, second);
+    assert_eq!(current.asset.name.value, "smile");
+    let restored = Runtime::restore(plan, runtime.save()).unwrap();
+    assert_eq!(restored.staged(), runtime.staged());
 }

@@ -323,16 +323,18 @@ characters, illustrations and variations independently; Studio can subsequently
 reference those shared items. Both apps understand one story project, organized
 as a folder of sources, metadata and assets.
 
-Studio supports one authoritative `.sf` file plus a companion SQLite database.
+Studio uses an entry `.sf` file and companion SQLite database; the entry can
+include additional `.sf` files. The editor, Preview and Player have initial
+multi-file support, with the remaining limitations tracked under SF-PLAN-08.
 New Studio projects use a shared folder with project-local artwork and an Atelier
 working-document directory; existing standalone pairs remain readable and can be
 explicitly copied into that layout. Atelier opens the shared manifest and also
-retains standalone `.atelier` projects and `.sfart` exchange. Automatic handoff,
-live synchronization and multi-file DSL compilation remain separate planned work.
+retains standalone `.atelier` projects and `.sfart` exchange. Shared catalog
+synchronization and linked-canvas handoff are implemented; broader production
+and multi-file acceptance remain open.
 See the [shared storage contract](shared-project.md).
 
-The following checklist describes the shared-project workstream. Multi-file
-language support can follow the initial shared-project workflow.
+The following checklist describes the shared-project workstream.
 
 - [x] **SF-PLAN-01 — Define app responsibilities.** Inventory Studio's visual
   creation, generation, editing and asset-management surfaces and assign their
@@ -491,6 +493,25 @@ language support can follow the initial shared-project workflow.
   together. Done when chapters and shared definitions occupy separate files with
   consistent diagnostics, navigation and identity-preserving rename.
   SF-PLAN-12 covers the related workspace tooling.
+  Studio needs a project explorer that presents story files and the shared asset
+  catalog together. It must open and edit each source without replacing another
+  file or losing unsaved changes; identify the entry source; show file-specific
+  problems and source locations; and make the complete project graph available
+  to preview. Create, rename and remove operations must preserve references and
+  require explicit conflict handling. Keep existing single-source projects
+  usable. Do not expose a list of files as though they already compile together.
+  Initial compiler/CLI slice: a snapshot can expand ordered top-level
+  `include "chapter.sf"` directives with source-location mapping, cycle and
+  duplicate detection, and project-contained file loading. CLI check and compile
+  and standalone Player use it; compiled snapshots can run in the existing runtime.
+  Studio now has an initial file/asset explorer, independent guarded drafts for
+  opened files, Preview over open drafts and saved files, and source navigation
+  back to the originating file. New chapters are created without overwrite and
+  linked from the entry draft; the explorer lists project diagnostics by file.
+  Resolved scene, beat and asset renames update all referenced files as one
+  undoable edit while retaining identities. File rename/removal, full
+  project-aware editor services, LSP, and durable
+  source maps in saved plans remain open. This slice does not complete SF-PLAN-08.
 - [ ] **SF-PLAN-14 — Atelier production backlog.** Present the shared catalog as
   actionable character, variation, place, prop and illustration work, including
   items without images. Group variations under their character and show saved
@@ -580,8 +601,10 @@ Whole-story restructuring and autonomous writing are outside this first delivery
   selection, character instances and variations, left/center/right groups,
   alignment, front-to-back order, spacing/overlap and optional per-instance
   position/scale adjustments. Validate references and lower staging into explicit
-  compiled instructions with pinned saved assets. Exact syntax remains to be
-  designed. Done when the same declarations produce a deterministic scene plan
+  compiled instructions with pinned saved assets. An initial `stage`/`swap`/`hide`
+  syntax now pins artwork, validates instance order and supports optional x/y
+  positions for explicit spacing and overlap. Done when the same declarations
+  produce a deterministic scene plan
   with actionable diagnostics for invalid staging or unavailable assets.
 - [ ] **SF-PLAN-19 — Shared runtime staging and visual presentation.** Track the
   current background, character instances, selected variations, groups, positions,
@@ -591,6 +614,31 @@ Whole-story restructuring and autonomous writing are outside this first delivery
   does not automatically rearrange characters or enlarge the speaker. Done when
   two characters (one left, one right), three (two left, one right) and five
   (two left, three right) render with authored overlap and front-to-back order.
+  Studio Preview now allows missing artwork and unsupported directions, showing
+  labelled approximate placeholders and a notice for ignored directions. The
+  runtime retains active authored uses across replay. Named instances now render
+  in both shared hosts with group, scale, depth, swaps and scene-scoped replay.
+  Automatic group slots stay stable as characters enter and leave, while optional
+  coordinates give explicit spacing and overlap. Native visual acceptance remains
+  open.
+- [ ] **SF-PLAN-32 — Define and render visual directions.** Specify the supported
+  meanings, scope and lifetime of `shot`, `style` and `mood` using authored
+  story examples. Define how they relate to scene staging and existing artwork,
+  including which values require asset production rather than a playback effect.
+  Lower supported directions into typed, source-mapped plan instructions and
+  apply them in the shared runtime and presentation used by Studio Preview and
+  Player. Keep unrecognized or unsupported values explicit in diagnostics; do
+  not silently claim to render them. Done when representative directions have
+  deterministic, tested visual behavior across scene changes, restart and restore
+  in both hosts, while unavailable artwork remains previewable. Until then,
+  Studio Preview skips unsupported directions with a visible notice; strict
+  playback retains its readiness checks.
+  Initial shared slice: `shot: wide/close`, `mood: neutral/tense`, and
+  `style: normal/monochrome` are scene-scoped playback effects. Runtime replay
+  restores them and the shared stage renders them in both hosts. Other text
+  stays explicitly unsupported. The combined effects and stage clipping were
+  inspected in isolated Studio Preview; broader authored directions, typed
+  plan semantics and Player-specific native acceptance remain open.
 - [ ] **SF-PLAN-20 — Variation consistency and author-controlled sizing.** Support
   switching saved variations without changing the character instance's scene
   placement or presentation scale. Use consistently prepared sprite images as
@@ -606,6 +654,9 @@ Whole-story restructuring and autonomous writing are outside this first delivery
   playback service or required asset resolver. Done when a prepared project plays
   on a machine without Atelier installed, and Studio previews its existing
   artwork without opening Atelier or invoking generation/editing providers.
+  Player now accepts a shared folder or `storyfella.toml`; an automated test
+  moves a multi-file project and opens its pinned artwork without Atelier.
+  Native acceptance on a separate machine remains open.
 
 Scene alignment, grouping, overlap, depth, position and scale belong to the DSL,
 compiler, runtime and visual hosts. They are independent of the image-creation
@@ -802,8 +853,10 @@ The broader product and UX assessments still need the review tracked below.
   source-mapped. Adapt selected performance to FineWineTTS without embedding its
   backend syntax in the DSL. Define variants, composition, transitions and media
   durations against the runtime plan. Done when authored intent and exact
-  bindings survive compilation and playback, with unsupported directions reported
-  as readiness blockers rather than silently replaced by neutral performance.
+  bindings survive compilation and playback, with unsupported directions exposed
+  rather than silently replaced by neutral performance. Strict playback blocks
+  them; Studio Preview identifies directions it skips. SF-PLAN-32 tracks visual
+  direction semantics and rendering.
 - [ ] **SF-PLAN-11 — Reconcile UX and workflow follow-ups.** Review outstanding
   acceptance in [DESIGN.md](../DESIGN.md#8-delivery-order-and-verification), the
   [development and regression scenarios](development.md)
@@ -882,7 +935,7 @@ authoritative `.sf` files with conflict handling and scene/beat artwork
 associations. The shared runtime, CLI trace, Studio preview and Player implement
 manual playback and verified save/restore. Current contracts and evidence live in
 [language.md](language.md), [compiler.md](compiler.md),
-[data-model.md](data-model.md) and [runtime.md](runtime.md).
+[data-model.md](data-model.md) and [playback reference](ROADMAP.md#story-execution-and-playback-reference).
 Project-relative asset paths belong to SF-PLAN-02;
 multi-file analysis belongs to SF-PLAN-08/12.
 
@@ -1712,13 +1765,13 @@ collection images together. See [Atelier](atelier.md).
    [data-model.md](data-model.md). Schema v10 persists source/registry associations.
    The shared headless runtime and CLI trace are implemented: typed events,
    manual advance/choice/jump/end/pause/restart, bounded automatic transitions,
-   imported-plan validation and exact-plan save/restore. See [runtime.md](runtime.md).
+   imported-plan validation and exact-plan save/restore. See [playback reference](ROADMAP.md#story-execution-and-playback-reference).
    Studio preview and standalone visual Player share checked resources and
    Dioxus controls: still visuals, text/choices, pause/restart, save/restore and
    source snapshots/Writer return. The 22-step fixture-backed desktop plan checks
    actual execution. Both hosts now use a minimal widescreen stage with
    location artwork, softly shaded text and choices, and secondary controls
-   in the options panel. See [runtime.md](runtime.md). Portable image paths,
+   in the options panel. See [playback reference](ROADMAP.md#story-execution-and-playback-reference). Portable image paths,
    packaging/export and expressive media/voice remain planned.
 10. **LSP tooling:** `storyfella-lsp` exposes shared language analysis to
     external editors. — **🔧 single-document tooling implemented.** Stdio, full-document
@@ -1847,3 +1900,168 @@ edit rather than a file edit; the same page adds and removes providers. Settings
 - The builder is substrate: linear, fail-fast, no branching/DAG in slice 1.
 - Storyfella is built from scratch in this repo; `../storyfella` is reference
   material only.
+
+
+## Story execution and playback reference
+
+`storyfella-runtime` consumes a version-1 compiler `StoryPlan`, independently of
+Studio, GUI and inference. `Runtime::start` validates before executing and
+requires completed artwork. `Runtime::start_with_policy(...,
+AssetPolicy::AllowMissing)` permits pending or unavailable artwork while
+preserving the exact source and flow checks.
+
+Both modes check the supported version, gather consistent pinned bindings,
+recompile the retained source and require exact plan equality. This uses compiler
+rules for imported identities, flow, ranges and requirements. Pending artwork
+blocks strict execution. Unsupported direction values block strict and
+allow-missing playback; Studio Preview skips it with a notice. Hosts additionally
+resolve exact resources in strict mode; allow-missing hosts omit unavailable visuals.
+
+Execution is manual and host-driven: no clocks, sleeps, audio or automatic text
+duration. `Advance` passes the current text, `SelectChoice { index }` uses a
+zero-based option, `Jump { scene }` targets a declared scene, and `End`, `Pause`,
+`Resume`, `Restart` are explicit. Paused execution rejects advancement/choices/
+jumps. Restart begins at entry, unpauses and clears command history. Invalid
+commands leave state unchanged. Choices, jumps and ends terminate the scene;
+implicit fallthrough and source-ordered beats follow the compiler.
+
+Events report scene/beat entry, exact asset bindings, dialogue/thought/narration,
+choice presentation, completion, pause/resume and exhausted transitions. Authored
+events retain instruction source spans. Asset declarations replace the active
+visuals of their kind; dialogue also introduces its speaker. Scene entry clears
+visuals and beat scope. `current()` and `state()` expose read-only presentation.
+
+Each start/flow command permits 128 automatic instruction transitions. Empty
+scenes and jump-only cycles cannot hang a host. Exhaustion emits
+`TransitionBudgetExceeded`, retaining a resumable position; Advance attempts the
+next bounded batch, Jump can escape, and End/Restart remain available.
+
+Save version 1 stores a SHA-256 identity of canonical full-plan JSON, a typed
+command history and checkpoint. Restore validates the plan, version and exact
+identity, replays the history, then requires checkpoint equality. Invented indices,
+assets, phases or impossible commands fail with an actionable error. Restore
+accepts at most 100,000 commands; execution requests Restart when history is full,
+so every emitted save remains restorable. Restart begins a new history. There
+are no format aliases/migrations. Resources are a separate host responsibility.
+
+The real headless caller is:
+
+```sh
+svs story compile ready.sf --assets catalog.json --require-ready > plan.json
+svs story trace plan.json commands.json
+```
+
+For example, `commands.json` can contain
+`["Advance",{"SelectChoice":{"index":0}},"Pause","Resume","Advance"]`.
+Trace emits a deterministic JSON event array and fails on invalid plans/commands.
+It checks compiler readiness, without opening artwork files; it is not a visual
+Player. Tests cover all text kinds, entry/beat/fallthrough, both choice routes,
+invalid commands, cycles, pause/restart, completion, restore and corrupt imports.
+
+## Studio preview and standalone Player
+
+Studio's Preview tab and the standalone Dioxus desktop Player share
+`storyfella-playback-ui` controls, the GUI-free `studio-core::playback` adapter,
+and the execution runtime described above. Player has no dependency on Studio state.
+No model configuration, generation or inference process is needed for playback.
+
+Preview → **Start preview** or **Restart with draft** compiles the current Writer
+source with exact completed active registry revisions. Syntax and flow errors
+block starting. Studio Preview permits pending or unreadable artwork and skips
+unsupported direction values with a visible notice. Missing active
+assets have labelled translucent placeholders; unstaged positions are approximate.
+Standalone Player remains strict unless
+started with `--allow-missing-assets`. Every plan binding is resolved by asset
+UUID and exact revision UUID, with matching name/kind and a completed revision.
+An absent revision, missing/unreadable file or undecodable image is explained
+before strict visual execution. With `--allow-missing-assets`, those visuals
+are omitted and the story continues with black placeholders; newer artwork is
+never a fallback.
+All used bindings, including artwork in alternate routes, are checked first.
+
+The session retains its compiled source and decoded PNG visuals. Editing source,
+changing artwork or replacing a file does not alter it. Source changes display
+the quiet **Draft changed** indicator; **Restart** replays the fixed snapshot,
+while **Restart with draft** checks and starts a new one. Switching projects
+clears preview. Playback does not mutate authored source or registry artwork.
+
+Both hosts use the same minimal widescreen stage: location artwork fills the
+scene, with softly shaded dialogue/thought/narration near the bottom, a small
+speaker portrait, and text choices. Without location artwork, the available
+portrait or prop is contained instead of cropped to fill the stage. A quiet
+header and current scene/beat leave the artwork prominent. Long passages and
+short windows scroll; narrower windows reduce margins.
+
+Continue and pause/resume stay beside the story. **Playback options** (the
+ellipsis) holds open, restart, end, scene jump, bookmarks, state files, artwork
+and source inspection. **Artwork** shows all active pinned images with name/kind
+captions. One panel opens at a time; Escape or clicking outside dismisses it and
+returns focus to the options button. Opening a panel focuses its Close button.
+Right arrow advances; Space pauses/resumes. Tab and Enter operate native controls
+and choices. Transition-budget exhaustion shows the recoverable runtime message.
+
+**Source snapshot** displays read-only source with the executing line highlighted.
+Studio's **Edit source** returns to the precise Writer caret. It is
+available when current source matches the snapshot; after editing, apply the
+new draft or inspect the retained snapshot. Source spans are UTF-8 bytes with
+shared UTF-16 conversion for the editor.
+
+**Bookmark / Restore bookmark** keep a checkpoint in memory. **Save state… /
+Load state…** write/read runtime save-version-1 JSON, verified against this exact
+plan and its replayed history. Failed load leaves the ongoing session intact.
+Restore retains checked snapshot resources and clears the last host event batch.
+Hosts retain only the latest bounded batch, so cycles do not grow a resident
+event log. The CLI trace explicitly collects its requested event sequence.
+
+### Player input and launch
+
+Open a shared project's `storyfella.toml` from **Open story…**, or pass its
+folder or manifest at launch. Player also accepts a paired `.sf`/`.db`:
+
+```sh
+cargo run -p storyfella-player -- /absolute/story-folder
+cargo run -p storyfella-player -- /absolute/story-folder/storyfella.toml
+cargo run -p storyfella-player -- /absolute/project.sf
+# Equivalent paired database input:
+cargo run -p storyfella-player -- /absolute/project.db
+# A compiled plan uses its pinned revisions from the supplied project:
+cargo run -p storyfella-player -- /absolute/plan.json --project /absolute/project.db
+```
+
+The pair has the same basename (`project.sf` and `project.db`). Missing databases
+are rejected before opening, so Player never creates a project by mistake.
+Existing databases use the normal persisted schema upgrade path. Text-only JSON
+plans need no resource DB. For a visual JSON plan opened in the UI, Player asks
+for its resource project after validating the plan. Cancel leaves the current
+session alone. Invalid plans and unavailable resources display a blocking error.
+
+Player uses embedded component styles, so Cargo launch is styled without an
+asset pipeline. A dx desktop artifact can also be built from `apps/player` with
+`dx build --platform desktop`. Studio continues to require its dx/CSS pipeline.
+
+### Model-free verification
+
+```sh
+cargo run -p storyfella-studio-core --example playback_fixture
+cargo xtask plan config/plans/playback.yaml --mode check --log
+cargo xtask plan config/plans/playback.yaml --mode guide --log
+cargo run -p storyfella-player -- .svs-e2e/inputs/playback/lantern.sf
+```
+
+The fixture generator writes three procedural PNGs, a two-scene `.sf`/`.db` pair
+and compiled JSON beneath `.svs-e2e/inputs/playback`. It deliberately overwrites
+that disposable fixture with fresh identities. The 22-step desktop plan checks
+text, choices, both routes, pause/resume, bookmark restore, restart/completion and
+pinned decoded imagery through the same model/actions as the visible controls.
+Artwork creation is shared with the resource tests through the GUI-free
+`studio-core::playback::fixture::create`. It reports unusable output directories
+as errors instead of panicking or replacing a blocking file.
+
+Host adapter tests compare event sequences, source positions and pinned image
+bytes for source compilation versus imported-plan playback, including a newer
+active revision and missing/corrupt files. Runtime tests cover rejected save
+mismatches and malformed execution positions.
+
+This slice presents basic still artwork. Voice, media durations, transitions,
+composition performance, portable image paths and packaging/export remain later
+work. The absolute paths in current project revisions are not portable exports.

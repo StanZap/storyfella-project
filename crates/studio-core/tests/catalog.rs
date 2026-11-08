@@ -62,6 +62,27 @@ fn declarations_create_pending_catalog_entries_without_images_and_invalid_drafts
 }
 
 #[test]
+fn staged_artwork_creates_pending_character_entries() {
+    let mut registry = ArtifactRegistry::default();
+    let source = "scene harbor\n  stage: lead, mara, left, 125, 4\n  narrate: Arrival\n  swap: lead, mara_smile\n  narrate: Hello\n";
+    assert!(catalog::reconcile_declarations(
+        &mut registry,
+        source,
+        false
+    ));
+    assert_eq!(registry.artifacts.len(), 2);
+    assert!(registry
+        .artifacts
+        .iter()
+        .all(|item| item.kind == ArtifactKind::Character && item.revisions.is_empty()));
+    assert!(registry.artifacts.iter().any(|item| item.name == "mara"));
+    assert!(registry
+        .artifacts
+        .iter()
+        .any(|item| item.name == "mara_smile"));
+}
+
+#[test]
 fn both_editors_share_identity_across_creation_variations_rename_artwork_and_relocation() {
     let fixture = fixture();
     let source = "scene harbor\n  cast: mara\n  beat arrival\n    mara: Hello\n";

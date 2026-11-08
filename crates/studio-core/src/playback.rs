@@ -50,6 +50,49 @@ impl PlaybackSession {
     pub fn compile(source: &str, registry: &ArtifactRegistry) -> Result<Self, String> {
         Self::compile_with_policy(source, registry, AssetPolicy::RequireCompleted)
     }
+    /// Build one playback snapshot from all referenced story files. The
+    /// returned mapping is retained by the host for source navigation.
+    pub fn compile_workspace(
+        workspace: &storyfella_compiler::SourceWorkspace,
+        registry: &ArtifactRegistry,
+        asset_policy: AssetPolicy,
+    ) -> Result<(Self, storyfella_compiler::ExpandedWorkspace), String> {
+        let catalog = AssetCatalog::from_registry(registry);
+        let (compilation, expanded) = storyfella_compiler::compile_workspace_with_catalog(
+            workspace,
+            &catalog.assets,
+            &catalog.bindings,
+        )
+        .map_err(|error| format!("{}: {}", error.path, error.message))?;
+        let plan = compilation.plan.ok_or_else(|| {
+            compilation
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.severity == storyfella_language::Severity::Error)
+                .map(|diagnostic| {
+                    if let Some((path, span)) = expanded.original_span(diagnostic.span) {
+                        let source = Source::new(&workspace.files[path]);
+                        if let Some(position) = source.position(span.start) {
+                            return format!(
+                                "{} at {}:{}:{}: {}",
+                                diagnostic.code,
+                                path,
+                                position.line + 1,
+                                position.character + 1,
+                                diagnostic.message
+                            );
+                        }
+                    }
+                    format!("{}: {}", diagnostic.code, diagnostic.message)
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })?;
+        Ok((
+            Self::from_plan_with_policy(plan, registry, asset_policy)?,
+            expanded,
+        ))
+    }
     pub fn compile_with_policy(
         source: &str,
         registry: &ArtifactRegistry,
@@ -139,7 +182,7 @@ impl PlaybackSession {
             };
             match resolve() {
                 Ok(visual) => visuals.push(visual),
-                Err(_error) if asset_policy == AssetPolicy::AllowMissing => {}
+                Err(_error) if asset_policy != AssetPolicy::RequireCompleted => {}
                 Err(error) => {
                     return Err(format!(
                         "Artwork '{}' revision {}: {error}",
@@ -157,7 +200,7 @@ impl PlaybackSession {
         })
     }
 
-    /// Open a .sf/.db pair, or a compiled JSON plan with an optional resource DB.
+    /// Open a shared project folder or manifest, a .sf/.db pair, or a compiled JSON plan.
     /// Refuse absent databases before ProjectDb can create one.
     pub fn open(input: &Path, project: Option<&Path>) -> Result<Self, String> {
         Self::open_with_policy(input, project, AssetPolicy::RequireCompleted)
@@ -168,6 +211,18 @@ impl PlaybackSession {
         project: Option<&Path>,
         asset_policy: AssetPolicy,
     ) -> Result<Self, String> {
+        if input.is_dir()
+            || input
+                .file_name()
+                .is_some_and(|name| name == crate::project::MANIFEST)
+        {
+            if project.is_some() {
+                return Err("--project is only used with compiled JSON plans".into());
+            }
+            let folder =
+                crate::project::ProjectFolder::open(input).map_err(|error| error.to_string())?;
+            return Self::open_with_policy(&folder.database(), None, asset_policy);
+        }
         match input.extension().and_then(|e| e.to_str()) {
             Some("sf" | "db") => {
                 if project.is_some() {
@@ -175,7 +230,27 @@ impl PlaybackSession {
                 }
                 let database = input.with_extension("db");
                 let stored = load_project(&database)?;
-                Self::compile_with_policy(stored.story.source(), &stored.registry, asset_policy)
+                if stored
+                    .story
+                    .source()
+                    .lines()
+                    .any(|line| line.starts_with("include "))
+                {
+                    let path = stored.story.path().ok_or("Story source has no path")?;
+                    let name = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or("Story filename is not UTF-8")?;
+                    let drafts = std::collections::BTreeMap::from([(
+                        name.to_owned(),
+                        stored.story.source().to_owned(),
+                    )]);
+                    let workspace = crate::story::load_source_workspace(path, &drafts)?;
+                    Self::compile_workspace(&workspace, &stored.registry, asset_policy)
+                        .map(|(session, _)| session)
+                } else {
+                    Self::compile_with_policy(stored.story.source(), &stored.registry, asset_policy)
+                }
             }
             Some("json") => {
                 let plan = read_plan(input)?;
@@ -185,7 +260,7 @@ impl PlaybackSession {
                 };
                 Self::from_plan_with_policy(plan, &registry, asset_policy)
             }
-            _ => Err("Open a .sf/.db project pair or compiled .json plan".into()),
+            _ => Err("Open a Storyfella folder, storyfella.toml, .sf/.db project pair or compiled .json plan".into()),
         }
     }
     pub fn dispatch(&mut self, command: Command) -> Result<(), String> {
@@ -212,9 +287,31 @@ impl PlaybackSession {
             .filter_map(|binding| self.visuals.iter().find(|v| v.binding == *binding))
             .collect()
     }
+
+    /// Active authored uses whose pinned image could not be resolved.
+    pub fn missing_uses(&self) -> Vec<&storyfella_compiler::AssetUse> {
+        self.runtime
+            .active_uses()
+            .iter()
+            .filter(|asset| {
+                asset.binding.as_ref().is_none_or(|binding| {
+                    !self.visuals.iter().any(|visual| visual.binding == *binding)
+                })
+            })
+            .collect()
+    }
 }
 
 fn load_project(path: &Path) -> Result<crate::persistence::StoredProject, String> {
+    if path.is_dir()
+        || path
+            .file_name()
+            .is_some_and(|name| name == crate::project::MANIFEST)
+    {
+        let folder =
+            crate::project::ProjectFolder::open(path).map_err(|error| error.to_string())?;
+        return load_project(&folder.database());
+    }
     if !path.is_file() {
         return Err(format!(
             "Project database does not exist: {}",

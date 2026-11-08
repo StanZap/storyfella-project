@@ -2,7 +2,7 @@
 
 `storyfella-compiler` validates and lowers stories without Studio, a project database,
 GUI or inference backend. It emits a typed, serializable version-1 `StoryPlan`.
-The [runtime](runtime.md) is the execution layer; compilation performs no playback.
+The [runtime](ROADMAP.md#story-execution-and-playback-reference) is the execution layer; compilation performs no playback.
 
 ## Flow semantics
 
@@ -100,6 +100,6 @@ and project databases are unnecessary.
 
 Studio [`.sf` persistence](data-model.md), registry synchronization and authoring
 tools, shared headless runtime and basic visual preview/Player are implemented.
-Hosts validate exact image resources; see [runtime.md](runtime.md). Further
+Hosts validate exact image resources; see [playback reference](ROADMAP.md#story-execution-and-playback-reference). Further
 media semantics, timing, save-state compatibility, expressions,
 imports and speech performance annotations require their own contracts.

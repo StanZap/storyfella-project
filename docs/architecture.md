@@ -18,7 +18,7 @@ and [central tracker](ROADMAP.md#0-current-direction-and-actionable-backlog) for
 | `xtask` | Build, launch, package and validation commands | Developer tooling only |
 
 Language, compiler, LSP and story runtime are implemented below. No placeholder
-crates are added; [runtime.md](runtime.md) records the execution contract.
+crates are added; [playback reference](ROADMAP.md#story-execution-and-playback-reference) records the execution contract.
 
 | Language/execution crate | Responsibility | Dependency boundary |
 | --- | --- | --- |

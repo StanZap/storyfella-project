@@ -122,6 +122,16 @@ pub fn analyze(source: &str, assets: &[Asset]) -> Analysis {
                         });
                     }
                 }
+                NodeKind::Stage { asset, .. } | NodeKind::Swap { asset, .. } => {
+                    references.push(Reference {
+                        name: asset.clone(),
+                        kind: ReferenceKind::Asset(AssetKind::Character),
+                        scene: scene.into(),
+                        beat: beat.map(str::to_owned),
+                        definition: None,
+                        asset_id: None,
+                    })
+                }
                 NodeKind::Speech { speaker, .. } => references.push(Reference {
                     name: speaker.clone(),
                     kind: ReferenceKind::Asset(AssetKind::Character),
@@ -407,6 +417,9 @@ pub fn complete(analysis: &Analysis, offset: usize, assets: &[Asset]) -> Vec<Com
                 "character",
                 "location",
                 "prop",
+                "stage",
+                "swap",
+                "hide",
                 "style",
                 "shot",
                 "mood",

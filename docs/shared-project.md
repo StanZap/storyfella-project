@@ -8,16 +8,17 @@ SF-PLAN-02 storage contract · 2026-11-01. [ROADMAP](ROADMAP.md) owns task statu
 ```text
 harbor/
   storyfella.toml       version and stable project UUID
-  story.sf             authoritative UTF-8 source, preserved byte for byte
+  story.sf             entry UTF-8 source, preserved byte for byte
+  chapter.sf           optional included story source
   story.db             project metadata, registry, revisions, associations
   artwork/             immutable saved images named by revision UUID
   atelier/
     main.atelier       editable visual document with embedded references/layers
 ```
 
-Manifest version 1 fixes the entry source/database filenames. This is a
-single-source project; SF-PLAN-08 will define modules and entry-point selection
-before introducing a source graph. Database schema migrations remain the existing
+Manifest version 1 fixes the entry source/database filenames. The entry source
+can include additional project-relative `.sf` files; SF-PLAN-08 tracks remaining
+editor and source-map work. Database schema migrations remain the existing
 `ProjectDb` migrations. The manifest UUID must match the database project UUID;
 unsupported versions, missing source/database or mismatched identity block opening.
 

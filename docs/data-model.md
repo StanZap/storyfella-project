@@ -269,7 +269,7 @@ new declaration requires its terminating newline before reconciliation; explicit
 save/open snapshots also accept complete declarations at EOF. This prevents
 typed name prefixes from creating placeholder artwork.
 
-Basic snapshot playback is implemented in [preview and Player](runtime.md).
+Basic snapshot playback is implemented in [preview and Player](ROADMAP.md#story-execution-and-playback-reference).
 Project-relative image paths are tracked by SF-PLAN-02 in the
 [central backlog](ROADMAP.md#0-current-direction-and-actionable-backlog).
 

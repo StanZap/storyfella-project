@@ -11,7 +11,7 @@ features are not implemented merely because they are agreed.
 | [development.md](development.md) | Setup, build/run/test commands, CLI usage, configuration and troubleshooting. |
 | [language.md](language.md) | Authoritative DSL syntax, grammar, language services and LSP setup. |
 | [compiler.md](compiler.md) | Flow lowering, immutable bindings, source maps and readiness. |
-| [runtime.md](runtime.md) | Execution, save/restore, Studio preview and standalone Player. |
+| [playback reference](ROADMAP.md#story-execution-and-playback-reference) | Execution, save/restore, Studio preview and standalone Player. |
 | [data-model.md](data-model.md) | Registry invariants, project files, persistence and source conflict handling. |
 | [atelier.md](atelier.md) | Current canvas, image tools, references, project recovery and model setup. |
 

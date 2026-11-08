@@ -129,6 +129,82 @@ impl Line<'_> {
                 self.count(1)?;
                 Ok(NodeKind::End)
             }
+            "stage" => {
+                if !matches!(self.tokens.len(), 11 | 15) {
+                    return Err(self.error(
+                        "Expected stage: instance, character, group, scale, depth[, x, y]",
+                    ));
+                }
+                if self.raw(1) != ":"
+                    || [3, 5, 7, 9].iter().any(|index| self.raw(*index) != ",")
+                    || (self.tokens.len() == 15 && (self.raw(11) != "," || self.raw(13) != ","))
+                {
+                    return Err(self.error(
+                        "Expected stage: instance, character, left|center|right, scale, depth",
+                    ));
+                }
+                let group = match self.raw(6) {
+                    "left" => StageGroup::Left,
+                    "center" => StageGroup::Center,
+                    "right" => StageGroup::Right,
+                    _ => return Err(self.error("Stage group must be left, center, or right")),
+                };
+                let scale = self
+                    .raw(8)
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|value| (25..=300).contains(value))
+                    .ok_or_else(|| {
+                        self.error("Stage scale must be an integer from 25 to 300 percent")
+                    })?;
+                let depth = self
+                    .raw(10)
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|value| *value <= 999)
+                    .ok_or_else(|| self.error("Stage depth must be an integer from 0 to 999"))?;
+                let position = if self.tokens.len() == 15 {
+                    let coordinate = |index| {
+                        self.raw(index)
+                            .parse::<u8>()
+                            .ok()
+                            .filter(|value| *value <= 100)
+                            .ok_or_else(|| {
+                                self.error("Stage x and y must be integers from 0 to 100 percent")
+                            })
+                    };
+                    Some((coordinate(12)?, coordinate(14)?))
+                } else {
+                    None
+                };
+                Ok(NodeKind::Stage {
+                    instance: self.name(2)?,
+                    asset: self.name(4)?,
+                    group,
+                    scale,
+                    depth,
+                    position,
+                })
+            }
+            "swap" => {
+                self.count(5)?;
+                if self.raw(1) != ":" || self.raw(3) != "," {
+                    return Err(self.error("Expected swap: instance, character"));
+                }
+                Ok(NodeKind::Swap {
+                    instance: self.name(2)?,
+                    asset: self.name(4)?,
+                })
+            }
+            "hide" => {
+                self.count(3)?;
+                if self.raw(1) != ":" {
+                    return Err(self.error("Expected hide: instance"));
+                }
+                Ok(NodeKind::Hide {
+                    instance: self.name(2)?,
+                })
+            }
             "cast" | "character" | "location" | "prop" => {
                 if self.raw(1) != ":" {
                     return Err(self.error("Expected ':' after asset slot"));

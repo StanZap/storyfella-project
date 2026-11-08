@@ -7,7 +7,7 @@ use uuid::Uuid;
 use storyfella_studio_core::catalog::sync::{self, Conflict, Resolution};
 use storyfella_studio_core::persistence::StoredProject;
 use storyfella_studio_core::registry::{Artifact, ArtifactRegistry, RevisionStatus};
-use storyfella_studio_core::story::StoryDocument;
+use storyfella_studio_core::story::{AdditionalSources, StoryDocument, StoryFileError};
 
 /// Cap on the undo stack depth (source and artwork travel together).
 const UNDO_DEPTH: usize = 100;
@@ -16,6 +16,7 @@ const UNDO_DEPTH: usize = 100;
 struct AuthoringSnapshot {
     registry: ArtifactRegistry,
     source: String,
+    additional: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -37,6 +38,9 @@ pub struct AppState {
     pub selected_artifact_id: Option<Uuid>,
     /// Exact Writer text, bound `.sf` path and disk snapshot for conflict checks.
     pub story: StoryDocument,
+    pub additional_sources: Option<AdditionalSources>,
+    pub active_source: Option<String>,
+    pub source_notice: Option<String>,
     description_drafts: std::collections::BTreeMap<Uuid, String>,
     operation_in_progress: bool,
     saved_associations: Vec<storyfella_studio_core::authoring::SceneAssociation>,
@@ -60,6 +64,17 @@ impl AppState {
         let mut source = self.story.source().to_owned();
         if let (Some(before), Some(after)) = (self.registry.artifact(id), registry.artifact(id)) {
             if before.name != after.name {
+                if self
+                    .story
+                    .source()
+                    .lines()
+                    .any(|line| line.starts_with("include "))
+                {
+                    let name = after.name.clone();
+                    self.rename_workspace_asset(id, &name, registry)?;
+                    self.selected_artifact_id = Some(id);
+                    return Ok(id);
+                }
                 source = storyfella_studio_core::catalog::rename_references(
                     &self.registry,
                     &source,
@@ -195,6 +210,9 @@ impl AppState {
         self.registry = stored.registry;
         self.project_name = stored.name;
         self.story = stored.story;
+        self.additional_sources = None;
+        self.active_source = None;
+        self.source_notice = None;
         self.project_path = Some(path);
         self.has_unsaved_changes = false;
         self.selected_artifact_id = None;
@@ -209,10 +227,107 @@ impl AppState {
         self.registry.artifact(selected_id)
     }
 
+    pub fn open_additional_source(&mut self, relative: &str) -> Result<(), StoryFileError> {
+        if self.additional_sources.is_none() {
+            let entry = self.story.path().ok_or(StoryFileError::Unbound)?;
+            self.additional_sources = Some(AdditionalSources::new(entry)?);
+        }
+        let old_clean = self
+            .additional_sources
+            .as_ref()
+            .and_then(|sources| sources.get(relative))
+            .filter(|document| !document.is_dirty())
+            .map(|document| document.source().to_owned());
+        let document = self
+            .additional_sources
+            .as_mut()
+            .ok_or(StoryFileError::Unbound)?
+            .open(relative)?;
+        let refreshed = old_clean
+            .filter(|old| old != document.source())
+            .map(|_| document.source().to_owned());
+        if refreshed.is_some() {
+            self.undo_stack.clear();
+            self.redo_stack.clear();
+            self.source_notice = Some(format!("{relative} changed outside Studio and was reloaded. Undo history was cleared to keep the story and assets consistent."));
+            self.reconcile_story();
+        }
+        self.active_source = Some(relative.to_owned());
+        Ok(())
+    }
+
+    pub fn create_additional_source(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<(), StoryFileError> {
+        if self.operation_in_progress {
+            return Err(StoryFileError::Unbound);
+        }
+        if self.additional_sources.is_none() {
+            self.additional_sources = Some(AdditionalSources::new(
+                self.story.path().ok_or(StoryFileError::Unbound)?,
+            )?);
+        }
+        let relative = self
+            .additional_sources
+            .as_mut()
+            .ok_or(StoryFileError::Unbound)?
+            .create(path)?;
+        let source = self.story.source();
+        let newline = if source.contains("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        };
+        let separator = if source.is_empty() || source.ends_with('\n') {
+            ""
+        } else {
+            newline
+        };
+        let updated = format!("{source}{separator}include \"{relative}\"{newline}");
+        self.set_story_source(updated);
+        self.active_source = Some(relative);
+        Ok(())
+    }
+
+    pub fn set_additional_source(
+        &mut self,
+        relative: &str,
+        source: String,
+    ) -> Result<(), StoryFileError> {
+        let current = self
+            .additional_sources
+            .as_ref()
+            .and_then(|sources| sources.get(relative))
+            .ok_or(StoryFileError::Unbound)?;
+        if current.source() == source {
+            return Ok(());
+        }
+        self.snapshot_for_undo();
+        let sources = self
+            .additional_sources
+            .as_mut()
+            .ok_or(StoryFileError::Unbound)?;
+        sources.set_source(relative, source)?;
+        self.has_unsaved_changes = true;
+        self.reconcile_multi(true);
+        Ok(())
+    }
+
     pub fn set_story_source(&mut self, source: String) {
         if self.story.source() != source {
             self.snapshot_for_undo();
             self.story.set_source(source);
+            if self
+                .story
+                .source()
+                .lines()
+                .any(|line| line.starts_with("include "))
+            {
+                self.reconcile_multi(true);
+                self.has_unsaved_changes = true;
+                return;
+            }
             storyfella_studio_core::catalog::reconcile_declarations(
                 &mut self.registry,
                 self.story.source(),
@@ -256,6 +371,21 @@ impl AppState {
     }
 
     pub fn rename_story_symbol(&mut self, offset: usize, name: &str) -> Result<(), String> {
+        if self
+            .story
+            .source()
+            .lines()
+            .any(|line| line.starts_with("include "))
+        {
+            let entry = self
+                .story
+                .path()
+                .and_then(|path| path.file_name())
+                .and_then(|name| name.to_str())
+                .ok_or("Story filename is not UTF-8")?
+                .to_owned();
+            return self.rename_workspace_symbol(&entry, offset, name);
+        }
         let analysis = analyze(
             self.story.source(),
             &AssetCatalog::from_registry(&self.registry).assets,
@@ -293,7 +423,183 @@ impl AppState {
         Ok(())
     }
 
+    /// Rename a resolved scene or beat throughout one immutable project
+    /// snapshot, retaining identities and applying all draft edits as one undo.
+    pub fn rename_workspace_symbol(
+        &mut self,
+        file: &str,
+        offset: usize,
+        name: &str,
+    ) -> Result<(), String> {
+        let workspace = self.workspace_snapshot()?;
+        let expanded = workspace.expand().map_err(|error| error.message)?;
+        let global_offset = expanded
+            .expanded_offset(file, offset)
+            .ok_or("Select a resolved scene or beat in the story")?;
+        let catalog = AssetCatalog::from_registry(&self.registry);
+        let analysis = analyze(&expanded.source, &catalog.assets);
+        if analysis.has_errors() {
+            return Err("Fix story errors before renaming across files.".into());
+        }
+        let definition = analysis
+            .definition_at(global_offset)
+            .ok_or("Select a resolved scene or beat")?;
+        let symbol = analysis
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name.span == definition)
+            .ok_or("Select a resolved declaration")?
+            .clone();
+        let edits = storyfella_language::rename(&analysis, global_offset, name)?;
+        let mut registry = self.registry.clone();
+        for scene in &mut registry.story_scenes {
+            match symbol.kind {
+                storyfella_language::SymbolKind::Scene if scene.name == symbol.name.value => {
+                    scene.name = name.into()
+                }
+                storyfella_language::SymbolKind::Beat
+                    if symbol.scene.as_ref() == Some(&scene.name) =>
+                {
+                    if let Some(beat) = scene
+                        .beats
+                        .iter_mut()
+                        .find(|beat| beat.name == symbol.name.value)
+                    {
+                        beat.name = name.into();
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.commit_workspace_edits(workspace, expanded, edits, registry)
+    }
+
+    fn workspace_snapshot(&self) -> Result<storyfella_compiler::SourceWorkspace, String> {
+        let path = self.story.path().ok_or("Open a story first")?;
+        let entry = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("Story filename is not UTF-8")?;
+        let mut drafts = self
+            .additional_sources
+            .as_ref()
+            .map_or_else(Default::default, AdditionalSources::overrides);
+        drafts.insert(entry.to_owned(), self.story.source().to_owned());
+        storyfella_studio_core::story::load_source_workspace(path, &drafts)
+    }
+
+    fn rename_workspace_asset(
+        &mut self,
+        id: Uuid,
+        name: &str,
+        registry: ArtifactRegistry,
+    ) -> Result<(), String> {
+        let workspace = self.workspace_snapshot()?;
+        let expanded = workspace.expand().map_err(|error| error.message)?;
+        let catalog = AssetCatalog::from_registry(&self.registry);
+        let analysis = analyze(&expanded.source, &catalog.assets);
+        if analysis.has_errors() {
+            return Err("Fix story errors before renaming an asset across files.".into());
+        }
+        let id = id.to_string();
+        let edits = analysis
+            .references
+            .iter()
+            .filter(|reference| reference.asset_id.as_deref() == Some(id.as_str()))
+            .map(|reference| storyfella_language::TextEdit {
+                replace: reference.name.span,
+                new_text: name.into(),
+            })
+            .collect();
+        self.commit_workspace_edits(workspace, expanded, edits, registry)
+    }
+
+    fn commit_workspace_edits(
+        &mut self,
+        mut workspace: storyfella_compiler::SourceWorkspace,
+        expanded: storyfella_compiler::ExpandedWorkspace,
+        edits: Vec<storyfella_language::TextEdit>,
+        registry: ArtifactRegistry,
+    ) -> Result<(), String> {
+        let entry_path = self.story.path().ok_or("Open a story first")?.to_owned();
+        let entry = workspace.entry.clone();
+        let mut groups =
+            std::collections::BTreeMap::<String, Vec<storyfella_language::TextEdit>>::new();
+        for edit in edits {
+            let (path, span) = expanded
+                .original_span(edit.replace)
+                .ok_or("A rename crosses file boundaries")?;
+            groups
+                .entry(path.to_owned())
+                .or_default()
+                .push(storyfella_language::TextEdit {
+                    replace: span,
+                    new_text: edit.new_text,
+                });
+        }
+        let mut before = match &self.additional_sources {
+            Some(sources) => sources.clone(),
+            None => AdditionalSources::new(&entry_path).map_err(|error| error.to_string())?,
+        };
+        for (path, edits) in &groups {
+            let original = workspace
+                .files
+                .get(path)
+                .ok_or("Source disappeared from the snapshot")?;
+            if path != &entry {
+                let document = before.open(path).map_err(|error| error.to_string())?;
+                if document.source() != original {
+                    return Err(format!("{path} changed while preparing the rename"));
+                }
+                if self
+                    .additional_sources
+                    .as_ref()
+                    .and_then(|sources| sources.get(path))
+                    .is_some_and(|old| !old.is_dirty() && old.source() != document.source())
+                {
+                    return Err(format!(
+                        "{path} changed outside Studio. Open it to refresh before renaming."
+                    ));
+                }
+            }
+            let updated = storyfella_language::apply_edits(original, edits)?;
+            workspace.files.insert(path.clone(), updated);
+        }
+        let updated = workspace.expand().map_err(|error| error.message)?;
+        if analyze(
+            &updated.source,
+            &AssetCatalog::from_registry(&registry).assets,
+        )
+        .has_errors()
+        {
+            return Err("The rename would make the story invalid.".into());
+        }
+        let mut after = before.clone();
+        for path in groups.keys().filter(|path| *path != &entry) {
+            after
+                .set_source(path, workspace.files[path].clone())
+                .map_err(|error| error.to_string())?;
+        }
+        self.additional_sources = Some(before);
+        self.snapshot_for_undo();
+        self.additional_sources = Some(after);
+        self.story.set_source(workspace.files[&entry].clone());
+        self.registry = registry;
+        self.reconcile_story();
+        self.has_unsaved_changes = true;
+        Ok(())
+    }
+
     pub fn reconcile_story(&mut self) {
+        if self
+            .story
+            .source()
+            .lines()
+            .any(|line| line.starts_with("include "))
+        {
+            self.reconcile_multi(false);
+            return;
+        }
         if storyfella_studio_core::catalog::reconcile_declarations(
             &mut self.registry,
             self.story.source(),
@@ -303,6 +609,50 @@ impl AppState {
         }
         let analysis = analyze(
             self.story.source(),
+            &AssetCatalog::from_registry(&self.registry).assets,
+        );
+        if reconcile(&mut self.registry, &analysis) {
+            self.has_unsaved_changes = true;
+        }
+    }
+
+    fn reconcile_multi(&mut self, live: bool) {
+        let Some(path) = self.story.path() else {
+            return;
+        };
+        let Some(entry) = path.file_name().and_then(|name| name.to_str()) else {
+            return;
+        };
+        let mut drafts = self
+            .additional_sources
+            .as_ref()
+            .map_or_else(Default::default, AdditionalSources::overrides);
+        drafts.insert(entry.to_owned(), self.story.source().to_owned());
+        if live {
+            let active = self.active_source.as_deref().unwrap_or(entry);
+            if drafts
+                .get(active)
+                .is_some_and(|source| !source.is_empty() && !source.ends_with('\n'))
+            {
+                return;
+            }
+        }
+        let Ok(workspace) = storyfella_studio_core::story::load_source_workspace(path, &drafts)
+        else {
+            return;
+        };
+        let Ok(expanded) = workspace.expand() else {
+            return;
+        };
+        if storyfella_studio_core::catalog::reconcile_declarations(
+            &mut self.registry,
+            &expanded.source,
+            live,
+        ) {
+            self.has_unsaved_changes = true;
+        }
+        let analysis = analyze(
+            &expanded.source,
             &AssetCatalog::from_registry(&self.registry).assets,
         );
         if reconcile(&mut self.registry, &analysis) {
@@ -546,7 +896,12 @@ impl AppState {
         if source_changed {
             self.reconcile_story();
         }
-        self.has_unsaved_changes = self.story.is_dirty() || self.registry != self.saved_registry;
+        self.has_unsaved_changes = self.story.is_dirty()
+            || self
+                .additional_sources
+                .as_ref()
+                .is_some_and(AdditionalSources::is_dirty)
+            || self.registry != self.saved_registry;
         Ok(())
     }
 
@@ -584,6 +939,10 @@ impl AppState {
         AuthoringSnapshot {
             registry: self.registry.clone(),
             source: self.story.source().to_owned(),
+            additional: self
+                .additional_sources
+                .as_ref()
+                .map_or_else(Default::default, AdditionalSources::drafts),
         }
     }
 
@@ -629,6 +988,9 @@ impl AppState {
         self.redo_stack.push(self.authoring_snapshot());
         self.registry = snapshot.registry;
         self.story.set_source(snapshot.source);
+        if let Some(sources) = &mut self.additional_sources {
+            sources.restore_drafts(&snapshot.additional);
+        }
         self.prune_selection();
         self.has_unsaved_changes = true;
         true
@@ -644,6 +1006,9 @@ impl AppState {
         self.undo_stack.push(self.authoring_snapshot());
         self.registry = snapshot.registry;
         self.story.set_source(snapshot.source);
+        if let Some(sources) = &mut self.additional_sources {
+            sources.restore_drafts(&snapshot.additional);
+        }
         self.prune_selection();
         self.has_unsaved_changes = true;
         true
@@ -680,6 +1045,245 @@ impl AppState {
 mod tests {
     use super::{AppState, StoryDocument};
     use storyfella_studio_core::registry::{ArtifactKind, ArtifactRegistry, CreateArtifact};
+
+    #[test]
+    fn undo_after_clean_external_refresh_does_not_restore_old_chapter_text() {
+        let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.svs-e2e/tests")
+            .join(format!("studio-rebase-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let entry = directory.join("story.sf");
+        let chapter = directory.join("chapter.sf");
+        std::fs::write(&entry, "include \"chapter.sf\"\n").unwrap();
+        std::fs::write(&chapter, "scene old\n  end\n").unwrap();
+        let mut state = AppState {
+            story: StoryDocument::open(&entry).unwrap(),
+            ..Default::default()
+        };
+        state.open_additional_source("chapter.sf").unwrap();
+        state.active_source = None;
+        state.set_story_source("# note\ninclude \"chapter.sf\"\n".into());
+        std::fs::write(&chapter, "scene external\n  end\n").unwrap();
+        state.open_additional_source("chapter.sf").unwrap();
+        assert!(!state.undo());
+        let document = state
+            .additional_sources
+            .as_ref()
+            .unwrap()
+            .get("chapter.sf")
+            .unwrap();
+        assert_eq!(document.source(), "scene external\n  end\n");
+        assert!(!document.is_dirty());
+        assert!(state.source_notice.is_some());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rename_scene_across_files_is_one_undo_and_preserves_identity() {
+        let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.svs-e2e/tests")
+            .join(format!("studio-rename-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let entry = directory.join("story.sf");
+        std::fs::write(&entry, "include \"first.sf\"\ninclude \"last.sf\"\n").unwrap();
+        std::fs::write(directory.join("first.sf"), "scene start\n  goto ending\n").unwrap();
+        std::fs::write(directory.join("last.sf"), "scene ending\n  end\n").unwrap();
+        let mut state = AppState {
+            story: StoryDocument::open(&entry).unwrap(),
+            ..Default::default()
+        };
+        state.reconcile_story();
+        let id = state
+            .registry
+            .story_scenes
+            .iter()
+            .find(|scene| scene.name == "ending")
+            .unwrap()
+            .artifact_id;
+        state.open_additional_source("first.sf").unwrap();
+        state
+            .rename_workspace_symbol("first.sf", "scene start\n  goto ".len(), "finale")
+            .unwrap();
+        let sources = state.additional_sources.as_ref().unwrap();
+        assert!(sources
+            .get("first.sf")
+            .unwrap()
+            .source()
+            .contains("goto finale"));
+        assert!(sources
+            .get("last.sf")
+            .unwrap()
+            .source()
+            .contains("scene finale"));
+        assert_eq!(
+            state
+                .registry
+                .story_scenes
+                .iter()
+                .find(|scene| scene.name == "finale")
+                .unwrap()
+                .artifact_id,
+            id
+        );
+        assert!(state.undo());
+        let sources = state.additional_sources.as_ref().unwrap();
+        assert!(sources
+            .get("first.sf")
+            .unwrap()
+            .source()
+            .contains("goto ending"));
+        assert!(sources
+            .get("last.sf")
+            .unwrap()
+            .source()
+            .contains("scene ending"));
+        assert!(state.redo());
+        assert!(state
+            .additional_sources
+            .as_ref()
+            .unwrap()
+            .get("last.sf")
+            .unwrap()
+            .source()
+            .contains("scene finale"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rename_asset_updates_all_files_and_undo_restores_every_reference() {
+        let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.svs-e2e/tests")
+            .join(format!("studio-asset-rename-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let entry = directory.join("story.sf");
+        std::fs::write(&entry, "include \"first.sf\"\ninclude \"last.sf\"\n").unwrap();
+        std::fs::write(
+            directory.join("first.sf"),
+            "scene start\n  cast: mara\n  mara: Hello\n  goto finish\n",
+        )
+        .unwrap();
+        std::fs::write(
+            directory.join("last.sf"),
+            "scene finish\n  mara: Goodbye\n  end\n",
+        )
+        .unwrap();
+        let mut state = AppState {
+            story: StoryDocument::open(&entry).unwrap(),
+            ..Default::default()
+        };
+        state.reconcile_story();
+        let id = state
+            .registry
+            .artifacts
+            .iter()
+            .find(|item| item.name == "mara")
+            .unwrap()
+            .id;
+        state
+            .edit_catalog(storyfella_studio_core::catalog::CatalogEdit::Describe {
+                id,
+                name: "captain".into(),
+                description: "A sailor".into(),
+            })
+            .unwrap();
+        let sources = state.additional_sources.as_ref().unwrap();
+        assert!(sources
+            .get("first.sf")
+            .unwrap()
+            .source()
+            .contains("cast: captain\n  captain: Hello"));
+        assert!(sources
+            .get("last.sf")
+            .unwrap()
+            .source()
+            .contains("captain: Goodbye"));
+        assert_eq!(state.registry.artifact(id).unwrap().name, "captain");
+        assert!(state.undo());
+        assert_eq!(state.registry.artifact(id).unwrap().name, "mara");
+        assert!(state
+            .additional_sources
+            .as_ref()
+            .unwrap()
+            .get("last.sf")
+            .unwrap()
+            .source()
+            .contains("mara: Goodbye"));
+        assert!(state.redo());
+        assert_eq!(state.registry.artifact(id).unwrap().name, "captain");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn multi_file_reconciliation_keeps_scene_and_asset_identities_on_invalid_drafts() {
+        let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.svs-e2e/tests")
+            .join(format!("studio-catalog-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let entry = directory.join("story.sf");
+        std::fs::write(&entry, "include \"chapter.sf\"\n").unwrap();
+        std::fs::write(directory.join("chapter.sf"), "scene start\n  end\n").unwrap();
+        let mut state = AppState {
+            story: StoryDocument::open(&entry).unwrap(),
+            ..Default::default()
+        };
+        state.open_additional_source("chapter.sf").unwrap();
+        state
+            .set_additional_source("chapter.sf", "scene start\n  cast: mara\n  end\n".into())
+            .unwrap();
+        let scene = state.registry.story_scenes[0].artifact_id;
+        let character = state
+            .registry
+            .artifacts
+            .iter()
+            .find(|item| item.name == "mara")
+            .unwrap()
+            .id;
+        state
+            .set_additional_source(
+                "chapter.sf",
+                "scene start\n  cast: mara\n  goto missing\n".into(),
+            )
+            .unwrap();
+        assert_eq!(state.registry.story_scenes[0].artifact_id, scene);
+        assert_eq!(
+            state
+                .registry
+                .artifacts
+                .iter()
+                .find(|item| item.name == "mara")
+                .unwrap()
+                .id,
+            character
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn creating_chapter_links_it_without_overwriting_and_preserves_line_endings() {
+        let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.svs-e2e/tests")
+            .join(format!("studio-create-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let entry = directory.join("story.sf");
+        std::fs::write(&entry, "scene first\r\n  end\r\n").unwrap();
+        let mut state = AppState {
+            story: StoryDocument::open(&entry).unwrap(),
+            ..Default::default()
+        };
+        state
+            .create_additional_source(&directory.join("chapter.sf"))
+            .unwrap();
+        assert_eq!(
+            state.story.source(),
+            "scene first\r\n  end\r\ninclude \"chapter.sf\"\r\n"
+        );
+        assert_eq!(state.active_source.as_deref(), Some("chapter.sf"));
+        assert!(state.has_unsaved_changes);
+        assert!(state
+            .create_additional_source(&directory.join("chapter.sf"))
+            .is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     fn sync_state() -> (AppState, storyfella_studio_core::persistence::StoredProject) {
         let stored = storyfella_studio_core::persistence::StoredProject {

@@ -27,6 +27,9 @@ pub const KEYWORDS: &[&str] = &[
     "character",
     "location",
     "prop",
+    "stage",
+    "swap",
+    "hide",
     "style",
     "shot",
     "mood",
@@ -58,8 +61,10 @@ pub fn lex(source: &Source) -> (Vec<Token>, Vec<Diagnostic>) {
         let span = source.line_span(line).unwrap();
         let raw = &text[span.start..span.end];
         let head = raw.trim_start().split(':').next().unwrap_or("").trim();
-        let prose = !matches!(head, "cast" | "character" | "location" | "prop")
-            && !head.starts_with("option ")
+        let prose = !matches!(
+            head,
+            "cast" | "character" | "location" | "prop" | "stage" | "swap" | "hide"
+        ) && !head.starts_with("option ")
             && !head.starts_with("scene ")
             && !head.starts_with("beat ")
             && !head.starts_with("choice ");

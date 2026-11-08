@@ -39,6 +39,7 @@ struct Lowerer<'a> {
     bindings: &'a [AssetBinding],
     diagnostics: Vec<Diagnostic>,
     readiness: Readiness,
+    staged: BTreeSet<String>,
 }
 impl Lowerer<'_> {
     fn header(&self, span: Span) -> Span {
@@ -114,23 +115,68 @@ impl Lowerer<'_> {
                     kind: *kind,
                     assets: names.iter().map(|name| self.asset(name, *kind)).collect(),
                 },
+                NodeKind::Stage {
+                    instance,
+                    asset,
+                    group,
+                    scale,
+                    depth,
+                    position,
+                } => {
+                    self.staged.insert(instance.value.clone());
+                    InstructionKind::Stage {
+                        instance: instance.clone(),
+                        asset: self.asset(asset, AssetKind::Character),
+                        group: *group,
+                        scale: *scale,
+                        depth: *depth,
+                        position: *position,
+                    }
+                }
+                NodeKind::Swap { instance, asset } => {
+                    if !self.staged.contains(&instance.value) {
+                        self.diagnostics.push(error(
+                            "SF307",
+                            format!("Stage instance '{}' before swapping it", instance.value),
+                            instance.span,
+                        ));
+                    }
+                    InstructionKind::Swap {
+                        instance: instance.clone(),
+                        asset: self.asset(asset, AssetKind::Character),
+                    }
+                }
+                NodeKind::Hide { instance } => {
+                    if !self.staged.remove(&instance.value) {
+                        self.diagnostics.push(error(
+                            "SF307",
+                            format!("Stage instance '{}' before hiding it", instance.value),
+                            instance.span,
+                        ));
+                    }
+                    InstructionKind::Hide {
+                        instance: instance.clone(),
+                    }
+                }
                 NodeKind::Direction { kind, text } => {
-                    self.readiness
-                        .unsupported_directions
-                        .push(UnsupportedDirection {
-                            kind: *kind,
-                            text: text.clone(),
-                            source: node.span,
+                    if crate::visual_direction(*kind, &text.value).is_none() {
+                        self.readiness
+                            .unsupported_directions
+                            .push(UnsupportedDirection {
+                                kind: *kind,
+                                text: text.clone(),
+                                source: node.span,
+                            });
+                        self.diagnostics.push(Diagnostic {
+                            code: "SF302".into(),
+                            severity: Severity::Information,
+                            message: format!(
+                                "Unsupported {:?} value; request retained in the plan",
+                                kind
+                            ),
+                            span: node.span,
                         });
-                    self.diagnostics.push(Diagnostic {
-                        code: "SF302".into(),
-                        severity: Severity::Information,
-                        message: format!(
-                            "{:?} direction execution is not implemented; request retained in the plan",
-                            kind
-                        ),
-                        span: node.span,
-                    });
+                    }
                     InstructionKind::Direction {
                         kind: *kind,
                         text: text.clone(),
@@ -257,6 +303,7 @@ pub fn compile_analysis(analysis: &Analysis, bindings: &[AssetBinding]) -> Compi
         bindings,
         diagnostics,
         readiness: Readiness::default(),
+        staged: BTreeSet::new(),
     };
     let nodes = &analysis.document.story.scenes;
     let scene_ids: Vec<_> = nodes
@@ -268,6 +315,7 @@ pub fn compile_analysis(analysis: &Analysis, bindings: &[AssetBinding]) -> Compi
         .collect();
     let mut scenes = Vec::new();
     for (index, node) in nodes.iter().enumerate() {
+        lowerer.staged.clear();
         let id = &scene_ids[index];
         let mut instructions = Vec::new();
         lowerer.nodes(&node.children, id, None, &mut instructions);

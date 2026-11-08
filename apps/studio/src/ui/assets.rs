@@ -128,7 +128,7 @@ fn AssetDetail(mut app_state: Signal<AppState>, artifact: Artifact, disabled: bo
                 if !links.is_empty() {
                     div { class: "flex flex-wrap gap-2 px-4 py-2",
                         for (label, position) in links {
-                            button { class: "studio-button", title: "Open this story reference", onclick: move |_| { caret.navigate(position); screen.set(super::AppScreen::Writer); }, "{label}" }
+                            button { class: "studio-button", title: "Open this story reference", onclick: move |_| { app_state.write().active_source = None; caret.navigate(position); screen.set(super::AppScreen::Writer); }, "{label}" }
                         }
                     }
                 }

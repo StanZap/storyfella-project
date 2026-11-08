@@ -16,7 +16,7 @@ cargo run -p storyfella-player -- /absolute/project.sf
 
 Language/compiler/runtime/LSP responsibilities are documented in
 [`architecture.md`](architecture.md#storyfella-workspace-boundaries), and
-[runtime.md](runtime.md) documents preview, Player inputs and fixtures. Existing CLI and user-data identities
+[playback reference](ROADMAP.md#story-execution-and-playback-reference) documents preview, Player inputs and fixtures. Existing CLI and user-data identities
 remain unchanged. CI checks formatting, all workspace targets and tests, builds
 CLI/Player, and builds and runs Studio's backend-free smoke plan through dx.
 Plan runs keep created projects, generated artwork and cache under `.svs-e2e/`,

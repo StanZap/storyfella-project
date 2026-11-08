@@ -145,6 +145,44 @@ fn pending_assets_and_unsupported_directions_are_distinct_from_source_errors() {
 }
 
 #[test]
+fn supported_direction_values_are_ready_and_unknown_values_remain_explicit() {
+    let source =
+        "scene first\n  shot: Close\n  mood: tense\n  style: monochrome\n  narrate: Hello\n  end\n";
+    let result = storyfella_compiler::compile(source, &[]);
+    assert!(result.ready());
+    let unknown = storyfella_compiler::compile(&source.replace("Close", "very close"), &[]);
+    assert_eq!(
+        unknown.plan.unwrap().readiness.unsupported_directions.len(),
+        1
+    );
+}
+
+#[test]
+fn staging_validates_instances_and_pins_character_artwork() {
+    let valid = "scene first\n  stage: lead, mara, left, 125, 4\n  swap: lead, smile\n  hide: lead\n  end\n";
+    let result = compile(
+        valid,
+        &[
+            binding("mara", AssetKind::Character),
+            binding("smile", AssetKind::Character),
+        ],
+    );
+    assert!(result.ready(), "{:?}", result.diagnostics);
+    let plan = result.plan.unwrap();
+    assert!(
+        matches!(&plan.scenes[0].instructions[0].kind, InstructionKind::Stage { asset, scale: 125, depth: 4, .. } if asset.binding.as_ref().unwrap().name == "mara")
+    );
+    for invalid in [
+        "scene a\n  swap: lead, mara\n",
+        "scene a\n  hide: lead\n",
+        "scene a\n  stage: lead, mara, above, 100, 0\n",
+        "scene a\n  stage: lead, mara, left, 0, 0\n",
+    ] {
+        assert!(compile(invalid, &[]).has_errors(), "{invalid}");
+    }
+}
+
+#[test]
 fn bindings_are_immutable_complete_and_unambiguous() {
     let text = "scene a\n  mara: Hi";
     let a = binding("mara", AssetKind::Character);
@@ -210,7 +248,10 @@ fn plan_is_deterministic_round_trips_and_ids_survive_source_edits() {
     assert_eq!(result, compile(text, &[]));
     let plan = result.plan.unwrap();
     let json = serde_json::to_string(&plan).unwrap();
-    assert_eq!(serde_json::from_str::<StoryPlan>(&json).unwrap(), plan);
+    assert_eq!(
+        serde_json::from_str::<storyfella_compiler::StoryPlan>(&json).unwrap(),
+        plan
+    );
     assert_eq!(plan.source, text);
     assert_eq!(plan.version, PLAN_VERSION);
     let edited = compile(&text.replace("You're late.", "Welcome back."), &[])
@@ -236,4 +277,21 @@ fn plan_is_deterministic_round_trips_and_ids_survive_source_edits() {
             .iter()
             .all(|i| source.slice(i.source).is_some()));
     }
+}
+
+#[test]
+fn authored_stage_coordinates_are_validated_and_survive_plan_round_trip() {
+    let source = "scene start\n  stage: lead, mara, center, 100, 2, 42, 12\n  narrate: Hello\n";
+    let plan = compile(source, &[]).plan.unwrap();
+    let json = serde_json::to_string(&plan).unwrap();
+    assert_eq!(
+        serde_json::from_str::<storyfella_compiler::StoryPlan>(&json).unwrap(),
+        plan
+    );
+    assert!(compile(
+        "scene start\n  stage: lead, mara, center, 100, 2, 101, 12\n  narrate: Hello\n",
+        &[]
+    )
+    .plan
+    .is_none());
 }

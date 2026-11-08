@@ -3,10 +3,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use storyfella_compiler::{
-    AssetBinding, BeatId, ChoiceOption, Instruction, InstructionKind, SceneId, StoryPlan,
-    PLAN_VERSION,
+    AssetBinding, AssetUse, BeatId, ChoiceOption, Instruction, InstructionKind, SceneId, StoryPlan,
+    VisualDirection, PLAN_VERSION,
 };
-use storyfella_language::{AssetKind, Span, Text};
+use storyfella_language::{AssetKind, DirectionKind, Span, StageGroup, Text};
 
 pub const TRANSITION_BUDGET: usize = 128;
 pub const SAVE_VERSION: u32 = 1;
@@ -16,6 +16,28 @@ const MAX_RESTORE_COMMANDS: usize = 100_000;
 pub enum AssetPolicy {
     RequireCompleted,
     AllowMissing,
+    /// Studio's authoring preview may skip unsupported visual directions.
+    Preview,
+}
+
+/// Scene-scoped visual effects, reconstructed by normal execution on restore.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Presentation {
+    pub shot: Option<VisualDirection>,
+    pub mood: Option<VisualDirection>,
+    pub style: Option<VisualDirection>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StagedCharacter {
+    pub instance: String,
+    pub asset: AssetUse,
+    pub group: StageGroup,
+    pub scale: u16,
+    pub depth: u16,
+    pub position: Option<(u8, u8)>,
+    /// Stable within a scene, so adding or hiding another instance does not move this one.
+    pub slot: usize,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -52,6 +74,9 @@ pub fn validate_plan_with_policy(
         let uses = match &instruction.kind {
             InstructionKind::Assets { assets, .. } => assets.as_slice(),
             InstructionKind::Speech { speaker, .. } => std::slice::from_ref(speaker),
+            InstructionKind::Stage { asset, .. } | InstructionKind::Swap { asset, .. } => {
+                std::slice::from_ref(asset)
+            }
             _ => &[],
         };
         for binding in uses.iter().filter_map(|a| a.binding.as_ref()) {
@@ -76,7 +101,7 @@ pub fn validate_plan_with_policy(
                 .into(),
         ));
     }
-    if !plan.readiness.unsupported_directions.is_empty()
+    if (asset_policy != AssetPolicy::Preview && !plan.readiness.unsupported_directions.is_empty())
         || (asset_policy == AssetPolicy::RequireCompleted
             && !plan.readiness.pending_assets.is_empty())
     {
@@ -191,6 +216,11 @@ pub struct Runtime {
     state: State,
     commands: Vec<Command>,
     asset_policy: AssetPolicy,
+    // Rebuilt by replay on restore; absent artwork still has an authored name.
+    active_uses: Vec<AssetUse>,
+    presentation: Presentation,
+    staged: Vec<StagedCharacter>,
+    staging_used: bool,
 }
 
 impl Runtime {
@@ -220,6 +250,10 @@ impl Runtime {
             },
             commands: Vec::new(),
             asset_policy,
+            active_uses: Vec::new(),
+            presentation: Presentation::default(),
+            staged: Vec::new(),
+            staging_used: false,
         };
         let mut events = Vec::new();
         runtime.enter(0, &mut events);
@@ -232,6 +266,18 @@ impl Runtime {
     }
     pub fn state(&self) -> &State {
         &self.state
+    }
+    pub fn active_uses(&self) -> &[AssetUse] {
+        &self.active_uses
+    }
+    pub fn presentation(&self) -> Presentation {
+        self.presentation
+    }
+    pub fn staged(&self) -> &[StagedCharacter] {
+        &self.staged
+    }
+    pub fn has_staging(&self) -> bool {
+        self.staging_used
     }
     pub fn asset_policy(&self) -> AssetPolicy {
         self.asset_policy
@@ -366,6 +412,10 @@ impl Runtime {
         self.state.instruction = 0;
         self.state.beat = None;
         self.state.assets.clear();
+        self.active_uses.clear();
+        self.presentation = Presentation::default();
+        self.staged.clear();
+        self.staging_used = false;
         self.state.phase = Phase::Budget;
         events.push(Event::SceneEntered {
             scene: self.plan.scenes[scene].id.clone(),
@@ -384,6 +434,8 @@ impl Runtime {
                     });
                 }
                 InstructionKind::Assets { kind, assets } => {
+                    self.active_uses.retain(|asset| asset.kind != kind);
+                    self.active_uses.extend(assets.iter().cloned());
                     let bindings: Vec<_> = assets.into_iter().filter_map(|a| a.binding).collect();
                     self.state.assets.retain(|a| a.kind != kind);
                     self.state.assets.extend(bindings.clone());
@@ -393,11 +445,73 @@ impl Runtime {
                         source: instruction.source,
                     });
                 }
+                InstructionKind::Stage {
+                    instance,
+                    asset,
+                    group,
+                    scale,
+                    depth,
+                    position,
+                } => {
+                    self.staging_used = true;
+                    let previous = self
+                        .staged
+                        .iter()
+                        .find(|item| item.instance == instance.value);
+                    let slot = previous
+                        .filter(|item| item.group == group)
+                        .map(|item| item.slot)
+                        .unwrap_or_else(|| {
+                            (0..)
+                                .find(|slot| {
+                                    !self
+                                        .staged
+                                        .iter()
+                                        .any(|item| item.group == group && item.slot == *slot)
+                                })
+                                .expect("unbounded slots")
+                        });
+                    let staged = StagedCharacter {
+                        instance: instance.value,
+                        asset,
+                        group,
+                        scale,
+                        depth,
+                        position,
+                        slot,
+                    };
+                    if let Some(current) = self
+                        .staged
+                        .iter_mut()
+                        .find(|item| item.instance == staged.instance)
+                    {
+                        *current = staged;
+                    } else {
+                        self.staged.push(staged);
+                    }
+                }
+                InstructionKind::Swap { instance, asset } => {
+                    let current = self
+                        .staged
+                        .iter_mut()
+                        .find(|item| item.instance == instance.value)
+                        .expect("validated stage instance");
+                    current.asset = asset;
+                }
+                InstructionKind::Hide { instance } => {
+                    self.staged.retain(|item| item.instance != instance.value)
+                }
                 InstructionKind::Speech {
                     speaker,
                     thought,
                     text,
                 } => {
+                    if !self.active_uses.iter().any(|asset| {
+                        asset.kind == speaker.kind
+                            && asset.name.value.eq_ignore_ascii_case(&speaker.name.value)
+                    }) {
+                        self.active_uses.push(speaker.clone());
+                    }
                     if let Some(binding) = speaker.binding.as_ref() {
                         if !self.state.assets.iter().any(|a| a.id == binding.id) {
                             self.state.assets.push(binding.clone());
@@ -447,8 +561,14 @@ impl Runtime {
                     });
                     return;
                 }
-                InstructionKind::Direction { .. } => {
-                    unreachable!("unsupported directions block validated plans")
+                InstructionKind::Direction { kind, text } => {
+                    if let Some(effect) = storyfella_compiler::visual_direction(kind, &text.value) {
+                        match kind {
+                            DirectionKind::Shot => self.presentation.shot = Some(effect),
+                            DirectionKind::Mood => self.presentation.mood = Some(effect),
+                            DirectionKind::Style => self.presentation.style = Some(effect),
+                        }
+                    }
                 }
             }
             self.state.instruction += 1;

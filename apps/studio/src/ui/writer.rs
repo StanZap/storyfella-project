@@ -24,6 +24,56 @@ use super::{
     icons::{Icon, IconName},
 };
 
+fn project_diagnostics(
+    state: &AppState,
+) -> Result<
+    Vec<(
+        String,
+        storyfella_language::Diagnostic,
+        storyfella_language::Position,
+    )>,
+    String,
+> {
+    let sources = super::preview::workspace(state)?;
+    let catalog = AssetCatalog::from_registry(&state.registry);
+    let (compilation, expanded) = storyfella_compiler::compile_workspace_with_catalog(
+        &sources,
+        &catalog.assets,
+        &catalog.bindings,
+    )
+    .map_err(|error| format!("{}: {}", error.path, error.message))?;
+    Ok(compilation
+        .diagnostics
+        .into_iter()
+        .filter_map(|mut diagnostic| {
+            let (path, span) = expanded.original_span(diagnostic.span)?;
+            let position =
+                storyfella_language::Source::new(&sources.files[path]).position(span.start)?;
+            diagnostic.span = span;
+            Some((path.to_owned(), diagnostic, position))
+        })
+        .collect())
+}
+
+fn workspace_symbol(state: &AppState, file: &str, offset: usize) -> Result<String, String> {
+    let sources = super::preview::workspace(state)?;
+    let expanded = sources.expand().map_err(|error| error.message)?;
+    let offset = expanded
+        .expanded_offset(file, offset)
+        .ok_or("Select a scene or beat in an included file")?;
+    let catalog = AssetCatalog::from_registry(&state.registry);
+    let analysis = analyze(&expanded.source, &catalog.assets);
+    let definition = analysis
+        .definition_at(offset)
+        .ok_or("Select a scene or beat name")?;
+    analysis
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.span == definition)
+        .map(|symbol| symbol.name.value.clone())
+        .ok_or_else(|| "Select a scene or beat name".into())
+}
+
 /// The starter document, so the screen explains itself rather than opening
 /// on an empty box.
 pub const STARTER: &str = r#"# Write the story; Assets lists the artwork it needs.
@@ -57,13 +107,19 @@ const CARET_BRIDGE: &str = r#"
 "#;
 
 fn focus_position(position: storyfella_language::Position) {
+    focus_in("svs-writer", position);
+}
+
+fn focus_in(id: &str, position: storyfella_language::Position) {
     document::eval(&format!(
-        r#"const el = document.getElementById("svs-writer");
+        r#"const el = document.getElementById({});
         if (el) {{ const lines = el.value.split("\n");
           const line = Math.min({}, lines.length - 1);
           const offset = lines.slice(0, line).reduce((n, s) => n + s.length + 1, 0) + Math.min({}, lines[line].length);
           el.focus(); el.setSelectionRange(offset, offset); }}"#,
-        position.line, position.character
+        serde_json::to_string(id).unwrap(),
+        position.line,
+        position.character
     ));
 }
 
@@ -286,6 +342,7 @@ fn RenameSymbolDialog(
     app_state: Signal<AppState>,
     offset: usize,
     name: String,
+    #[props(default)] file: Option<String>,
     onclose: EventHandler<()>,
 ) -> Element {
     let mut replacement = use_signal(|| name.clone());
@@ -295,7 +352,8 @@ fn RenameSymbolDialog(
         super::dialog::Dialog { title: "Rename scene or beat", on_close: onclose,
             form { class: "studio-task-form", onsubmit: move |event| {
                 event.prevent_default();
-                match app_state.write().rename_story_symbol(offset, replacement().trim()) {
+                let result = if let Some(file) = &file { app_state.write().rename_workspace_symbol(file, offset, replacement().trim()) } else { app_state.write().rename_story_symbol(offset, replacement().trim()) };
+                match result {
                     Ok(()) => onclose.call(()),
                     Err(message) => error.set(Some(message)),
                 }
@@ -321,6 +379,216 @@ fn RenameSymbolDialog(
 
 #[component]
 pub fn Writer(
+    mut app_state: Signal<AppState>,
+    backend: Signal<storyfella_studio_core::registry::backend::CreativeBackend>,
+) -> Element {
+    let mut error_report = use_context::<Signal<Option<ReportedError>>>();
+    let mut screen = use_context::<Signal<super::AppScreen>>();
+    let mut files = use_signal(Vec::<String>::new);
+    let mut scan_error = use_signal(|| None::<String>);
+    let mut refresh = use_signal(|| 0u64);
+    let path = app_state
+        .read()
+        .story
+        .path()
+        .map(std::path::Path::to_path_buf);
+    let revision = refresh();
+    use_effect(use_reactive(
+        (&path, &revision),
+        move |(path, _)| match path
+            .map(|path| storyfella_studio_core::story::list_source_files(&path))
+        {
+            Some(Ok(found)) => {
+                files.set(found);
+                scan_error.set(None);
+            }
+            Some(Err(error)) => {
+                files.set(Vec::new());
+                scan_error.set(Some(error.to_string()));
+            }
+            None => {
+                files.set(Vec::new());
+                scan_error.set(None);
+            }
+        },
+    ));
+    let entry = path
+        .as_ref()
+        .and_then(|path| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let active = app_state.read().active_source.clone();
+    let included = super::preview::workspace(&app_state.read())
+        .ok()
+        .map(|workspace| {
+            workspace
+                .files
+                .into_keys()
+                .collect::<std::collections::BTreeSet<_>>()
+        });
+    let caret = use_context::<super::WriterCaret>();
+    let project_problems = if app_state
+        .read()
+        .story
+        .source()
+        .lines()
+        .any(|line| line.starts_with("include "))
+    {
+        Some(project_diagnostics(&app_state.read()))
+    } else {
+        None
+    };
+    let assets: Vec<_> = app_state
+        .read()
+        .registry
+        .artifacts
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.kind,
+                ArtifactKind::Character
+                    | ArtifactKind::Environment
+                    | ArtifactKind::Object
+                    | ArtifactKind::Illustration
+            )
+        })
+        .map(|item| (item.id, item.name.clone()))
+        .collect();
+    rsx! {
+        div { class: "flex h-full min-h-0 min-w-0",
+            aside { class: "flex w-52 shrink-0 flex-col overflow-y-auto border-r border-white/10 p-3", aria_label: "Project explorer",
+                if let Some(notice) = app_state.read().source_notice.clone() {
+                    div { class: "mb-3 text-xs text-amber-300", role: "status", "{notice}"
+                        button { class: "ml-1 underline", onclick: move |_| app_state.write().source_notice = None, "Dismiss" }
+                    }
+                }
+                div { class: "flex items-center justify-between gap-2",
+                    h2 { class: "text-xs font-semibold text-zinc-400", "Story files" }
+                    IconButton { label: "Create story file", icon: IconName::Add, onclick: move |_| {
+                        let root = app_state.read().story.path().and_then(|path| path.parent()).map(std::path::Path::to_path_buf);
+                        let Some(root) = root else { return; };
+                        let Some(mut destination) = rfd::FileDialog::new().set_title("Create story file").set_directory(root).set_file_name("chapter.sf").add_filter("Storyfella source", &["sf"]).save_file() else { return; };
+                        if destination.extension().is_none() { destination.set_extension("sf"); }
+                        if let Err(error) = app_state.write().create_additional_source(&destination) { error_report.set(Some(error.report().log())); }
+                        else { refresh += 1; }
+                    } }
+                    IconButton { label: "Refresh project files", icon: IconName::Refresh, onclick: move |_| refresh += 1 }
+                }
+                if let Some(error) = scan_error() { p { class: "text-xs text-red-400", role: "alert", "{error}" } }
+                for file in files() {
+                    {
+                        let is_entry = file == entry;
+                        let selected = if is_entry { active.is_none() } else { active.as_deref() == Some(file.as_str()) };
+                        let label = if is_entry { format!("{file} · entry") } else if included.as_ref().is_some_and(|sources| !sources.contains(&file)) { format!("{file} · not included") } else { file.clone() };
+                        let target = file.clone();
+                        rsx! { button { key: "{file}", class: if selected { "rounded bg-white/10 px-2 py-1 text-left text-xs text-zinc-100" } else { "rounded px-2 py-1 text-left text-xs text-zinc-400 hover:bg-white/5" },
+                            title: "{file}", onclick: move |_| {
+                                if is_entry { app_state.write().active_source = None; }
+                                else if let Err(error) = app_state.write().open_additional_source(&target) { error_report.set(Some(error.report().log())); }
+                            }, "{label}"
+                        } }
+                    }
+                }
+                if project_problems.is_some() {
+                    h2 { class: "mt-5 text-xs font-semibold text-zinc-400", "Story problems" }
+                    if let Some(Ok(problems)) = project_problems.clone() {
+                        for (path, diagnostic, position) in problems.into_iter().filter(|(_, diagnostic, _)| diagnostic.severity != Severity::Information) {
+                            {
+                                let is_entry = path == entry;
+                                let target = path.clone();
+                                rsx! { button { class: "rounded px-2 py-1 text-left text-xs text-zinc-400 hover:bg-white/5", title: "{diagnostic.message}", onclick: move |_| {
+                                    if is_entry { app_state.write().active_source = None; }
+                                    else if let Err(error) = app_state.write().open_additional_source(&target) { error_report.set(Some(error.report().log())); return; }
+                                    caret.navigate(position);
+                                }, "{path}:{position.line + 1} · {diagnostic.message}" } }
+                            }
+                        }
+                    }
+                    if let Some(Err(message)) = project_problems {
+                        p { class: "px-2 py-1 text-xs text-rose-300", role: "alert", "{message}" }
+                    }
+                }
+                h2 { class: "mt-5 text-xs font-semibold text-zinc-400", "Assets" }
+                for (id, name) in assets {
+                    button { key: "{id}", class: "rounded px-2 py-1 text-left text-xs text-zinc-400 hover:bg-white/5", onclick: move |_| { app_state.write().select_artifact(id); screen.set(super::AppScreen::Assets); }, "{name}" }
+                }
+            }
+            div { class: "min-w-0 flex-1",
+                div { hidden: active.is_some(), class: "h-full", MainWriter { app_state, backend } }
+                if let Some(path) = active.clone() { AdditionalWriter { key: "{path}", path, app_state } }
+            }
+        }
+    }
+}
+
+#[component]
+fn AdditionalWriter(path: String, mut app_state: Signal<AppState>) -> Element {
+    let mut error_report = use_context::<Signal<Option<ReportedError>>>();
+    let mut navigation = use_context::<super::WriterCaret>().target;
+    let mut mounted = use_signal(|| false);
+    let mut rename_target = use_signal(|| None::<(usize, String)>);
+    let source = app_state
+        .read()
+        .additional_sources
+        .as_ref()
+        .and_then(|sources| sources.get(&path))
+        .map(|document| document.source().to_owned())
+        .unwrap_or_default();
+    let mut previous_source = use_signal(|| source.clone());
+    use_effect(use_reactive((&source,), move |(source,)| {
+        let previous = previous_source.peek().replace("\r\n", "\n");
+        previous_source.set(source.clone());
+        let next = source.replace("\r\n", "\n");
+        document::eval(&format!("const el = document.getElementById('svs-extra-writer'); if (el && el.value === {}) el.value = {};", serde_json::to_string(&previous).unwrap(), serde_json::to_string(&next).unwrap()));
+    }));
+    let target = path.clone();
+    use_effect(move || {
+        if mounted() {
+            if let Some(position) = navigation() {
+                focus_in("svs-extra-writer", position);
+                navigation.set(None);
+            }
+        }
+    });
+    rsx! {
+        section { class: "flex h-full min-h-0 flex-col", aria_label: "Story file editor",
+            header { class: "flex items-center gap-2 border-b border-white/10 px-4 py-2 text-xs text-zinc-400",
+                span { class: "min-w-0 flex-1 truncate", "{path}" }
+                IconButton { label: "Rename scene or beat at cursor", icon: IconName::Edit, onclick: { let path = path.clone(); move |_| {
+                    let path = path.clone();
+                    spawn(async move {
+                        let mut query = document::eval(r#"const el = document.getElementById('svs-extra-writer'); const lines = el.value.slice(0, el.selectionStart ?? 0).split('\n'); dioxus.send({line: lines.length - 1, character: lines.at(-1).length});"#);
+                        let Ok(position) = query.recv::<storyfella_language::Position>().await else { return; };
+                        let state = app_state.read();
+                        if state.active_source.as_deref() != Some(path.as_str()) { return; }
+                        let Some(source) = state.additional_sources.as_ref().and_then(|sources| sources.get(&path)).map(|document| document.source()) else { return; };
+                        let Some(offset) = storyfella_language::Source::new(source).offset(position) else { return; };
+                        let result = workspace_symbol(&state, &path, offset);
+                        drop(state);
+                        match result { Ok(name) => rename_target.set(Some((offset, name))), Err(message) => error_report.set(Some(ReportedError::plain(storyfella_studio_core::errors::ErrorCode::AppCommandInvalid, message))) }
+                    });
+                } } }
+            }
+            textarea { id: "svs-extra-writer", aria_label: "Story source", spellcheck: "false", autocomplete: "off",
+                class: "min-h-0 w-full flex-1 resize-none bg-transparent px-4 py-3 font-mono text-sm leading-relaxed text-zinc-100 outline-none",
+                onmounted: { let initial = source.clone(); move |_| { document::eval(&format!("document.getElementById('svs-extra-writer').value = {};", serde_json::to_string(&initial.replace("\r\n", "\n")).unwrap())); mounted.set(true); } },
+                oninput: move |event| {
+                    let mut state = app_state.write();
+                    if let Some(document) = state.additional_sources.as_ref().and_then(|sources| sources.get(&target)) {
+                        let edited = storyfella_language::textarea_input(document.source(), &event.value());
+                        if let Err(error) = state.set_additional_source(&target, edited) { error_report.set(Some(error.report().log())); }
+                    }
+                },
+            }
+            if let Some((offset, name)) = rename_target() {
+                RenameSymbolDialog { app_state, offset, name, file: Some(path.clone()), onclose: move |_| rename_target.set(None) }
+            }
+        }
+    }
+}
+
+#[component]
+fn MainWriter(
     app_state: Signal<AppState>,
     backend: Signal<storyfella_studio_core::registry::backend::CreativeBackend>,
 ) -> Element {
@@ -379,7 +647,26 @@ pub fn Writer(
     let registry = app_state.read().registry.clone();
     let catalog = AssetCatalog::from_registry(&registry);
     let analysis = analyze(&source, &catalog.assets);
-    let compilation = storyfella_compiler::compile_analysis(&analysis, &catalog.bindings);
+    let mut compilation = storyfella_compiler::compile_analysis(&analysis, &catalog.bindings);
+    if source.lines().any(|line| line.starts_with("include ")) {
+        let entry = story_path
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        compilation.diagnostics = match project_diagnostics(&app_state.read()) {
+            Ok(problems) => problems
+                .into_iter()
+                .filter_map(|(path, diagnostic, _)| (path == entry).then_some(diagnostic))
+                .collect(),
+            Err(message) => vec![storyfella_language::Diagnostic {
+                code: "SF400".into(),
+                message,
+                severity: Severity::Error,
+                span: storyfella_language::Span::new(0, 0),
+            }],
+        };
+    }
     let error_count = compilation
         .diagnostics
         .iter()
@@ -424,6 +711,16 @@ pub fn Writer(
                 .find(|symbol| symbol.name.span == span)
         })
         .map(|symbol| symbol.name.value.clone());
+    let rename_symbol = if source.lines().any(|line| line.starts_with("include ")) {
+        let entry = story_path
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        workspace_symbol(&app_state.read(), entry, offset).ok()
+    } else {
+        rename_symbol
+    };
     let reference_positions: Vec<_> = analysis
         .references_at(offset, true)
         .iter()
@@ -453,9 +750,11 @@ pub fn Writer(
         ));
     }));
     use_effect(move || {
-        if let Some(position) = navigation() {
-            focus_position(position);
-            navigation.set(None);
+        if app_state.read().active_source.is_none() {
+            if let Some(position) = navigation() {
+                focus_position(position);
+                navigation.set(None);
+            }
         }
     });
     // Keep both editor layers on the parent's scroll surface. Following the
@@ -869,6 +1168,34 @@ fn MentionGroup(title: String, mentions: Vec<Mention>, app_state: Signal<AppStat
 mod tests {
     use super::*;
     use storyfella_studio_core::registry::CreateArtifact;
+
+    #[test]
+    fn project_problems_follow_unsaved_chapter_locations() {
+        let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.svs-e2e/tests")
+            .join(format!("writer-project-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let entry = directory.join("story.sf");
+        std::fs::write(&entry, "include \"chapter.sf\"\n").unwrap();
+        std::fs::write(directory.join("chapter.sf"), "scene start\n  end\n").unwrap();
+        let mut state = AppState::default();
+        state.story = storyfella_studio_core::story::StoryDocument::open(&entry).unwrap();
+        state.open_additional_source("chapter.sf").unwrap();
+        state
+            .set_additional_source("chapter.sf", "scene start\n  goto missing\n".into())
+            .unwrap();
+        let problems = project_diagnostics(&state).unwrap();
+        assert!(problems
+            .iter()
+            .any(|(path, diagnostic, position)| path == "chapter.sf"
+                && diagnostic.code == "SF202"
+                && position.line == 1));
+        assert!(!problems
+            .iter()
+            .any(|(path, diagnostic, _)| path == "story.sf"
+                && diagnostic.severity == Severity::Error));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn starter_and_sample_are_valid_storyfella() {
