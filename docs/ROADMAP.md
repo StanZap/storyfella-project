@@ -317,6 +317,80 @@ Inference execution and deployment management now live in Agentkit. Application
 configuration, prompts, domain tools, result persistence and UI remain app-owned.
 SF-PLAN-27 records the completed migration and native/hosted live acceptance.
 
+### Agentic visual novel production
+
+Enable vision-capable agents to create, inspect, revise, playtest and ship
+ambitious visual novels through first-party tools, without ad hoc scripts for
+routine production. This scope includes new Studio, Atelier and Player features,
+not just MCP wrappers around today's UI. The integrated capability inventory,
+proposed tool groups, code evidence, open decisions and acceptance scenarios are
+in [agentic visual novel production research](agentic-vn-production-research.md).
+That document is a research baseline, not proof that every path has been audited
+or validated live. Check the current implementation and tests before planning each
+slice. Human creators should benefit from the same underlying capabilities.
+
+- [ ] **SF-PLAN-33 — Agent access and project coordination.** Inventory the
+  existing implementation and choose an authoritative coordination model for
+  Studio, Atelier and external clients, including open and dirty documents.
+  Design project-scoped handles, stable identities, capability discovery,
+  versioned schemas, checked edits, conflict reporting, recovery and bounded
+  access. Reuse Agentkit's MCP infrastructure where suitable; assess its
+  synchronous calls and result format against visual content, long-running jobs
+  and client interoperability. Preserve shared-project and authoring invariants
+  from SF-PLAN-02–06 and SF-PLAN-17. Done when independent MCP clients can
+  safely inspect and edit a shared project, receive actionable conflicts, and
+  recover after interruption without silently overwriting app edits.
+- [ ] **SF-PLAN-34 — Agentic visual creation and inspection.** Extract or expose
+  reusable Atelier document, image and generation capabilities through a
+  UI-independent boundary shared with the app. Support image and region
+  inspection, previews and comparison, crop, resize, canvas expansion, layer
+  and mask operations, generation and edits, candidate review and checked
+  publication. Identify and build missing capabilities such as richer
+  selections, segmentation and background removal as validated by production
+  scenarios. Specify pixel coordinates, alpha, non-destructive revisions,
+  provider capabilities and protected-region behavior. Add durable,
+  recoverable generation jobs, batch results and cancellation semantics;
+  retain successful outputs when attachment fails. Coordinate with SF-PLAN-14,
+  SF-PLAN-20, SF-PLAN-25–26 and SF-PLAN-28. Done when an agent can create,
+  inspect, edit and publish a set of consistent asset variations without
+  external image scripts, with restart and conflict recovery tested.
+- [ ] **SF-PLAN-35 — Story and production intelligence.** Provide structured,
+  versioned story and visual bibles, contextual retrieval, character and
+  location requirements, asset coverage, scene and route inspection, precise
+  source edits, diagnostics and reviewable changes. Track provenance and
+  distinguish canon from proposals. Extend the language and runtime where
+  complex stories require richer state and conditional content; retain source
+  mappings, deterministic execution and save compatibility. Coordinate with
+  SF-PLAN-08, SF-PLAN-12–13 and SF-PLAN-15–17. Done when an agent can plan and
+  revise a branching chapter, trace its dependencies and identify missing art
+  and story issues using project tools.
+- [ ] **SF-PLAN-36 — Agent playtesting and production quality.** Expose isolated
+  deterministic playback, state and events, checkpoints, choice selection,
+  actual rendered frames, route scripts and bounded coverage reports. Provide
+  asset, layout and readiness checks, visual comparisons and review findings
+  with evidence; distinguish objective failures from advisory creative reviews.
+  Develop scalable character variants and composition where needed, including
+  evaluating layered sprites against full-image alternatives. Coordinate with
+  SF-PLAN-18–21, SF-PLAN-32 and the expressive media work in SF-PLAN-10. Done
+  when an agent can exercise both routes of a fixture, inspect real frames,
+  diagnose missing or misaligned artwork and reproduce reported issues.
+- [ ] **SF-PLAN-37 — Agentic vertical slice and release readiness.** Validate
+  the complete workflow on a project with multiple characters, expressions,
+  outfits and locations, branching choices and persistent consequences: plan,
+  write, generate, inspect, revise, assemble, playtest, save and reopen without
+  ad hoc scripts. Test real MCP clients, concurrent edits, partial failures,
+  cancellation and restart recovery alongside deterministic offline checks.
+  Expand based on measured quality, coverage, cost and usability, then add
+  release packaging, localization, accessibility and media capabilities end to
+  end as needed. Record human review and real-provider limitations rather than
+  treating automated checks as proof of creative quality.
+
+**Delivery order:** establish coordination and contracts in SF-PLAN-33, then
+build a thin end-to-end SF-PLAN-37 slice using the essential parts of
+SF-PLAN-34–36. Expand capabilities and production scale from its findings;
+avoid completing broad inventories or every advanced feature before proving the
+shared workflow.
+
 ### Studio for writing, Atelier for visual creation · 2026-10-28
 
 The proposed direction is Studio for writing and previewing stories with the
@@ -893,16 +967,80 @@ The broader product and UX assessments still need the review tracked below.
   [§12](#12-suggested-implementation-order), including re-sync, distribution,
   persistence, scheduling and generation validation. Move actionable remainders
   into this checklist with owning apps and evidence; retire superseded proposals.
-- [ ] **SF-PLAN-10 — Design expressive performance and media.** Design speech
-  annotations using real authored scenes: speaker identity, voice version,
-  delivery scopes, timing, events and pronunciation must be typed and
-  source-mapped. Adapt selected performance to FineWineTTS without embedding its
-  backend syntax in the DSL. Define variants, composition, transitions and media
-  durations against the runtime plan. Done when authored intent and exact
-  bindings survive compilation and playback, with unsupported directions exposed
-  rather than silently replaced by neutral performance. Strict playback blocks
-  them; Studio Preview identifies directions it skips. SF-PLAN-32 tracks visual
-  direction semantics and rendering.
+- [ ] **SF-PLAN-10 — First-party speech and performance in the DSL.** Design and
+  implement optional speech for narration, dialogue and thoughts, using
+  Agentkit's Drama 3 support. Existing stories and ordinary unannotated lines
+  remain valid and can generate speech without performance modifiers. Associate
+  reusable voice resources and exact revisions with characters and the narrator;
+  define an explicit policy for whether and how thoughts are voiced. Voice
+  references and generated takes are project resources, not generation calls
+  triggered by parsing the story.
+
+  Explore the following proposed authoring form with real scenes; it is not
+  current syntax. An indented spoken line keeps whole-line direction alongside
+  the words. Point cues mark an event at a position and scoped cues affect only
+  the enclosed words. Preserve the existing compact dialogue form when no
+  direction is needed; do not introduce a scene- or beat-level `performance`
+  directive.
+
+  ```storyfella
+  scene observatory
+    beat the_encounter
+      elian:
+        "You knew her. [pause] You knew Mara." | The realization lands slowly.
+      the_keeper:
+        "<whisper>Some things need to be found</whisper>, even when they hurt." | Gentle but firm.
+      elian: "That's my name."
+  ```
+
+  Specify the grammar, escaping and literal text, cue vocabulary or free-form
+  rules and validation for whole-line, point and span directions, including how
+  cues combine. Define how the indented form relates to current single-line
+  statements and source-preserving editing. Design grouping lines as a shared
+  multi-speaker performance: all grouped lines are requested speech, not merely
+  context for the final line. Address alignment, replay and regeneration without
+  assuming the backend supplies line boundaries. The dialogue header may later
+  carry visual-novel presentation information, but its syntax and whether it
+  changes persistent staging or only the current line remain open. Coordinate
+  with SF-PLAN-18, SF-PLAN-19 and SF-PLAN-32 rather than changing existing
+  `stage`/`swap` semantics implicitly.
+
+  Keep spoken/display text separate from typed, source-mapped performance intent:
+  direction text and cue markup guide audio generation and must not appear in
+  playback dialogue or be spoken as literal markup. Highlight directions,
+  point cues and scoped cues distinctly in Studio and shared language services,
+  with diagnostics and source ranges, so authors can recognize them while
+  writing. Compile explicit voice bindings, spoken text and authored cues into a
+  backend-independent plan. Translate whole-line direction to a documented
+  Drama 3 style prefix or director-note form, and point and span cues to their
+  corresponding model controls; test the translation and results on the actual
+  runtime. Do not automatically include preceding story lines as prompt context.
+  Surface unsupported cues
+  when generating audio instead of silently discarding them; text playback
+  remains usable without generated audio.
+
+  Define take storage, preview, approval, regeneration and stale detection when
+  text, direction, voice or other generation inputs change. Design workflows for
+  grouped generation, relative direction against previous audio takes,
+  pronunciation, streaming and audio infilling. Extend Agentkit and its runtime
+  interfaces as needed, validating each capability rather than treating the
+  current interface as the product limit. Record exact inputs and dependencies
+  for each take. Specify resource availability, playback controls and
+  synchronization, and preserve deterministic story execution and save/restore.
+  Done when an unannotated story and an annotated scene can generate and play
+  speech, cues never leak into displayed or spoken text, highlighted source and
+  diagnostics identify modifiers, and compiled bindings and approved takes
+  remain traceable and reproducible. SF-PLAN-32 tracks visual direction
+  semantics and rendering.
+
+  Drama 3 inputs and integration baseline: the [technical report](https://arxiv.org/html/2610.18010)
+  documents point and scoped tags, line direction, multi-speaker prompts,
+  revision with previous audio and infilling. The [inference guide](https://speech.fish.audio/inference/)
+  describes reference audio paired with its transcript and speaker mapping.
+  Agentkit currently takes one configured reference and transcript per voice,
+  supports typed dialogue turns and returns scene audio without turn timestamps;
+  its current request types do not expose dedicated revision or infilling inputs.
+  Model, runtime and interface support must be checked separately.
 - [ ] **SF-PLAN-11 — Reconcile UX and workflow follow-ups.** Review outstanding
   acceptance in [DESIGN.md](../DESIGN.md#8-delivery-order-and-verification), the
   [development and regression scenarios](development.md)
