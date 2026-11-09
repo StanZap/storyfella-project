@@ -8,7 +8,7 @@ use gpui_kit::{
     component::{
         button::*,
         input::{Input, InputState, NumberInput, Textarea, TextareaState},
-        menu::{DropdownMenu, PopupMenuItem},
+        menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem},
         select::Select,
         *,
     },
@@ -27,11 +27,206 @@ const GREEN: u32 = 0x2f6b3a;
 pub(crate) const BORDER: u32 = 0xe1dce5;
 const SURFACE: u32 = 0xf7f6f8;
 
+fn selection_context_menu(
+    menu: PopupMenu,
+    app: Entity<DrawingApp>,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    let (
+        available,
+        has_selection,
+        locked,
+        can_crop,
+        can_group,
+        can_ungroup,
+        can_forward,
+        can_backward,
+    ) = {
+        let state = app.read(cx);
+        let available = state.image_crop.is_none();
+        let can_crop = available
+            && state.selected_layers.len() == 1
+            && state.selected_group_name().is_none()
+            && state
+                .doc
+                .layers
+                .get(state.selected_layers[0])
+                .is_some_and(|layer| layer.image.is_some() && !state.doc.layer_is_locked(layer));
+        (
+            available,
+            available && !state.selected_layers.is_empty(),
+            state.selection_is_locked(),
+            can_crop,
+            available
+                && state.selected_layers.len() >= 2
+                && state.selected_layers.iter().all(|index| {
+                    state
+                        .doc
+                        .layers
+                        .get(*index)
+                        .is_some_and(|layer| layer.group.is_none())
+                }),
+            available && state.selected_group_name().is_some(),
+            available
+                && state
+                    .selected_move_range()
+                    .is_some_and(|(_, end)| end < state.doc.layers.len()),
+            available
+                && state
+                    .selected_move_range()
+                    .is_some_and(|(start, _)| start > 0),
+        )
+    };
+    let duplicate = app.clone();
+    let crop = app.clone();
+    let group = app.clone();
+    let ungroup = app.clone();
+    let zoom = app.clone();
+    let forward = app.clone();
+    let backward = app.clone();
+    let front = app.clone();
+    let back = app.clone();
+    let flip_horizontal = app.clone();
+    let flip_vertical = app.clone();
+    let paste = app.clone();
+    menu.item(
+        PopupMenuItem::new("Paste image")
+            .disabled(!available)
+            .on_click(move |_, _, cx| paste.update(cx, |this, cx| this.paste_artwork(cx))),
+    )
+    .item(
+        PopupMenuItem::new("Duplicate selection")
+            .disabled(!has_selection || locked)
+            .on_click(move |_, window, cx| {
+                duplicate.update(cx, |this, cx| this.duplicate_selected_layers(window, cx))
+            }),
+    )
+    .item(
+        PopupMenuItem::new("Crop image")
+            .disabled(!can_crop)
+            .on_click(move |_, window, cx| {
+                crop.update(cx, |this, cx| {
+                    this.start_image_crop(cx);
+                    window.focus(&this.focus, cx);
+                })
+            }),
+    )
+    .item(
+        PopupMenuItem::new("Group layers")
+            .disabled(!can_group)
+            .on_click(move |_, window, cx| {
+                group.update(cx, |this, cx| {
+                    this.group_selected_layers();
+                    this.sync_layer_controls(window, cx);
+                    cx.notify();
+                })
+            }),
+    )
+    .item(
+        PopupMenuItem::new("Ungroup")
+            .disabled(!can_ungroup)
+            .on_click(move |_, window, cx| {
+                ungroup.update(cx, |this, cx| {
+                    this.ungroup_selected_layers();
+                    this.sync_layer_controls(window, cx);
+                    cx.notify();
+                })
+            }),
+    )
+    .item(
+        PopupMenuItem::new("Move forward")
+            .disabled(!can_forward || locked)
+            .on_click(move |_, window, cx| {
+                forward.update(cx, |this, cx| {
+                    this.move_layer(true);
+                    this.sync_layer_controls(window, cx);
+                    cx.notify();
+                })
+            }),
+    )
+    .item(
+        PopupMenuItem::new("Move backward")
+            .disabled(!can_backward || locked)
+            .on_click(move |_, window, cx| {
+                backward.update(cx, |this, cx| {
+                    this.move_layer(false);
+                    this.sync_layer_controls(window, cx);
+                    cx.notify();
+                })
+            }),
+    )
+    .item(
+        PopupMenuItem::new("Bring to front")
+            .disabled(!can_forward || locked)
+            .on_click(move |_, window, cx| {
+                front.update(cx, |this, cx| this.move_selection_to_edge(true, window, cx))
+            }),
+    )
+    .item(
+        PopupMenuItem::new("Send to back")
+            .disabled(!can_backward || locked)
+            .on_click(move |_, window, cx| {
+                back.update(cx, |this, cx| {
+                    this.move_selection_to_edge(false, window, cx)
+                })
+            }),
+    )
+    .item(
+        PopupMenuItem::new("Flip horizontally")
+            .disabled(!has_selection || locked)
+            .on_click(move |_, window, cx| {
+                flip_horizontal.update(cx, |this, cx| this.flip_selection(true, false, window, cx))
+            }),
+    )
+    .item(
+        PopupMenuItem::new("Flip vertically")
+            .disabled(!has_selection || locked)
+            .on_click(move |_, window, cx| {
+                flip_vertical.update(cx, |this, cx| this.flip_selection(false, true, window, cx))
+            }),
+    )
+    .item(
+        PopupMenuItem::new("Zoom to selection")
+            .disabled(!has_selection)
+            .on_click(move |_, _, cx| zoom.update(cx, |this, cx| this.zoom_to_selection(cx))),
+    )
+    .item(
+        PopupMenuItem::new("Delete selection")
+            .disabled(!has_selection || locked)
+            .on_click(move |_, window, cx| {
+                app.update(cx, |this, cx| {
+                    let revision = this.revision;
+                    this.delete_layer();
+                    if this.revision != revision {
+                        this.sync_inputs(window, cx);
+                    }
+                    cx.notify();
+                })
+            }),
+    )
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PromptComposerMode {
     Artboards,
     Drawing,
     Image,
+}
+
+#[derive(Clone)]
+pub(crate) struct DraggedLayerRows {
+    pub epoch: u64,
+    pub artboard: u32,
+    pub revision: u64,
+    pub start: usize,
+    pub end: usize,
+    pub label: String,
+}
+
+impl Render for DraggedLayerRows {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        panel().px_3().py_2().text_sm().child(self.label.clone())
+    }
 }
 
 fn prompt_composer_frame(
@@ -105,6 +300,7 @@ fn separator() -> Div {
 pub(crate) fn icon(name: &str) -> Icon {
     let path = match name {
         "pencil" => "<path d='m15 4 5 5M4 15l11-11a3 3 0 0 1 5 5L9 20l-6 1z'/>",
+        "select" => "<path d='M5 3v16l4-4 3 6 3-1-3-6h6z'/>",
         "brush" => "<path d='m14 3 7 7-9 9-7-7zM5 12l-3 9 9-3M14 3l-3 3'/>",
         "eraser" => "<path d='m15 3 6 6-10 12H6l-4-4zM7 12l6 6M11 21h10'/>",
         "hand" => {
@@ -142,6 +338,7 @@ pub(crate) fn icon(name: &str) -> Icon {
         "rotate" => "<path d='M20 10a8 8 0 1 0-2 8M20 3v7h-7'/>",
         "flip" => "<path d='M12 3v18M8 6 3 12l5 6zM16 6l5 6-5 6z'/>",
         "fit" => "<path d='M3 9V3h6M15 3h6v6M21 15v6h-6M9 21H3v-6'/>",
+        "search" => "<circle cx='10' cy='10' r='6'/><path d='m15 15 5 5'/>",
         "grid" => {
             "<rect x='3' y='3' width='18' height='18' rx='2'/><path d='M9 3v18M15 3v18M3 9h18M3 15h18'/>"
         }
@@ -164,6 +361,14 @@ pub(crate) fn icon(name: &str) -> Icon {
             "<rect x='4' y='10' width='16' height='11' rx='2'/><path d='M8 10V7a4 4 0 0 1 8 0M12 14v3'/>"
         }
         "panel" => "<rect x='3' y='3' width='18' height='18' rx='2'/><path d='M15 3v18'/>",
+        "align-left" => "<path d='M5 3v18M9 7h10v4H9zM9 15h7v4H9z'/>",
+        "align-center" => "<path d='M12 3v18M5 7h14v4H5zM8 15h8v4H8z'/>",
+        "align-right" => "<path d='M19 3v18M5 7h10v4H5zM8 15h7v4H8z'/>",
+        "align-top" => "<path d='M3 5h18M7 9h4v10H7zM15 9h4v7h-4z'/>",
+        "align-middle" => "<path d='M3 12h18M7 5h4v14H7zM15 8h4v8h-4z'/>",
+        "align-bottom" => "<path d='M3 19h18M7 5h4v10H7zM15 8h4v7h-4z'/>",
+        "distribute-x" => "<path d='M4 4v16M20 4v16M8 7h3v10H8zM13 7h3v10h-3z'/>",
+        "distribute-y" => "<path d='M4 4h16M4 20h16M7 8h10v3H7zM7 13h10v3H7z'/>",
         "play" => "<path d='m7 3 14 9-14 9z'/>",
         "pause" => "<path d='M8 4v16M16 4v16'/>",
         "trash" => "<path d='M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7'/>",
@@ -213,7 +418,17 @@ impl AtelierSelection for Button {
 }
 
 pub(crate) fn field(name: &'static str, input: &Entity<InputState>) -> Div {
-    column().gap_1().child(label(name)).child(Input::new(input))
+    column()
+        .gap_1()
+        .child(label(name))
+        .child(Input::new(input).aria_label(name))
+}
+
+fn property_field(name: &'static str, input: &Entity<InputState>, disabled: bool) -> Div {
+    column()
+        .gap_1()
+        .child(label(name))
+        .child(Input::new(input).aria_label(name).disabled(disabled))
 }
 
 pub(crate) fn side_panel_frame(title: &'static str, content: Div, close: Button) -> Div {
@@ -476,7 +691,9 @@ impl DrawingApp {
                 cx.stop_propagation();
             }))
             .on_action(cx.listener(|this, _: &crate::ClosePanel, window, cx| {
-                if this.panel != Panel::None {
+                if this.cancel_layer_input(window, cx) {
+                    cx.stop_propagation();
+                } else if this.panel != Panel::None {
                     this.panel = Panel::None;
                     window.focus(&this.focus, cx);
                     cx.notify();
@@ -783,6 +1000,28 @@ impl DrawingApp {
             .bg(rgb(0xffffff))
             .border_r_1()
             .border_color(rgb(BORDER));
+        rail = rail.child(
+            tool_button(
+                "tool-select",
+                "select",
+                "Select layers · V · ⌘-click cycles overlapping layers",
+            )
+            .atelier_selected(self.tool == Tool::Hand && self.moving_image, cx)
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.finish_stroke();
+                if this.image_crop.take().is_some() {
+                    this.visual_revision += 1;
+                }
+                this.tool = Tool::Hand;
+                this.moving_image = true;
+                this.selecting_generation_region = false;
+                this.panel = Panel::None;
+                this.page = Page::Draw;
+                this.restore_prompt(window, cx);
+                window.focus(&this.focus, cx);
+                cx.notify();
+            })),
+        );
         for (tool, name, tooltip) in [
             (Tool::Pencil, "pencil", "Pencil · B"),
             (Tool::Eraser, "eraser", "Eraser · E"),
@@ -790,9 +1029,15 @@ impl DrawingApp {
         ] {
             rail = rail.child(
                 tool_button(format!("tool-{name}"), name, tooltip)
-                    .atelier_selected(self.tool == tool, cx)
+                    .atelier_selected(
+                        self.tool == tool && !(tool == Tool::Hand && self.moving_image),
+                        cx,
+                    )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.finish_stroke();
+                        if this.image_crop.take().is_some() {
+                            this.visual_revision += 1;
+                        }
                         this.tool = tool;
                         this.moving_image = false;
                         this.page = Page::Draw;
@@ -813,6 +1058,9 @@ impl DrawingApp {
                     .atelier_selected(self.page == Page::Library, cx)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.finish_stroke();
+                        if this.image_crop.take().is_some() {
+                            this.visual_revision += 1;
+                        }
                         this.page = Page::Library;
                         cx.notify();
                     })),
@@ -1001,6 +1249,15 @@ impl DrawingApp {
                 )),
             )
             .child(
+                tool_button("zoom-to-selection", "search", "Zoom to selected artwork")
+                    .disabled(
+                        self.doc
+                            .selected_layer_bounds(&self.selected_layers)
+                            .is_none(),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| this.zoom_to_selection(cx))),
+            )
+            .child(
                 tool_button("canvas-guides", "grid", "Canvas proportion guides")
                     .atelier_selected(self.guides, cx)
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1043,6 +1300,7 @@ impl DrawingApp {
             )
     }
     fn canvas(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let menu_app = cx.entity();
         let capture = self.bounds.clone();
         let tiles: Vec<_> = self
             .tiles
@@ -1058,19 +1316,48 @@ impl DrawingApp {
         let guides = self.guides;
         let artboard_tool =
             self.panel == Panel::Canvas && self.view.turns == 0 && !self.view.mirror;
-        let region = self.generation_region;
-        let gizmo = (self.moving_image && self.tool == Tool::Hand)
-            .then(|| self.doc.layer_bounds())
+        let region = if self.image_crop.is_none() {
+            self.generation_region
+        } else {
+            None
+        };
+        let crop = self
+            .image_crop
+            .as_ref()
+            .map(|crop| (crop.image.transform, crop.draft, crop.width, crop.height));
+        let marquee = self.selection_marquee;
+        let transform_guides = self.transform_guides.clone();
+        let gizmo = (self.image_crop.is_none() && self.moving_image && self.tool == Tool::Hand)
+            .then(|| self.doc.selected_layer_bounds(&self.selected_layers))
             .flatten();
+        let individual_bounds: Vec<_> = if gizmo.is_some() && self.selected_layers.len() > 1 {
+            self.selected_layers
+                .iter()
+                .filter_map(|index| self.doc.layer_bounds_for(*index))
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         div()
             .id("canvas-viewport")
             .relative()
+            .border_1()
+            .border_color(gpui_kit::transparent_black())
+            .drag_over::<ExternalPaths>(|style, _, _, _| style.border_color(rgb(WINE)))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                this.import_artwork_paths(paths.paths().to_vec(), cx);
+            }))
             .flex_1()
             .min_h_0()
             .overflow_hidden()
             .cursor(
-                if self.tool == Tool::Hand && !self.selecting_generation_region {
+                if self.tool == Tool::Hand && self.moving_image && self.image_crop.is_none() {
+                    CursorStyle::Arrow
+                } else if self.tool == Tool::Hand
+                    && !self.selecting_generation_region
+                    && self.image_crop.is_none()
+                {
                     CursorStyle::OpenHand
                 } else {
                     CursorStyle::Crosshair
@@ -1078,14 +1365,24 @@ impl DrawingApp {
             )
             .on_mouse_down(MouseButton::Left, cx.listener(Self::pointer_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::pointer_down))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::select_context_target))
             .on_mouse_move(cx.listener(|this, event, _, cx| this.pointer_move(event, cx)))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
+                    if let Some(crop) = &mut this.image_crop {
+                        crop.anchor = None;
+                    }
                     let resized_artboard = this.artboard_resize_drag.is_some();
+                    let transformed_selection = this.last_image_point.is_some();
+                    let painted = this.active_stroke;
+                    this.finish_marquee(window, cx);
                     this.finish_stroke();
                     if resized_artboard {
                         this.sync_inputs(window, cx);
+                    }
+                    if transformed_selection || painted {
+                        this.sync_layer_controls(window, cx);
                     }
                     this.finish_drawing_region(cx);
                     this.restore_prompt(window, cx);
@@ -1095,10 +1392,19 @@ impl DrawingApp {
             .on_mouse_up_out(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
+                    if let Some(crop) = &mut this.image_crop {
+                        crop.anchor = None;
+                    }
                     let resized_artboard = this.artboard_resize_drag.is_some();
+                    let transformed_selection = this.last_image_point.is_some();
+                    let painted = this.active_stroke;
+                    this.finish_marquee(window, cx);
                     this.finish_stroke();
                     if resized_artboard {
                         this.sync_inputs(window, cx);
+                    }
+                    if transformed_selection || painted {
+                        this.sync_layer_controls(window, cx);
                     }
                     this.finish_drawing_region(cx);
                     this.restore_prompt(window, cx);
@@ -1244,6 +1550,40 @@ impl DrawingApp {
                                 window.paint_path(path, rgba(0x790e2640));
                             }
                         }
+                        if !transform_guides.is_empty() {
+                            let convert = |p: crate::document::Point| {
+                                let p = view.to_view(p, w as f32, h as f32);
+                                point(
+                                    paper.origin.x + px(p.x * scale),
+                                    paper.origin.y + px(p.y * scale),
+                                )
+                            };
+                            let mut path = PathBuilder::stroke(px(1.));
+                            for &(vertical, value) in &transform_guides {
+                                if vertical {
+                                    path.move_to(convert(crate::document::Point {
+                                        x: value,
+                                        y: 0.,
+                                    }));
+                                    path.line_to(convert(crate::document::Point {
+                                        x: value,
+                                        y: h as f32,
+                                    }));
+                                } else {
+                                    path.move_to(convert(crate::document::Point {
+                                        x: 0.,
+                                        y: value,
+                                    }));
+                                    path.line_to(convert(crate::document::Point {
+                                        x: w as f32,
+                                        y: value,
+                                    }));
+                                }
+                            }
+                            if let Ok(path) = path.build() {
+                                window.paint_path(path, rgb(WINE));
+                            }
+                        }
                         if let Some((a, b)) = region {
                             let corners = [
                                 crate::document::Point { x: a.x, y: a.y },
@@ -1281,6 +1621,82 @@ impl DrawingApp {
                                 window.paint_path(border, rgb(WINE));
                             }
                         }
+                        if let Some((a, b)) = marquee {
+                            let convert = |p| {
+                                let p = view.to_view(p, w as f32, h as f32);
+                                point(
+                                    paper.origin.x + px(p.x * scale),
+                                    paper.origin.y + px(p.y * scale),
+                                )
+                            };
+                            let mut path = PathBuilder::stroke(px(1.));
+                            path.move_to(convert(crate::document::Point { x: a.x, y: a.y }));
+                            path.line_to(convert(crate::document::Point { x: b.x, y: a.y }));
+                            path.line_to(convert(crate::document::Point { x: b.x, y: b.y }));
+                            path.line_to(convert(crate::document::Point { x: a.x, y: b.y }));
+                            path.close();
+                            if let Ok(path) = path.build() {
+                                window.paint_path(path, rgb(WINE));
+                            }
+                        }
+                        if let Some((
+                            [a, b, c, d, x, y],
+                            [left, top, width, height],
+                            source_width,
+                            source_height,
+                        )) = crop
+                        {
+                            let convert = |sx: u32, sy: u32| {
+                                let p = view.to_view(
+                                    crate::document::Point {
+                                        x: a * sx as f32 + c * sy as f32 + x,
+                                        y: b * sx as f32 + d * sy as f32 + y,
+                                    },
+                                    w as f32,
+                                    h as f32,
+                                );
+                                point(
+                                    paper.origin.x + px(p.x * scale),
+                                    paper.origin.y + px(p.y * scale),
+                                )
+                            };
+                            let corners = [
+                                convert(left, top),
+                                convert(left + width, top),
+                                convert(left + width, top + height),
+                                convert(left, top + height),
+                            ];
+                            // Dim the source area outside the proposed crop while retaining
+                            // the rest of the scene as context for placement.
+                            for (x0, y0, x1, y1) in [
+                                (0, 0, source_width, top),
+                                (0, top + height, source_width, source_height),
+                                (0, top, left, top + height),
+                                (left + width, top, source_width, top + height),
+                            ] {
+                                if x0 >= x1 || y0 >= y1 {
+                                    continue;
+                                }
+                                let mut shade = PathBuilder::fill();
+                                shade.move_to(convert(x0, y0));
+                                shade.line_to(convert(x1, y0));
+                                shade.line_to(convert(x1, y1));
+                                shade.line_to(convert(x0, y1));
+                                shade.close();
+                                if let Ok(shade) = shade.build() {
+                                    window.paint_path(shade, rgba(0x1b172780));
+                                }
+                            }
+                            let mut outline = PathBuilder::stroke(px(2.));
+                            outline.move_to(corners[0]);
+                            for corner in corners.iter().skip(1) {
+                                outline.line_to(*corner);
+                            }
+                            outline.close();
+                            if let Ok(outline) = outline.build() {
+                                window.paint_path(outline, rgb(WINE));
+                            }
+                        }
                         if let Some((x, y, r, b)) = gizmo {
                             let convert = |x, y| {
                                 let p = view.to_view(
@@ -1294,6 +1710,17 @@ impl DrawingApp {
                                 )
                             };
                             let mut path = PathBuilder::stroke(px(1.5));
+                            for &(left, top, right, bottom) in &individual_bounds {
+                                let mut outline = PathBuilder::stroke(px(1.));
+                                outline.move_to(convert(left, top));
+                                outline.line_to(convert(right, top));
+                                outline.line_to(convert(right, bottom));
+                                outline.line_to(convert(left, bottom));
+                                outline.close();
+                                if let Ok(outline) = outline.build() {
+                                    window.paint_path(outline, rgba(0x790e2680));
+                                }
+                            }
                             path.move_to(convert(x, y));
                             path.line_to(convert(r, y));
                             path.line_to(convert(r, b));
@@ -1302,14 +1729,49 @@ impl DrawingApp {
                             if let Ok(path) = path.build() {
                                 window.paint_path(path, rgb(WINE));
                             }
-                            let handle = convert(r, b);
-                            window.paint_quad(fill(
-                                Bounds::new(
-                                    point(handle.x - px(6.), handle.y - px(6.)),
-                                    size(px(12.), px(12.)),
-                                ),
-                                rgb(WINE),
-                            ));
+                            let rotate_anchor = convert((x + r) / 2., y);
+                            let rotate_handle = convert((x + r) / 2., y - 28. / scale.max(0.001));
+                            let mut stem = PathBuilder::stroke(px(1.5));
+                            stem.move_to(rotate_anchor);
+                            stem.line_to(rotate_handle);
+                            if let Ok(stem) = stem.build() {
+                                window.paint_path(stem, rgb(WINE));
+                            }
+                            let mut ring = PathBuilder::stroke(px(1.5));
+                            for i in 0..=24 {
+                                let angle = i as f32 / 24. * std::f32::consts::TAU;
+                                let point = point(
+                                    rotate_handle.x + px(6. * angle.cos()),
+                                    rotate_handle.y + px(6. * angle.sin()),
+                                );
+                                if i == 0 {
+                                    ring.move_to(point);
+                                } else {
+                                    ring.line_to(point);
+                                }
+                            }
+                            if let Ok(ring) = ring.build() {
+                                window.paint_path(ring, rgb(WINE));
+                            }
+                            for (hx, hy) in [
+                                (x, y),
+                                ((x + r) / 2., y),
+                                (r, y),
+                                (x, (y + b) / 2.),
+                                (r, (y + b) / 2.),
+                                (x, b),
+                                ((x + r) / 2., b),
+                                (r, b),
+                            ] {
+                                let handle = convert(hx, hy);
+                                window.paint_quad(fill(
+                                    Bounds::new(
+                                        point(handle.x - px(4.), handle.y - px(4.)),
+                                        size(px(8.), px(8.)),
+                                    ),
+                                    rgb(WINE),
+                                ));
+                            }
                         }
                         if tool != Tool::Hand {
                             if let Some(p) = hover.filter(|p| paper.contains(p)) {
@@ -1336,9 +1798,61 @@ impl DrawingApp {
                 )
                 .size_full(),
             )
+            .when_some(self.image_crop.as_ref(), |canvas, crop| {
+                canvas.child(
+                    div()
+                        .absolute()
+                        .top(px(12.))
+                        .left(px(12.))
+                        .p_2()
+                        .rounded_md()
+                        .bg(rgb(0xffffff))
+                        .border_1()
+                        .border_color(rgb(BORDER))
+                        .child(
+                            row()
+                                .flex_wrap()
+                                .child(label(format!(
+                                    "Drag the image area to keep · {} × {} px",
+                                    crop.draft[2], crop.draft[3]
+                                )))
+                                .child(
+                                    Button::new("crop-reset")
+                                        .ghost()
+                                        .small()
+                                        .label("Reset")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.reset_image_crop_draft(cx)
+                                        })),
+                                )
+                                .child(
+                                    Button::new("crop-cancel")
+                                        .ghost()
+                                        .small()
+                                        .label("Cancel")
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.cancel_image_crop(cx)
+                                            }),
+                                        ),
+                                )
+                                .child(
+                                    Button::new("crop-apply")
+                                        .primary()
+                                        .small()
+                                        .label("Apply")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.apply_image_crop(window, cx)
+                                        })),
+                                ),
+                        )
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
+                )
+            })
             .when(self.show_drawing_composer, |canvas| {
                 canvas.child(self.drawing_composer(cx))
             })
+            .context_menu(move |menu, _, cx| selection_context_menu(menu, menu_app.clone(), cx))
     }
     fn brush_rail_controls(&self, cx: &mut Context<Self>) -> Div {
         column()
@@ -1412,21 +1926,42 @@ impl DrawingApp {
             )
     }
     fn dock_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (title, content) = match self.dock_view {
-            DockView::Layers => ("Layers", self.layer_panel(cx)),
-            DockView::References => ("References", self.reference_panel(cx)),
-        };
-        side_panel_frame(
-            title,
-            column().gap_4().child(content),
-            tool_button("close-inspector", "close", "Close panel").on_click(cx.listener(
-                |this, _, window, cx| {
-                    this.dock = false;
-                    window.focus(&this.focus, cx);
-                    cx.notify();
-                },
-            )),
-        )
+        let close = tool_button("close-inspector", "close", "Close panel").on_click(cx.listener(
+            |this, _, window, cx| {
+                this.dock = false;
+                window.focus(&this.focus, cx);
+                cx.notify();
+            },
+        ));
+        if self.dock_view == DockView::Layers {
+            column()
+                .key_context("SidePanel")
+                .w(px(360.))
+                .flex_shrink_0()
+                .h_full()
+                .min_h_0()
+                .gap_2()
+                .bg(rgb(0xffffff))
+                .border_l_1()
+                .border_color(rgb(BORDER))
+                .p_4()
+                .occlude()
+                .child(
+                    row()
+                        .flex_shrink_0()
+                        .child(div().flex_1().text_lg().child("Layers"))
+                        .child(close),
+                )
+                .child(self.layer_panel(cx).flex_1().min_h_0())
+                .into_any_element()
+        } else {
+            side_panel_frame(
+                "References",
+                column().gap_4().child(self.reference_panel(cx)),
+                close,
+            )
+            .into_any_element()
+        }
     }
 
     fn reference_panel(&self, cx: &mut Context<Self>) -> Div {
@@ -1700,40 +2235,67 @@ impl DrawingApp {
 
     fn layer_panel(&self, cx: &mut Context<Self>) -> Div {
         let selected = &self.doc.layers[self.doc.active_layer];
-        let can_ungroup = self.selected_layers.iter().any(|index| {
-            self.doc
-                .layers
-                .get(*index)
-                .is_some_and(|layer| layer.group.is_some())
-        });
+        let unit_count = self.selection_units().len();
+        let all_units_have_bounds = self
+            .selection_units()
+            .iter()
+            .all(|unit| self.doc.selected_layer_bounds(unit).is_some());
+        let mixed_opacity = self
+            .selected_layers
+            .first()
+            .and_then(|index| self.doc.layers.get(*index))
+            .is_some_and(|first| {
+                self.selected_layers.iter().any(|index| {
+                    self.doc
+                        .layers
+                        .get(*index)
+                        .is_some_and(|layer| (layer.opacity - first.opacity).abs() > 0.0001)
+                })
+            });
+        let move_range = self.selected_move_range();
+        let can_ungroup = self.selected_group_name().is_some();
         let mut layers = column().gap_2().child(
             row()
-                .child(div().font_weight(FontWeight::MEDIUM).child("Layers"))
-                .child(label(self.doc.layers.len().to_string()))
-                .child(div().flex_1())
+                .flex_wrap()
                 .child(
-                    Button::new("group-layers")
-                        .ghost()
-                        .small()
-                        .label("Group")
-                        .disabled(self.selected_layers.len() < 2)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.group_selected_layers();
-                            cx.notify();
-                        })),
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(format!("Artwork · {}", self.doc.layers.len())),
                 )
+                .child(div().flex_1())
+                .when(self.selected_layers.len() >= 2 && !can_ungroup, |header| {
+                    header.child(
+                        Button::new("group-layers")
+                            .ghost()
+                            .small()
+                            .label("Group")
+                            .disabled(self.selected_layers.len() < 2)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.group_selected_layers();
+                                this.sync_layer_controls(window, cx);
+                                cx.notify();
+                            })),
+                    )
+                })
                 .when(can_ungroup, |header| {
                     header.child(
                         Button::new("ungroup-layers")
                             .ghost()
                             .small()
                             .label("Ungroup")
-                            .on_click(cx.listener(|this, _, _, cx| {
+                            .on_click(cx.listener(|this, _, window, cx| {
                                 this.ungroup_selected_layers();
+                                this.sync_layer_controls(window, cx);
                                 cx.notify();
                             })),
                     )
                 })
+                .child(
+                    tool_button("import-artwork", "image", "Import images as artwork layers")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.import_artwork_dialog(window, cx)
+                        })),
+                )
                 .child(
                     tool_button("add-layer", "plus", "Add layer").on_click(cx.listener(
                         |this, _, window, cx| {
@@ -1744,12 +2306,237 @@ impl DrawingApp {
                     )),
                 ),
         );
+        if let Some(group) = self.editing_group_name().map(str::to_owned) {
+            let group_for_done = group.clone();
+            layers = layers.child(
+                row()
+                    .child(label(format!("Editing {group}")))
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("exit-group-edit")
+                            .ghost()
+                            .small()
+                            .label("Done")
+                            .tooltip("Select the whole group · Esc")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.select_layer_group(&group_for_done, false, window, cx);
+                            })),
+                    ),
+            );
+        }
+        if self.selected_group_and_layer().is_some() {
+            layers = layers.child(
+                Button::new("add-selection-to-group")
+                    .ghost()
+                    .small()
+                    .label("Add selected layer to group")
+                    .tooltip("Add the adjacent layer without changing stacking")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.add_selected_layer_to_group(window, cx)
+                    })),
+            );
+        }
+        if self.editing_group_name().is_some() && self.selected_layers.len() == 1 {
+            layers = layers.child(
+                Button::new("remove-layer-from-group")
+                    .ghost()
+                    .small()
+                    .label("Remove layer from group")
+                    .tooltip("Remove an edge layer without changing stacking")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.remove_selected_layer_from_group(window, cx)
+                    })),
+            );
+        }
         let mut list = column()
             .id("layer-list")
             .gap_1()
             .max_h(px(232.))
             .overflow_y_scroll();
+        let mut seen_groups = std::collections::HashSet::new();
         for (i, layer) in self.doc.layers.iter().enumerate().rev() {
+            if let Some(group) = &layer.group {
+                let begins_segment = self
+                    .doc
+                    .layers
+                    .get(i + 1)
+                    .is_none_or(|next| next.group.as_ref() != Some(group));
+                let key = (self.epoch, self.doc.canvas_id, group.clone());
+                let collapsed = self.collapsed_layer_groups.contains(&key);
+                if begins_segment {
+                    let continued = !seen_groups.insert(group.clone());
+                    let members = self
+                        .doc
+                        .layers
+                        .iter()
+                        .filter(|layer| layer.group.as_ref() == Some(group))
+                        .count();
+                    let all_selected = self
+                        .doc
+                        .layers
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, layer)| layer.group.as_ref() == Some(group))
+                        .all(|(index, _)| self.selected_layers.contains(&index));
+                    let selected_group = group.clone();
+                    let context_group = group.clone();
+                    let group_app = cx.entity();
+                    let visibility_group = group.clone();
+                    let lock_group = group.clone();
+                    let properties = self.doc.layer_groups.get(group);
+                    let group_visible = properties.is_none_or(|props| props.visible);
+                    let group_locked = properties.is_some_and(|props| props.locked);
+                    let collapse_key = key.clone();
+                    let positions: Vec<_> = self
+                        .doc
+                        .layers
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, layer)| {
+                            (layer.group.as_ref() == Some(group)).then_some(index)
+                        })
+                        .collect();
+                    let group_range = positions
+                        .first()
+                        .zip(positions.last())
+                        .filter(|(start, end)| **end - **start + 1 == positions.len())
+                        .map(|(start, end)| (*start, *end + 1));
+                    let (drag_start, drag_end) =
+                        if all_selected && self.selected_layers.len() > positions.len() {
+                            move_range.unwrap_or((0, 0))
+                        } else {
+                            group_range.unwrap_or((0, 0))
+                        };
+                    let drag = DraggedLayerRows {
+                        epoch: self.epoch,
+                        artboard: self.doc.canvas_id,
+                        revision: self.revision,
+                        start: drag_start,
+                        end: drag_end,
+                        label: group.clone(),
+                    };
+                    list = list.child(
+                        row()
+                            .id(format!("group-row-{i}"))
+                            .gap_1()
+                            .rounded_md()
+                            .border_t_1()
+                            .border_color(gpui_kit::transparent_black())
+                            .drag_over::<DraggedLayerRows>(|style, _, _, _| {
+                                style.border_color(rgb(WINE))
+                            })
+                            .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
+                            .on_drop(cx.listener(
+                                move |this, drag: &DraggedLayerRows, window, cx| {
+                                    this.drop_layer_rows(drag, i, window, cx);
+                                },
+                            ))
+                            .when(all_selected, |r| r.bg(rgb(0xf1e6eb)))
+                            .child(
+                                tool_button(
+                                    format!("group-expand-{i}"),
+                                    if collapsed { "plus" } else { "minus" },
+                                    if collapsed {
+                                        "Expand group"
+                                    } else {
+                                        "Collapse group"
+                                    },
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        if !this.collapsed_layer_groups.remove(&collapse_key) {
+                                            this.collapsed_layer_groups
+                                                .insert(collapse_key.clone());
+                                        }
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                            .child(
+                                div().flex_1().min_w_0().overflow_hidden().child(
+                                    Button::new(format!("group-select-{i}"))
+                                        .ghost()
+                                        .small()
+                                        .w_full()
+                                        .justify_start()
+                                        .icon(icon("layers"))
+                                        .label(if continued {
+                                            format!("{group} · continued")
+                                        } else {
+                                            group.clone()
+                                        })
+                                        .tooltip("Select group")
+                                        .atelier_selected(all_selected, cx)
+                                        .on_click(cx.listener(
+                                            move |this, event: &ClickEvent, window, cx| {
+                                                let modifiers = event.modifiers();
+                                                this.select_layer_group(
+                                                    &selected_group,
+                                                    modifiers.shift
+                                                        || modifiers.platform
+                                                        || modifiers.control,
+                                                    window,
+                                                    cx,
+                                                );
+                                            },
+                                        )),
+                                ),
+                            )
+                            .child(label(format!("{members}")))
+                            .child(
+                                tool_button(
+                                    format!("group-visible-{i}"),
+                                    if group_visible { "eye" } else { "eye-off" },
+                                    if group_visible {
+                                        "Hide group"
+                                    } else {
+                                        "Show group"
+                                    },
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.toggle_group_visibility(&visibility_group, cx)
+                                    },
+                                )),
+                            )
+                            .child(
+                                tool_button(
+                                    format!("group-lock-{i}"),
+                                    if group_locked { "lock" } else { "unlock" },
+                                    if group_locked {
+                                        "Unlock group"
+                                    } else {
+                                        "Lock group"
+                                    },
+                                )
+                                .atelier_selected(group_locked, cx)
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| this.toggle_group_lock(&lock_group, cx),
+                                )),
+                            )
+                            .context_menu(move |menu, window, cx| {
+                                group_app.update(cx, |this, cx| {
+                                    let all_selected = this
+                                        .doc
+                                        .layers
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|(_, layer)| {
+                                            layer.group.as_deref() == Some(context_group.as_str())
+                                        })
+                                        .all(|(index, _)| this.selected_layers.contains(&index));
+                                    if !all_selected {
+                                        this.select_layer_group(&context_group, false, window, cx);
+                                    }
+                                });
+                                selection_context_menu(menu, group_app.clone(), cx)
+                            }),
+                    );
+                }
+                if collapsed {
+                    continue;
+                }
+            }
             let thumbnail = layer.image.as_ref().and_then(|image| {
                 self.doc
                     .references
@@ -1763,30 +2550,95 @@ impl DrawingApp {
                             .map(|(_, preview)| preview.clone())
                     })
             });
-            let mut layer_row = row()
+            let is_selected = self.selected_layers.contains(&i);
+            let is_paint_target = self.doc.paint_layer == Some(i);
+            let preview = if let Some(thumbnail) = thumbnail {
+                img(thumbnail)
+                    .w(px(28.))
+                    .h(px(28.))
+                    .object_fit(ObjectFit::Contain)
+                    .into_any_element()
+            } else {
+                div()
+                    .w(px(28.))
+                    .h(px(28.))
+                    .rounded_md()
+                    .bg(rgb(0xf7f3f5))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon(if layer.image.is_some() {
+                        "image"
+                    } else {
+                        "brush"
+                    }))
+                    .into_any_element()
+            };
+            let selection = Button::new(format!("layer-{i}"))
+                .ghost()
+                .small()
+                .w_full()
+                .justify_start()
+                .accessibility_label(format!(
+                    "{}{}{}",
+                    layer.name,
+                    if is_paint_target {
+                        ", paint target"
+                    } else {
+                        ""
+                    },
+                    if layer.candidate {
+                        ", pending review"
+                    } else {
+                        ""
+                    }
+                ))
+                .tooltip(layer.name.clone())
+                .atelier_selected(is_selected, cx)
+                .child(div().w(px(8.)).child(if is_selected { "•" } else { "" }))
+                .child(preview)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(layer.name.clone()),
+                )
+                .when(is_paint_target, |button| button.child(label("Paint")))
+                .when(layer.candidate, |button| {
+                    button.child(label("Review").text_color(rgb(AMBER)))
+                })
+                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                    let modifiers = event.modifiers();
+                    if modifiers.shift {
+                        this.select_layer_range(i, window, cx);
+                    } else if modifiers.platform || modifiers.control {
+                        this.toggle_layer_selection(i, window, cx);
+                    } else {
+                        this.select_layer(i, window, cx);
+                    }
+                }));
+            let layer_row = row()
                 .gap_1()
                 .rounded_md()
-                .when(i == self.doc.active_layer, |r| r.bg(rgb(0xf1e6eb)))
-                .child(
-                    tool_button(
-                        format!("layer-select-{i}"),
-                        if self.selected_layers.contains(&i) {
-                            "check"
-                        } else {
-                            "circle"
-                        },
-                        "Include layer in group selection",
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.toggle_layer_selection(i, cx);
-                    })),
-                )
+                .when(layer.group.is_some(), |r| r.pl_3())
+                .when(is_selected, |r| r.bg(rgb(0xf1e6eb)))
+                .child(div().flex_1().min_w_0().child(selection))
                 .child(
                     tool_button(
                         format!("layer-visible-{i}"),
                         if layer.visible { "eye" } else { "eye-off" },
-                        "Toggle layer visibility",
+                        if layer.visible {
+                            "Hide layer"
+                        } else {
+                            "Show layer"
+                        },
                     )
+                    .accessibility_label(format!(
+                        "{} {}",
+                        if layer.visible { "Hide" } else { "Show" },
+                        layer.name
+                    ))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.checkpoint();
                         this.doc.layers[i].visible = !this.doc.layers[i].visible;
@@ -1804,91 +2656,59 @@ impl DrawingApp {
                             "Lock layer"
                         },
                     )
+                    .accessibility_label(format!(
+                        "{} {}",
+                        if layer.locked { "Unlock" } else { "Lock" },
+                        layer.name
+                    ))
                     .atelier_selected(layer.locked, cx)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.toggle_layer_lock(i, cx);
-                    })),
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_layer_lock(i, cx))),
                 );
-            layer_row = layer_row.child(if let Some(thumbnail) = thumbnail {
-                img(thumbnail)
-                    .w(px(36.))
-                    .h(px(36.))
-                    .object_fit(ObjectFit::Contain)
-                    .into_any_element()
+            let row_app = cx.entity();
+            let (drag_start, drag_end) = if self.selected_layers.contains(&i) {
+                move_range.unwrap_or((0, 0))
             } else {
-                div()
-                    .w(px(36.))
-                    .h(px(36.))
-                    .rounded_md()
-                    .bg(rgb(0xf7f3f5))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(icon("layers"))
-                    .into_any_element()
-            });
-            layer_row = layer_row
-                .child(
-                    div().flex_1().min_w_0().overflow_hidden().child(
-                        Button::new(format!("layer-{i}"))
-                            .ghost()
-                            .small()
-                            .w_full()
-                            .label(layer.name.clone())
-                            .atelier_selected(i == self.doc.active_layer, cx)
-                            .on_click(cx.listener(move |this, _, window, cx| {
+                (i, i + 1)
+            };
+            let drag = DraggedLayerRows {
+                epoch: self.epoch,
+                artboard: self.doc.canvas_id,
+                revision: self.revision,
+                start: drag_start,
+                end: drag_end,
+                label: layer.name.clone(),
+            };
+            list = list.child(
+                layer_row
+                    .id(format!("layer-row-{i}"))
+                    .border_t_1()
+                    .border_color(gpui_kit::transparent_black())
+                    .drag_over::<DraggedLayerRows>(|style, _, _, _| style.border_color(rgb(WINE)))
+                    .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
+                    .on_drop(
+                        cx.listener(move |this, drag: &DraggedLayerRows, window, cx| {
+                            this.drop_layer_rows(drag, i, window, cx);
+                        }),
+                    )
+                    .context_menu(move |menu, window, cx| {
+                        row_app.update(cx, |this, cx| {
+                            if !this.selected_layers.contains(&i) {
                                 this.select_layer(i, window, cx);
-                            })),
-                    ),
-                )
-                .when_some(layer.group.as_ref(), |r, group| {
-                    r.child(label(format!("Group · {group}")))
-                })
-                .when(layer.candidate, |r| {
-                    r.child(label("Review").text_color(rgb(AMBER)).pr_2())
-                });
-            list = list.child(layer_row);
-        }
-        layers = layers.child(list).child(
-            row()
-                .child(
-                    Button::new("move-image-layer")
-                        .ghost()
-                        .small()
-                        .icon(icon("hand"))
-                        .label("Move")
-                        .tooltip("Drag the layer to move; drag its corner to scale")
-                        .disabled(self.doc.layer_bounds().is_none())
-                        .atelier_selected(self.moving_image && self.tool == Tool::Hand, cx)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.finish_stroke();
-                            this.moving_image = !this.moving_image;
-                            this.tool = Tool::Hand;
-                            this.selecting_generation_region = false;
-                            cx.notify();
-                        })),
-                )
-                .child(div().flex_1())
-                .child(
-                    Button::new("layer-properties")
-                        .ghost()
-                        .small()
-                        .icon(icon("settings"))
-                        .label(format!("{}%", (selected.opacity * 100.).round() as u32))
-                        .accessibility_label("Layer properties")
-                        .tooltip("Opacity and precise layer values")
-                        .atelier_selected(self.show_layer_properties, cx)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.show_layer_properties = !this.show_layer_properties;
-                            if this.show_layer_properties {
-                                this.sync_layer_controls(window, cx);
                             }
-                            cx.notify();
-                        })),
-                ),
-        );
-        if selected.candidate {
-            layers = layers.child(
+                        });
+                        selection_context_menu(menu, row_app.clone(), cx)
+                    }),
+            );
+        }
+        layers = layers.child(list.flex_shrink_0());
+        let mut inspector = column().gap_2();
+        if self.selected_layers.is_empty() {
+            inspector = inspector
+                .child(separator())
+                .child(label("Select a layer to view its properties."));
+        }
+        if selected.candidate && self.selected_layers.as_slice() == [self.doc.active_layer] {
+            inspector = inspector.child(
                 column()
                     .gap_2()
                     .pt_2()
@@ -1956,71 +2776,368 @@ impl DrawingApp {
                     ),
             );
         }
-        if self.show_layer_properties {
-            let mut properties = column()
-                .gap_3()
-                .pt_2()
-                .child(
-                    row()
-                        .child(field("Layer name", &self.layer_name).flex_1())
-                        .child(
-                            tool_button("rename-layer", "check", "Apply layer name").on_click(
-                                cx.listener(|this, _, _, cx| {
-                                    this.rename_active_layer(cx);
-                                }),
-                            ),
-                        ),
-                )
-                .child(
-                    row()
-                        .child(field("Move X (px)", &self.layer_dx).flex_1())
-                        .child(field("Move Y (px)", &self.layer_dy).flex_1()),
-                )
-                .child(
-                    row()
-                        .child(field("Scale by (%)", &self.layer_scale).flex_1())
-                        .child(field("Opacity (%)", &self.layer_opacity).flex_1()),
-                )
-                .child(
-                    row()
-                        .child(
-                            tool_button("layer-up", "up", "Move layer up")
-                                .disabled(self.doc.active_layer + 1 >= self.doc.layers.len())
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.move_layer(true);
-                                    this.sync_inputs(window, cx);
+        if !self.selected_layers.is_empty() {
+            let group = self.selected_group_name();
+            let includes_group = self.selection_units().iter().any(|unit| unit.len() > 1);
+            let heading = if let Some(name) = group {
+                name.to_owned()
+            } else if unit_count == 1 {
+                selected.name.clone()
+            } else {
+                format!("{unit_count} items selected")
+            };
+            let item_type = if group.is_some() {
+                "Group"
+            } else if unit_count > 1 {
+                ""
+            } else if selected.image.is_some() {
+                "Image"
+            } else {
+                "Paint layer"
+            };
+            let mut properties = column().gap_2().pt_2()
+                .child(separator())
+                .child(row().child(div().flex_1().text_base().font_weight(FontWeight::SEMIBOLD).child(heading)).child(label(item_type)))
+                .when(self.selection_is_locked(), |properties| properties.child(label("Locked · unlock selected items to edit")))
+                .when(unit_count == 1 && group.is_none() && !selected.visible, |properties| properties.child(label("Hidden layer")))
+                .when_some(group, |properties, _| properties
+                    .child(field("Group name", &self.group_name))
+                    .child(property_field("Group opacity (%)", &self.group_opacity, self.selection_is_locked()))
+                    .when(!self.doc.group_is_contiguous(group.unwrap()), |p| p.child(label("Regroup adjacent layers to edit group opacity."))))
+                .when(unit_count == 1 && group.is_none(), |properties| properties
+                    .child(field("Layer name", &self.layer_name))
+                    .child(if self.doc.paint_layer == Some(self.doc.active_layer) {
+                        label("Paint target").into_any_element()
+                    } else {
+                        Button::new("set-layer-paint-target").ghost().small().label("Set as paint target")
+                            .disabled(selected.candidate)
+                            .tooltip("Choose where the brush and eraser paint")
+                            .on_click(cx.listener(|this, _, _, cx| this.set_paint_layer(this.doc.active_layer, cx)))
+                            .into_any_element()
+                    }))
+                .when(self.doc.selected_layer_bounds(&self.selected_layers).is_some(), |properties| {
+                    properties
+                        .child(label("Position and size"))
+                        .child(row()
+                            .child(property_field("X (px)", &self.layer_x, self.selection_is_locked()).flex_1())
+                            .child(property_field("Y (px)", &self.layer_y, self.selection_is_locked()).flex_1()))
+                        .child(row()
+                            .child(property_field("Width (px)", &self.layer_width, self.selection_is_locked()).flex_1())
+                            .child(property_field("Height (px)", &self.layer_height, self.selection_is_locked()).flex_1())
+                            .child(Button::new("layer-aspect-lock").ghost().small()
+                                .icon(icon(if self.layer_aspect_locked { "lock" } else { "unlock" }))
+                                .tooltip("Lock width and height proportions")
+                                .atelier_selected(self.layer_aspect_locked, cx)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.layer_aspect_locked = !this.layer_aspect_locked;
                                     cx.notify();
-                                })),
-                        )
-                        .child(
-                            tool_button("layer-down", "down", "Move layer down")
-                                .disabled(self.doc.active_layer == 0)
+                                }))))
+                        .child(row()
+                            .child(property_field("Rotate by (°)", &self.layer_rotation, self.selection_is_locked()).flex_1())
+                            .child(Button::new("rotate-selection").ghost().small().label("Rotate")
+                                .tooltip("Rotate selected artwork around its center")
+                                .disabled(self.selection_is_locked())
                                 .on_click(cx.listener(|this, _, window, cx| {
-                                    this.move_layer(false);
-                                    this.sync_inputs(window, cx);
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            tool_button("delete-layer", "trash", "Delete layer · undoable")
-                                .disabled(self.doc.layers.len() == 1)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.delete_layer();
-                                    this.sync_inputs(window, cx);
-                                    cx.notify();
-                                })),
-                        )
+                                    this.rotate_selection_by_input(window, cx)
+                                }))))
+                })
+                .when(self.doc.selected_layer_bounds(&self.selected_layers).is_none(), |properties| {
+                    properties.child(label("Draw on this layer to enable position and size controls."))
+                })
+                .when(group.is_none() && !includes_group, |properties| {
+                    properties.child(property_field("Layer opacity (%)", &self.layer_opacity, self.selection_is_locked()))
+                })
+                .when(group.is_none() && includes_group, |properties| properties.child(label("Group opacity remains separate from layer opacity.")))
+                .when(
+                    mixed_opacity && group.is_none() && !includes_group,
+                    |properties| {
+                        properties.child(label(
+                            "Mixed layer opacity · enter a value to change all selected layers",
+                        ))
+                    },
+                )
+                .child(Button::new("toggle-arrange").ghost().small()
+                    .label(if self.show_layer_arrange { "Hide arrange controls" } else { "Arrange…" })
+                    .disabled(self.doc.selected_layer_bounds(&self.selected_layers).is_none())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.show_layer_arrange = !this.show_layer_arrange;
+                        cx.notify();
+                    })))
+                .when(self.show_layer_arrange && self.doc.selected_layer_bounds(&self.selected_layers).is_some(), |section| {
+                    section
+                .child(
+                    row()
+                        .child(label(if self.selected_layers.len() > 1 {
+                            format!("{} layers selected", self.selected_layers.len())
+                        } else {
+                            "Transform".into()
+                        }))
                         .child(div().flex_1())
                         .child(
-                            Button::new("apply-layer-values")
-                                .small()
-                                .label("Apply")
+                            tool_button(
+                                "layer-snap",
+                                "grid",
+                                "Snap to artboard, layers, and 16 px grid",
+                            )
+                            .atelier_selected(self.snap_enabled, cx)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.set_snap_enabled(!this.snap_enabled);
+                                cx.notify();
+                            })),
+                        ),
+                )
+                .child(label("Position selection as a whole on artboard"))
+                .child({
+                    let mut controls = row();
+                    for (id, icon_name, tooltip, horizontal, mode) in [
+                        (
+                            "position-left",
+                            "align-left",
+                            "Move selection to artboard left",
+                            true,
+                            0,
+                        ),
+                        (
+                            "position-center",
+                            "align-center",
+                            "Center selection horizontally on artboard",
+                            true,
+                            1,
+                        ),
+                        (
+                            "position-right",
+                            "align-right",
+                            "Move selection to artboard right",
+                            true,
+                            2,
+                        ),
+                        (
+                            "position-top",
+                            "align-top",
+                            "Move selection to artboard top",
+                            false,
+                            0,
+                        ),
+                        (
+                            "position-middle",
+                            "align-middle",
+                            "Center selection vertically on artboard",
+                            false,
+                            1,
+                        ),
+                        (
+                            "position-bottom",
+                            "align-bottom",
+                            "Move selection to artboard bottom",
+                            false,
+                            2,
+                        ),
+                    ] {
+                        controls = controls.child(
+                            tool_button(id, icon_name, tooltip)
+                                .disabled(
+                                    self.selected_layers.is_empty() || self.selection_is_locked(),
+                                )
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.position_selection_on_artboard(
+                                        horizontal, mode, window, cx,
+                                    );
+                                })),
+                        );
+                    }
+                    controls
+                })
+                .when(unit_count > 1, |section| section.child(label("Align each item to artboard · items may overlap"))
+                .child({
+                    let mut controls = row();
+                    for (id, icon_name, tooltip, horizontal, mode) in [
+                        (
+                            "each-left",
+                            "align-left",
+                            "Align each item to artboard left",
+                            true,
+                            0,
+                        ),
+                        (
+                            "each-center",
+                            "align-center",
+                            "Center each item on artboard horizontally; items may overlap",
+                            true,
+                            1,
+                        ),
+                        (
+                            "each-right",
+                            "align-right",
+                            "Align each item to artboard right",
+                            true,
+                            2,
+                        ),
+                        (
+                            "each-top",
+                            "align-top",
+                            "Align each item to artboard top",
+                            false,
+                            0,
+                        ),
+                        (
+                            "each-middle",
+                            "align-middle",
+                            "Center each item on artboard vertically; items may overlap",
+                            false,
+                            1,
+                        ),
+                        (
+                            "each-bottom",
+                            "align-bottom",
+                            "Align each item to artboard bottom",
+                            false,
+                            2,
+                        ),
+                    ] {
+                        controls = controls.child(
+                            tool_button(id, icon_name, tooltip)
+                                .disabled(
+                                    self.selected_layers.is_empty() || self.selection_is_locked(),
+                                )
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    if mode == 1 {
+                                        this.align_each_confirmation = Some((horizontal, this.epoch, this.doc.canvas_id, this.revision, this.selected_layers.clone()));
+                                        cx.notify();
+                                    } else {
+                                        this.align_each_to_artboard(horizontal, mode, window, cx);
+                                    }
+                                })),
+                        );
+                    }
+                    controls
+                })
+                .when(self.align_each_confirmation.as_ref().is_some_and(|(_, epoch, canvas, revision, selection)| *epoch == self.epoch && *canvas == self.doc.canvas_id && *revision == self.revision && *selection == self.selected_layers), |section| section
+                    .child(label("Centering each item may overlap them. Continue?"))
+                    .child(row()
+                        .child(Button::new("cancel-align-each").small().label("Cancel").on_click(cx.listener(|this, _, _, cx| { this.align_each_confirmation = None; cx.notify(); })))
+                        .child(Button::new("confirm-align-each").small().label("Center each item").on_click(cx.listener(|this, _, window, cx| {
+                            if let Some((horizontal, epoch, canvas, revision, selection)) = this.align_each_confirmation.take() {
+                                if epoch == this.epoch && canvas == this.doc.canvas_id && revision == this.revision && selection == this.selected_layers {
+                                    this.align_each_to_artboard(horizontal, 1, window, cx);
+                                }
+                            }
+                            cx.notify();
+                        }))))
+                )
+                )
+                .when(unit_count > 1, |section| section
+                .when(!all_units_have_bounds, |section| section.child(label("Each item needs artwork before alignment or spacing.")))
+                .child(label("Align items to each other"))
+                .child(
+                    row()
+                        .child(
+                            tool_button("align-left", "align-left", "Align left edges")
+                                .disabled(unit_count < 2 || self.selection_is_locked() || !all_units_have_bounds)
                                 .on_click(cx.listener(|this, _, window, cx| {
-                                    this.apply_layer_controls(window, cx)
+                                    this.align_selection(true, 0, window, cx)
+                                })),
+                        )
+                        .child(
+                            tool_button(
+                                "align-hcenter",
+                                "align-center",
+                                "Align horizontal centers",
+                            )
+                            .disabled(unit_count < 2 || self.selection_is_locked() || !all_units_have_bounds)
+                            .on_click(cx.listener(
+                                |this, _, window, cx| this.align_selection(true, 1, window, cx),
+                            )),
+                        )
+                        .child(
+                            tool_button("align-right", "align-right", "Align right edges")
+                                .disabled(unit_count < 2 || self.selection_is_locked() || !all_units_have_bounds)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.align_selection(true, 2, window, cx)
+                                })),
+                        )
+                        .child(
+                            tool_button("align-top", "align-top", "Align top edges")
+                                .disabled(unit_count < 2 || self.selection_is_locked() || !all_units_have_bounds)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.align_selection(false, 0, window, cx)
+                                })),
+                        )
+                        .child(
+                            tool_button("align-vcenter", "align-middle", "Align vertical centers")
+                                .disabled(unit_count < 2 || self.selection_is_locked() || !all_units_have_bounds)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.align_selection(false, 1, window, cx)
+                                })),
+                        )
+                        .child(
+                            tool_button("align-bottom", "align-bottom", "Align bottom edges")
+                                .disabled(unit_count < 2 || self.selection_is_locked() || !all_units_have_bounds)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.align_selection(false, 2, window, cx)
+                                })),
+                        )
+                        .when(unit_count >= 3, |row| row.child(
+                            tool_button("distribute-x", "distribute-x", "Distribute horizontally")
+                                .disabled(unit_count < 3 || self.selection_is_locked() || !all_units_have_bounds)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.distribute_selection(true, window, cx)
+                                })),
+                        ))
+                        .when(unit_count >= 3, |row| row.child(
+                            tool_button("distribute-y", "distribute-y", "Distribute vertically")
+                                .disabled(unit_count < 3 || self.selection_is_locked() || !all_units_have_bounds)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.distribute_selection(false, window, cx)
+                                })),
+                        )),
+                )
+                .child(
+                    row()
+                        .child(field("Gap (px)", &self.layer_gap).flex_1())
+                        .child(
+                            Button::new("gap-horizontal")
+                                .ghost()
+                                .small()
+                                .label("Horizontal")
+                                .tooltip(
+                                    "Set exact horizontal gaps; keep the leftmost layer in place",
+                                )
+                                .disabled(unit_count < 2 || self.selection_is_locked() || !all_units_have_bounds)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.set_selection_gap(true, window, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new("gap-vertical")
+                                .ghost()
+                                .small()
+                                .label("Vertical")
+                                .tooltip("Set exact vertical gaps; keep the topmost layer in place")
+                                .disabled(unit_count < 2 || self.selection_is_locked() || !all_units_have_bounds)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.set_selection_gap(false, window, cx)
                                 })),
                         ),
+                )
+                )
+                })
+                ;
+            if let Some(reference) = (self.selected_layers.len() == 1
+                && self.selected_group_name().is_none())
+            .then(|| selected.image.as_ref().map(|image| image.reference.clone()))
+            .flatten()
+            {
+                properties = properties.child(
+                    Button::new("crop-layer-image")
+                        .ghost()
+                        .small()
+                        .label("Crop image")
+                        .disabled(self.doc.layer_is_locked(selected) || self.image_crop.is_some())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.start_image_crop(cx);
+                            window.focus(&this.focus, cx);
+                        })),
                 );
-            if let Some(reference) = selected.image.as_ref().map(|image| image.reference.clone()) {
                 properties = properties.child(
                     Button::new("inspect-layer-image")
                         .ghost()
@@ -2044,9 +3161,16 @@ impl DrawingApp {
                     );
                 }
             }
-            layers = layers.child(properties);
+            inspector = inspector.child(properties);
         }
-        layers
+        layers.child(
+            div()
+                .id("layer-inspector-scroll")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(inspector),
+        )
     }
     fn study_timer(&self, cx: &mut Context<Self>) -> Div {
         let seconds = self.timer_remaining.as_secs();
@@ -2141,6 +3265,20 @@ impl DrawingApp {
                 ))
             })
             .when(self.tracing, |r| r.child("· Assisted"))
+            .when(matches!(self.tool, Tool::Pencil | Tool::Eraser), |r| {
+                let name = self
+                    .doc
+                    .paint_layer
+                    .and_then(|index| self.doc.layers.get(index))
+                    .map_or("Automatic", |layer| layer.name.as_str());
+                r.child(
+                    div()
+                        .max_w(px(180.))
+                        .overflow_hidden()
+                        .truncate()
+                        .child(format!("Paint: {name}")),
+                )
+            })
             .child(self.render_backend)
             .child(
                 div()
@@ -2343,19 +3481,24 @@ impl DrawingApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let drawing = mode == PromptComposerMode::Drawing;
-        let selection = drawing && self.region_bounds().is_some();
+        let new_layer = drawing && self.drawing_create_layer;
+        let selection = drawing && !new_layer && self.region_bounds().is_some();
         let separate = selection && self.selection_mode == crate::workflow::SelectionMode::Separate;
-        let has_image_options =
-            !drawing || separate || self.settings.provider.native_architecture().is_some();
+        let has_image_options = !drawing
+            || separate
+            || new_layer
+            || self.settings.provider.native_architecture().is_some();
         let composer_app = cx.entity();
         let show_details = self.show_prompt_details;
         let caption = if drawing {
-            if separate {
-                "Separate image · new artboard"
+            if new_layer {
+                "Create an image; review it as a new layer on this artboard"
+            } else if separate {
+                "Create from the selected area; the result opens on a new artboard"
             } else if selection {
-                "Blend into artboard · review as a layer"
+                "Edit the selected area; review the result as a layer"
             } else {
-                "Artboard edit · review as a layer"
+                "Edit the full artboard; review the result as a layer"
             }
         } else if mode == PromptComposerMode::Image {
             "Image variation · new artboard"
@@ -2368,7 +3511,7 @@ impl DrawingApp {
             .when_some(self.generation_report(), |row, report| {
                 row.child(self.report_hint(report.id, "Generation failed · View", cx))
             })
-            .when(drawing && !separate, |r| {
+            .when(drawing && !separate && !new_layer, |r| {
                 let (x, y, w, h) =
                     self.region_bounds()
                         .unwrap_or((0, 0, self.doc.width, self.doc.height));
@@ -2382,13 +3525,17 @@ impl DrawingApp {
         if drawing {
             controls = controls.child(
                 row()
+                    .flex_wrap()
                     .gap_1()
                     .child(
                         Button::new("drawing-full")
                             .ghost()
                             .small()
-                            .label("Full artboard")
-                            .atelier_selected(!selection && !self.selecting_generation_region, cx)
+                            .label("Edit artboard")
+                            .atelier_selected(
+                                !new_layer && !selection && !self.selecting_generation_region,
+                                cx,
+                            )
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.use_full_canvas(cx);
                                 this.restore_prompt(window, cx);
@@ -2400,14 +3547,30 @@ impl DrawingApp {
                             .small()
                             .icon(icon("mask-rect"))
                             .label(if selection {
-                                "Selected area"
+                                "Edit selected area"
                             } else {
-                                "Select area"
+                                "Edit an area"
                             })
-                            .atelier_selected(self.selecting_generation_region || selection, cx)
+                            .atelier_selected(
+                                !new_layer && (self.selecting_generation_region || selection),
+                                cx,
+                            )
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.toggle_box_select(cx);
                                 this.restore_prompt(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("drawing-new-layer")
+                            .ghost()
+                            .small()
+                            .label("Create image layer")
+                            .atelier_selected(new_layer, cx)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.use_full_canvas(cx);
+                                this.drawing_create_layer = true;
+                                this.restore_prompt(window, cx);
+                                cx.notify();
                             })),
                     ),
             );
@@ -2456,7 +3619,7 @@ impl DrawingApp {
                             .w_full(),
                     ),
                 )
-                .when(!drawing || separate, |r| {
+                .when(!drawing || separate || new_layer, |r| {
                     r.child(
                         div().w(px(144.)).child(
                             Select::new(&self.artboard_aspect_select)
@@ -2517,7 +3680,7 @@ impl DrawingApp {
                     Button::new("composer-submit")
                         .primary()
                         .small()
-                        .label(if drawing && !separate {
+                        .label(if drawing && !separate && !new_layer {
                             "Queue edit"
                         } else {
                             "Create"
@@ -2544,7 +3707,7 @@ impl DrawingApp {
                     .child(
                         label(format!(
                             "{} · {}",
-                            i + if drawing || mode == PromptComposerMode::Image {
+                            i + if (drawing && !new_layer) || mode == PromptComposerMode::Image {
                                 2
                             } else {
                                 1
@@ -3202,7 +4365,10 @@ impl DrawingApp {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Provider"),
             )
-            .child(self.provider_choices(true));
+            .child(self.provider_choices(true))
+            .child(label(
+                "Choose the service used for image creation and editing.",
+            ));
         if provider.native_architecture().is_some() {
             content = content
                 .child(label(if provider.supports_edit() {
@@ -3240,13 +4406,30 @@ impl DrawingApp {
                             }))
                     },
                 )))
-                .child(field("Generation model", &self.model))
-                .child(field("Editing model", &self.edit_model))
-                .child(label(
-                    "Leave editing model blank for models that only create images.",
-                ));
+                .child(
+                    Button::new("advanced-provider-models")
+                        .ghost()
+                        .small()
+                        .label(if self.show_advanced_provider {
+                            "Hide model details"
+                        } else {
+                            "Model details…"
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.show_advanced_provider = !this.show_advanced_provider;
+                            cx.notify();
+                        })),
+                )
+                .when(self.show_advanced_provider, |content| {
+                    content
+                        .child(field("Generation model", &self.model))
+                        .child(field("Editing model", &self.edit_model))
+                        .child(label(
+                            "Leave editing model blank for models that only create images.",
+                        ))
+                });
             content = content.child(separator())
-                .child(label("Provider connections, credentials and secrets are managed in Clipforge. Request model presets stay here."));
+                .child(label("Connections and credentials are managed in Clipforge. Model choices are saved here."));
         } else {
             content = content
                 .child(separator())

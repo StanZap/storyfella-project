@@ -303,21 +303,68 @@ impl Renderer {
             &[if transparent { 1. } else { 0. }],
             None,
         );
-        for (i, layer) in doc
-            .layers
-            .iter()
-            .enumerate()
-            .filter(|(_, l)| l.visible && l.opacity > 0.)
-        {
-            if let Some(tile) = self.layers[i].get(&key) {
+        // One scratch texture per tile is reused for every isolated group.
+        let mut scratch: Option<Texture> = None;
+        let mut group_surface: Option<(String, f32)> = None;
+        for (i, layer) in doc.layers.iter().enumerate() {
+            if !doc.layer_is_visible(layer) {
+                continue;
+            }
+            let isolated = layer.group.as_ref().and_then(|name| {
+                doc.layer_groups
+                    .get(name)
+                    .filter(|group| group.opacity < 1.)
+                    .map(|group| (name, group.opacity))
+            });
+            if group_surface
+                .as_ref()
+                .is_some_and(|(name, _)| isolated.is_none_or(|(next, _)| name != next))
+            {
+                let (_, opacity) = group_surface.take().unwrap();
                 self.dispatch(
                     command,
                     &self.composite,
-                    &[&tile.painted, output],
+                    &[scratch.as_ref().unwrap(), output],
+                    &[opacity, 0., 0.],
+                    None,
+                );
+            }
+            if let Some((name, opacity)) = isolated {
+                if group_surface.is_none() {
+                    let texture = scratch.get_or_insert_with(|| {
+                        self.texture(
+                            output.width() as u32,
+                            output.height() as u32,
+                            MTLPixelFormat::RGBA8Unorm,
+                        )
+                    });
+                    self.dispatch(command, &self.paper, &[texture], &[1.], None);
+                    group_surface = Some((name.clone(), opacity));
+                }
+            }
+            if let Some(tile) = self.layers[i].get(&key) {
+                let target = if group_surface.is_some() {
+                    scratch.as_ref().unwrap().as_ref()
+                } else {
+                    output
+                };
+                self.dispatch(
+                    command,
+                    &self.composite,
+                    &[&tile.painted, target],
                     &[layer.opacity, 0., 0.],
                     None,
                 );
             }
+        }
+        if let Some((_, opacity)) = group_surface {
+            self.dispatch(
+                command,
+                &self.composite,
+                &[scratch.as_ref().unwrap(), output],
+                &[opacity, 0., 0.],
+                None,
+            );
         }
         if !transparent && self.tracing {
             if let Some(reference) = &self.reference {
@@ -439,10 +486,10 @@ impl Renderer {
             .as_ref()
             .is_none_or(|old| !can_append(old, doc));
         let metadata_changed = self.previous.as_ref().is_none_or(|old| {
-            old.layers
-                .iter()
-                .zip(&doc.layers)
-                .any(|(a, b)| a.visible != b.visible || a.opacity != b.opacity)
+            old.layer_groups != doc.layer_groups
+                || old.layers.iter().zip(&doc.layers).any(|(a, b)| {
+                    a.visible != b.visible || a.opacity != b.opacity || a.group != b.group
+                })
         });
         let reference = doc.reference.and_then(|i| doc.references.get(i));
         let reference_changed = match (&self.reference_id, reference) {
@@ -867,6 +914,7 @@ mod tests {
             doc.layers[0].image = Some(crate::document::ImageLayer {
                 reference: std::sync::Arc::new(reference),
                 transform: [1., 0., 0., 1., 0., 0.],
+                crop: None,
             });
             let mut renderer = Renderer::new().unwrap();
             let actual = renderer.export(&doc, true).unwrap();

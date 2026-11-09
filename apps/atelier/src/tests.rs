@@ -189,7 +189,7 @@ fn generated_compositions_and_candidates_keep_distinct_roles_through_save_and_hi
     let mut history = History::new();
     history.checkpoint(&project);
     project.layers[1].candidate = false;
-    project.reposition_image_layer(3., 4., 1.5).unwrap();
+    project.translate_layers(&[1], 3., 4.).unwrap();
     project.layers[1].opacity = 0.4;
     project.layers[1].visible = false;
     assert!(history.undo(&mut project));
@@ -1092,6 +1092,7 @@ fn image_layers_paint_erase_transform_and_survive_undo_and_save() {
     project.layers[0].image = Some(document::ImageLayer {
         reference: Arc::new(colored_reference("Blue", [0, 80, 255, 255], 128, 96)),
         transform: [1., 0., 0., 1., 0., 0.],
+        crop: None,
     });
     let original = document::raster(&project, 128, true).unwrap();
     assert_eq!(original.get_pixel(60, 48).0, [0, 80, 255, 255]);
@@ -1132,17 +1133,139 @@ fn image_layer_placement_moves_painted_marks_and_rejects_invalid_changes() {
     project.layers[0].image = Some(document::ImageLayer {
         reference: Arc::new(colored_reference("Blue", [0, 80, 255, 255], 128, 96)),
         transform: [1., 0., 0., 1., 0., 0.],
+        crop: None,
     });
     project.layers[0].strokes.push(stroke(Tool::Eraser, 48.));
-    project.reposition_image_layer(16., 8., 0.5).unwrap();
+    project
+        .transform_layers_to_bounds(&[0], (48., 32., 64., 48.))
+        .unwrap();
     let moved = document::raster(&project, 128, true).unwrap();
     assert_eq!(moved.get_pixel(78, 56)[3], 0);
     assert_eq!(moved.get_pixel(78, 36).0, [0, 80, 255, 255]);
     let before = serde_json::to_vec(&project).unwrap();
-    assert!(project.reposition_image_layer(f32::NAN, 0., 1.).is_err());
-    assert!(project.reposition_image_layer(0., 0., 0.000001).is_err());
+    assert!(project
+        .transform_layers_to_bounds(&[0], (f32::NAN, 0., 64., 48.))
+        .is_err());
+    assert!(project
+        .transform_layers_to_bounds(&[0], (0., 0., 0.000001, 0.000001))
+        .is_err());
     assert_eq!(serde_json::to_vec(&project).unwrap(), before);
     project.validate().unwrap();
+}
+
+#[test]
+fn rotating_images_and_paint_is_atomic_when_any_selection_is_invalid() {
+    let mut project = doc();
+    project.layers[0].image = Some(document::ImageLayer {
+        reference: Arc::new(colored_reference("Blue", [0, 80, 255, 255], 128, 96)),
+        transform: [1., 0., 0., 1., 0., 0.],
+        crop: None,
+    });
+    project.layers[0].strokes.push(stroke(Tool::Eraser, 48.));
+    let before = serde_json::to_vec(&project).unwrap();
+    assert!(project
+        .rotate_layers(&[0, 99], Point { x: 64., y: 48. }, 1.)
+        .is_err());
+    assert_eq!(serde_json::to_vec(&project).unwrap(), before);
+    project
+        .rotate_layers(&[0], Point { x: 64., y: 48. }, std::f32::consts::FRAC_PI_2)
+        .unwrap();
+    let transformed = &project.layers[0].image.as_ref().unwrap().transform;
+    assert!((transformed[0]).abs() < 0.0001);
+    assert!((transformed[1] - 1.).abs() < 0.0001);
+    assert_ne!(serde_json::to_vec(&project).unwrap(), before);
+    project.validate().unwrap();
+}
+
+#[test]
+fn undone_artboard_ids_stay_reserved_for_pending_work() {
+    let mut project = doc();
+    let mut history = History::new();
+    history.checkpoint(&project);
+    project.create_canvas().unwrap();
+    let source = project.canvas_id;
+    assert!(history.undo(&mut project));
+    assert!(history.redo(&mut project));
+    assert_eq!(project.canvas_id, source);
+    assert!(history.undo(&mut project));
+
+    let mut project: Document =
+        serde_json::from_slice(&serde_json::to_vec(&project).unwrap()).unwrap();
+    project.create_canvas().unwrap();
+    assert!(project.canvas_id > source);
+    let reference = colored_reference("Pending", [255, 0, 0, 255], 32, 16);
+    let rect = (0, 0, 128, 96);
+    assert!(project
+        .attach_imported_images(source, rect, vec![reference.clone()])
+        .is_err());
+    assert!(project
+        .attach_result(
+            Arc::new(reference),
+            crate::workflow::Destination::NewLayer {
+                artboard: source,
+                rect
+            },
+        )
+        .is_err());
+    assert_eq!(project.layers.len(), 1);
+}
+
+#[test]
+fn imported_artwork_preserves_paint_target_and_rejects_missing_artboard_atomically() {
+    let mut project = doc();
+    let images = vec![
+        colored_reference("First", [255, 0, 0, 255], 32, 16),
+        colored_reference("Second", [0, 0, 255, 255], 16, 32),
+    ];
+    let before = serde_json::to_vec(&project).unwrap();
+    assert!(project
+        .attach_imported_images(999, (0, 0, 128, 96), images.clone())
+        .is_err());
+    assert_eq!(serde_json::to_vec(&project).unwrap(), before);
+    let active = project.active_layer;
+    let paint = project.paint_layer;
+    let indices = project
+        .attach_imported_images(project.canvas_id, (0, 0, 128, 96), images)
+        .unwrap();
+    assert_eq!(indices, vec![1, 2]);
+    assert_eq!(project.active_layer, active);
+    assert_eq!(project.paint_layer, paint);
+    assert!(indices
+        .iter()
+        .all(|index| project.layers[*index].image.is_some()));
+    assert!(project.layer_bounds_for(1).unwrap().2 < project.layer_bounds_for(2).unwrap().0);
+}
+
+#[test]
+fn group_opacity_applies_to_composited_artwork_once() {
+    let mut project = doc();
+    project.version = 3;
+    project.layers[0].group = Some("Group".into());
+    project.layers[0].image = Some(document::ImageLayer {
+        reference: Arc::new(colored_reference("Red", [255, 0, 0, 255], 16, 16)),
+        transform: [1., 0., 0., 1., 0., 0.],
+        crop: None,
+    });
+    project.layers.push(project.layers[0].clone());
+    project.layer_groups.insert(
+        "Group".into(),
+        document::LayerGroup {
+            opacity: 0.5,
+            ..Default::default()
+        },
+    );
+    let pixel = document::raster(&project, 128, true)
+        .unwrap()
+        .get_pixel(4, 4)
+        .0;
+    assert!((126..=129).contains(&pixel[3]), "group alpha: {pixel:?}");
+    project.layer_groups.get_mut("Group").unwrap().visible = false;
+    assert_eq!(
+        document::raster(&project, 128, true)
+            .unwrap()
+            .get_pixel(4, 4)[3],
+        0
+    );
 }
 
 #[test]
@@ -2027,6 +2150,7 @@ fn metal_canvas_artwork_package_contains_image_paint_and_erase() {
     painting.layers[0].image = Some(document::ImageLayer {
         reference: Arc::new(colored_reference("Base", [20, 100, 200, 255], 128, 96)),
         transform: [1., 0., 0., 1., 0., 0.],
+        crop: None,
     });
     painting.layers[0].strokes.push(stroke(Tool::Pencil, 30.));
     painting.layers[0].strokes.push(stroke(Tool::Eraser, 70.));

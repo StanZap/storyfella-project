@@ -75,11 +75,37 @@ pub struct Layer {
     #[serde(default)]
     pub image: Option<ImageLayer>,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LayerGroup {
+    #[serde(default = "show_references")]
+    pub visible: bool,
+    #[serde(default)]
+    pub locked: bool,
+    #[serde(default = "full_opacity")]
+    pub opacity: f32,
+}
+
+fn full_opacity() -> f32 {
+    1.
+}
+impl Default for LayerGroup {
+    fn default() -> Self {
+        Self {
+            visible: true,
+            locked: false,
+            opacity: 1.,
+        }
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ImageLayer {
     pub reference: std::sync::Arc<Reference>,
     /// Original pixel coordinates to canvas coordinates: a,b,c,d,tx,ty.
     pub transform: [f32; 6],
+    /// Source-pixel rectangle; the embedded original is retained for reset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crop: Option<[u32; 4]>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Reference {
@@ -102,6 +128,10 @@ pub struct CanvasArtboard {
     pub height: u32,
     pub layers: Vec<Layer>,
     pub active_layer: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paint_layer: Option<usize>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub layer_groups: std::collections::BTreeMap<String, LayerGroup>,
     #[serde(default)]
     pub references: Vec<String>,
     #[serde(default = "show_references")]
@@ -125,6 +155,8 @@ impl CanvasArtboard {
                 image: None,
             }],
             active_layer: 0,
+            paint_layer: Some(0),
+            layer_groups: Default::default(),
             references: vec![],
             references_visible: true,
         }
@@ -144,8 +176,14 @@ pub struct Document {
     pub height: u32,
     pub layers: Vec<Layer>,
     pub active_layer: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paint_layer: Option<usize>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub layer_groups: std::collections::BTreeMap<String, LayerGroup>,
     #[serde(default)]
     pub canvas_id: u32,
+    #[serde(default)]
+    pub(crate) last_canvas_id: u32,
     #[serde(default)]
     pub canvas_created: bool,
     #[serde(default)]
@@ -188,7 +226,10 @@ impl Default for Document {
                 image: None,
             }],
             active_layer: 0,
+            paint_layer: Some(0),
+            layer_groups: Default::default(),
             canvas_id: 0,
+            last_canvas_id: 0,
             canvas_created: false,
             canvases: vec![],
             references: vec![],
@@ -203,6 +244,65 @@ impl Default for Document {
     }
 }
 impl Document {
+    pub fn uses_extended_layer_features(&self) -> bool {
+        !self.layer_groups.is_empty()
+            || self.layers.iter().any(|layer| {
+                layer
+                    .image
+                    .as_ref()
+                    .is_some_and(|image| image.crop.is_some())
+            })
+            || self.canvases.iter().any(|canvas| {
+                !canvas.layer_groups.is_empty()
+                    || canvas.layers.iter().any(|layer| {
+                        layer
+                            .image
+                            .as_ref()
+                            .is_some_and(|image| image.crop.is_some())
+                    })
+            })
+    }
+
+    pub fn layer_is_visible(&self, layer: &Layer) -> bool {
+        layer.visible
+            && layer.opacity > 0.
+            && layer
+                .group
+                .as_ref()
+                .and_then(|name| self.layer_groups.get(name))
+                .is_none_or(|group| group.visible && group.opacity > 0.)
+    }
+
+    pub fn layer_is_locked(&self, layer: &Layer) -> bool {
+        layer.locked
+            || layer
+                .group
+                .as_ref()
+                .and_then(|name| self.layer_groups.get(name))
+                .is_some_and(|group| group.locked)
+    }
+
+    pub fn group_is_contiguous(&self, name: &str) -> bool {
+        let indices: Vec<_> = self
+            .layers
+            .iter()
+            .enumerate()
+            .filter_map(|(index, layer)| (layer.group.as_deref() == Some(name)).then_some(index))
+            .collect();
+        indices
+            .first()
+            .zip(indices.last())
+            .is_some_and(|(start, end)| end - start + 1 == indices.len())
+    }
+
+    pub fn prune_layer_groups(&mut self) {
+        self.layer_groups.retain(|name, _| {
+            self.layers
+                .iter()
+                .any(|layer| layer.group.as_ref() == Some(name))
+        });
+    }
+
     pub fn current_canvas(&self) -> CanvasArtboard {
         CanvasArtboard {
             id: self.canvas_id,
@@ -210,6 +310,8 @@ impl Document {
             height: self.height,
             layers: self.layers.clone(),
             active_layer: self.active_layer,
+            paint_layer: self.paint_layer,
+            layer_groups: self.layer_groups.clone(),
             references: self.artboard_references.clone(),
             references_visible: self.references_visible,
         }
@@ -221,27 +323,24 @@ impl Document {
         self.height = canvas.height;
         self.layers = canvas.layers;
         self.active_layer = canvas.active_layer;
+        self.paint_layer = canvas.paint_layer;
+        self.layer_groups = canvas.layer_groups;
         self.artboard_references = canvas.references;
         self.references_visible = canvas.references_visible;
         self.canvas_created = true;
     }
 
     pub fn create_canvas(&mut self) -> Result<()> {
-        let has_artwork = self
-            .layers
-            .iter()
-            .any(|layer| !layer.strokes.is_empty() || layer.image.is_some());
-        let next_id = self
-            .canvases
-            .iter()
-            .map(|canvas| canvas.id)
-            .chain(std::iter::once(self.canvas_id))
-            .max()
-            .unwrap_or_default()
-            .checked_add(1)
-            .context("Canvas ID limit reached")?;
-        if self.canvas_created || has_artwork {
+        let keep_current = self.canvas_created
+            || self
+                .layers
+                .iter()
+                .any(|layer| !layer.strokes.is_empty() || layer.image.is_some());
+        if keep_current {
             ensure!(self.canvases.len() < 24, "Maximum 25 canvases per project");
+        }
+        let next_id = self.allocate_canvas_id()?;
+        if keep_current {
             self.canvases.push(self.current_canvas());
             self.set_current_canvas(CanvasArtboard::blank(next_id, self.width, self.height));
         } else {
@@ -249,6 +348,20 @@ impl Document {
             self.canvas_created = true;
         }
         Ok(())
+    }
+
+    pub(crate) fn allocate_canvas_id(&mut self) -> Result<u32> {
+        let id = self
+            .canvases
+            .iter()
+            .map(|canvas| canvas.id)
+            .chain([self.canvas_id, self.last_canvas_id])
+            .max()
+            .unwrap_or_default()
+            .checked_add(1)
+            .context("Canvas ID limit reached")?;
+        self.last_canvas_id = id;
+        Ok(id)
     }
 
     /// One linked artboard per requested identity. Reopening never recreates
@@ -296,51 +409,20 @@ impl Document {
                 .map(|image| image.reference.image.len())
                 .sum::<usize>()
     }
-    pub fn reposition_image_layer(&mut self, dx: f32, dy: f32, scale: f32) -> Result<()> {
-        ensure!(
-            dx.is_finite() && dy.is_finite() && scale.is_finite() && scale > 0.,
-            "Invalid layer movement"
-        );
-        let mut layer = self.layers[self.active_layer].clone();
-        let cx = self.width as f32 / 2.;
-        let cy = self.height as f32 / 2.;
-        if let Some(image) = &mut layer.image {
-            let t = &mut image.transform;
-            for value in &mut t[..4] {
-                *value *= scale;
-            }
-            t[4] = (t[4] - cx) * scale + cx + dx;
-            t[5] = (t[5] - cy) * scale + cy + dy;
-            ensure!(
-                t.iter().all(|v| v.is_finite() && v.abs() < 1_000_000.)
-                    && (t[0] * t[3] - t[1] * t[2]).abs() > 0.000001,
-                "Image scale or position limit reached"
-            );
-        }
-        for stroke in &mut layer.strokes {
-            stroke.size = (stroke.size * scale).clamp(0.1, 512.);
-            for point in std::sync::Arc::make_mut(&mut stroke.points) {
-                point.x = (point.x - cx) * scale + cx + dx;
-                point.y = (point.y - cy) * scale + cy + dy;
-                ensure!(
-                    point.x.is_finite()
-                        && point.y.is_finite()
-                        && point.x.abs() < 1_000_000.
-                        && point.y.abs() < 1_000_000.,
-                    "Layer position limit reached"
-                );
-            }
-        }
-        self.layers[self.active_layer] = layer;
-        Ok(())
-    }
     pub fn validate(&self) -> Result<()> {
-        ensure!(self.version == 2, "Unsupported project version");
+        ensure!(matches!(self.version, 2 | 3), "Unsupported project version");
+        ensure!(
+            self.version == 3 || !self.uses_extended_layer_features(),
+            "Image crops and group properties require project version 3"
+        );
         validate_size(self.width, self.height)?;
         ensure!(
             !self.layers.is_empty()
                 && self.layers.len() <= 24
-                && self.active_layer < self.layers.len(),
+                && self.active_layer < self.layers.len()
+                && self
+                    .paint_layer
+                    .is_none_or(|index| index < self.layers.len()),
             "Invalid layers"
         );
         ensure!(self.canvases.len() <= 24, "Too many canvases");
@@ -351,9 +433,45 @@ impl Document {
                 !canvas.layers.is_empty()
                     && canvas.layers.len() <= 24
                     && canvas.active_layer < canvas.layers.len()
+                    && canvas
+                        .paint_layer
+                        .is_none_or(|index| index < canvas.layers.len())
                     && canvas_ids.insert(canvas.id),
                 "Invalid canvas artboard"
             );
+        }
+        for groups in std::iter::once(&self.layer_groups)
+            .chain(self.canvases.iter().map(|canvas| &canvas.layer_groups))
+        {
+            ensure!(
+                groups.len() <= 24
+                    && groups.iter().all(|(name, group)| !name.is_empty()
+                        && name.len() <= 128
+                        && group.opacity.is_finite()
+                        && (0. ..=1.).contains(&group.opacity)),
+                "Invalid layer group properties"
+            );
+        }
+        for (layers, groups) in std::iter::once((&self.layers, &self.layer_groups)).chain(
+            self.canvases
+                .iter()
+                .map(|canvas| (&canvas.layers, &canvas.layer_groups)),
+        ) {
+            for (name, _) in groups.iter().filter(|(_, group)| group.opacity < 1.) {
+                let indices: Vec<_> = layers
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, layer)| {
+                        (layer.group.as_ref() == Some(name)).then_some(index)
+                    })
+                    .collect();
+                if let Some((start, end)) = indices.first().zip(indices.last()) {
+                    ensure!(
+                        end - start + 1 == indices.len(),
+                        "A group with opacity must contain adjacent layers"
+                    );
+                }
+            }
         }
         let mut linked = std::collections::HashSet::new();
         ensure!(
@@ -398,7 +516,18 @@ impl Document {
                         > 0.000001,
                     "Image layer transform has no area"
                 );
-                decode_reference(&image.reference)?;
+                let decoded = decode_reference(&image.reference)?;
+                if let Some([x, y, width, height]) = image.crop {
+                    ensure!(
+                        width > 0
+                            && height > 0
+                            && x.checked_add(width)
+                                .is_some_and(|right| right <= decoded.width())
+                            && y.checked_add(height)
+                                .is_some_and(|bottom| bottom <= decoded.height()),
+                        "Invalid image crop"
+                    );
+                }
             }
             ensure!(
                 layer.opacity.is_finite() && (0. ..=1.).contains(&layer.opacity),
@@ -591,6 +720,8 @@ impl History {
         !self.redo.is_empty()
     }
     fn retain_editor_state(current: &mut Document, replacement: &mut Document) {
+        // Queued work can still address a canvas removed by Undo.
+        replacement.last_canvas_id = replacement.last_canvas_id.max(current.last_canvas_id);
         // Image publication is a disk baseline, not undoable canvas content.
         for link in &replacement.asset_links {
             if current
@@ -761,13 +892,21 @@ pub fn decode_reference(reference: &Reference) -> Result<DynamicImage> {
     Ok(image)
 }
 pub fn raster(doc: &Document, max_edge: u32, transparent: bool) -> Result<RgbaImage> {
-    raster_layers(doc.width, doc.height, &doc.layers, max_edge, transparent)
+    raster_layers(
+        doc.width,
+        doc.height,
+        &doc.layers,
+        &doc.layer_groups,
+        max_edge,
+        transparent,
+    )
 }
 
 pub fn raster_layers(
     width: u32,
     height: u32,
     layers: &[Layer],
+    groups: &std::collections::BTreeMap<String, LayerGroup>,
     max_edge: u32,
     transparent: bool,
 ) -> Result<RgbaImage> {
@@ -778,7 +917,45 @@ pub fn raster_layers(
     if !transparent {
         output.fill(tiny_skia::Color::from_rgba8(255, 253, 248, 255));
     }
-    for layer in layers.iter().filter(|l| l.visible && l.opacity > 0.) {
+    let mut group_surface: Option<(String, f32, tiny_skia::Pixmap)> = None;
+    for layer in layers {
+        let group = layer
+            .group
+            .as_ref()
+            .and_then(|name| groups.get(name).map(|props| (name, props)));
+        let visible = layer.visible
+            && layer.opacity > 0.
+            && group.is_none_or(|(_, props)| props.visible && props.opacity > 0.);
+        if !visible {
+            continue;
+        }
+        let isolated = group.filter(|(_, props)| props.opacity < 1.);
+        if group_surface
+            .as_ref()
+            .is_some_and(|(name, _, _)| isolated.is_none_or(|(next, _)| name != next))
+        {
+            let (_, opacity, surface) = group_surface.take().unwrap();
+            output.draw_pixmap(
+                0,
+                0,
+                surface.as_ref(),
+                &tiny_skia::PixmapPaint {
+                    opacity,
+                    ..Default::default()
+                },
+                tiny_skia::Transform::identity(),
+                None,
+            );
+        }
+        if let Some((name, props)) = isolated {
+            if group_surface.is_none() {
+                group_surface = Some((
+                    name.clone(),
+                    props.opacity,
+                    tiny_skia::Pixmap::new(w, h).context("Could not allocate group buffer")?,
+                ));
+            }
+        }
         let mut pixels = image_layer_pixels(layer, w, h, scale)?;
         for stroke in &layer.strokes {
             if stroke.points.is_empty() {
@@ -833,12 +1010,29 @@ pub fn raster_layers(
                 }
             }
         }
-        output.draw_pixmap(
+        let target = group_surface
+            .as_mut()
+            .map(|(_, _, surface)| surface)
+            .unwrap_or(&mut output);
+        target.draw_pixmap(
             0,
             0,
             pixels.as_ref(),
             &tiny_skia::PixmapPaint {
                 opacity: layer.opacity,
+                ..Default::default()
+            },
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+    if let Some((_, opacity, surface)) = group_surface {
+        output.draw_pixmap(
+            0,
+            0,
+            surface.as_ref(),
+            &tiny_skia::PixmapPaint {
+                opacity,
                 ..Default::default()
             },
             tiny_skia::Transform::identity(),
@@ -866,6 +1060,24 @@ pub fn image_layer_pixels(
     let mut pixels = tiny_skia::Pixmap::new(width, height).context("Could not allocate layer")?;
     if let Some(image) = &layer.image {
         let decoded = decode_reference(&image.reference)?.to_rgba8();
+        let (crop_x, crop_y, decoded) = if let Some([x, y, width, height]) = image.crop {
+            ensure!(
+                width > 0
+                    && height > 0
+                    && x.checked_add(width)
+                        .is_some_and(|right| right <= decoded.width())
+                    && y.checked_add(height)
+                        .is_some_and(|bottom| bottom <= decoded.height()),
+                "Invalid image crop"
+            );
+            (
+                x,
+                y,
+                image::imageops::crop_imm(&decoded, x, y, width, height).to_image(),
+            )
+        } else {
+            (0, 0, decoded)
+        };
         let (w, h) = decoded.dimensions();
         let mut bytes = decoded.into_raw();
         for p in bytes.as_chunks_mut::<4>().0 {
@@ -878,7 +1090,12 @@ pub fn image_layer_pixels(
             tiny_skia::IntSize::from_wh(w, h).context("Invalid image dimensions")?,
         )
         .context("Invalid image pixels")?;
-        let [a, b, c, d, x, y] = image.transform.map(|value| value * scale);
+        let [a, b, c, d, x, y] = image.transform;
+        let (x, y) = (
+            x + a * crop_x as f32 + c * crop_y as f32,
+            y + b * crop_x as f32 + d * crop_y as f32,
+        );
+        let [a, b, c, d, x, y] = [a, b, c, d, x, y].map(|value| value * scale);
         pixels.draw_pixmap(
             0,
             0,

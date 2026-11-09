@@ -64,12 +64,22 @@ pub enum Event {
     Exported(crate::activity::Scope, Result<PathBuf>),
     Switched(u64, Result<(Document, Vec<RgbaImage>, Option<PathBuf>)>),
     Imported(u64, bool, Result<Vec<(Reference, RgbaImage)>>),
+    ArtworkImported {
+        epoch: u64,
+        artboard: u32,
+        rect: (u32, u32, u32, u32),
+        result: Result<Vec<Reference>>,
+    },
     Generated(u64, Result<(Reference, RgbaImage)>),
     GenerationProgress(u64, String),
     Workflow(Result<serde_json::Value>),
     Settings(Result<()>),
     SettingsApplied(Result<()>),
     ServerStatus(crate::native_images::ServerStatus),
+}
+pub enum ArtworkImport {
+    File(PathBuf),
+    Clipboard(Vec<u8>),
 }
 pub enum Storage {
     StoryContext(storyfella_studio_core::atelier::OpenRequest),
@@ -118,6 +128,12 @@ pub enum Storage {
         next: Option<PathBuf>,
     },
     Import(u64, Vec<PathBuf>, PathBuf, bool),
+    ImportArtwork {
+        epoch: u64,
+        artboard: u32,
+        rect: (u32, u32, u32, u32),
+        inputs: Vec<ArtworkImport>,
+    },
     Workflow(PathBuf),
     Settings(providers::Settings, PathBuf),
     ApplySettings(providers::Settings, PathBuf),
@@ -408,6 +424,56 @@ pub fn start() -> Workers {
                         Ok((doc, images, next))
                     })(),
                 ),
+                Storage::ImportArtwork {
+                    epoch,
+                    artboard,
+                    rect,
+                    inputs,
+                } => {
+                    let result = (|| {
+                        anyhow::ensure!(
+                            !inputs.is_empty() && inputs.len() <= 24,
+                            "Choose between 1 and 24 images"
+                        );
+                        let mut images = Vec::with_capacity(inputs.len());
+                        for input in inputs {
+                            let (name, bytes, provenance) = match input {
+                                ArtworkImport::File(path) => {
+                                    anyhow::ensure!(
+                                        std::fs::metadata(&path)?.len() <= 20 * 1024 * 1024,
+                                        "Image exceeds 20 MB"
+                                    );
+                                    let name = path
+                                        .file_stem()
+                                        .unwrap_or_default()
+                                        .to_string_lossy()
+                                        .into_owned();
+                                    let provenance = format!(
+                                        "Imported · {}",
+                                        path.file_name().unwrap_or_default().to_string_lossy()
+                                    );
+                                    (name, std::fs::read(&path)?, provenance)
+                                }
+                                ArtworkImport::Clipboard(bytes) => {
+                                    ("Pasted image".into(), bytes, "Pasted from clipboard".into())
+                                }
+                            };
+                            images.push(document::reference_from_bytes(name, &bytes, provenance)?);
+                        }
+                        anyhow::ensure!(
+                            images.iter().map(|image| image.image.len()).sum::<usize>()
+                                <= 64 * 1024 * 1024,
+                            "Selected images exceed the 64 MB project limit"
+                        );
+                        Ok(images)
+                    })();
+                    Event::ArtworkImported {
+                        epoch,
+                        artboard,
+                        rect,
+                        result,
+                    }
+                }
                 Storage::Import(epoch, paths, directory, into_project) => Event::Imported(
                     epoch,
                     into_project,
@@ -619,6 +685,7 @@ pub fn projects(directory: PathBuf, sender: Sender<Event>) {
                             canvas.width,
                             canvas.height,
                             &canvas.layers,
+                            &canvas.layer_groups,
                             360,
                             false,
                         )?

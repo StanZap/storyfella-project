@@ -44,6 +44,67 @@ into artboard**, and selection **Create separate image** contexts. Local edits
 are candidates to review, accept, hide, discard or save as references. Separate
 images become new artboards. Accepted artwork remains intact until review.
 
+In the drawing workspace, **Select** (V) selects the topmost visible, unlocked
+layer under the pointer, including visible image pixels and nearby paint strokes.
+Shift-click adds or removes a layer; Command/Control-click cycles overlapping
+layers. Drag from empty canvas to select intersecting layers, or Shift-drag to
+add them. Option/Alt-drag starts a marquee over existing artwork. Clicking
+empty canvas clears the selection. Drag a selection to move it, its edge or
+corner handles to resize it, or its outer handle to rotate it. Shift temporarily
+changes the aspect lock during resize and snaps rotation to 15°; Option/Alt
+resizes from the center. Escape cancels a drag. Arrow keys nudge the selection
+by one pixel, or ten with Shift. Pan remains available with Hand (H) or middle
+drag. Layer properties include precise transforms, alignment, distribution,
+exact spacing and separate actions for positioning the selection or aligning
+each item to the artboard. Open **Arrange…** in layer properties to show the
+arrangement controls; options for multiple items appear when they are useful.
+Position and size appear when the selected layers contain artwork. Edit a value
+and press Enter or move focus to apply it; Escape cancels the edit. Numeric
+positions are exact even when snapping is enabled for canvas dragging. With
+snapping enabled, guides show alignments to the artboard and other visible layers.
+In Layers, Shift-click selects a range and Command/Control-click toggles rows.
+Duplicate, delete, stacking, flipping and zoom-to-selection actions are also
+available from the context menu.
+
+The paint and eraser target is shown in Layers and in the status bar, separately
+from the transform selection. Select a layer and choose **Set as paint target**
+in its properties to change it. Undo restores the previous target.
+When no target is set, drawing uses the selected paint layer or creates one above
+the selected image. Choosing an image as the paint target explicitly permits
+painting and erasing on that image-backed layer.
+
+Select adjacent, ungrouped layers in Layers and choose **Group** to keep them
+together without changing stacking order. A group appears as an expandable row;
+select its row or click its artwork to move, resize, align, distribute, reorder,
+or delete it as one unit. Select a child in Layers or double-click its artwork
+to edit the group's children; **Done** or Escape returns to the group. Group
+names are editable in Layer properties. Drag rows to reorder adjacent selections;
+the group controls can add an adjacent layer or remove an edge child without
+changing stacking. **Ungroup** releases all children while
+preserving their order. Group membership, names, visibility, locking and opacity
+are saved with the project. Hiding or locking a group preserves each child's
+own settings; group opacity applies to the composited group. To ungroup while
+preserving its appearance, first show and unlock the group and return its
+opacity to 100%. Nested groups are not yet available.
+From image inspection, **Add to canvas** creates and selects an image layer.
+The Layers panel can import image files directly as artwork; dropping files onto
+the canvas or pasting an image with Command/Control-V also creates image layers.
+Each imported image is placed on the artboard captured when the import began.
+The current selection and paint target stay in place.
+The drawing composer also offers **New image layer**; generated results arrive
+as candidates for review on the artboard captured when the request was queued.
+If that artboard was undone, Atelier reports an attachment failure and keeps
+the generated result in the queue for recovery.
+With one unlocked, accepted image layer selected, **Replace selected · Fit** fits
+the inspected image within the old image's frame, preserving its orientation.
+**Replace selected · Fill** fills that frame using a reversible crop. Replacement
+is undoable; pending candidates retain their separate review flow.
+For one selected image layer, open Layer properties and choose **Crop image**.
+Drag the area to keep on the canvas, then choose **Apply** or **Cancel**. The
+shaded area is outside the proposed image crop; other layers are unaffected.
+**Reset** restores the full original image when applied. Crops preserve the
+embedded original, participate in undo, and are saved with the project.
+
 The app-wide **Library** holds explicitly shared originals. The composer/drawing
 reference picker searches shared and project images, supports importing into the
 library, and embeds selected references in the project. References can be hidden
@@ -309,11 +370,10 @@ there is no automatic retry or guessed provider cooldown.
 Configuration and shared loopback tests pass on this Mac; actual Linux CUDA
 inference and Linux native interaction still require verification on that machine.
 
-**Add to canvas** creates an image-backed layer. Draw and erase on that layer,
-change opacity/visibility/order, move it by dragging with **Move**, or scale it
-with its corner handle. **Layer properties** discloses precise offsets, relative
-scale, opacity and image/version actions. Painted marks move with the image. Placement, deletion
-and painting are undoable. Images participate in full-resolution CPU/Metal
+**Add to canvas** creates an image-backed layer ready to position. Select a
+paint target in Layers; explicitly choosing an image-backed layer makes paint
+and eraser strokes part of that layer. Placement, deletion, painting, cropping
+and replacement are undoable. Images participate in full-resolution CPU/Metal
 exports, project saves and artwork rotation/flip/resize.
 
 **Paint mask**, **Erase mask** and **Box selection** create a source-resolution
@@ -380,11 +440,14 @@ it is a local collection, without cloud synchronization or pagination.
 
 ## Document storage and image roles
 
-`.atelier` schema version 2 keeps one canonical active-artboard representation
+`.atelier` schema versions 2 and 3 keep one canonical active-artboard representation
 (`width`, `height`, `layers`, `canvas_id`) and stores other artboards in
 `canvases`. An artboard's reference associations and reference visibility travel
 with it. The project embeds referenced originals, accepted artwork, pending
 candidates, image parent identities, prompts and drafts.
+Version 3 adds reversible image crops and independent group properties. Applying
+one of those features upgrades the document to version 3, which older Atelier
+versions cannot open. Version 2 documents remain supported.
 
 New compositions create artboards containing image layers. Full-artboard edits
 and selection blends create layers marked `candidate`. Candidates can be
@@ -405,8 +468,9 @@ Loading version 1 upgrades generated references with saved generation prompts
 into image artboards, removing the redundant reference-role records while keeping
 their bytes and metadata in layers. Existing image layers and imported references
 keep their roles. Up to the existing 25-artboard limit are promoted; remaining
-originals remain available as references. Resaving writes version 2. Old files are
-not rewritten merely by reading them. Fingerprints are restored in inactive
+originals remain available as references. Resaving writes version 2 unless the
+document uses version 3 features. Old files are not rewritten merely by reading
+them. Fingerprints are restored in inactive
 artboards as well as in active layers.
 
 

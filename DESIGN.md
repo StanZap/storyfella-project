@@ -58,6 +58,22 @@ also reports unsupported visual directions that it skips. Named character
 instances render in groups with scale, depth and optional precise positioning;
 native visual acceptance remains tracked by SF-PLAN-18–19.
 
+### Atelier Layers sidebar · 2026-11-03
+
+The Layers sidebar has a compact, left-aligned layer list above a contextual
+inspector. Selection and the paint target are independent; group opacity and
+candidate review remain distinct from layer properties. Alignment distinguishes
+positioning a selection as a unit from aligning each item to the artboard.
+The proposed interaction and acceptance criteria are in
+[the sidebar specification](docs/atelier-layers-sidebar-spec.md). Native review
+has covered a paint layer, exact position entry, and importing an image while
+keeping the Sketch layer selected and targeted for paint. Selecting the imported
+image kept Sketch as the target. Setting the image as the target and pressing
+⌘Z restored Sketch as the target while the image stayed selected.
+An automated regression covers undoing and recreating a destination artboard
+while image work still refers to the original. Group, candidate, broader
+keyboard, accessibility and constrained-window acceptance remain open.
+
 ### In-scope artwork links · 2026-11-02
 
 Scene and beat shortcuts are compact full-width rows with a shared type icon,

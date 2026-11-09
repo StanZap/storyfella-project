@@ -7,12 +7,13 @@
 
 use std::path::Path;
 use std::process::{Command as Process, ExitCode, ExitStatus};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 
 use crate::cli::{
-    BuildArgs, BundleArgs, Cli, ClippyArgs, Command, CssArgs, FmtArgs, PlanArgs, RunArgs, ServeArgs,
+    AtelierArgs, BuildArgs, BundleArgs, Cli, ClippyArgs, Command, CssArgs, FmtArgs, PlanArgs,
+    RunArgs, ServeArgs,
 };
 use crate::proc;
 use crate::workspace::{Profile, Workspace};
@@ -49,7 +50,36 @@ fn run(ws: &Workspace, args: RunArgs) -> Result<ExitCode> {
     launch_app(ws, args.profile.resolve(false), args.app_args, args.log)
 }
 
-fn atelier(ws: &Workspace, args: RunArgs) -> Result<ExitCode> {
+fn atelier(ws: &Workspace, args: AtelierArgs) -> Result<ExitCode> {
+    let restart = args.restart;
+    let args = args.run;
+    if args.app_args.first().is_some_and(|arg| arg == "--help") && restart {
+        bail!("--restart cannot be combined with Atelier's --help");
+    }
+    if restart {
+        let data_dir = if args.app_args.first().is_some_and(|arg| arg == "--data-dir") {
+            ws.resolve(Path::new(
+                args.app_args
+                    .get(1)
+                    .context("--data-dir requires a directory")?,
+            ))
+        } else {
+            storyfella_studio_core::atelier::data_dir()
+        };
+        let mut build = Process::new("cargo");
+        build.current_dir(ws.root()).args([
+            "build",
+            "--package",
+            "storyfella-atelier",
+            "--bin",
+            "atelier",
+        ]);
+        if args.profile.resolve(false).is_release() {
+            build.arg("--release");
+        }
+        proc::require(&mut build)?;
+        restart_atelier(&data_dir)?;
+    }
     let mut cmd = Process::new("cargo");
     cmd.current_dir(ws.root())
         .args(["run", "--package", "storyfella-atelier", "--bin", "atelier"]);
@@ -58,6 +88,33 @@ fn atelier(ws: &Workspace, args: RunArgs) -> Result<ExitCode> {
     }
     cmd.arg("--").args(args.app_args);
     launch_with_log(ws, &mut cmd, args.log, "atelier")
+}
+
+fn restart_atelier(data_dir: &Path) -> Result<()> {
+    let mailbox = storyfella_studio_core::atelier::Mailbox::new(data_dir);
+    if mailbox.claim()?.is_some() {
+        return Ok(());
+    }
+    proc::step(format!(
+        "requesting Atelier shutdown for {}",
+        data_dir.display()
+    ));
+    let request = mailbox.request_restart()?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if mailbox.claim()?.is_some() {
+            let _ = std::fs::remove_file(&request);
+            proc::done("previous instance closed after saving recovery");
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            let _ = std::fs::remove_file(&request);
+            bail!(
+                "Atelier did not close within 20 seconds. The running version may not support restart requests, or recovery may have failed; close it normally and retry."
+            );
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 fn plan(ws: &Workspace, args: PlanArgs) -> Result<ExitCode> {

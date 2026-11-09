@@ -16,6 +16,10 @@ pub type BlendCrop = ((u32, u32), PixelRect);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Destination {
     NewArtboard,
+    NewLayer {
+        artboard: u32,
+        rect: (u32, u32, u32, u32),
+    },
     Candidate {
         artboard: u32,
         rect: (u32, u32, u32, u32),
@@ -30,6 +34,72 @@ pub enum Review {
 }
 
 impl Document {
+    /// Import separate artwork layers into the artboard captured when the import began.
+    pub fn attach_imported_images(
+        &mut self,
+        artboard: u32,
+        rect: (u32, u32, u32, u32),
+        images: Vec<Reference>,
+    ) -> Result<Vec<usize>> {
+        ensure!(!images.is_empty(), "No images to import");
+        let extra = images.iter().map(|image| image.image.len()).sum::<usize>();
+        ensure!(
+            self.embedded_image_bytes().saturating_add(extra) <= 64 * 1024 * 1024,
+            "Project images exceed 64 MB"
+        );
+        let mut next = self.clone();
+        let (width, height, layers) = if artboard == next.canvas_id {
+            (next.width, next.height, &mut next.layers)
+        } else {
+            let canvas = next
+                .canvases
+                .iter_mut()
+                .find(|canvas| canvas.id == artboard)
+                .context("The destination artboard no longer exists")?;
+            (canvas.width, canvas.height, &mut canvas.layers)
+        };
+        ensure!(
+            rect.2 > 0
+                && rect.3 > 0
+                && rect.0.saturating_add(rect.2) <= width
+                && rect.1.saturating_add(rect.3) <= height,
+            "The destination artboard was resized; import the images again"
+        );
+        ensure!(
+            layers.len() + images.len() <= 24,
+            "Import would exceed the 24-layer limit"
+        );
+        let first = layers.len();
+        let count = images.len();
+        let gap = if count > 1 {
+            16f32.min(rect.2 as f32 / (count as f32 * 4.))
+        } else {
+            0.
+        };
+        let cell_width = (rect.2 as f32 - gap * (count.saturating_sub(1) as f32)) / count as f32;
+        for (index, image) in images.into_iter().enumerate() {
+            let decoded = document::decode_reference(&image)?;
+            let (source_width, source_height) = (decoded.width(), decoded.height());
+            let scale =
+                (cell_width / source_width as f32).min(rect.3 as f32 / source_height as f32);
+            let mut layer = image_layer(Arc::new(image), source_width, source_height, rect, false)?;
+            layer.image.as_mut().unwrap().transform = [
+                scale,
+                0.,
+                0.,
+                scale,
+                rect.0 as f32
+                    + index as f32 * (cell_width + gap)
+                    + (cell_width - source_width as f32 * scale) / 2.,
+                rect.1 as f32 + (rect.3 as f32 - source_height as f32 * scale) / 2.,
+            ];
+            layers.push(layer);
+        }
+        next.validate()?;
+        *self = next;
+        Ok((first..first + count).collect())
+    }
+
     pub fn generation_source(&self, crop: Option<PixelRect>) -> Result<Reference> {
         let mut raster = document::raster(&self.artwork(), document::MAX_EDGE, true)?;
         if let Some((x, y, w, h)) = crop {
@@ -53,7 +123,7 @@ impl Document {
             .layers
             .iter()
             .rev()
-            .filter(|l| l.visible && l.opacity > 0. && !l.candidate)
+            .filter(|l| self.layer_is_visible(l) && !l.candidate)
             .find_map(|l| l.image.as_ref().map(|i| &i.reference))
         {
             let previous_id = crate::library::id(previous);
@@ -70,7 +140,7 @@ impl Document {
         let sources: Vec<_> = self
             .layers
             .iter()
-            .filter(|l| l.visible && l.opacity > 0. && !l.candidate)
+            .filter(|l| self.layer_is_visible(l) && !l.candidate)
             .filter_map(|l| l.image.as_ref().map(|i| (l.name.as_str(), &i.reference)))
             .collect();
         let prompt = if self.note.trim().is_empty() && sources.len() == 1 {
@@ -94,8 +164,130 @@ impl Document {
     }
 
     pub fn layer_bounds(&self) -> Option<(f32, f32, f32, f32)> {
+        self.layer_bounds_for(self.active_layer)
+    }
+
+    /// Find visible, unlocked artwork under the pointer, optionally cycling below a layer.
+    pub fn layer_at_point(
+        &self,
+        point: document::Point,
+        tolerance: f32,
+        after: Option<usize>,
+        skip: &[usize],
+    ) -> Option<usize> {
         use base64::Engine;
-        let layer = &self.layers[self.active_layer];
+        use image::GenericImageView;
+        let mut order: Vec<_> = (0..self.layers.len()).rev().collect();
+        if let Some(position) = after.and_then(|index| order.iter().position(|item| *item == index))
+        {
+            let count = order.len();
+            if count > 0 {
+                order.rotate_left((position + 1) % count);
+            }
+        }
+        order.into_iter().find_map(|index| {
+            if skip.contains(&index) {
+                return None;
+            }
+            let layer = &self.layers[index];
+            if !self.layer_is_visible(layer) || self.layer_is_locked(layer) {
+                return None;
+            }
+            let (left, top, right, bottom) = self.layer_bounds_for(index)?;
+            if point.x < left - tolerance
+                || point.x > right + tolerance
+                || point.y < top - tolerance
+                || point.y > bottom + tolerance
+            {
+                return None;
+            }
+            let mut hit = layer
+                .image
+                .as_ref()
+                .and_then(|image| {
+                    let [a, b, c, d, x, y] = image.transform;
+                    let determinant = a * d - b * c;
+                    if determinant.abs() < f32::EPSILON {
+                        return None;
+                    }
+                    let (dx, dy) = (point.x - x, point.y - y);
+                    let source_x = (d * dx - c * dy) / determinant;
+                    let source_y = (-b * dx + a * dy) / determinant;
+                    if source_x < 0. || source_y < 0. {
+                        return None;
+                    }
+                    if let Some([x, y, width, height]) = image.crop {
+                        if source_x < x as f32
+                            || source_y < y as f32
+                            || source_x >= x.saturating_add(width) as f32
+                            || source_y >= y.saturating_add(height) as f32
+                        {
+                            return None;
+                        }
+                    }
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(&image.reference.image)
+                        .ok()?;
+                    let decoded = image::load_from_memory(&bytes).ok()?;
+                    if source_x >= decoded.width() as f32 || source_y >= decoded.height() as f32 {
+                        return None;
+                    }
+                    Some(decoded.get_pixel(source_x as u32, source_y as u32).0[3] > 0)
+                })
+                .unwrap_or(false);
+            for stroke in &layer.strokes {
+                if stroke.opacity <= 0. {
+                    continue;
+                }
+                let radius = if stroke.tool == document::Tool::Eraser {
+                    stroke.size / 2.
+                } else {
+                    (stroke.size / 2.).max(tolerance)
+                };
+                let distance = |a: &document::Point, b: &document::Point| {
+                    let dx = b.x - a.x;
+                    let dy = b.y - a.y;
+                    let length2 = dx * dx + dy * dy;
+                    let t = if length2 > 0. {
+                        (((point.x - a.x) * dx + (point.y - a.y) * dy) / length2).clamp(0., 1.)
+                    } else {
+                        0.
+                    };
+                    (point.x - a.x - t * dx).hypot(point.y - a.y - t * dy)
+                };
+                if stroke
+                    .points
+                    .first()
+                    .is_some_and(|first| distance(first, first) <= radius)
+                    || stroke
+                        .points
+                        .windows(2)
+                        .any(|pair| distance(&pair[0], &pair[1]) <= radius)
+                {
+                    hit = stroke.tool != document::Tool::Eraser;
+                }
+            }
+            hit.then_some(index)
+        })
+    }
+
+    /// Cache eligible bounds once when a marquee gesture starts.
+    pub fn selectable_layer_bounds(&self) -> Vec<(usize, (f32, f32, f32, f32))> {
+        self.layers
+            .iter()
+            .enumerate()
+            .filter_map(|(index, layer)| {
+                if !self.layer_is_visible(layer) || self.layer_is_locked(layer) {
+                    return None;
+                }
+                self.layer_bounds_for(index).map(|bounds| (index, bounds))
+            })
+            .collect()
+    }
+
+    pub fn layer_bounds_for(&self, index: usize) -> Option<(f32, f32, f32, f32)> {
+        use base64::Engine;
+        let layer = self.layers.get(index)?;
         let mut points = Vec::new();
         if let Some(image) = &layer.image {
             let bytes = base64::engine::general_purpose::STANDARD
@@ -107,12 +299,14 @@ impl Document {
                 .into_dimensions()
                 .ok()?;
             let [a, b, c, d, x, y] = image.transform;
-            for (px, py) in [
-                (0., 0.),
-                (w as f32, 0.),
-                (w as f32, h as f32),
-                (0., h as f32),
-            ] {
+            let [left, top, width, height] = image.crop.unwrap_or([0, 0, w, h]);
+            let (left, top, right, bottom) = (
+                left as f32,
+                top as f32,
+                left.saturating_add(width) as f32,
+                top.saturating_add(height) as f32,
+            );
+            for (px, py) in [(left, top), (right, top), (right, bottom), (left, bottom)] {
                 points.push((a * px + c * py + x, b * px + d * py + y));
             }
         }
@@ -129,6 +323,308 @@ impl Document {
             (f32::MAX, f32::MAX, f32::MIN, f32::MIN),
             |(x, y, r, b), (px, py)| (x.min(px), y.min(py), r.max(px), b.max(py)),
         ))
+    }
+
+    pub fn selected_layer_bounds(&self, indices: &[usize]) -> Option<(f32, f32, f32, f32)> {
+        indices
+            .iter()
+            .filter_map(|index| self.layer_bounds_for(*index))
+            .fold(None, |bounds, (left, top, right, bottom)| {
+                Some(match bounds {
+                    Some((x0, y0, x1, y1)) => {
+                        (x0.min(left), y0.min(top), x1.max(right), y1.max(bottom))
+                    }
+                    None => (left, top, right, bottom),
+                })
+            })
+    }
+
+    pub fn translate_layers(&mut self, indices: &[usize], dx: f32, dy: f32) -> Result<()> {
+        ensure!(dx.is_finite() && dy.is_finite(), "Invalid layer movement");
+        let indices = indices
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        for index in &indices {
+            let layer = self.layers.get(*index).context("Layer no longer exists")?;
+            if let Some(image) = &layer.image {
+                ensure!(
+                    (image.transform[4] + dx).is_finite()
+                        && (image.transform[5] + dy).is_finite()
+                        && (image.transform[4] + dx).abs() < 1_000_000.
+                        && (image.transform[5] + dy).abs() < 1_000_000.,
+                    "Layer position limit reached"
+                );
+            }
+            ensure!(
+                layer
+                    .strokes
+                    .iter()
+                    .flat_map(|stroke| stroke.points.iter())
+                    .all(|point| {
+                        let x = point.x + dx;
+                        let y = point.y + dy;
+                        x.is_finite()
+                            && y.is_finite()
+                            && x.abs() < 1_000_000.
+                            && y.abs() < 1_000_000.
+                    }),
+                "Layer position limit reached"
+            );
+        }
+        for index in indices {
+            let layer = self
+                .layers
+                .get_mut(index)
+                .context("Layer no longer exists")?;
+            if let Some(image) = &mut layer.image {
+                image.transform[4] += dx;
+                image.transform[5] += dy;
+            }
+            for stroke in &mut layer.strokes {
+                for point in std::sync::Arc::make_mut(&mut stroke.points) {
+                    point.x += dx;
+                    point.y += dy;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn transform_layers_to_bounds(
+        &mut self,
+        indices: &[usize],
+        target: (f32, f32, f32, f32),
+    ) -> Result<()> {
+        let (left, top, right, bottom) = self
+            .selected_layer_bounds(indices)
+            .context("Selected layers have no transformable artwork")?;
+        let (x, y, width, height) = target;
+        ensure!(
+            [x, y, width, height].iter().all(|v| v.is_finite()) && width > 0. && height > 0.,
+            "Position and size must be finite and positive"
+        );
+        let (source_width, source_height) = (right - left, bottom - top);
+        ensure!(
+            source_width > 0. && source_height > 0.,
+            "Selection has no area"
+        );
+        let (scale_x, scale_y) = (width / source_width, height / source_height);
+        ensure!(
+            scale_x.is_finite() && scale_y.is_finite() && scale_x > 0. && scale_y > 0.,
+            "Invalid selection size"
+        );
+        let indices = indices
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        for index in &indices {
+            let layer = self.layers.get(*index).context("Layer no longer exists")?;
+            if let Some(image) = &layer.image {
+                let [a, b, c, d, tx, ty] = image.transform;
+                let determinant = (a * scale_x) * (d * scale_y) - (b * scale_y) * (c * scale_x);
+                ensure!(
+                    [
+                        a * scale_x,
+                        c * scale_x,
+                        b * scale_y,
+                        d * scale_y,
+                        (tx - left) * scale_x + x,
+                        (ty - top) * scale_y + y
+                    ]
+                    .iter()
+                    .all(|v| v.is_finite() && v.abs() < 1_000_000.),
+                    "Selection transform exceeds the supported range"
+                );
+                ensure!(
+                    determinant.is_finite() && determinant.abs() > 0.000001,
+                    "Selection size is too small for image layers"
+                );
+            }
+            ensure!(
+                layer
+                    .strokes
+                    .iter()
+                    .flat_map(|stroke| stroke.points.iter())
+                    .all(|point| {
+                        let px = (point.x - left) * scale_x + x;
+                        let py = (point.y - top) * scale_y + y;
+                        px.is_finite()
+                            && py.is_finite()
+                            && px.abs() < 1_000_000.
+                            && py.abs() < 1_000_000.
+                    }),
+                "Selection transform exceeds the supported range"
+            );
+        }
+        let stroke_scale = (scale_x * scale_y).sqrt();
+        for index in indices {
+            let layer = &mut self.layers[index];
+            if let Some(image) = &mut layer.image {
+                let [a, b, c, d, tx, ty] = image.transform;
+                image.transform = [
+                    a * scale_x,
+                    b * scale_y,
+                    c * scale_x,
+                    d * scale_y,
+                    (tx - left) * scale_x + x,
+                    (ty - top) * scale_y + y,
+                ];
+            }
+            for stroke in &mut layer.strokes {
+                stroke.size = (stroke.size * stroke_scale).clamp(0.1, 512.);
+                for point in std::sync::Arc::make_mut(&mut stroke.points) {
+                    point.x = (point.x - left) * scale_x + x;
+                    point.y = (point.y - top) * scale_y + y;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Rotate images and paint together around a fixed artboard-space pivot.
+    pub fn rotate_layers(
+        &mut self,
+        indices: &[usize],
+        pivot: document::Point,
+        angle: f32,
+    ) -> Result<()> {
+        ensure!(
+            pivot.x.is_finite() && pivot.y.is_finite() && angle.is_finite(),
+            "Invalid rotation"
+        );
+        let (sin, cos) = angle.sin_cos();
+        let rotate = |x: f32, y: f32| {
+            let (dx, dy) = (x - pivot.x, y - pivot.y);
+            (pivot.x + cos * dx - sin * dy, pivot.y + sin * dx + cos * dy)
+        };
+        let valid = |values: &[f32]| values.iter().all(|v| v.is_finite() && v.abs() < 1_000_000.);
+        let indices = indices
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        ensure!(!indices.is_empty(), "Select artwork to rotate");
+        let mut replacements = Vec::with_capacity(indices.len());
+        for index in indices {
+            let mut layer = self
+                .layers
+                .get(index)
+                .context("Layer no longer exists")?
+                .clone();
+            if let Some(image) = &mut layer.image {
+                let [a, b, c, d, x, y] = image.transform;
+                let (x, y) = rotate(x, y);
+                let transform = [
+                    cos * a - sin * b,
+                    sin * a + cos * b,
+                    cos * c - sin * d,
+                    sin * c + cos * d,
+                    x,
+                    y,
+                ];
+                ensure!(valid(&transform), "Rotation exceeds the supported range");
+                image.transform = transform;
+            }
+            for stroke in &mut layer.strokes {
+                for point in std::sync::Arc::make_mut(&mut stroke.points) {
+                    let (x, y) = rotate(point.x, point.y);
+                    ensure!(valid(&[x, y]), "Rotation exceeds the supported range");
+                    point.x = x;
+                    point.y = y;
+                }
+            }
+            replacements.push((index, layer));
+        }
+        for (index, layer) in replacements {
+            self.layers[index] = layer;
+        }
+        Ok(())
+    }
+
+    pub fn flip_layers(
+        &mut self,
+        indices: &[usize],
+        horizontal: bool,
+        vertical: bool,
+    ) -> Result<()> {
+        ensure!(horizontal || vertical, "Choose a flip direction");
+        let (left, top, right, bottom) = self
+            .selected_layer_bounds(indices)
+            .context("Selected layers have no transformable artwork")?;
+        let indices = indices
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        for index in &indices {
+            let layer = self.layers.get(*index).context("Layer no longer exists")?;
+            if let Some(image) = &layer.image {
+                let [a, b, c, d, x, y] = image.transform;
+                let (flipped_x, flipped_y) = (
+                    if horizontal { left + right - x } else { x },
+                    if vertical { top + bottom - y } else { y },
+                );
+                ensure!(
+                    [a, b, c, d, flipped_x, flipped_y]
+                        .iter()
+                        .all(|v| v.is_finite() && v.abs() < 1_000_000.),
+                    "Layer position limit reached"
+                );
+            }
+            ensure!(
+                layer
+                    .strokes
+                    .iter()
+                    .flat_map(|stroke| stroke.points.iter())
+                    .all(|point| {
+                        let x = if horizontal {
+                            left + right - point.x
+                        } else {
+                            point.x
+                        };
+                        let y = if vertical {
+                            top + bottom - point.y
+                        } else {
+                            point.y
+                        };
+                        x.is_finite()
+                            && y.is_finite()
+                            && x.abs() < 1_000_000.
+                            && y.abs() < 1_000_000.
+                    }),
+                "Layer position limit reached"
+            );
+        }
+        for index in indices {
+            let layer = self
+                .layers
+                .get_mut(index)
+                .context("Layer no longer exists")?;
+            if let Some(image) = &mut layer.image {
+                let [mut a, mut b, mut c, mut d, mut x, mut y] = image.transform;
+                if horizontal {
+                    a = -a;
+                    c = -c;
+                    x = left + right - x;
+                }
+                if vertical {
+                    b = -b;
+                    d = -d;
+                    y = top + bottom - y;
+                }
+                image.transform = [a, b, c, d, x, y];
+            }
+            for stroke in &mut layer.strokes {
+                for point in std::sync::Arc::make_mut(&mut stroke.points) {
+                    if horizontal {
+                        point.x = left + right - point.x;
+                    }
+                    if vertical {
+                        point.y = top + bottom - point.y;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Hide candidates in a snapshot, keeping on-screen review independent of export.
@@ -174,7 +670,7 @@ impl Document {
             {
                 let promoted_id = crate::library::id(&reference);
                 let decoded = document::decode_reference(&reference)?;
-                let id = self.next_artboard_id()?;
+                let id = self.allocate_canvas_id()?;
                 self.canvases.push(CanvasArtboard {
                     id,
                     width: decoded.width().max(64),
@@ -187,6 +683,8 @@ impl Document {
                         false,
                     )?],
                     active_layer: 0,
+                    paint_layer: None,
+                    layer_groups: Default::default(),
                     references: vec![],
                     references_visible: true,
                 });
@@ -200,18 +698,11 @@ impl Document {
             });
             self.version = 2;
         }
+        // Some early development builds wrote these optional fields as version 2.
+        if self.version == 2 && self.uses_extended_layer_features() {
+            self.version = 3;
+        }
         Ok(())
-    }
-
-    fn next_artboard_id(&self) -> Result<u32> {
-        self.canvases
-            .iter()
-            .map(|c| c.id)
-            .chain([self.canvas_id])
-            .max()
-            .unwrap_or_default()
-            .checked_add(1)
-            .context("Artboard ID limit reached")
     }
 
     /// Attach to the captured artboard, even if the user has since opened another.
@@ -239,7 +730,9 @@ impl Document {
                     (0, 0, width, height),
                     false,
                 )?];
+                next.layer_groups.clear();
                 next.active_layer = 0;
+                next.paint_layer = None;
                 // Background completion must not switch away from artwork the
                 // user is currently editing. Replace only an empty placeholder.
                 if let Some(index) = next.canvases.iter().position(|c| c.id == previous_id) {
@@ -248,7 +741,8 @@ impl Document {
                     next.set_current_canvas(previous);
                 }
             }
-            Destination::Candidate { artboard, rect } => {
+            Destination::Candidate { artboard, rect }
+            | Destination::NewLayer { artboard, rect } => {
                 let (w, h, layers, active) = if artboard == next.canvas_id {
                     (
                         next.width,
@@ -279,7 +773,19 @@ impl Document {
                     layers.len() < 24,
                     "Maximum 24 layers; recover the result from the queue"
                 );
-                layers.push(image_layer(reference, width, height, rect, true)?);
+                let mut layer = image_layer(reference, width, height, rect, true)?;
+                if matches!(destination, Destination::NewLayer { .. }) {
+                    let scale = (rect.2 as f32 / width as f32).min(rect.3 as f32 / height as f32);
+                    layer.image.as_mut().unwrap().transform = [
+                        scale,
+                        0.,
+                        0.,
+                        scale,
+                        rect.0 as f32 + (rect.2 as f32 - width as f32 * scale) / 2.,
+                        rect.1 as f32 + (rect.3 as f32 - height as f32 * scale) / 2.,
+                    ];
+                }
+                layers.push(layer);
                 *active = layers.len() - 1;
             }
         }
@@ -310,6 +816,7 @@ pub(crate) fn image_layer(
         strokes: vec![],
         image: Some(ImageLayer {
             reference,
+            crop: None,
             transform: [
                 rect.2 as f32 / width as f32,
                 0.,

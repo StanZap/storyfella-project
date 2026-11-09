@@ -127,7 +127,9 @@ any directory:
 cargo xtask build                 # dx build --platform desktop (debug)
 cargo xtask run [-r]              # build, then launch Dioxus Studio
 cargo xtask atelier [-r]          # build, then launch the separate GPUI app
+cargo xtask atelier --restart     # build, then safely restart the same data-directory instance
 cargo xtask atelier -- --data-dir .svs-e2e/atelier-dev
+cargo xtask atelier --restart -- --data-dir .svs-e2e/atelier-dev
 cargo xtask run -l                # …teeing its output to .svs-e2e/logs/
 cargo xtask plan config/plans/smoke.yaml --mode check
 cargo xtask serve                 # dx serve (hot reload)

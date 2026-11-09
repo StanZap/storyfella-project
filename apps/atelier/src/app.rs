@@ -8,7 +8,7 @@ use crate::{
 };
 use gpui_kit::{
     component::{
-        input::{InputState, TextareaState},
+        input::{InputEvent, InputState, TextareaState},
         select::{SearchableVec, SelectEvent, SelectState},
         IndexPath,
     },
@@ -59,6 +59,59 @@ pub enum Panel {
 pub enum DockView {
     Layers,
     References,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LayerInput {
+    X,
+    Y,
+    Width,
+    Height,
+    Opacity,
+    GroupOpacity,
+    Name,
+    GroupName,
+    Rotation,
+}
+
+struct LayerInputDraft {
+    field: LayerInput,
+    epoch: u64,
+    artboard: u32,
+    selection: Vec<usize>,
+    original: String,
+}
+
+struct ArtworkImportDestination {
+    epoch: u64,
+    artboard: u32,
+    rect: (u32, u32, u32, u32),
+}
+
+#[derive(Clone)]
+pub(crate) struct ImageCropSession {
+    pub layer: usize,
+    pub artboard: u32,
+    pub image: document::ImageLayer,
+    pub width: u32,
+    pub height: u32,
+    pub draft: [u32; 4],
+    pub anchor: Option<DocPoint>,
+}
+
+impl ImageCropSession {
+    fn source_point(&self, point: DocPoint) -> Option<DocPoint> {
+        let [a, b, c, d, x, y] = self.image.transform;
+        let determinant = a * d - b * c;
+        if determinant.abs() < f32::EPSILON {
+            return None;
+        }
+        let (dx, dy) = (point.x - x, point.y - y);
+        Some(DocPoint {
+            x: ((d * dx - c * dy) / determinant).clamp(0., self.width as f32),
+            y: ((-b * dx + a * dy) / determinant).clamp(0., self.height as f32),
+        })
+    }
 }
 
 fn aspect_index(width: u32, height: u32) -> usize {
@@ -185,6 +238,7 @@ pub(crate) struct ArtboardResizeDrag {
 pub struct DrawingApp {
     pub(crate) handoff_loading: bool,
     pub(crate) handoff_checked: Instant,
+    restart_checked: Instant,
     pub(crate) handoff_open: Option<(
         storyfella_studio_core::atelier::OpenRequest,
         crate::story_context::StoryTarget,
@@ -249,7 +303,20 @@ pub struct DrawingApp {
     pub last_pan: Option<gpui_kit::Point<Pixels>>,
     pub moving_image: bool,
     pub last_image_point: Option<DocPoint>,
-    pub scaling_layer: bool,
+    pub resize_handle: Option<(i8, i8)>,
+    pub rotating_layer: bool,
+    pub transform_checkpointed: bool,
+    pub transform_original: Option<Document>,
+    pub transform_snap_x: Vec<f32>,
+    pub transform_snap_y: Vec<f32>,
+    pub transform_guides: Vec<(bool, f32)>,
+    pub selection_marquee: Option<(DocPoint, DocPoint)>,
+    pub marquee_initial_selection: Vec<usize>,
+    pub marquee_additive: bool,
+    pub marquee_bounds: Vec<(usize, (f32, f32, f32, f32))>,
+    pub(crate) image_crop: Option<ImageCropSession>,
+    pub collapsed_layer_groups: std::collections::HashSet<(u64, u32, String)>,
+    pub editing_layer_group: Option<(u64, u32, String)>,
     pub(crate) artboard_resize_drag: Option<ArtboardResizeDrag>,
     pub hover: Option<gpui_kit::Point<Pixels>>,
     pub bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -270,7 +337,10 @@ pub struct DrawingApp {
     pub dock: bool,
     pub dock_view: DockView,
     pub selected_layers: Vec<usize>,
-    pub show_layer_properties: bool,
+    pub layer_selection_anchor: Option<usize>,
+    pub show_layer_arrange: bool,
+    pub align_each_confirmation: Option<(bool, u64, u32, u64, Vec<usize>)>,
+    pub show_advanced_provider: bool,
     pub show_reference_tools: bool,
     pub grid: bool,
     pub guides: bool,
@@ -280,6 +350,7 @@ pub struct DrawingApp {
     pub scale_art: bool,
     pub aspect_locked: bool,
     pub resize_anchor: (u8, u8),
+    pub snap_enabled: bool,
     pub transparent: bool,
     pub jpeg: bool,
     pub jpeg_quality: u8,
@@ -329,6 +400,7 @@ pub struct DrawingApp {
     pub(crate) region_drag: Option<DocPoint>,
     /// The prompt used by the floating drawing composer.
     pub selection_mode: crate::workflow::SelectionMode,
+    pub drawing_create_layer: bool,
     pub job_id: u64,
     pub job_epoch: u64,
     pub timer_seconds: u32,
@@ -338,10 +410,17 @@ pub struct DrawingApp {
     pub exercise: usize,
     pub title: Entity<InputState>,
     pub layer_name: Entity<InputState>,
-    pub layer_dx: Entity<InputState>,
-    pub layer_dy: Entity<InputState>,
-    pub layer_scale: Entity<InputState>,
+    pub group_name: Entity<InputState>,
+    pub layer_x: Entity<InputState>,
+    pub layer_y: Entity<InputState>,
+    pub layer_width: Entity<InputState>,
+    pub layer_height: Entity<InputState>,
     pub layer_opacity: Entity<InputState>,
+    layer_input_draft: Option<LayerInputDraft>,
+    pub layer_gap: Entity<InputState>,
+    pub group_opacity: Entity<InputState>,
+    pub layer_rotation: Entity<InputState>,
+    pub layer_aspect_locked: bool,
     pub width: Entity<InputState>,
     pub height: Entity<InputState>,
     pub prompt: Entity<TextareaState>,
@@ -416,7 +495,10 @@ impl DrawingApp {
                 Err(recovery_error) => {
                     let snapshots = data_dir.join("open-projects");
                     if snapshots.join("session.json").exists() {
-                        status = format!("Open-project recovery failed: {recovery_error}. Snapshots remain in {}",snapshots.display());
+                        status = format!(
+                            "Open-project recovery failed: {recovery_error}. Snapshots remain in {}",
+                            snapshots.display()
+                        );
                         error = true;
                     }
                     let order = if data_dir.join("recovery.atelier").exists() {
@@ -483,14 +565,19 @@ impl DrawingApp {
         });
         let title = input(doc.title.clone(), window, cx);
         let layer_name = input(doc.layers[doc.active_layer].name.clone(), window, cx);
-        let layer_dx = input("0".into(), window, cx);
-        let layer_dy = input("0".into(), window, cx);
-        let layer_scale = input("100".into(), window, cx);
+        let group_name = input("".into(), window, cx);
+        let layer_x = input("0".into(), window, cx);
+        let layer_y = input("0".into(), window, cx);
+        let layer_width = input("0".into(), window, cx);
+        let layer_height = input("0".into(), window, cx);
         let layer_opacity = input(
             format!("{}", doc.layers[doc.active_layer].opacity * 100.),
             window,
             cx,
         );
+        let layer_gap = input("24".into(), window, cx);
+        let group_opacity = input("100".into(), window, cx);
+        let layer_rotation = input("0".into(), window, cx);
         let width = input(doc.width.to_string(), window, cx);
         let height = input(doc.height.to_string(), window, cx);
         let prompt_target = doc
@@ -589,9 +676,11 @@ impl DrawingApp {
             .zip(references.iter().cloned())
             .collect();
         let selected_layers = vec![doc.active_layer];
+        let layer_selection_anchor = Some(doc.active_layer);
         let mut app = Self {
             handoff_loading: false,
             handoff_checked: Instant::now(),
+            restart_checked: Instant::now(),
             handoff_open: None,
             catalog: None,
             catalog_kind: storyfella_studio_core::registry::ArtifactKind::Character,
@@ -688,7 +777,20 @@ impl DrawingApp {
             last_pan: None,
             moving_image: false,
             last_image_point: None,
-            scaling_layer: false,
+            resize_handle: None,
+            rotating_layer: false,
+            transform_checkpointed: false,
+            transform_original: None,
+            transform_snap_x: Vec::new(),
+            transform_snap_y: Vec::new(),
+            transform_guides: Vec::new(),
+            selection_marquee: None,
+            marquee_initial_selection: Vec::new(),
+            marquee_additive: false,
+            marquee_bounds: Vec::new(),
+            image_crop: None,
+            collapsed_layer_groups: Default::default(),
+            editing_layer_group: None,
             artboard_resize_drag: None,
             hover: None,
             bounds: Rc::new(Cell::new(Bounds::default())),
@@ -703,7 +805,10 @@ impl DrawingApp {
             dock: true,
             dock_view: DockView::Layers,
             selected_layers,
-            show_layer_properties: true,
+            layer_selection_anchor,
+            show_layer_arrange: false,
+            align_each_confirmation: None,
+            show_advanced_provider: false,
             show_reference_tools: false,
             grid: false,
             guides: false,
@@ -713,6 +818,7 @@ impl DrawingApp {
             scale_art: false,
             aspect_locked: false,
             resize_anchor: (1, 1),
+            snap_enabled: false,
             transparent: false,
             jpeg: false,
             jpeg_quality: 90,
@@ -754,6 +860,7 @@ impl DrawingApp {
             selecting_generation_region: false,
             region_drag: None,
             selection_mode: crate::workflow::SelectionMode::Blend,
+            drawing_create_layer: false,
             job_id: 0,
             job_epoch: 0,
             timer_seconds: 300,
@@ -763,10 +870,17 @@ impl DrawingApp {
             exercise: 0,
             title,
             layer_name,
-            layer_dx,
-            layer_dy,
-            layer_scale,
+            group_name,
+            layer_x,
+            layer_y,
+            layer_width,
+            layer_height,
             layer_opacity,
+            layer_input_draft: None,
+            layer_gap,
+            group_opacity,
+            layer_rotation,
+            layer_aspect_locked: true,
             width,
             height,
             prompt,
@@ -799,10 +913,75 @@ impl DrawingApp {
             );
             app.status.clear();
         }
+        app.sync_layer_controls(window, cx);
         app.sync_ref_inputs(window, cx);
         app.refresh_library();
         app.refresh_projects();
         app.reload_clipforge(window, cx);
+        for (input, field) in [
+            (app.layer_x.clone(), LayerInput::X),
+            (app.layer_y.clone(), LayerInput::Y),
+            (app.layer_width.clone(), LayerInput::Width),
+            (app.layer_height.clone(), LayerInput::Height),
+            (app.layer_opacity.clone(), LayerInput::Opacity),
+            (app.group_opacity.clone(), LayerInput::GroupOpacity),
+            (app.layer_name.clone(), LayerInput::Name),
+            (app.group_name.clone(), LayerInput::GroupName),
+            (app.layer_rotation.clone(), LayerInput::Rotation),
+        ] {
+            app.subscriptions.push(cx.subscribe_in(
+                &input,
+                window,
+                move |this, input, event: &InputEvent, window, cx| {
+                    match event {
+                        InputEvent::Focus => {
+                            if let Some(previous) =
+                                this.layer_input_draft.as_ref().map(|draft| draft.field)
+                            {
+                                if previous != field && previous != LayerInput::Rotation {
+                                    this.commit_layer_input(previous, window, cx);
+                                }
+                            }
+                            this.layer_input_draft = Some(LayerInputDraft {
+                                field,
+                                epoch: this.epoch,
+                                artboard: this.doc.canvas_id,
+                                selection: this.selected_layers.clone(),
+                                original: input.read(cx).value().to_string(),
+                            })
+                        }
+                        InputEvent::PressEnter { .. } if field == LayerInput::Rotation => {
+                            this.rotate_selection_by_input(window, cx);
+                        }
+                        InputEvent::PressEnter { .. } if field != LayerInput::Rotation => {
+                            if this.layer_input_draft.is_none() {
+                                this.layer_input_draft = Some(LayerInputDraft {
+                                    field,
+                                    epoch: this.epoch,
+                                    artboard: this.doc.canvas_id,
+                                    selection: this.selected_layers.clone(),
+                                    original: String::new(),
+                                });
+                            }
+                            this.commit_layer_input(field, window, cx);
+                        }
+                        InputEvent::Blur if input.read(cx).focus_handle(cx).is_focused(window) => {}
+                        InputEvent::Blur if field != LayerInput::Rotation => {
+                            this.commit_layer_input(field, window, cx);
+                        }
+                        InputEvent::Blur
+                            if this
+                                .layer_input_draft
+                                .as_ref()
+                                .is_some_and(|draft| draft.field == field) =>
+                        {
+                            this.layer_input_draft = None
+                        }
+                        _ => {}
+                    }
+                },
+            ));
+        }
         app.subscriptions
             .push(cx.observe(&app.prompt, |this, _, cx| {
                 this.capture_prompt(cx);
@@ -1024,12 +1203,16 @@ impl DrawingApp {
     }
     pub fn restore_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let target = if self.page == Page::Draw {
-            match self.region_bounds() {
-                Some((x, y, w, h)) => format!(
-                    "canvas:{}:{:?}:{x}:{y}:{w}:{h}",
-                    self.doc.canvas_id, self.selection_mode
-                ),
-                None => format!("canvas:{}:full", self.doc.canvas_id),
+            if self.drawing_create_layer {
+                format!("canvas:{}:layer", self.doc.canvas_id)
+            } else {
+                match self.region_bounds() {
+                    Some((x, y, w, h)) => format!(
+                        "canvas:{}:{:?}:{x}:{y}:{w}:{h}",
+                        self.doc.canvas_id, self.selection_mode
+                    ),
+                    None => format!("canvas:{}:full", self.doc.canvas_id),
+                }
             }
         } else if self.editing_image {
             self.edit_source()
@@ -1072,11 +1255,38 @@ impl DrawingApp {
         self.history.checkpoint(&self.doc);
     }
     pub fn finish_stroke(&mut self) {
+        if let Some(original) = self.transform_original.take() {
+            if self.transform_checkpointed {
+                self.history.checkpoint(&original);
+            }
+        }
         self.active_stroke = false;
         self.last_pan = None;
         self.last_image_point = None;
-        self.scaling_layer = false;
+        self.resize_handle = None;
+        self.rotating_layer = false;
+        self.transform_checkpointed = false;
+        self.transform_snap_x.clear();
+        self.transform_snap_y.clear();
+        self.transform_guides.clear();
+        self.selection_marquee = None;
+        self.marquee_initial_selection.clear();
+        self.marquee_additive = false;
+        self.marquee_bounds.clear();
         self.artboard_resize_drag = None;
+    }
+    pub fn finish_marquee(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selection_marquee.is_none() {
+            return;
+        }
+        if let Some(index) = self.selected_layers.last().copied() {
+            self.doc.active_layer = index;
+            self.layer_selection_anchor = Some(index);
+            let name = self.doc.layers[index].name.clone();
+            self.layer_name
+                .update(cx, |state, cx| state.set_value(name, window, cx));
+        }
+        self.sync_layer_controls(window, cx);
     }
     pub fn size(&self) -> f32 {
         if self.tool == Tool::Eraser {
@@ -1107,8 +1317,13 @@ impl DrawingApp {
         }
     }
     pub(crate) fn sync_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.sync_layer_controls(window, cx);
+        if self.image_crop.take().is_some() {
+            self.visual_revision += 1;
+        }
+        self.editing_layer_group = None;
         self.selected_layers = vec![self.doc.active_layer];
+        self.layer_selection_anchor = Some(self.doc.active_layer);
+        self.sync_layer_controls(window, cx);
         self.prompt_target = self
             .doc
             .active_prompt_target
@@ -1344,7 +1559,7 @@ impl DrawingApp {
         let mut probe = self.doc.clone();
         for index in 0..probe.layers.len() {
             let layer = &probe.layers[index];
-            if !layer.visible || layer.opacity <= 0. || layer.candidate {
+            if !probe.layer_is_visible(layer) || layer.candidate {
                 continue;
             }
             probe.active_layer = index;
@@ -1515,8 +1730,170 @@ impl DrawingApp {
             image: None,
         });
         self.doc.active_layer = self.doc.layers.len() - 1;
+        self.doc.paint_layer = Some(self.doc.active_layer);
         self.selected_layers = vec![self.doc.active_layer];
+        self.layer_selection_anchor = Some(self.doc.active_layer);
         self.changed();
+    }
+
+    pub fn set_paint_layer(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(layer) = self.doc.layers.get(index) else {
+            return;
+        };
+        if layer.candidate {
+            self.message("Accept the candidate before painting directly on it", false);
+            return;
+        }
+        if self.doc.paint_layer != Some(index) {
+            self.checkpoint();
+            self.doc.paint_layer = Some(index);
+            self.changed();
+        }
+        self.message(
+            format!("Paint target: {}", self.doc.layers[index].name),
+            false,
+        );
+        cx.notify();
+    }
+
+    fn dispatch_artwork_import(
+        &mut self,
+        destination: ArtworkImportDestination,
+        inputs: Vec<crate::worker::ArtworkImport>,
+        cx: &mut Context<Self>,
+    ) {
+        let ArtworkImportDestination {
+            epoch,
+            artboard,
+            rect,
+        } = destination;
+        if inputs.is_empty() {
+            return;
+        }
+        if !self.project_tab_order.contains(&epoch) {
+            self.message(
+                "The destination project was closed; import the images again",
+                false,
+            );
+            cx.notify();
+            return;
+        }
+        if self
+            .workers
+            .storage
+            .send(Storage::ImportArtwork {
+                epoch,
+                artboard,
+                rect,
+                inputs,
+            })
+            .is_err()
+        {
+            self.message("Import worker stopped. Restart Atelier to retry.", true);
+        } else {
+            self.message("Importing images as artwork layers…", false);
+        }
+        cx.notify();
+    }
+
+    pub fn import_artwork_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        self.import_artwork_inputs(
+            paths
+                .into_iter()
+                .map(crate::worker::ArtworkImport::File)
+                .collect(),
+            cx,
+        );
+    }
+
+    fn import_artwork_inputs(
+        &mut self,
+        inputs: Vec<crate::worker::ArtworkImport>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.image_crop.is_some() {
+            self.message("Apply or cancel the crop before importing", false);
+            cx.notify();
+            return;
+        }
+        self.finish_stroke();
+        self.ensure_project_tab();
+        self.dispatch_artwork_import(
+            ArtworkImportDestination {
+                epoch: self.epoch,
+                artboard: self.doc.canvas_id,
+                rect: (0, 0, self.doc.width, self.doc.height),
+            },
+            inputs,
+            cx,
+        );
+    }
+
+    pub fn paste_artwork(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = cx.read_from_clipboard() else {
+            self.message("Clipboard does not contain an image", false);
+            cx.notify();
+            return;
+        };
+        let mut paths = Vec::new();
+        let mut image = None;
+        for entry in item.into_entries() {
+            match entry {
+                ClipboardEntry::ExternalPaths(files) => paths.extend(files.paths().iter().cloned()),
+                ClipboardEntry::Image(value) if image.is_none() => image = Some(value.bytes),
+                _ => {}
+            }
+        }
+        if !paths.is_empty() {
+            self.import_artwork_paths(paths, cx);
+        } else if let Some(bytes) = image {
+            self.import_artwork_inputs(vec![crate::worker::ArtworkImport::Clipboard(bytes)], cx);
+        } else {
+            self.message("Clipboard does not contain an image or image file", false);
+            cx.notify();
+        }
+    }
+
+    pub fn import_artwork_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.image_crop.is_some() {
+            self.message("Apply or cancel the crop before importing", false);
+            cx.notify();
+            return;
+        }
+        self.finish_stroke();
+        self.ensure_project_tab();
+        let destination = ArtworkImportDestination {
+            epoch: self.epoch,
+            artboard: self.doc.canvas_id,
+            rect: (0, 0, self.doc.width, self.doc.height),
+        };
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Import images as artwork layers".into()),
+        });
+        let entity = cx.weak_entity();
+        window
+            .spawn(cx, async move |cx| {
+                let result = receiver.await;
+                let _ = entity.update_in(cx, |this, _, cx| match result {
+                    Ok(Ok(Some(paths))) => this.dispatch_artwork_import(
+                        destination,
+                        paths
+                            .into_iter()
+                            .map(crate::worker::ArtworkImport::File)
+                            .collect(),
+                        cx,
+                    ),
+                    Ok(Ok(None)) => {}
+                    _ => {
+                        this.message("File dialog could not be opened", true);
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
     }
 
     pub fn select_layer(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -1526,17 +1903,159 @@ impl DrawingApp {
         self.finish_stroke();
         self.doc.active_layer = index;
         self.selected_layers = vec![index];
+        let group = self.doc.layers[index].group.clone();
         self.sync_inputs(window, cx);
+        self.editing_layer_group = group.map(|name| (self.epoch, self.doc.canvas_id, name));
+        if let Some(key) = &self.editing_layer_group {
+            self.collapsed_layer_groups.remove(key);
+        }
+        self.sync_layer_controls(window, cx);
         cx.notify();
     }
 
-    pub fn toggle_layer_selection(&mut self, index: usize, cx: &mut Context<Self>) {
+    pub fn select_layer_range(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if index >= self.doc.layers.len() {
+            return;
+        }
+        self.finish_stroke();
+        let anchor = self
+            .layer_selection_anchor
+            .filter(|anchor| *anchor < self.doc.layers.len())
+            .unwrap_or(self.doc.active_layer);
+        self.selected_layers = (anchor.min(index)..=anchor.max(index)).collect();
+        self.doc.active_layer = index;
+        let group = self.doc.layers[index].group.clone().filter(|name| {
+            self.selected_layers
+                .iter()
+                .all(|index| self.doc.layers[*index].group.as_ref() == Some(name))
+        });
+        self.editing_layer_group = group.map(|name| (self.epoch, self.doc.canvas_id, name));
+        let name = self.doc.layers[index].name.clone();
+        self.layer_name
+            .update(cx, |state, cx| state.set_value(name, window, cx));
+        self.sync_layer_controls(window, cx);
+        cx.notify();
+    }
+
+    pub fn start_image_crop(&mut self, cx: &mut Context<Self>) {
+        if self.selected_layers.as_slice() != [self.doc.active_layer] {
+            return;
+        }
+        let layer = &self.doc.layers[self.doc.active_layer];
+        if self.doc.layer_is_locked(layer) {
+            self.message("Unlock the image layer before cropping", false);
+            return;
+        }
+        let Some(image) = layer.image.clone() else {
+            return;
+        };
+        let decoded = match document::decode_reference(&image.reference) {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                self.message(format!("Could not read image: {error:#}"), true);
+                return;
+            }
+        };
+        let (width, height) = (decoded.width(), decoded.height());
+        let draft = image.crop.unwrap_or([0, 0, width, height]);
+        self.finish_stroke();
+        self.image_crop = Some(ImageCropSession {
+            layer: self.doc.active_layer,
+            artboard: self.doc.canvas_id,
+            image,
+            width,
+            height,
+            draft,
+            anchor: None,
+        });
+        self.visual_revision += 1;
+        self.tool = Tool::Hand;
+        self.moving_image = false;
+        self.selecting_generation_region = false;
+        self.panel = Panel::None;
+        self.show_drawing_composer = false;
+        self.message(
+            "Drag a crop rectangle on the image, then Apply or Cancel",
+            false,
+        );
+        cx.notify();
+    }
+
+    pub fn reset_image_crop_draft(&mut self, cx: &mut Context<Self>) {
+        if let Some(crop) = &mut self.image_crop {
+            crop.draft = [0, 0, crop.width, crop.height];
+            crop.anchor = None;
+        }
+        cx.notify();
+    }
+
+    pub fn apply_image_crop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(crop) = self.image_crop.take() else {
+            return;
+        };
+        self.visual_revision += 1;
+        self.tool = Tool::Hand;
+        self.moving_image = true;
+        let valid = crop.artboard == self.doc.canvas_id
+            && self.selected_layers.as_slice() == [crop.layer]
+            && self.doc.layers.get(crop.layer).is_some_and(|layer| {
+                !self.doc.layer_is_locked(layer) && layer.image.as_ref() == Some(&crop.image)
+            });
+        if !valid {
+            self.message("The image changed; start cropping again", true);
+            cx.notify();
+            return;
+        }
+        let new_crop = (crop.draft != [0, 0, crop.width, crop.height]).then_some(crop.draft);
+        if crop.image.crop != new_crop {
+            self.checkpoint();
+            self.doc.layers[crop.layer].image.as_mut().unwrap().crop = new_crop;
+            if new_crop.is_some() {
+                self.doc.version = 3;
+            }
+            self.changed();
+        }
+        self.sync_layer_controls(window, cx);
+        self.message("Crop applied · original image retained", false);
+        cx.notify();
+    }
+
+    pub fn cancel_image_crop(&mut self, cx: &mut Context<Self>) {
+        if self.image_crop.take().is_some() {
+            self.visual_revision += 1;
+        }
+        self.tool = Tool::Hand;
+        self.moving_image = true;
+        self.message("Crop cancelled", false);
+        cx.notify();
+    }
+
+    pub fn toggle_layer_selection(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.layer_selection_anchor = Some(index);
         if self.selected_layers.contains(&index) {
             self.selected_layers.retain(|selected| *selected != index);
+            if self.doc.active_layer == index && !self.selected_layers.is_empty() {
+                self.doc.active_layer = *self.selected_layers.last().unwrap();
+            }
         } else if index < self.doc.layers.len() {
             self.selected_layers.push(index);
             self.selected_layers.sort_unstable();
+            self.doc.active_layer = index;
         }
+        let active_name = self.doc.layers[self.doc.active_layer].name.clone();
+        self.layer_name
+            .update(cx, |state, cx| state.set_value(active_name, window, cx));
+        self.sync_layer_controls(window, cx);
         cx.notify();
     }
 
@@ -1565,7 +2084,7 @@ impl DrawingApp {
     }
 
     pub fn group_selected_layers(&mut self) {
-        let selected: Vec<_> = self
+        let mut selected: Vec<_> = self
             .selected_layers
             .iter()
             .copied()
@@ -1575,11 +2094,27 @@ impl DrawingApp {
             self.message("Select at least two layers to group", true);
             return;
         }
+        selected.sort_unstable();
+        if selected
+            .iter()
+            .any(|index| self.doc.layers[*index].group.is_some())
+        {
+            self.message("Ungroup selected layers before creating a new group", false);
+            return;
+        }
+        if selected.last().unwrap() - selected[0] + 1 != selected.len() {
+            self.message(
+                "Select adjacent layers to group without changing their stacking order",
+                false,
+            );
+            return;
+        }
         let used: std::collections::HashSet<String> = self
             .doc
             .layers
             .iter()
             .filter_map(|layer| layer.group.clone())
+            .chain(self.doc.layer_groups.keys().cloned())
             .collect();
         let mut number = 1;
         while used.contains(&format!("Group {number}")) {
@@ -1587,6 +2122,7 @@ impl DrawingApp {
         }
         let group = format!("Group {number}");
         self.checkpoint();
+        self.editing_layer_group = None;
         for index in selected {
             self.doc.layers[index].group = Some(group.clone());
         }
@@ -1594,73 +2130,1060 @@ impl DrawingApp {
     }
 
     pub fn ungroup_selected_layers(&mut self) {
-        let selected: Vec<_> = self
+        let groups: std::collections::HashSet<_> = self
             .selected_layers
             .iter()
-            .copied()
-            .filter(|index| *index < self.doc.layers.len())
+            .filter_map(|index| self.doc.layers.get(*index)?.group.clone())
             .collect();
-        if !selected
-            .iter()
-            .any(|index| self.doc.layers[*index].group.is_some())
-        {
+        if groups.is_empty() {
             return;
         }
-        self.checkpoint();
-        for index in selected {
-            self.doc.layers[index].group = None;
+        for group in &groups {
+            let properties = self.doc.layer_groups.get(group);
+            if properties.is_some_and(|properties| {
+                !properties.visible || properties.locked || properties.opacity != 1.
+            }) {
+                self.message(
+                    "Show and unlock the group, and set its opacity to 100% before ungrouping",
+                    false,
+                );
+                return;
+            }
         }
+        self.checkpoint();
+        self.editing_layer_group = None;
+        for layer in &mut self.doc.layers {
+            if layer
+                .group
+                .as_ref()
+                .is_some_and(|name| groups.contains(name))
+            {
+                layer.group = None;
+            }
+        }
+        self.doc.prune_layer_groups();
         self.changed();
     }
 
-    pub fn sync_layer_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        for (input, value) in [
-            (&self.layer_dx, "0".into()),
-            (&self.layer_dy, "0".into()),
-            (&self.layer_scale, "100".into()),
-            (
-                &self.layer_opacity,
-                format!("{}", self.doc.layers[self.doc.active_layer].opacity * 100.),
-            ),
-        ] {
-            input.update(cx, |s, cx| s.set_value(value, window, cx));
+    pub fn select_layer_group(
+        &mut self,
+        name: &str,
+        toggle: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let members: Vec<_> = self
+            .doc
+            .layers
+            .iter()
+            .enumerate()
+            .filter_map(|(index, layer)| (layer.group.as_deref() == Some(name)).then_some(index))
+            .collect();
+        if members.is_empty() {
+            return;
         }
+        self.finish_stroke();
+        self.editing_layer_group = None;
+        if toggle {
+            let remove = members
+                .iter()
+                .all(|index| self.selected_layers.contains(index));
+            if remove {
+                self.selected_layers
+                    .retain(|index| !members.contains(index));
+            } else {
+                for &index in &members {
+                    if !self.selected_layers.contains(&index) {
+                        self.selected_layers.push(index);
+                    }
+                }
+            }
+        } else {
+            self.selected_layers = members.clone();
+        }
+        self.selected_layers.sort_unstable();
+        if let Some(index) = self.selected_layers.last().copied() {
+            self.doc.active_layer = index;
+            self.layer_selection_anchor = Some(index);
+            let name = self.doc.layers[index].name.clone();
+            self.layer_name
+                .update(cx, |state, cx| state.set_value(name, window, cx));
+        }
+        self.sync_layer_controls(window, cx);
+        cx.notify();
     }
 
-    pub fn apply_layer_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.doc.layers[self.doc.active_layer].locked {
+    /// A fully selected group is arranged as one unit; selected children can be arranged individually.
+    pub fn selection_units(&self) -> Vec<Vec<usize>> {
+        let mut units = Vec::new();
+        let mut assigned = std::collections::HashSet::new();
+        for &index in &self.selected_layers {
+            if assigned.contains(&index) {
+                continue;
+            }
+            let Some(layer) = self.doc.layers.get(index) else {
+                continue;
+            };
+            let members: Vec<_> = layer
+                .group
+                .as_ref()
+                .map(|name| {
+                    self.doc
+                        .layers
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, layer)| (layer.group.as_ref() == Some(name)).then_some(i))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if members.len() > 1
+                && layer.group.as_deref() != self.editing_group_name()
+                && members.iter().all(|i| self.selected_layers.contains(i))
+            {
+                assigned.extend(members.iter().copied());
+                units.push(members);
+            } else {
+                assigned.insert(index);
+                units.push(vec![index]);
+            }
+        }
+        units
+    }
+
+    pub fn editing_group_name(&self) -> Option<&str> {
+        self.editing_layer_group
+            .as_ref()
+            .filter(|(epoch, canvas, _)| *epoch == self.epoch && *canvas == self.doc.canvas_id)
+            .map(|(_, _, name)| name.as_str())
+    }
+
+    pub fn selected_group_name(&self) -> Option<&str> {
+        let units = self.selection_units();
+        if units.len() != 1 {
+            return None;
+        }
+        let group = self.doc.layers.get(units[0][0])?.group.as_deref()?;
+        if self.editing_group_name() == Some(group) {
+            return None;
+        }
+        let all_selected = self
+            .doc
+            .layers
+            .iter()
+            .enumerate()
+            .filter(|(_, layer)| layer.group.as_deref() == Some(group))
+            .all(|(index, _)| self.selected_layers.contains(&index));
+        all_selected.then_some(group)
+    }
+
+    /// A complete group and one ungrouped layer can be selected together.
+    pub fn selected_group_and_layer(&self) -> Option<(String, usize)> {
+        if self.editing_group_name().is_some() {
+            return None;
+        }
+        let units = self.selection_units();
+        if units.len() != 2 {
+            return None;
+        }
+        for (group_unit, layer_unit) in [(&units[0], &units[1]), (&units[1], &units[0])] {
+            if layer_unit.len() != 1 {
+                continue;
+            }
+            let layer_index = layer_unit[0];
+            if self.doc.layers.get(layer_index)?.group.is_some() {
+                continue;
+            }
+            let Some(name) = self
+                .doc
+                .layers
+                .get(group_unit[0])
+                .and_then(|layer| layer.group.as_ref())
+            else {
+                continue;
+            };
+            let members: Vec<_> = self
+                .doc
+                .layers
+                .iter()
+                .enumerate()
+                .filter_map(|(index, layer)| (layer.group.as_ref() == Some(name)).then_some(index))
+                .collect();
+            if members == *group_unit {
+                return Some((name.clone(), layer_index));
+            }
+        }
+        None
+    }
+
+    pub fn add_selected_layer_to_group(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((name, index)) = self.selected_group_and_layer() else {
+            return;
+        };
+        if self.doc.layer_is_locked(&self.doc.layers[index]) {
+            self.message("Unlock the layer before adding it to a group", false);
+            return;
+        }
+        if self
+            .doc
+            .layer_groups
+            .get(&name)
+            .is_some_and(|group| !group.visible || group.locked || group.opacity != 1.)
+        {
             self.message(
-                "Unlock this layer before changing its position or opacity",
+                "Show and unlock the group, and set its opacity to 100% before adding the layer",
                 false,
             );
             return;
         }
-        let values: Option<Vec<f32>> = [
-            &self.layer_dx,
-            &self.layer_dy,
-            &self.layer_scale,
-            &self.layer_opacity,
-        ]
-        .iter()
-        .map(|input| input.read(cx).value().parse().ok())
-        .collect();
-        let Some(values) = values.filter(|v| {
-            v.iter().all(|x| x.is_finite()) && v[2] > 0. && (0. ..=100.).contains(&v[3])
-        }) else {
+        let members: Vec<_> = self
+            .doc
+            .layers
+            .iter()
+            .enumerate()
+            .filter_map(|(i, layer)| (layer.group.as_deref() == Some(name.as_str())).then_some(i))
+            .collect();
+        let (Some(&first), Some(&last)) = (members.first(), members.last()) else {
+            return;
+        };
+        if last - first + 1 != members.len()
+            || !(index.checked_add(1) == Some(first) || last.checked_add(1) == Some(index))
+        {
             self.message(
-                "Enter finite movement, positive scale and opacity from 0 to 100",
+                "Place the layer next to the group before adding it, so stacking stays unchanged",
+                false,
+            );
+            return;
+        }
+        self.checkpoint();
+        self.doc.layers[index].group = Some(name.clone());
+        self.editing_layer_group = None;
+        self.changed();
+        self.sync_layer_controls(window, cx);
+        self.message(format!("Added layer to {name}"), false);
+        cx.notify();
+    }
+
+    pub fn remove_selected_layer_from_group(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(name) = self.editing_group_name().map(str::to_owned) else {
+            return;
+        };
+        if self.selected_layers.len() != 1 {
+            return;
+        }
+        let index = self.selected_layers[0];
+        let Some(layer) = self.doc.layers.get(index) else {
+            return;
+        };
+        if layer.group.as_deref() != Some(name.as_str()) {
+            return;
+        }
+        if self.doc.layer_is_locked(layer) {
+            self.message("Unlock the layer and its group first", false);
+            return;
+        }
+        if self
+            .doc
+            .layer_groups
+            .get(&name)
+            .is_some_and(|group| !group.visible || group.opacity != 1.)
+        {
+            self.message(
+                "Show the group and set its opacity to 100% before removing the layer",
+                false,
+            );
+            return;
+        }
+        let members: Vec<_> = self
+            .doc
+            .layers
+            .iter()
+            .enumerate()
+            .filter_map(|(i, layer)| (layer.group.as_deref() == Some(name.as_str())).then_some(i))
+            .collect();
+        if members.first() != Some(&index) && members.last() != Some(&index) {
+            self.message(
+                "Move the layer to an edge of the group before removing it",
+                false,
+            );
+            return;
+        }
+        self.checkpoint();
+        self.doc.layers[index].group = None;
+        self.doc.prune_layer_groups();
+        self.editing_layer_group = None;
+        self.changed();
+        self.sync_layer_controls(window, cx);
+        self.message("Layer removed from group", false);
+        cx.notify();
+    }
+
+    pub fn duplicate_selected_layers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_layers.is_empty() {
+            return;
+        }
+        if self.selection_is_locked() {
+            self.message("Unlock selected layers before duplicating them", false);
+            return;
+        }
+        let mut selected = self.selected_layers.clone();
+        selected.sort_unstable();
+        selected.dedup();
+        if self.doc.layers.len() + selected.len() > 24 {
+            self.message("Duplicating would exceed the 24-layer limit", true);
+            return;
+        }
+        if selected.iter().any(|index| {
+            self.doc
+                .layers
+                .get(*index)
+                .is_none_or(|layer| layer.candidate)
+        }) {
+            self.message("Accept candidates before duplicating them", false);
+            return;
+        }
+        let groups: std::collections::BTreeSet<_> = selected
+            .iter()
+            .filter_map(|index| self.doc.layers[*index].group.clone())
+            .collect();
+        for group in &groups {
+            let members: Vec<_> = self
+                .doc
+                .layers
+                .iter()
+                .enumerate()
+                .filter_map(|(index, layer)| (layer.group.as_ref() == Some(group)).then_some(index))
+                .collect();
+            let complete = members.iter().all(|index| selected.contains(index));
+            if !complete
+                && selected
+                    .iter()
+                    .any(|index| self.doc.layers[*index].group.as_ref() != Some(group))
+            {
+                self.message(
+                    "Select the whole group, or duplicate its children separately",
+                    false,
+                );
+                return;
+            }
+        }
+        self.finish_stroke();
+        let previous = self.doc.clone();
+        let mut next = previous.clone();
+        let mut used: std::collections::HashSet<String> = next
+            .layers
+            .iter()
+            .filter_map(|layer| layer.group.clone())
+            .chain(next.layer_groups.keys().cloned())
+            .collect();
+        let mut copies = std::collections::BTreeMap::new();
+        for group in &groups {
+            let all = previous
+                .layers
+                .iter()
+                .enumerate()
+                .filter(|(_, layer)| layer.group.as_ref() == Some(group))
+                .all(|(index, _)| selected.contains(&index));
+            if all && self.editing_group_name() != Some(group.as_str()) {
+                let mut number = 1;
+                while used.contains(&format!("Group {number}")) {
+                    number += 1;
+                }
+                let name = format!("Group {number}");
+                used.insert(name.clone());
+                if let Some(properties) = previous.layer_groups.get(group) {
+                    next.layer_groups.insert(name.clone(), properties.clone());
+                }
+                copies.insert(group.clone(), name);
+            }
+        }
+        let insert = selected.last().copied().unwrap() + 1;
+        let mut duplicated = Vec::with_capacity(selected.len());
+        for &index in &selected {
+            let mut layer = previous.layers[index].clone();
+            if let Some(group) = layer.group.as_ref().and_then(|group| copies.get(group)) {
+                layer.group = Some(group.clone());
+            }
+            if layer.group.is_none() {
+                layer.name = format!("{} copy", layer.name);
+            }
+            duplicated.push(layer);
+        }
+        let count = duplicated.len();
+        next.layers.splice(insert..insert, duplicated);
+        next.paint_layer = next.paint_layer.map(|index| {
+            if index >= insert {
+                index + count
+            } else {
+                index
+            }
+        });
+        let indices: Vec<_> = (insert..insert + count).collect();
+        next.active_layer = *indices.last().unwrap();
+        if let Err(error) = next
+            .translate_layers(&indices, 16., 16.)
+            .and_then(|()| next.validate())
+        {
+            self.message(format!("Could not duplicate selection: {error:#}"), true);
+            return;
+        }
+        self.history.checkpoint(&previous);
+        self.doc = next;
+        self.selected_layers = indices;
+        self.layer_selection_anchor = Some(self.doc.active_layer);
+        if !copies.is_empty() {
+            self.editing_layer_group = None;
+        }
+        let name = self.doc.layers[self.doc.active_layer].name.clone();
+        self.layer_name
+            .update(cx, |state, cx| state.set_value(name, window, cx));
+        self.changed();
+        self.sync_layer_controls(window, cx);
+        cx.notify();
+    }
+
+    pub fn rename_selected_group(&mut self, cx: &mut Context<Self>) {
+        let Some(old) = self.selected_group_name().map(str::to_owned) else {
+            return;
+        };
+        let name = self.group_name.read(cx).value().trim().to_owned();
+        if name.is_empty() || name.len() > 128 {
+            self.message("Group names must contain 1–128 characters", true);
+            return;
+        }
+        if name == old {
+            return;
+        }
+        if self
+            .doc
+            .layers
+            .iter()
+            .any(|layer| layer.group.as_deref() == Some(name.as_str()))
+        {
+            self.message(
+                "A group with that name already exists on this artboard",
                 true,
             );
             return;
+        }
+        self.checkpoint();
+        if let Some(properties) = self.doc.layer_groups.remove(&old) {
+            self.doc.layer_groups.insert(name.clone(), properties);
+        }
+        for layer in &mut self.doc.layers {
+            if layer.group.as_deref() == Some(old.as_str()) {
+                layer.group = Some(name.clone());
+            }
+        }
+        let old_key = (self.epoch, self.doc.canvas_id, old);
+        if self.collapsed_layer_groups.remove(&old_key) {
+            self.collapsed_layer_groups
+                .insert((self.epoch, self.doc.canvas_id, name));
+        }
+        self.changed();
+        cx.notify();
+    }
+
+    pub fn toggle_group_visibility(&mut self, name: &str, cx: &mut Context<Self>) {
+        if !self
+            .doc
+            .layers
+            .iter()
+            .any(|layer| layer.group.as_deref() == Some(name))
+        {
+            return;
+        }
+        self.checkpoint();
+        self.doc.version = 3;
+        let group = self.doc.layer_groups.entry(name.to_owned()).or_default();
+        group.visible = !group.visible;
+        self.changed();
+        cx.notify();
+    }
+
+    pub fn toggle_group_lock(&mut self, name: &str, cx: &mut Context<Self>) {
+        if !self
+            .doc
+            .layers
+            .iter()
+            .any(|layer| layer.group.as_deref() == Some(name))
+        {
+            return;
+        }
+        self.checkpoint();
+        self.doc.version = 3;
+        let group = self.doc.layer_groups.entry(name.to_owned()).or_default();
+        group.locked = !group.locked;
+        self.changed();
+        cx.notify();
+    }
+
+    pub fn apply_group_opacity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = self.selected_group_name().map(str::to_owned) else {
+            return;
+        };
+        if !self.doc.group_is_contiguous(&name) {
+            self.message(
+                "Ungroup and regroup adjacent layers to change group opacity",
+                false,
+            );
+            return;
+        }
+        if self
+            .doc
+            .layer_groups
+            .get(&name)
+            .is_some_and(|group| group.locked)
+        {
+            self.message("Unlock the group before changing its opacity", false);
+            return;
+        }
+        let value = self.group_opacity.read(cx).value().parse::<f32>().ok();
+        let Some(value) = value.filter(|v| v.is_finite() && (0. ..=100.).contains(v)) else {
+            self.message("Enter group opacity from 0 to 100", true);
+            return;
+        };
+        let previous = self
+            .doc
+            .layer_groups
+            .get(&name)
+            .map_or(1., |group| group.opacity);
+        if (previous - value / 100.).abs() > 0.0001 {
+            self.checkpoint();
+            self.doc.layer_groups.entry(name).or_default().opacity = value / 100.;
+            self.doc.version = 3;
+            self.changed();
+        }
+        self.sync_layer_controls(window, cx);
+        cx.notify();
+    }
+
+    fn commit_layer_input(
+        &mut self,
+        field: LayerInput,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .layer_input_draft
+            .as_ref()
+            .is_some_and(|draft| draft.field != field)
+        {
+            return;
+        }
+        let Some(draft) = self.layer_input_draft.take() else {
+            return;
+        };
+        if draft.field != field
+            || draft.epoch != self.epoch
+            || draft.artboard != self.doc.canvas_id
+            || draft.selection != self.selected_layers
+        {
+            return;
+        }
+        let input = match field {
+            LayerInput::X => &self.layer_x,
+            LayerInput::Y => &self.layer_y,
+            LayerInput::Width => &self.layer_width,
+            LayerInput::Height => &self.layer_height,
+            LayerInput::Opacity => &self.layer_opacity,
+            LayerInput::GroupOpacity => &self.group_opacity,
+            LayerInput::Name => &self.layer_name,
+            LayerInput::GroupName => &self.group_name,
+            LayerInput::Rotation => return,
+        }
+        .clone();
+        let value = input.read(cx).value().trim().to_owned();
+        let unchanged_number = !matches!(field, LayerInput::Name | LayerInput::GroupName)
+            && value
+                .parse::<f32>()
+                .ok()
+                .zip(draft.original.trim().parse::<f32>().ok())
+                .is_some_and(|(left, right)| left.is_finite() && left == right);
+        if value != draft.original.trim() && !unchanged_number && !self.selected_layers.is_empty() {
+            match field {
+                LayerInput::Name => self.rename_active_layer(cx),
+                LayerInput::GroupName => self.rename_selected_group(cx),
+                LayerInput::GroupOpacity => self.apply_group_opacity(window, cx),
+                _ if self.selection_is_locked() => {
+                    self.message("Unlock selected layers before editing properties", false)
+                }
+                _ => {
+                    let parsed = value.parse::<f32>().ok().filter(|v| v.is_finite());
+                    let valid = parsed.filter(|v| match field {
+                        LayerInput::Width | LayerInput::Height => *v > 0.,
+                        LayerInput::Opacity => (0. ..=100.).contains(v),
+                        _ => true,
+                    });
+                    if let Some(value) = valid {
+                        let previous = self.doc.clone();
+                        let mut next = previous.clone();
+                        let result = if field == LayerInput::Opacity {
+                            for &index in &self.selected_layers {
+                                next.layers[index].opacity = value / 100.;
+                            }
+                            Ok(())
+                        } else if let Some((x, y, right, bottom)) =
+                            self.doc.selected_layer_bounds(&self.selected_layers)
+                        {
+                            let (mut width, mut height) = (right - x, bottom - y);
+                            let (mut left, mut top) = (x, y);
+                            match field {
+                                LayerInput::X => left = value,
+                                LayerInput::Y => top = value,
+                                LayerInput::Width => {
+                                    if self.layer_aspect_locked {
+                                        height *= value / width;
+                                    }
+                                    width = value;
+                                }
+                                LayerInput::Height => {
+                                    if self.layer_aspect_locked {
+                                        width *= value / height;
+                                    }
+                                    height = value;
+                                }
+                                _ => {}
+                            }
+                            next.transform_layers_to_bounds(
+                                &self.selected_layers,
+                                (left, top, width, height),
+                            )
+                        } else {
+                            Err(anyhow::anyhow!("Selected artwork has no bounds"))
+                        };
+                        match result {
+                            Ok(()) => {
+                                self.history.checkpoint(&previous);
+                                self.doc = next;
+                                self.changed();
+                            }
+                            Err(error) => self.message(error.to_string(), true),
+                        }
+                    } else {
+                        self.message(
+                            match field {
+                                LayerInput::Opacity => "Enter opacity from 0 to 100",
+                                LayerInput::Width | LayerInput::Height => "Enter a positive size",
+                                _ => "Enter a finite position",
+                            },
+                            true,
+                        );
+                    }
+                }
+            }
+        }
+        self.sync_layer_controls(window, cx);
+        let original = input.read(cx).value().to_string();
+        if input.read(cx).focus_handle(cx).is_focused(window) {
+            self.layer_input_draft = Some(LayerInputDraft {
+                field,
+                epoch: self.epoch,
+                artboard: self.doc.canvas_id,
+                selection: self.selected_layers.clone(),
+                original,
+            });
+        }
+        cx.notify();
+    }
+
+    pub fn sync_layer_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focused = self
+            .layer_input_draft
+            .as_ref()
+            .filter(|draft| {
+                draft.epoch == self.epoch
+                    && draft.artboard == self.doc.canvas_id
+                    && draft.selection == self.selected_layers
+            })
+            .filter(|draft| {
+                let input = match draft.field {
+                    LayerInput::X => &self.layer_x,
+                    LayerInput::Y => &self.layer_y,
+                    LayerInput::Width => &self.layer_width,
+                    LayerInput::Height => &self.layer_height,
+                    LayerInput::Opacity => &self.layer_opacity,
+                    LayerInput::GroupOpacity => &self.group_opacity,
+                    LayerInput::Name => &self.layer_name,
+                    LayerInput::GroupName => &self.group_name,
+                    LayerInput::Rotation => &self.layer_rotation,
+                };
+                input.read(cx).value().as_ref() != draft.original
+            })
+            .map(|draft| draft.field);
+        let group_name = self.selected_group_name().unwrap_or("").to_owned();
+        if focused != Some(LayerInput::GroupName) {
+            self.group_name
+                .update(cx, |state, cx| state.set_value(group_name, window, cx));
+        }
+        let opacity = self
+            .selected_group_name()
+            .and_then(|name| self.doc.layer_groups.get(name))
+            .map_or(100., |group| group.opacity * 100.);
+        if focused != Some(LayerInput::GroupOpacity) {
+            self.group_opacity.update(cx, |state, cx| {
+                state.set_value(format!("{opacity:.2}"), window, cx)
+            });
+        }
+        let values = self
+            .doc
+            .selected_layer_bounds(&self.selected_layers)
+            .map(|(left, top, right, bottom)| {
+                [left, top, right - left, bottom - top].map(|value| format!("{value:.2}"))
+            })
+            .unwrap_or_else(|| ["0".into(), "0".into(), "0".into(), "0".into()]);
+        let common_opacity = self
+            .selected_layers
+            .first()
+            .and_then(|index| self.doc.layers.get(*index))
+            .map(|layer| layer.opacity)
+            .filter(|opacity| {
+                self.selected_layers.iter().all(|index| {
+                    self.doc
+                        .layers
+                        .get(*index)
+                        .is_some_and(|layer| (layer.opacity - opacity).abs() < 0.0001)
+                })
+            })
+            .map(|opacity| format!("{:.2}", opacity * 100.))
+            .unwrap_or_default();
+        for (input, value, field) in [
+            (&self.layer_x, values[0].clone(), LayerInput::X),
+            (&self.layer_y, values[1].clone(), LayerInput::Y),
+            (&self.layer_width, values[2].clone(), LayerInput::Width),
+            (&self.layer_height, values[3].clone(), LayerInput::Height),
+            (&self.layer_opacity, common_opacity, LayerInput::Opacity),
+        ] {
+            if focused != Some(field) {
+                input.update(cx, |s, cx| s.set_value(value, window, cx));
+            }
+        }
+        if focused.is_none() {
+            if let Some(draft) = &mut self.layer_input_draft {
+                if draft.epoch == self.epoch
+                    && draft.artboard == self.doc.canvas_id
+                    && draft.selection == self.selected_layers
+                {
+                    let input = match draft.field {
+                        LayerInput::X => &self.layer_x,
+                        LayerInput::Y => &self.layer_y,
+                        LayerInput::Width => &self.layer_width,
+                        LayerInput::Height => &self.layer_height,
+                        LayerInput::Opacity => &self.layer_opacity,
+                        LayerInput::GroupOpacity => &self.group_opacity,
+                        LayerInput::Name => &self.layer_name,
+                        LayerInput::GroupName => &self.group_name,
+                        LayerInput::Rotation => &self.layer_rotation,
+                    };
+                    draft.original = input.read(cx).value().to_string();
+                }
+            }
+        }
+    }
+
+    pub(crate) fn selection_is_locked(&self) -> bool {
+        self.selected_layers.iter().any(|index| {
+            self.doc
+                .layers
+                .get(*index)
+                .is_some_and(|layer| self.doc.layer_is_locked(layer))
+        })
+    }
+
+    fn snap_axis(start: f32, extent: f32, targets: &[f32], tolerance: f32) -> (f32, Option<f32>) {
+        let best = [start, start + extent / 2., start + extent]
+            .into_iter()
+            .flat_map(|point| {
+                targets
+                    .iter()
+                    .copied()
+                    .map(move |target| (target - point, target))
+            })
+            .filter(|(delta, _)| delta.abs() <= tolerance)
+            .min_by(|a, b| a.0.abs().total_cmp(&b.0.abs()));
+        best.map_or(((start / 16.).round() * 16., None), |(delta, target)| {
+            (start + delta, Some(target))
+        })
+    }
+
+    fn prepare_transform_snap_targets(&mut self) {
+        self.transform_snap_x = vec![0., self.doc.width as f32 / 2., self.doc.width as f32];
+        self.transform_snap_y = vec![0., self.doc.height as f32 / 2., self.doc.height as f32];
+        for (index, layer) in self.doc.layers.iter().enumerate() {
+            if self.selected_layers.contains(&index) || !self.doc.layer_is_visible(layer) {
+                continue;
+            }
+            if let Some((left, top, right, bottom)) = self.doc.layer_bounds_for(index) {
+                self.transform_snap_x
+                    .extend([left, (left + right) / 2., right]);
+                self.transform_snap_y
+                    .extend([top, (top + bottom) / 2., bottom]);
+            }
+        }
+    }
+
+    pub fn align_selection(
+        &mut self,
+        horizontal: bool,
+        mode: u8,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let units = self.selection_units();
+        if units.len() < 2 || self.selection_is_locked() {
+            return;
+        }
+        let expected = units.len();
+        let mut bounds: Vec<_> = units
+            .into_iter()
+            .filter_map(|unit| {
+                self.doc
+                    .selected_layer_bounds(&unit)
+                    .map(|rect| (unit, rect))
+            })
+            .collect();
+        if bounds.len() != expected {
+            self.message("Each selected item needs artwork before alignment", false);
+            cx.notify();
+            return;
+        }
+        let (group_start, group_end) = if horizontal {
+            (
+                bounds
+                    .iter()
+                    .map(|(_, rect)| rect.0)
+                    .fold(f32::MAX, f32::min),
+                bounds
+                    .iter()
+                    .map(|(_, rect)| rect.2)
+                    .fold(f32::MIN, f32::max),
+            )
+        } else {
+            (
+                bounds
+                    .iter()
+                    .map(|(_, rect)| rect.1)
+                    .fold(f32::MAX, f32::min),
+                bounds
+                    .iter()
+                    .map(|(_, rect)| rect.3)
+                    .fold(f32::MIN, f32::max),
+            )
+        };
+        let target = match mode {
+            0 => group_start,
+            1 => (group_start + group_end) / 2.,
+            _ => group_end,
         };
         let previous = self.doc.clone();
-        match self
-            .doc
-            .reposition_image_layer(values[0], values[1], values[2] / 100.)
-        {
+        let mut changed = false;
+        for (unit, rect) in bounds.drain(..) {
+            let (start, end) = if horizontal {
+                (rect.0, rect.2)
+            } else {
+                (rect.1, rect.3)
+            };
+            let current = match mode {
+                0 => start,
+                1 => (start + end) / 2.,
+                _ => end,
+            };
+            let delta = target - current;
+            if delta.abs() < 0.001 {
+                continue;
+            }
+            let result = if horizontal {
+                self.doc.translate_layers(&unit, delta, 0.)
+            } else {
+                self.doc.translate_layers(&unit, 0., delta)
+            };
+            if let Err(error) = result {
+                self.doc = previous;
+                self.message(error.to_string(), true);
+                cx.notify();
+                return;
+            }
+            changed = true;
+        }
+        if changed {
+            self.history.checkpoint(&previous);
+            self.changed();
+            self.sync_layer_controls(window, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn distribute_selection(
+        &mut self,
+        horizontal: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let units = self.selection_units();
+        if units.len() < 3 || self.selection_is_locked() {
+            return;
+        }
+        let expected = units.len();
+        let mut items: Vec<_> = units
+            .into_iter()
+            .filter_map(|unit| {
+                self.doc.selected_layer_bounds(&unit).map(|rect| {
+                    (
+                        unit,
+                        if horizontal { rect.0 } else { rect.1 },
+                        if horizontal { rect.2 } else { rect.3 },
+                    )
+                })
+            })
+            .collect();
+        if items.len() != expected {
+            self.message(
+                "Each selected item needs artwork before distribution",
+                false,
+            );
+            cx.notify();
+            return;
+        }
+        items.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let span = items
+            .iter()
+            .map(|(_, _, end)| *end)
+            .fold(f32::NEG_INFINITY, f32::max)
+            - items[0].1;
+        let total_size: f32 = items.iter().map(|(_, start, end)| end - start).sum();
+        let gap = (span - total_size) / (items.len() - 1) as f32;
+        let previous = self.doc.clone();
+        let mut cursor = items[0].1;
+        let mut changed = false;
+        for (unit, start, end) in items {
+            let target = cursor;
+            let delta = target - start;
+            let result = if delta.abs() < 0.001 {
+                Ok(())
+            } else if horizontal {
+                self.doc.translate_layers(&unit, delta, 0.)
+            } else {
+                self.doc.translate_layers(&unit, 0., delta)
+            };
+            if let Err(error) = result {
+                self.doc = previous;
+                self.message(error.to_string(), true);
+                cx.notify();
+                return;
+            }
+            changed |= delta.abs() >= 0.001;
+            cursor += end - start + gap;
+        }
+        if changed {
+            self.history.checkpoint(&previous);
+            self.changed();
+            self.sync_layer_controls(window, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn set_selection_gap(
+        &mut self,
+        horizontal: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selection_units().len() < 2 || self.selection_is_locked() {
+            return;
+        }
+        let gap = self.layer_gap.read(cx).value().parse::<f32>().ok();
+        let Some(gap) =
+            gap.filter(|value| value.is_finite() && *value >= 0. && *value <= 1_000_000.)
+        else {
+            self.message("Enter a gap from 0 to 1,000,000 pixels", true);
+            return;
+        };
+        let units = self.selection_units();
+        let mut items: Vec<_> = units
+            .iter()
+            .filter_map(|unit| {
+                self.doc.selected_layer_bounds(unit).map(|bounds| {
+                    (
+                        unit.clone(),
+                        if horizontal { bounds.0 } else { bounds.1 },
+                        if horizontal { bounds.2 } else { bounds.3 },
+                    )
+                })
+            })
+            .collect();
+        if items.len() != units.len() {
+            self.message(
+                "Each selected layer needs visible artwork to set a gap",
+                false,
+            );
+            return;
+        }
+        items.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+        let previous = self.doc.clone();
+        let mut cursor = items[0].2 + gap;
+        let mut changed = false;
+        for (unit, start, end) in items.into_iter().skip(1) {
+            let delta = cursor - start;
+            if delta.abs() > 0.001 {
+                let result = if horizontal {
+                    self.doc.translate_layers(&unit, delta, 0.)
+                } else {
+                    self.doc.translate_layers(&unit, 0., delta)
+                };
+                if let Err(error) = result {
+                    self.doc = previous;
+                    self.message(error.to_string(), true);
+                    return;
+                }
+                changed = true;
+            }
+            cursor += end - start + gap;
+        }
+        if changed {
+            self.history.checkpoint(&previous);
+            self.changed();
+            self.sync_layer_controls(window, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn position_selection_on_artboard(
+        &mut self,
+        horizontal: bool,
+        mode: u8,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selection_is_locked() {
+            self.message("Unlock selected layers before positioning them", false);
+            return;
+        }
+        let Some((left, top, right, bottom)) =
+            self.doc.selected_layer_bounds(&self.selected_layers)
+        else {
+            return;
+        };
+        let (start, end, extent) = if horizontal {
+            (left, right, self.doc.width as f32)
+        } else {
+            (top, bottom, self.doc.height as f32)
+        };
+        let delta = match mode {
+            0 => -start,
+            1 => (extent - start - end) / 2.,
+            _ => extent - end,
+        };
+        if delta.abs() < f32::EPSILON {
+            return;
+        }
+        let previous = self.doc.clone();
+        let (dx, dy) = if horizontal { (delta, 0.) } else { (0., delta) };
+        match self.doc.translate_layers(&self.selected_layers, dx, dy) {
             Ok(()) => {
                 self.history.checkpoint(&previous);
-                self.doc.layers[self.doc.active_layer].opacity = values[3] / 100.;
                 self.changed();
                 self.sync_layer_controls(window, cx);
             }
@@ -1668,25 +3191,575 @@ impl DrawingApp {
         }
         cx.notify();
     }
-    pub fn delete_layer(&mut self) {
-        if self.doc.layers.len() > 1 {
-            self.checkpoint();
-            self.doc.layers.remove(self.doc.active_layer);
-            self.doc.active_layer = self.doc.active_layer.min(self.doc.layers.len() - 1);
-            self.selected_layers = vec![self.doc.active_layer];
+
+    pub fn align_each_to_artboard(
+        &mut self,
+        horizontal: bool,
+        mode: u8,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selection_is_locked() {
+            self.message("Unlock selected layers before aligning them", false);
+            return;
+        }
+        let units = self.selection_units();
+        if units.is_empty() {
+            return;
+        }
+        let extent = if horizontal {
+            self.doc.width as f32
+        } else {
+            self.doc.height as f32
+        };
+        let target = match mode {
+            0 => 0.,
+            1 => extent / 2.,
+            _ => extent,
+        };
+        let previous = self.doc.clone();
+        let mut next = previous.clone();
+        let mut changed = false;
+        for unit in units {
+            let Some((left, top, right, bottom)) = previous.selected_layer_bounds(&unit) else {
+                self.message(
+                    "Each selected item needs artwork before it can be aligned",
+                    false,
+                );
+                return;
+            };
+            let (start, end) = if horizontal {
+                (left, right)
+            } else {
+                (top, bottom)
+            };
+            let current = match mode {
+                0 => start,
+                1 => (start + end) / 2.,
+                _ => end,
+            };
+            let delta = target - current;
+            if delta.abs() < 0.001 {
+                continue;
+            }
+            let (dx, dy) = if horizontal { (delta, 0.) } else { (0., delta) };
+            if let Err(error) = next.translate_layers(&unit, dx, dy) {
+                self.message(error.to_string(), true);
+                return;
+            }
+            changed = true;
+        }
+        if changed {
+            self.history.checkpoint(&previous);
+            self.doc = next;
             self.changed();
+            self.sync_layer_controls(window, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn flip_selection(
+        &mut self,
+        horizontal: bool,
+        vertical: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selection_is_locked() {
+            self.message("Unlock selected layers before flipping them", false);
+            return;
+        }
+        let previous = self.doc.clone();
+        match self
+            .doc
+            .flip_layers(&self.selected_layers, horizontal, vertical)
+        {
+            Ok(()) => {
+                self.history.checkpoint(&previous);
+                self.changed();
+                self.sync_layer_controls(window, cx);
+            }
+            Err(error) => self.message(error.to_string(), true),
         }
     }
-    pub fn move_layer(&mut self, up: bool) {
-        let i = self.doc.active_layer;
-        let next = if up { i + 1 } else { i.saturating_sub(1) };
-        if next < self.doc.layers.len() && next != i {
-            self.checkpoint();
-            self.doc.layers.swap(i, next);
-            self.doc.active_layer = next;
-            self.selected_layers = vec![next];
-            self.changed();
+
+    pub fn rotate_selection_by_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selection_is_locked() {
+            self.message("Unlock selected layers before rotating them", false);
+            return;
         }
+        let Some((left, top, right, bottom)) =
+            self.doc.selected_layer_bounds(&self.selected_layers)
+        else {
+            self.message("Select artwork to rotate", false);
+            return;
+        };
+        let angle = self.layer_rotation.read(cx).value().parse::<f32>().ok();
+        let Some(angle) = angle.filter(|value| value.is_finite() && value.abs() <= 360_000.) else {
+            self.message("Enter a finite rotation in degrees", true);
+            return;
+        };
+        if angle.rem_euclid(360.).abs() < 0.0001 {
+            return;
+        }
+        let previous = self.doc.clone();
+        let center = DocPoint {
+            x: (left + right) / 2.,
+            y: (top + bottom) / 2.,
+        };
+        match self
+            .doc
+            .rotate_layers(&self.selected_layers, center, angle.to_radians())
+        {
+            Ok(()) => {
+                self.history.checkpoint(&previous);
+                self.changed();
+                self.layer_rotation
+                    .update(cx, |state, cx| state.set_value("0", window, cx));
+                self.sync_layer_controls(window, cx);
+            }
+            Err(error) => self.message(error.to_string(), true),
+        }
+        cx.notify();
+    }
+
+    pub fn set_snap_enabled(&mut self, enabled: bool) {
+        self.snap_enabled = enabled;
+    }
+
+    pub fn zoom_to_selection(&mut self, cx: &mut Context<Self>) {
+        let Some((left, top, right, bottom)) =
+            self.doc.selected_layer_bounds(&self.selected_layers)
+        else {
+            self.message("Select artwork to zoom to it", false);
+            return;
+        };
+        let points = [
+            DocPoint { x: left, y: top },
+            DocPoint { x: right, y: top },
+            DocPoint {
+                x: right,
+                y: bottom,
+            },
+            DocPoint { x: left, y: bottom },
+        ]
+        .map(|point| {
+            self.view
+                .to_view(point, self.doc.width as f32, self.doc.height as f32)
+        });
+        let min_x = points
+            .iter()
+            .map(|point| point.x)
+            .fold(f32::INFINITY, f32::min);
+        let max_x = points
+            .iter()
+            .map(|point| point.x)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let min_y = points
+            .iter()
+            .map(|point| point.y)
+            .fold(f32::INFINITY, f32::min);
+        let max_y = points
+            .iter()
+            .map(|point| point.y)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let available = self.bounds.get().size;
+        let (available_width, available_height): (f32, f32) =
+            (available.width.into(), available.height.into());
+        let mut base = self.view;
+        base.zoom = 1.;
+        let base_scale = base.scale(
+            (available_width, available_height),
+            (self.doc.width, self.doc.height),
+        );
+        let scale = ((available_width - 96.).max(1.) / (max_x - min_x).max(1.))
+            .min((available_height - 96.).max(1.) / (max_y - min_y).max(1.));
+        self.view.zoom = (scale / base_scale.max(0.001)).clamp(0.2, 8.);
+        let actual_scale = self.view.scale(
+            (available_width, available_height),
+            (self.doc.width, self.doc.height),
+        );
+        let (view_width, view_height) = self.view.dimensions(self.doc.width, self.doc.height);
+        self.view.pan = DocPoint {
+            x: (view_width / 2. - (min_x + max_x) / 2.) * actual_scale,
+            y: (view_height / 2. - (min_y + max_y) / 2.) * actual_scale,
+        };
+        self.view_changed();
+        cx.notify();
+    }
+
+    pub fn selected_move_range(&self) -> Option<(usize, usize)> {
+        if self.selected_layers.is_empty() {
+            return None;
+        }
+        let start = *self.selected_layers.iter().min()?;
+        let end = self.selected_layers.iter().max()?.checked_add(1)?;
+        if end - start != self.selected_layers.len() || end > self.doc.layers.len() {
+            return None;
+        }
+        let groups: std::collections::HashSet<_> = self.doc.layers[start..end]
+            .iter()
+            .filter_map(|layer| layer.group.as_ref())
+            .collect();
+        for group in groups {
+            let all = self
+                .doc
+                .layers
+                .iter()
+                .enumerate()
+                .filter(|(_, layer)| layer.group.as_ref() == Some(group))
+                .all(|(index, _)| (start..end).contains(&index));
+            if !all
+                && self.doc.layers[start..end]
+                    .iter()
+                    .any(|layer| layer.group.as_ref() != Some(group))
+            {
+                return None;
+            }
+        }
+        Some((start, end))
+    }
+
+    pub fn delete_layer(&mut self) {
+        let selected: std::collections::BTreeSet<_> = self
+            .selected_layers
+            .iter()
+            .copied()
+            .filter(|index| *index < self.doc.layers.len())
+            .collect();
+        if selected.is_empty() {
+            return;
+        }
+        if self.selection_is_locked() {
+            self.message("Unlock selected layers before deleting them", false);
+            return;
+        }
+        self.checkpoint();
+        if selected.len() == self.doc.layers.len() {
+            self.doc.layers = vec![Layer {
+                name: "Paint".into(),
+                visible: true,
+                locked: false,
+                opacity: 1.,
+                group: None,
+                candidate: false,
+                strokes: vec![],
+                image: None,
+            }];
+            self.doc.paint_layer = Some(0);
+            self.doc.active_layer = 0;
+            self.doc.prune_layer_groups();
+            self.selected_layers = vec![0];
+            self.layer_selection_anchor = Some(0);
+            self.changed();
+            return;
+        }
+        let start = *selected.first().unwrap();
+        let mut index = 0;
+        self.doc.layers.retain(|_| {
+            let keep = !selected.contains(&index);
+            index += 1;
+            keep
+        });
+        self.doc.paint_layer = self.doc.paint_layer.and_then(|index| {
+            (!selected.contains(&index)).then(|| index - selected.range(..index).count())
+        });
+        self.doc.prune_layer_groups();
+        self.doc.active_layer = start.min(self.doc.layers.len() - 1);
+        self.selected_layers = vec![self.doc.active_layer];
+        self.layer_selection_anchor = Some(self.doc.active_layer);
+        self.changed();
+    }
+    pub fn move_layer(&mut self, up: bool) {
+        let Some((start, end)) = self.selected_move_range() else {
+            return;
+        };
+        if self.selection_is_locked() {
+            self.message("Unlock selected layers before reordering them", false);
+            return;
+        }
+        let neighbor = if up {
+            end
+        } else if start > 0 {
+            start - 1
+        } else {
+            return;
+        };
+        if neighbor >= self.doc.layers.len() {
+            return;
+        }
+        let own_group = self.doc.layers[start].group.clone();
+        let neighbor_group = self.doc.layers[neighbor].group.clone();
+        let partial_group = own_group.as_ref().is_some_and(|group| {
+            self.doc.layers.iter().enumerate().any(|(index, layer)| {
+                layer.group.as_ref() == Some(group) && !(start..end).contains(&index)
+            })
+        });
+        if partial_group && own_group != neighbor_group {
+            self.message(
+                "Ungroup the layer before moving it outside its group",
+                false,
+            );
+            return;
+        }
+        let (mut other_start, mut other_end) = (neighbor, neighbor + 1);
+        if let Some(group) = &neighbor_group {
+            if own_group.as_ref() != Some(group) {
+                while other_start > 0
+                    && self.doc.layers[other_start - 1].group.as_ref() == Some(group)
+                {
+                    other_start -= 1;
+                }
+                while other_end < self.doc.layers.len()
+                    && self.doc.layers[other_end].group.as_ref() == Some(group)
+                {
+                    other_end += 1;
+                }
+                if self
+                    .doc
+                    .layers
+                    .iter()
+                    .filter(|layer| layer.group.as_ref() == Some(group))
+                    .count()
+                    != other_end - other_start
+                {
+                    self.message("Ungroup the non-adjacent layers before reordering", false);
+                    return;
+                }
+            }
+        }
+        let active_offset = self.doc.active_layer.saturating_sub(start);
+        let paint_layer = self.doc.paint_layer;
+        self.checkpoint();
+        let new_start = if up {
+            self.doc.layers[start..other_end].rotate_left(end - start);
+            other_end - (end - start)
+        } else {
+            self.doc.layers[other_start..end].rotate_right(end - start);
+            other_start
+        };
+        self.selected_layers = (new_start..new_start + end - start).collect();
+        self.doc.active_layer = new_start + active_offset.min(end - start - 1);
+        self.layer_selection_anchor = Some(self.doc.active_layer);
+        self.doc.paint_layer = paint_layer.map(|index| {
+            if (start..end).contains(&index) {
+                new_start + index - start
+            } else if up && (end..other_end).contains(&index) {
+                index - (end - start)
+            } else if !up && (other_start..start).contains(&index) {
+                index + (end - start)
+            } else {
+                index
+            }
+        });
+        self.changed();
+    }
+
+    pub fn drop_layer_rows(
+        &mut self,
+        drag: &crate::ui::DraggedLayerRows,
+        target: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if drag.epoch != self.epoch
+            || drag.artboard != self.doc.canvas_id
+            || drag.revision != self.revision
+        {
+            self.message("Layers changed while dragging; try again", false);
+            return;
+        }
+        let (start, end) = (drag.start, drag.end);
+        if start >= end || end > self.doc.layers.len() || target >= self.doc.layers.len() {
+            self.message("Select adjacent layers before dragging", false);
+            return;
+        }
+        if (start..end).contains(&target) {
+            return;
+        }
+        if self.doc.layers[start..end]
+            .iter()
+            .any(|layer| self.doc.layer_is_locked(layer))
+        {
+            self.message("Unlock the dragged layers before reordering", false);
+            return;
+        }
+        let groups: std::collections::HashSet<_> = self.doc.layers[start..end]
+            .iter()
+            .filter_map(|layer| layer.group.clone())
+            .collect();
+        let single_group = if groups.len() == 1
+            && self.doc.layers[start..end]
+                .iter()
+                .all(|layer| layer.group.is_some())
+        {
+            groups.iter().next().cloned()
+        } else {
+            None
+        };
+        let target_group = self.doc.layers[target].group.clone();
+        for group in &groups {
+            let all = self
+                .doc
+                .layers
+                .iter()
+                .enumerate()
+                .filter(|(_, layer)| layer.group.as_ref() == Some(group))
+                .all(|(index, _)| (start..end).contains(&index));
+            if !all
+                && (single_group.as_ref() != Some(group) || target_group.as_ref() != Some(group))
+            {
+                self.message(
+                    "Move grouped children within their group, or remove them from the group first",
+                    false,
+                );
+                return;
+            }
+        }
+        let mut insert = target + 1;
+        if let Some(name) = target_group
+            .as_ref()
+            .filter(|_| target_group != single_group)
+        {
+            if !self.doc.group_is_contiguous(name) {
+                self.message("Ungroup the non-adjacent layers before reordering", false);
+                return;
+            }
+            let group_top = self
+                .doc
+                .layers
+                .iter()
+                .rposition(|layer| layer.group.as_ref() == Some(name))
+                .unwrap();
+            if target != group_top {
+                self.message(
+                    "Drop on the group row to place the selection above the group",
+                    false,
+                );
+                return;
+            }
+            insert = group_top + 1;
+        }
+        if insert >= start && insert <= end {
+            return;
+        }
+        let old_active = self.doc.active_layer;
+        let old_paint = self.doc.paint_layer;
+        self.checkpoint();
+        let count = end - start;
+        let new_start = if insert > end {
+            self.doc.layers[start..insert].rotate_left(count);
+            insert - count
+        } else {
+            self.doc.layers[insert..end].rotate_right(count);
+            insert
+        };
+        self.doc.paint_layer = old_paint.map(|index| {
+            if (start..end).contains(&index) {
+                new_start + index - start
+            } else if insert > end && (end..insert).contains(&index) {
+                index - count
+            } else if insert < start && (insert..start).contains(&index) {
+                index + count
+            } else {
+                index
+            }
+        });
+        self.doc.active_layer = if (start..end).contains(&old_active) {
+            new_start + old_active - start
+        } else {
+            new_start + count - 1
+        };
+        self.selected_layers = (new_start..new_start + count).collect();
+        self.layer_selection_anchor = Some(self.doc.active_layer);
+        if self.editing_group_name() != single_group.as_deref() {
+            self.editing_layer_group = None;
+        }
+        let name = self.doc.layers[self.doc.active_layer].name.clone();
+        self.layer_name
+            .update(cx, |state, cx| state.set_value(name, window, cx));
+        self.changed();
+        self.sync_layer_controls(window, cx);
+        cx.notify();
+    }
+
+    pub fn move_selection_to_edge(
+        &mut self,
+        front: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((start, end)) = self.selected_move_range() else {
+            self.message("Select adjacent layers to change their stacking", false);
+            return;
+        };
+        if self.selection_is_locked() {
+            self.message("Unlock selected layers before reordering", false);
+            return;
+        }
+        let group = self.doc.layers[start].group.clone();
+        let partial_group = group.as_ref().is_some_and(|name| {
+            self.doc.layers.iter().enumerate().any(|(index, layer)| {
+                layer.group.as_ref() == Some(name) && !(start..end).contains(&index)
+            })
+        });
+        let (lower, upper) = if partial_group {
+            let group = group.as_ref().unwrap();
+            if !self.doc.group_is_contiguous(group) {
+                self.message("Ungroup the non-adjacent layers before reordering", false);
+                return;
+            }
+            (
+                self.doc
+                    .layers
+                    .iter()
+                    .position(|layer| layer.group.as_ref() == Some(group))
+                    .unwrap(),
+                self.doc
+                    .layers
+                    .iter()
+                    .rposition(|layer| layer.group.as_ref() == Some(group))
+                    .unwrap()
+                    + 1,
+            )
+        } else {
+            (0, self.doc.layers.len())
+        };
+        if (front && end == upper) || (!front && start == lower) {
+            return;
+        }
+        let old_active = self.doc.active_layer;
+        let old_paint = self.doc.paint_layer;
+        let count = end - start;
+        self.checkpoint();
+        let new_start = if front {
+            self.doc.layers[start..upper].rotate_left(count);
+            upper - count
+        } else {
+            self.doc.layers[lower..end].rotate_right(count);
+            lower
+        };
+        self.doc.paint_layer = old_paint.map(|index| {
+            if (start..end).contains(&index) {
+                new_start + index - start
+            } else if front && (end..upper).contains(&index) {
+                index - count
+            } else if !front && (lower..start).contains(&index) {
+                index + count
+            } else {
+                index
+            }
+        });
+        self.doc.active_layer = if (start..end).contains(&old_active) {
+            new_start + old_active - start
+        } else {
+            new_start + count - 1
+        };
+        self.selected_layers = (new_start..new_start + count).collect();
+        self.layer_selection_anchor = Some(self.doc.active_layer);
+        self.changed();
+        self.sync_layer_controls(window, cx);
+        cx.notify();
     }
     pub fn paper_bounds(&self) -> Bounds<Pixels> {
         let available = self.bounds.get();
@@ -1770,6 +3843,10 @@ impl DrawingApp {
         if !bounds.contains(&p) {
             return None;
         }
+        Some(self.unbounded_doc_point(p))
+    }
+    fn unbounded_doc_point(&self, p: gpui_kit::Point<Pixels>) -> DocPoint {
+        let bounds = self.paper_bounds();
         let scale = self.view.scale(
             (
                 self.bounds.get().size.width.into(),
@@ -1777,14 +3854,14 @@ impl DrawingApp {
             ),
             (self.doc.width, self.doc.height),
         );
-        Some(self.view.to_document(
+        self.view.to_document(
             DocPoint {
                 x: f32::from(p.x - bounds.origin.x) / scale,
                 y: f32::from(p.y - bounds.origin.y) / scale,
             },
             self.doc.width as f32,
             self.doc.height as f32,
-        ))
+        )
     }
     fn clamped_doc_point(&self, p: gpui_kit::Point<Pixels>) -> DocPoint {
         let bounds = self.paper_bounds();
@@ -1808,6 +3885,28 @@ impl DrawingApp {
             y: document_point.y.clamp(0., self.doc.height as f32),
         }
     }
+    fn begin_layer_marquee(
+        &mut self,
+        point: DocPoint,
+        additive: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.marquee_initial_selection = self.selected_layers.clone();
+        self.marquee_additive = additive;
+        self.marquee_bounds = self.doc.selectable_layer_bounds();
+        if let Some(group) = self.editing_group_name().map(str::to_owned) {
+            self.marquee_bounds.retain(|(index, _)| {
+                self.doc.layers[*index].group.as_deref() == Some(group.as_str())
+            });
+        }
+        if !additive {
+            self.selected_layers.clear();
+        }
+        self.selection_marquee = Some((point, point));
+        self.sync_layer_controls(window, cx);
+        cx.notify();
+    }
     pub fn pointer_down(
         &mut self,
         event: &MouseDownEvent,
@@ -1820,6 +3919,19 @@ impl DrawingApp {
         window.focus(&self.focus, cx);
         self.finish_stroke();
         self.tablet.drain();
+        if self.image_crop.is_some() && event.button == MouseButton::Left {
+            if let Some(point) = self.doc_point(event.position) {
+                let source = self
+                    .image_crop
+                    .as_ref()
+                    .and_then(|crop| crop.source_point(point));
+                if let Some(crop) = &mut self.image_crop {
+                    crop.anchor = source;
+                }
+            }
+            cx.notify();
+            return;
+        }
         if self.panel == crate::app::Panel::Canvas && event.button == MouseButton::Left {
             if let Some(handle) = self.artboard_resize_handle(event.position) {
                 let viewport = self.bounds.get();
@@ -1846,28 +3958,137 @@ impl DrawingApp {
             }
             return;
         }
-        if event.button == MouseButton::Left
-            && (self.tool != Tool::Hand || self.moving_image)
-            && self.doc.layers[self.doc.active_layer].locked
-        {
-            self.message("This layer is locked", false);
-            return;
-        }
         if self.tool == Tool::Hand && self.moving_image && event.button == MouseButton::Left {
-            if let Some(point) = self.doc_point(event.position) {
-                self.history.checkpoint(&self.doc);
-                self.scaling_layer = self.doc.layer_bounds().is_some_and(|(_, _, x, y)| {
-                    (point.x - x).hypot(point.y - y)
-                        * self.view.scale(
-                            (
-                                self.bounds.get().size.width.into(),
-                                self.bounds.get().size.height.into(),
-                            ),
-                            (self.doc.width, self.doc.height),
-                        )
-                        < 16.
-                });
+            {
+                let point = self.unbounded_doc_point(event.position);
+                let scale = self.view.scale(
+                    (
+                        self.bounds.get().size.width.into(),
+                        self.bounds.get().size.height.into(),
+                    ),
+                    (self.doc.width, self.doc.height),
+                );
+                let handle = self
+                    .doc
+                    .selected_layer_bounds(&self.selected_layers)
+                    .and_then(|(left, top, right, bottom)| {
+                        [
+                            (-1, -1),
+                            (0, -1),
+                            (1, -1),
+                            (-1, 0),
+                            (1, 0),
+                            (-1, 1),
+                            (0, 1),
+                            (1, 1),
+                        ]
+                        .into_iter()
+                        .map(|(hx, hy)| {
+                            let x = match hx {
+                                -1 => left,
+                                1 => right,
+                                _ => (left + right) / 2.,
+                            };
+                            let y = match hy {
+                                -1 => top,
+                                1 => bottom,
+                                _ => (top + bottom) / 2.,
+                            };
+                            ((hx, hy), (point.x - x).hypot(point.y - y) * scale)
+                        })
+                        .filter(|(_, distance)| *distance < 10.)
+                        .min_by(|a, b| a.1.total_cmp(&b.1))
+                        .map(|(handle, _)| handle)
+                    });
+                let rotate_handle = self
+                    .doc
+                    .selected_layer_bounds(&self.selected_layers)
+                    .is_some_and(|(left, top, right, _)| {
+                        (point.x - (left + right) / 2.)
+                            .hypot(point.y - (top - 28. / scale.max(0.001)))
+                            * scale
+                            < 12.
+                    });
+                if handle.is_none() && !rotate_handle && event.modifiers.alt {
+                    self.begin_layer_marquee(point, event.modifiers.shift, window, cx);
+                    return;
+                }
+                if handle.is_none() && !rotate_handle {
+                    let cycling = event.modifiers.platform || event.modifiers.control;
+                    let after = (cycling && self.selected_layers.contains(&self.doc.active_layer))
+                        .then_some(self.doc.active_layer);
+                    let skip = if cycling && self.selected_group_name().is_some() {
+                        self.selected_layers.as_slice()
+                    } else {
+                        &[]
+                    };
+                    let hit = self
+                        .doc
+                        .layer_at_point(point, 6. / scale.max(0.001), after, skip)
+                        .or_else(|| {
+                            (!skip.is_empty())
+                                .then(|| {
+                                    self.doc.layer_at_point(
+                                        point,
+                                        6. / scale.max(0.001),
+                                        after,
+                                        &[],
+                                    )
+                                })
+                                .flatten()
+                        });
+                    if let Some(index) = hit {
+                        let group = self.doc.layers[index].group.clone();
+                        if cycling {
+                            if let Some(group) = group
+                                .filter(|name| self.editing_group_name() != Some(name.as_str()))
+                            {
+                                self.select_layer_group(&group, false, window, cx);
+                            } else {
+                                self.select_layer(index, window, cx);
+                            }
+                            return;
+                        }
+                        if let Some(group) = group.filter(|name| {
+                            event.click_count < 2
+                                && self.editing_group_name() != Some(name.as_str())
+                        }) {
+                            if event.modifiers.shift {
+                                self.select_layer_group(&group, true, window, cx);
+                                return;
+                            }
+                            let all_selected = self
+                                .doc
+                                .layers
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, layer)| layer.group.as_deref() == Some(group.as_str()))
+                                .all(|(member, _)| self.selected_layers.contains(&member));
+                            if !all_selected {
+                                self.select_layer_group(&group, false, window, cx);
+                            }
+                        } else if event.modifiers.shift {
+                            self.toggle_layer_selection(index, window, cx);
+                            return;
+                        } else if event.click_count >= 2 || !self.selected_layers.contains(&index) {
+                            self.select_layer(index, window, cx);
+                        }
+                    } else {
+                        self.begin_layer_marquee(point, event.modifiers.shift, window, cx);
+                        return;
+                    }
+                }
+                if self.selection_is_locked() {
+                    self.message("Unlock selected layers before transforming them", false);
+                    return;
+                }
+                self.resize_handle = handle;
+                self.rotating_layer = rotate_handle;
                 self.last_image_point = Some(point);
+                self.transform_original = Some(self.doc.clone());
+                if self.snap_enabled && self.resize_handle.is_none() && !self.rotating_layer {
+                    self.prepare_transform_snap_targets();
+                }
             }
             return;
         }
@@ -1876,13 +4097,91 @@ impl DrawingApp {
             return;
         }
         if let Some(p) = self.doc_point(event.position) {
-            if !self.doc.layers[self.doc.active_layer].visible {
-                self.message("Show this layer before drawing", true);
-                return;
+            let active = self.doc.active_layer;
+            let target = self
+                .doc
+                .paint_layer
+                .filter(|index| *index < self.doc.layers.len())
+                .or_else(|| {
+                    (self.doc.layers[active].image.is_none() && !self.doc.layers[active].candidate)
+                        .then_some(active)
+                });
+            if let Some(index) = target {
+                let layer = &self.doc.layers[index];
+                if layer.candidate {
+                    self.message("Accept the paint target candidate before drawing", false);
+                    return;
+                }
+                if self.doc.layer_is_locked(layer) {
+                    self.message("Unlock the paint target before drawing", false);
+                    return;
+                }
+                if !self.doc.layer_is_visible(layer) {
+                    self.message("Show the paint target before drawing", false);
+                    return;
+                }
+            } else {
+                if self.doc.layers.len() >= 24 {
+                    self.message("Maximum 24 layers; choose a paint target in Layers", true);
+                    return;
+                }
+                let group = self.doc.layers[active]
+                    .group
+                    .as_ref()
+                    .and_then(|name| self.doc.layer_groups.get(name));
+                if group.is_some_and(|group| group.locked || !group.visible || group.opacity <= 0.)
+                {
+                    self.message("Show and unlock the group before painting in it", false);
+                    return;
+                }
             }
             self.history.checkpoint(&self.doc);
+            let target = if let Some(index) = target {
+                index
+            } else {
+                let index = active + 1;
+                let group = self.doc.layers[active].group.clone();
+                let group_selected = group.as_ref().is_some_and(|name| {
+                    self.doc
+                        .layers
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, layer)| layer.group.as_ref() == Some(name))
+                        .all(|(member, _)| self.selected_layers.contains(&member))
+                });
+                self.doc.layers.insert(
+                    index,
+                    Layer {
+                        name: "Paint".into(),
+                        visible: true,
+                        locked: false,
+                        opacity: 1.,
+                        group,
+                        candidate: false,
+                        strokes: vec![],
+                        image: None,
+                    },
+                );
+                for selected in &mut self.selected_layers {
+                    if *selected >= index {
+                        *selected += 1;
+                    }
+                }
+                if group_selected {
+                    self.selected_layers.push(index);
+                    self.selected_layers.sort_unstable();
+                }
+                if let Some(anchor) = &mut self.layer_selection_anchor {
+                    if *anchor >= index {
+                        *anchor += 1;
+                    }
+                }
+                self.message("Painting on a new layer above the image", false);
+                index
+            };
+            self.doc.paint_layer = Some(target);
             let brush_size = self.size();
-            self.doc.layers[self.doc.active_layer].strokes.push(Stroke {
+            self.doc.layers[target].strokes.push(Stroke {
                 brush: self.brush,
                 pressures: (if self.pressure_enabled {
                     crate::tablet::current_pressure()
@@ -1906,7 +4205,114 @@ impl DrawingApp {
             cx.notify();
         }
     }
+    pub fn select_context_target(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.tool != Tool::Hand
+            || !self.moving_image
+            || self.image_crop.is_some()
+            || self.selecting_generation_region
+        {
+            return;
+        }
+        let point = self.unbounded_doc_point(event.position);
+        let scale = self.view.scale(
+            (
+                self.bounds.get().size.width.into(),
+                self.bounds.get().size.height.into(),
+            ),
+            (self.doc.width, self.doc.height),
+        );
+        match self
+            .doc
+            .layer_at_point(point, 6. / scale.max(0.001), None, &[])
+        {
+            Some(index) if self.selected_layers.contains(&index) => {}
+            Some(index) => {
+                let group = self.doc.layers[index].group.clone();
+                if let Some(group) =
+                    group.filter(|name| self.editing_group_name() != Some(name.as_str()))
+                {
+                    self.select_layer_group(&group, false, window, cx);
+                } else {
+                    self.select_layer(index, window, cx);
+                }
+            }
+            None => {
+                self.selected_layers.clear();
+                self.sync_layer_controls(window, cx);
+                cx.notify();
+            }
+        }
+    }
     pub fn pointer_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        if let Some(crop) = &self.image_crop {
+            if let Some(anchor) = crop.anchor {
+                let end = crop.source_point(self.clamped_doc_point(event.position));
+                if let Some(end) = end {
+                    let left = anchor
+                        .x
+                        .min(end.x)
+                        .floor()
+                        .clamp(0., (crop.width - 1) as f32) as u32;
+                    let top = anchor
+                        .y
+                        .min(end.y)
+                        .floor()
+                        .clamp(0., (crop.height - 1) as f32) as u32;
+                    let right = (anchor.x.max(end.x).ceil() as u32).clamp(left + 1, crop.width);
+                    let bottom = (anchor.y.max(end.y).ceil() as u32).clamp(top + 1, crop.height);
+                    if let Some(crop) = &mut self.image_crop {
+                        crop.draft = [left, top, right - left, bottom - top];
+                    }
+                    cx.notify();
+                }
+            }
+            return;
+        }
+        if let Some((anchor, _)) = self.selection_marquee {
+            let end = self.clamped_doc_point(event.position);
+            self.selection_marquee = Some((anchor, end));
+            let mut selected = if self.marquee_additive {
+                self.marquee_initial_selection.clone()
+            } else {
+                Vec::new()
+            };
+            let (left, right) = (anchor.x.min(end.x), anchor.x.max(end.x));
+            let (top, bottom) = (anchor.y.min(end.y), anchor.y.max(end.y));
+            for &(index, (x0, y0, x1, y1)) in &self.marquee_bounds {
+                if x0 <= right
+                    && x1 >= left
+                    && y0 <= bottom
+                    && y1 >= top
+                    && !selected.contains(&index)
+                {
+                    selected.push(index);
+                }
+            }
+            let groups: std::collections::HashSet<_> = selected
+                .iter()
+                .filter_map(|index| self.doc.layers.get(*index)?.group.clone())
+                .filter(|group| self.editing_group_name() != Some(group.as_str()))
+                .collect();
+            for (index, layer) in self.doc.layers.iter().enumerate() {
+                if layer
+                    .group
+                    .as_ref()
+                    .is_some_and(|group| groups.contains(group))
+                    && !selected.contains(&index)
+                {
+                    selected.push(index);
+                }
+            }
+            selected.sort_unstable();
+            self.selected_layers = selected;
+            cx.notify();
+            return;
+        }
         if let Some(drag) = &self.artboard_resize_drag {
             let (dx, dy) = (
                 f32::from(event.position.x - drag.start.x) / drag.scale,
@@ -1981,32 +4387,198 @@ impl DrawingApp {
     ) {
         self.hover = Some(event.position);
         self.pen_pressure = pressure;
-        if let Some(last) = self.last_image_point {
+        if let Some(start) = self.last_image_point {
             if event.dragging() {
-                if let Some(point) = self.doc_point(event.position) {
-                    let (dx, dy, scale) = if self.scaling_layer {
-                        let (x, y, _, _) = self.doc.layer_bounds().unwrap_or((0., 0., 1., 1.));
-                        let factor = ((point.x - x).hypot(point.y - y)
-                            / (last.x - x).hypot(last.y - y).max(1.))
-                        .clamp(0.5, 2.);
-                        (
-                            (x - self.doc.width as f32 / 2.) * (1. - factor),
-                            (y - self.doc.height as f32 / 2.) * (1. - factor),
-                            factor,
-                        )
-                    } else {
-                        (point.x - last.x, point.y - last.y, 1.)
+                {
+                    let point = self.unbounded_doc_point(event.position);
+                    let Some((left, top, right, bottom)) = self
+                        .transform_original
+                        .as_ref()
+                        .and_then(|original| original.selected_layer_bounds(&self.selected_layers))
+                    else {
+                        return;
                     };
-                    match self.doc.reposition_image_layer(dx, dy, scale) {
+                    let Some((current_left, current_top, current_right, current_bottom)) =
+                        self.doc.selected_layer_bounds(&self.selected_layers)
+                    else {
+                        return;
+                    };
+                    let result = if self.rotating_layer {
+                        let pivot = DocPoint {
+                            x: (left + right) / 2.,
+                            y: (top + bottom) / 2.,
+                        };
+                        let start_angle = (start.y - pivot.y).atan2(start.x - pivot.x);
+                        let mut angle = (point.y - pivot.y).atan2(point.x - pivot.x) - start_angle;
+                        if event.modifiers.shift {
+                            let step = std::f32::consts::PI / 12.;
+                            angle = (angle / step).round() * step;
+                        }
+                        if angle.abs() < 0.0001 && !self.transform_checkpointed {
+                            return;
+                        }
+                        let mut next = self.transform_original.as_ref().unwrap().clone();
+                        match next.rotate_layers(&self.selected_layers, pivot, angle) {
+                            Ok(()) => {
+                                for &index in &self.selected_layers {
+                                    if let (Some(current), Some(rotated)) =
+                                        (self.doc.layers.get_mut(index), next.layers.get(index))
+                                    {
+                                        *current = rotated.clone();
+                                    }
+                                }
+                                self.status = format!(
+                                    "Rotation: {:.1}° · Shift snaps to 15°",
+                                    angle.to_degrees()
+                                );
+                                Ok(())
+                            }
+                            Err(error) => Err(error),
+                        }
+                    } else if let Some((hx, hy)) = self.resize_handle {
+                        let original_width = right - left;
+                        let original_height = bottom - top;
+                        if original_width <= 0. || original_height <= 0. {
+                            return;
+                        }
+                        let multiplier = if event.modifiers.alt { 2. } else { 1. };
+                        let mut width = if hx == 0 {
+                            original_width
+                        } else {
+                            (original_width + (point.x - start.x) * hx as f32 * multiplier)
+                                .max(0.01)
+                        };
+                        let mut height = if hy == 0 {
+                            original_height
+                        } else {
+                            (original_height + (point.y - start.y) * hy as f32 * multiplier)
+                                .max(0.01)
+                        };
+                        let keep_aspect = self.layer_aspect_locked != event.modifiers.shift;
+                        if keep_aspect {
+                            let sx = width / original_width;
+                            let sy = height / original_height;
+                            let factor = if hx == 0 {
+                                sy
+                            } else if hy == 0 || (sx - 1.).abs() >= (sy - 1.).abs() {
+                                sx
+                            } else {
+                                sy
+                            };
+                            width = original_width * factor;
+                            height = original_height * factor;
+                        }
+                        if self.snap_enabled {
+                            if hx != 0 {
+                                width = (width / 16.).round().max(1.) * 16.;
+                                if keep_aspect {
+                                    height = width * original_height / original_width;
+                                }
+                            }
+                            if hy != 0 && (!keep_aspect || hx == 0) {
+                                height = (height / 16.).round().max(1.) * 16.;
+                                if keep_aspect {
+                                    width = height * original_width / original_height;
+                                }
+                            }
+                        }
+                        let x = if event.modifiers.alt || hx == 0 {
+                            (left + right - width) / 2.
+                        } else if hx < 0 {
+                            right - width
+                        } else {
+                            left
+                        };
+                        let y = if event.modifiers.alt || hy == 0 {
+                            (top + bottom - height) / 2.
+                        } else if hy < 0 {
+                            bottom - height
+                        } else {
+                            top
+                        };
+                        if (x - current_left).abs() < 0.001
+                            && (y - current_top).abs() < 0.001
+                            && (width - (current_right - current_left)).abs() < 0.001
+                            && (height - (current_bottom - current_top)).abs() < 0.001
+                        {
+                            return;
+                        }
+                        let mut next = self.transform_original.as_ref().unwrap().clone();
+                        match next.transform_layers_to_bounds(
+                            &self.selected_layers,
+                            (x, y, width, height),
+                        ) {
+                            Ok(()) => {
+                                for &index in &self.selected_layers {
+                                    if let (Some(current), Some(resized)) =
+                                        (self.doc.layers.get_mut(index), next.layers.get(index))
+                                    {
+                                        *current = resized.clone();
+                                    }
+                                }
+                                self.status = format!(
+                                    "Size: {:.1} × {:.1} px · Shift changes aspect lock · Option/Alt resizes from center",
+                                    width, height
+                                );
+                                Ok(())
+                            }
+                            Err(error) => Err(error),
+                        }
+                    } else {
+                        let (proposed_x, proposed_y) =
+                            (left + point.x - start.x, top + point.y - start.y);
+                        let (target_x, target_y) = if self.snap_enabled {
+                            let scale = self.view.scale(
+                                (
+                                    self.bounds.get().size.width.into(),
+                                    self.bounds.get().size.height.into(),
+                                ),
+                                (self.doc.width, self.doc.height),
+                            );
+                            let tolerance = 6. / scale.max(0.001);
+                            let (x, guide_x) = Self::snap_axis(
+                                proposed_x,
+                                right - left,
+                                &self.transform_snap_x,
+                                tolerance,
+                            );
+                            let (y, guide_y) = Self::snap_axis(
+                                proposed_y,
+                                bottom - top,
+                                &self.transform_snap_y,
+                                tolerance,
+                            );
+                            self.transform_guides.clear();
+                            if let Some(value) = guide_x {
+                                self.transform_guides.push((true, value));
+                            }
+                            if let Some(value) = guide_y {
+                                self.transform_guides.push((false, value));
+                            }
+                            (x, y)
+                        } else {
+                            self.transform_guides.clear();
+                            (proposed_x, proposed_y)
+                        };
+                        let dx = target_x - current_left;
+                        let dy = target_y - current_top;
+                        if dx.abs() < 0.001 && dy.abs() < 0.001 {
+                            cx.notify();
+                            return;
+                        }
+                        self.status = format!("Position: {:.1}, {:.1} px", target_x, target_y);
+                        self.doc.translate_layers(&self.selected_layers, dx, dy)
+                    };
+                    match result {
                         Ok(()) => {
-                            self.last_image_point = Some(point);
+                            self.transform_checkpointed = true;
                             self.changed();
                         }
                         Err(error) => self.message(error.to_string(), true),
                     }
                 }
             } else {
-                self.last_image_point = None;
+                self.finish_stroke();
             }
             cx.notify();
             return;
@@ -2028,10 +4600,15 @@ impl DrawingApp {
                 return;
             }
             if let Some(mut p) = self.doc_point(event.position) {
-                let stroke = self.doc.layers[self.doc.active_layer]
-                    .strokes
-                    .last_mut()
-                    .unwrap();
+                let Some(stroke) = self
+                    .doc
+                    .paint_layer
+                    .and_then(|index| self.doc.layers.get_mut(index))
+                    .and_then(|layer| layer.strokes.last_mut())
+                else {
+                    self.finish_stroke();
+                    return;
+                };
                 if let Some(previous) = stroke.points.last() {
                     if self.stabilize {
                         p.x = previous.x + (p.x - previous.x) * 0.55;
@@ -2372,10 +4949,15 @@ impl DrawingApp {
     }
 
     pub fn restore_drawing_context(&mut self) {
+        self.drawing_create_layer = false;
         let Some(target) = self.doc.artboard_prompt_targets.get(&self.doc.canvas_id) else {
             return;
         };
         let parts: Vec<_> = target.split(':').collect();
+        if parts.len() == 3 && parts[2] == "layer" {
+            self.drawing_create_layer = true;
+            return;
+        }
         if parts.len() == 7 {
             let coords: Option<Vec<u32>> = parts[3..].iter().map(|s| s.parse().ok()).collect();
             if let Some(rect) = coords.filter(|r| {
@@ -2751,6 +5333,7 @@ impl DrawingApp {
         self.region_drag = None;
         self.generation_region = None;
         self.selecting_generation_region = false;
+        self.drawing_create_layer = false;
         cx.notify();
     }
 
@@ -2795,6 +5378,7 @@ impl DrawingApp {
 
     /// Toggles area selection. A drag on the canvas defines the region.
     pub fn toggle_box_select(&mut self, cx: &mut Context<Self>) {
+        self.drawing_create_layer = false;
         if self.selecting_generation_region {
             self.use_full_canvas(cx);
             return;
@@ -2825,6 +5409,31 @@ impl DrawingApp {
         let prompt = self.prompt.read(cx).value().trim().to_owned();
         let result = (|| -> anyhow::Result<QueuedRequest> {
             anyhow::ensure!(!prompt.is_empty(), "Describe the image or change you want");
+            if self.drawing_create_layer {
+                anyhow::ensure!(
+                    self.doc.layers.len() < 24,
+                    "Maximum 24 layers; remove a layer before generating"
+                );
+                let input = self.input_references();
+                let source = input.first().cloned();
+                let references = input.into_iter().skip(1).collect::<Vec<_>>();
+                let editing = source.is_some();
+                let settings = self.settings.clone();
+                crate::providers::validate_inputs(&settings, editing, references.len(), false)?;
+                return Ok(QueuedRequest {
+                    settings,
+                    prompt: prompt.clone(),
+                    source,
+                    references,
+                    mask: None,
+                    editing,
+                    destination: crate::workflow::Destination::NewLayer {
+                        artboard: self.doc.canvas_id,
+                        rect: (0, 0, self.doc.width, self.doc.height),
+                    },
+                    blend: None,
+                });
+            }
             let region = self.region_bounds();
             anyhow::ensure!(
                 !self.selecting_generation_region || region.is_some(),
@@ -2888,6 +5497,7 @@ impl DrawingApp {
         })();
         match result {
             Ok(request) => {
+                let destination = request.destination;
                 self.changed();
                 let id = self.queue.enqueue(request, self.epoch);
                 self.queue.get_mut(id).expect("New request exists").context =
@@ -2895,7 +5505,17 @@ impl DrawingApp {
                 self.prompt_validation = None;
                 self.pump_queue();
                 self.message(
-                    "Queued · original artwork preserved; edits arrive as candidates",
+                    match destination {
+                        crate::workflow::Destination::NewLayer { .. } => {
+                            "Queued · new image will arrive as a candidate layer"
+                        }
+                        crate::workflow::Destination::Candidate { .. } => {
+                            "Queued · original artwork preserved; edit arrives as a candidate"
+                        }
+                        crate::workflow::Destination::NewArtboard => {
+                            "Queued · separate image will open as a new artboard"
+                        }
+                    },
                     false,
                 );
             }
@@ -3150,6 +5770,16 @@ impl DrawingApp {
         }
     }
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.closing && self.restart_checked.elapsed() >= Duration::from_millis(250) {
+            self.restart_checked = Instant::now();
+            match storyfella_studio_core::atelier::Mailbox::new(&self.data_dir).take_restart() {
+                Ok(true) => self.request_close(cx),
+                Ok(false) => {}
+                Err(error) => {
+                    self.message(format!("Could not read restart request: {error:#}"), true)
+                }
+            }
+        }
         if self.page != Page::Projects
             && self.page != Page::Artboards
             && self.opening_image.is_none()
@@ -3729,6 +6359,77 @@ impl DrawingApp {
                         }
                     }
                 }
+                Event::ArtworkImported {
+                    epoch,
+                    artboard,
+                    rect,
+                    result,
+                } => {
+                    match result {
+                        Err(error) => {
+                            self.report_error(
+                                crate::activity::Scope::Project(epoch),
+                                crate::activity::Task::Import,
+                                format!("Artwork import failed: {error:#}"),
+                            );
+                        }
+                        Ok(_) if !self.project_tab_order.contains(&epoch) => {
+                            self.report_error(crate::activity::Scope::Project(epoch), crate::activity::Task::Import,
+                                "The destination project was closed; reopen it and import the original files again.".into());
+                        }
+                        Ok(images) if epoch == self.epoch => {
+                            self.finish_stroke();
+                            let previous = self.doc.clone();
+                            match self.doc.attach_imported_images(artboard, rect, images) {
+                                Ok(indices) => {
+                                    let count = indices.len();
+                                    self.history.checkpoint(&previous);
+                                    self.changed();
+                                    self.activity.resolve(
+                                        &crate::activity::Scope::Project(epoch),
+                                        &crate::activity::Task::Import,
+                                    );
+                                    if self.doc.canvas_id == artboard && self.page == Page::Draw {
+                                        self.message(
+                                            format!("Imported {count} image layer(s) · select them in Layers"),
+                                            false,
+                                        );
+                                    } else {
+                                        self.message(format!("Imported {count} image layer(s) to the source artboard"), false);
+                                    }
+                                }
+                                Err(error) => {
+                                    self.report_error(crate::activity::Scope::Project(epoch), crate::activity::Task::Import,
+                                    format!("Could not add imported images: {error:#}. Try importing again."));
+                                }
+                            }
+                        }
+                        Ok(images) => {
+                            if let Some(tab) =
+                                self.project_tabs.iter_mut().find(|tab| tab.epoch == epoch)
+                            {
+                                let previous = tab.doc.clone();
+                                match tab.doc.attach_imported_images(artboard, rect, images) {
+                                    Ok(_) => {
+                                        tab.history.checkpoint(&previous);
+                                        tab.revision += 1;
+                                        tab.dirty = true;
+                                        self.activity.resolve(
+                                            &crate::activity::Scope::Project(epoch),
+                                            &crate::activity::Task::Import,
+                                        );
+                                    }
+                                    Err(error) => {
+                                        self.report_error(crate::activity::Scope::Project(epoch), crate::activity::Task::Import,
+                                        format!("Could not add imported images: {error:#}. Try importing again."));
+                                    }
+                                }
+                                self.persist_open_projects();
+                            }
+                        }
+                    }
+                    cx.notify();
+                }
                 Event::Imported(epoch, into_project, result) => {
                     self.refresh_library();
                     if !into_project {
@@ -3855,19 +6556,37 @@ impl DrawingApp {
                                                     .map(Arc::new)
                                                 })
                                                 .unwrap_or_else(|| Ok(reference.clone()));
+                                            self.finish_stroke();
+                                            let previous = self.doc.clone();
+                                            let previous_active = self.doc.active_layer;
                                             match attached.and_then(|r| {
-                                                self.checkpoint();
                                                 self.doc.attach_result(r, request.destination)
                                             }) {
                                                 Ok(()) => {
+                                                    // A delayed result must not steal the user's current selection.
+                                                    let same_artboard =
+                                                        self.doc.canvas_id == previous.canvas_id;
+                                                    if same_artboard
+                                                        && previous_active < self.doc.layers.len()
+                                                    {
+                                                        self.doc.active_layer = previous_active;
+                                                    }
+                                                    self.history.checkpoint(&previous);
                                                     self.changed();
-                                                    self.sync_inputs(window, cx);
-                                                    if matches!(
-                                                        request.destination,
-                                                        crate::workflow::Destination::Candidate { .. }
-                                                    ) {
-                                                        self.message("Candidate ready · accept, hide or discard in Layers", false);
-                                                        self.dock = true;
+                                                    if same_artboard {
+                                                        self.sync_layer_controls(window, cx);
+                                                    } else {
+                                                        self.sync_inputs(window, cx);
+                                                    }
+                                                    if let crate::workflow::Destination::Candidate { artboard, .. }
+                                                        | crate::workflow::Destination::NewLayer { artboard, .. } = request.destination {
+                                                        if artboard == self.doc.canvas_id && self.page == Page::Draw {
+                                                            self.message("Candidate ready · select it in Layers to review", false);
+                                                            self.dock_view = DockView::Layers;
+                                                            self.dock = true;
+                                                        } else {
+                                                            self.message("Candidate ready on its source artboard", false);
+                                                        }
                                                     } else {
                                                         self.message("New artboard ready", false);
                                                     }
@@ -3969,20 +6688,25 @@ impl DrawingApp {
                 }
             }
         }
-        if !self.render_pending
-            && self.rendered_revision != self.visual_revision
-            && self
+        if !self.render_pending && self.rendered_revision != self.visual_revision {
+            let mut preview = self.doc.clone();
+            if let Some(crop) = &self.image_crop {
+                if crop.artboard == preview.canvas_id {
+                    if let Some(layer) = preview.layers.get_mut(crop.layer) {
+                        if layer.image.as_ref() == Some(&crop.image) {
+                            layer.image.as_mut().unwrap().crop = None;
+                        }
+                    }
+                }
+            }
+            if self
                 .workers
                 .render
-                .send((
-                    self.visual_revision,
-                    self.doc.clone(),
-                    self.view,
-                    self.tracing,
-                ))
+                .send((self.visual_revision, preview, self.view, self.tracing))
                 .is_ok()
-        {
-            self.render_pending = true;
+            {
+                self.render_pending = true;
+            }
         }
         if !self.active_stroke
             && !self.save_pending
@@ -4017,7 +6741,31 @@ impl DrawingApp {
         self.timer_running = !self.timer_running;
         self.timer_tick = Instant::now();
     }
+    pub fn cancel_layer_input(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(draft) = self.layer_input_draft.take() else {
+            return false;
+        };
+        let input = match draft.field {
+            LayerInput::X => &self.layer_x,
+            LayerInput::Y => &self.layer_y,
+            LayerInput::Width => &self.layer_width,
+            LayerInput::Height => &self.layer_height,
+            LayerInput::Opacity => &self.layer_opacity,
+            LayerInput::GroupOpacity => &self.group_opacity,
+            LayerInput::Name => &self.layer_name,
+            LayerInput::GroupName => &self.group_name,
+            LayerInput::Rotation => &self.layer_rotation,
+        };
+        input.update(cx, |state, cx| state.set_value(draft.original, window, cx));
+        window.focus(&self.focus, cx);
+        cx.notify();
+        true
+    }
     pub fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if event.keystroke.key == "escape" && self.cancel_layer_input(window, cx) {
+            cx.stop_propagation();
+            return;
+        }
         // Canvas focus scopes shortcuts; text fields keep normal editing behavior.
         if self.closing
             || self.switching
@@ -4028,6 +6776,9 @@ impl DrawingApp {
         }
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
+        if self.image_crop.is_some() && key != "escape" {
+            return;
+        }
         if self.page == Page::Image {
             if modifiers.platform || modifiers.control {
                 match key {
@@ -4065,6 +6816,55 @@ impl DrawingApp {
         }
         if modifiers.platform || modifiers.control {
             match key {
+                "v" if self.page == Page::Draw => self.paste_artwork(cx),
+                "d" if self.page == Page::Draw && self.tool == Tool::Hand && self.moving_image => {
+                    self.duplicate_selected_layers(window, cx);
+                }
+                "a" if self.page == Page::Draw && self.tool == Tool::Hand && self.moving_image => {
+                    self.finish_stroke();
+                    let editing = self.editing_group_name().map(str::to_owned);
+                    self.selected_layers = self
+                        .doc
+                        .layers
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, layer)| {
+                            (self.doc.layer_is_visible(layer)
+                                && !self.doc.layer_is_locked(layer)
+                                && editing
+                                    .as_ref()
+                                    .is_none_or(|name| layer.group.as_ref() == Some(name))
+                                && self.doc.layer_bounds_for(index).is_some())
+                            .then_some(index)
+                        })
+                        .collect();
+                    if editing.is_none() {
+                        let groups: std::collections::HashSet<_> = self
+                            .selected_layers
+                            .iter()
+                            .filter_map(|index| self.doc.layers[*index].group.clone())
+                            .collect();
+                        for (index, layer) in self.doc.layers.iter().enumerate() {
+                            if layer
+                                .group
+                                .as_ref()
+                                .is_some_and(|group| groups.contains(group))
+                                && !self.selected_layers.contains(&index)
+                            {
+                                self.selected_layers.push(index);
+                            }
+                        }
+                        self.selected_layers.sort_unstable();
+                    }
+                    if let Some(index) = self.selected_layers.last().copied() {
+                        self.doc.active_layer = index;
+                        self.layer_selection_anchor = Some(index);
+                        let name = self.doc.layers[index].name.clone();
+                        self.layer_name
+                            .update(cx, |state, cx| state.set_value(name, window, cx));
+                    }
+                    self.sync_layer_controls(window, cx);
+                }
                 "z" => {
                     if modifiers.shift {
                         self.redo(window, cx)
@@ -4076,13 +6876,59 @@ impl DrawingApp {
             }
         } else {
             match key {
+                "backspace" | "delete"
+                    if self.page == Page::Draw && self.tool == Tool::Hand && self.moving_image =>
+                {
+                    let revision = self.revision;
+                    self.delete_layer();
+                    if self.revision != revision {
+                        self.sync_inputs(window, cx);
+                    }
+                }
+                "left" | "right" | "up" | "down"
+                    if self.page == Page::Draw && self.tool == Tool::Hand && self.moving_image =>
+                {
+                    if self.selected_layers.is_empty() {
+                        return;
+                    }
+                    if self.selection_is_locked() {
+                        self.message("Unlock selected layers before moving them", false);
+                    } else {
+                        self.finish_stroke();
+                        let amount = if modifiers.shift { 10. } else { 1. };
+                        let (dx, dy) = match key {
+                            "left" => (-amount, 0.),
+                            "right" => (amount, 0.),
+                            "up" => (0., -amount),
+                            _ => (0., amount),
+                        };
+                        let previous = self.doc.clone();
+                        match self.doc.translate_layers(&self.selected_layers, dx, dy) {
+                            Ok(()) => {
+                                self.history.checkpoint(&previous);
+                                self.changed();
+                                self.sync_layer_controls(window, cx);
+                            }
+                            Err(error) => self.message(error.to_string(), true),
+                        }
+                    }
+                }
                 "b" => {
                     self.finish_stroke();
+                    self.moving_image = false;
                     self.tool = Tool::Pencil
                 }
                 "e" => {
                     self.finish_stroke();
+                    self.moving_image = false;
                     self.tool = Tool::Eraser
+                }
+                "v" => {
+                    self.finish_stroke();
+                    self.tool = Tool::Hand;
+                    self.moving_image = true;
+                    self.selecting_generation_region = false;
+                    self.panel = Panel::None;
                 }
                 "h" => {
                     self.finish_stroke();
@@ -4104,7 +6950,47 @@ impl DrawingApp {
                     self.view_changed();
                 }
                 "escape" => {
+                    if self.image_crop.is_some() {
+                        self.cancel_image_crop(cx);
+                        cx.stop_propagation();
+                        return;
+                    }
+                    if self.selection_marquee.is_some() {
+                        self.selected_layers = self.marquee_initial_selection.clone();
+                        self.sync_layer_controls(window, cx);
+                        self.finish_stroke();
+                        cx.stop_propagation();
+                        cx.notify();
+                        return;
+                    }
+                    if let Some(original) = self.transform_original.take() {
+                        if self.transform_checkpointed {
+                            for &index in &self.selected_layers {
+                                if let (Some(current), Some(previous)) =
+                                    (self.doc.layers.get_mut(index), original.layers.get(index))
+                                {
+                                    *current = previous.clone();
+                                }
+                            }
+                            self.changed();
+                        }
+                        self.finish_stroke();
+                        self.sync_layer_controls(window, cx);
+                        cx.stop_propagation();
+                        cx.notify();
+                        return;
+                    }
+                    if let Some(group) = self.editing_group_name().map(str::to_owned) {
+                        self.select_layer_group(&group, false, window, cx);
+                        cx.stop_propagation();
+                        cx.notify();
+                        return;
+                    }
                     self.finish_stroke();
+                    if self.tool == Tool::Hand && self.moving_image {
+                        self.selected_layers.clear();
+                        self.sync_layer_controls(window, cx);
+                    }
                     self.panel = Panel::None;
                     self.show_drawing_composer = false;
                     self.generation_region = None;

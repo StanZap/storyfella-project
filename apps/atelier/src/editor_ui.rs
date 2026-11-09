@@ -85,10 +85,31 @@ impl DrawingApp {
                     ),
                 )
                 .child(
-                    tool_button("image-add-layer", "layers", "Add to canvas").on_click(
-                        cx.listener(|this, _, window, cx| this.add_opened_image_layer(window, cx)),
-                    ),
+                    tool_button("image-add-layer", "layers", "Add to canvas")
+                        .disabled(self.opening_image.is_some())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.add_opened_image_layer(window, cx)
+                        })),
                 )
+                .when(self.can_replace_selected_image(), |toolbar| {
+                    toolbar.child(
+                        Button::new("replace-selected-image")
+                            .ghost()
+                            .small()
+                            .label("Replace selected · Fit")
+                            .tooltip("Fit this image within the selected image's previous bounds")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.replace_selected_image(false, window, cx)
+                            })),
+                    ).child(
+                        Button::new("replace-selected-image-fill").ghost().small()
+                            .label("Replace selected · Fill")
+                            .tooltip("Fill the selected image's previous frame with a reversible crop")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.replace_selected_image(true, window, cx)
+                            })),
+                    )
+                })
                 .child(
                     tool_button("image-approve", "package", "Export for Studio").on_click(
                         cx.listener(|this, _, window, cx| this.pick(Picker::Artwork, window, cx)),
@@ -537,9 +558,9 @@ impl DrawingApp {
         for canvas in canvases {
             let (card, _, _) = self.canvas_artboard_card(
                 canvas.id,
-                canvas.width,
-                canvas.height,
+                (canvas.width, canvas.height),
                 &canvas.layers,
+                &canvas.layer_groups,
                 focused,
                 cx,
             );
@@ -613,12 +634,13 @@ impl DrawingApp {
     fn canvas_artboard_card(
         &self,
         id: u32,
-        width: u32,
-        height: u32,
+        size: (u32, u32),
         layers: &[crate::document::Layer],
+        groups: &std::collections::BTreeMap<String, crate::document::LayerGroup>,
         focused: bool,
         cx: &mut Context<Self>,
     ) -> (AnyElement, f32, f32) {
+        let (width, height) = size;
         let has_artwork = layers
             .iter()
             .any(|layer| !layer.strokes.is_empty() || layer.image.is_some());
@@ -628,6 +650,7 @@ impl DrawingApp {
                     width,
                     height,
                     layers,
+                    groups,
                     if focused { 600 } else { 400 },
                     false,
                 )

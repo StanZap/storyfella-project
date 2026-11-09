@@ -1,6 +1,6 @@
 //! Image inspection, library reuse, and durable editing drafts.
 use crate::{
-    app::{DrawingApp, Page},
+    app::{DockView, DrawingApp, Page, Panel},
     document::{self, Brush, Layer, Point as DocPoint, Stroke, Tool},
     worker::{self, Storage},
 };
@@ -14,7 +14,7 @@ impl DrawingApp {
         cx: &mut Context<Self>,
     ) {
         let layer = &self.doc.layers[self.doc.active_layer];
-        if !layer.candidate {
+        if !layer.candidate || self.selected_layers.as_slice() != [self.doc.active_layer] {
             return;
         }
         let reference = layer.image.as_ref().map(|i| i.reference.clone());
@@ -49,17 +49,46 @@ impl DrawingApp {
                         vec![reference],
                     ));
                 }
-                self.doc.layers.remove(self.doc.active_layer);
-                self.doc.active_layer = self.doc.active_layer.min(self.doc.layers.len() - 1);
+                self.remove_reviewed_candidate();
             }
             crate::workflow::Review::Discard => {
-                self.doc.layers.remove(self.doc.active_layer);
-                self.doc.active_layer = self.doc.active_layer.min(self.doc.layers.len() - 1);
+                self.remove_reviewed_candidate();
             }
         }
+        self.selected_layers = vec![self.doc.active_layer];
+        self.doc.prune_layer_groups();
         self.changed();
-        self.sync_layer_controls(window, cx);
+        self.sync_inputs(window, cx);
         cx.notify();
+    }
+
+    fn remove_reviewed_candidate(&mut self) {
+        if self.doc.layers.len() == 1 {
+            self.doc.layers[0] = Layer {
+                name: "Paint".into(),
+                visible: true,
+                locked: false,
+                opacity: 1.,
+                group: None,
+                candidate: false,
+                strokes: vec![],
+                image: None,
+            };
+            self.doc.paint_layer = Some(0);
+        } else {
+            let removed = self.doc.active_layer;
+            self.doc.layers.remove(removed);
+            self.doc.paint_layer = self.doc.paint_layer.and_then(|index| {
+                if index == removed {
+                    None
+                } else if index > removed {
+                    Some(index - 1)
+                } else {
+                    Some(index)
+                }
+            });
+            self.doc.active_layer = self.doc.active_layer.min(self.doc.layers.len() - 1);
+        }
     }
 
     pub fn layer_variation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -369,6 +398,9 @@ impl DrawingApp {
     }
 
     pub fn open_image(&mut self, reference: Arc<document::Reference>, cx: &mut Context<Self>) {
+        if self.image_crop.take().is_some() {
+            self.visual_revision += 1;
+        }
         self.finish_mask();
         if self.mask_save_error.is_some() {
             self.page = Page::Image;
@@ -435,6 +467,14 @@ impl DrawingApp {
         }
     }
     pub fn add_opened_image_layer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.opening_image.is_some() {
+            return;
+        }
+        self.finish_mask();
+        if self.mask_save_error.is_some() {
+            self.message("Save the current mask before leaving the image", true);
+            return;
+        }
         let Some((reference, _, width, height)) = self.opened_image.clone() else {
             return;
         };
@@ -463,6 +503,7 @@ impl DrawingApp {
             strokes: vec![],
             image: Some(document::ImageLayer {
                 reference,
+                crop: None,
                 transform: [
                     scale,
                     0.,
@@ -477,9 +518,146 @@ impl DrawingApp {
         self.changed();
         self.page = Page::Draw;
         self.dock = true;
-        self.tool = Tool::Pencil;
+        self.dock_view = DockView::Layers;
+        self.panel = Panel::None;
+        self.tool = Tool::Hand;
+        self.moving_image = true;
+        self.selecting_generation_region = false;
+        self.sync_inputs(window, cx);
         window.focus(&self.focus, cx);
-        self.message("Image layer added · draw or erase on this layer", false);
+        self.message("Image layer added · drag to position it", false);
+        cx.notify();
+    }
+
+    pub fn can_replace_selected_image(&self) -> bool {
+        self.opening_image.is_none()
+            && self.project_tab_order.contains(&self.epoch)
+            && self.selected_layers.as_slice() == [self.doc.active_layer]
+            && self.selected_group_name().is_none()
+            && self
+                .doc
+                .layers
+                .get(self.doc.active_layer)
+                .is_some_and(|layer| {
+                    !self.doc.layer_is_locked(layer) && !layer.candidate && layer.image.is_some()
+                })
+    }
+
+    pub fn replace_selected_image(
+        &mut self,
+        fill: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.can_replace_selected_image() {
+            return;
+        }
+        self.finish_mask();
+        if self.mask_save_error.is_some() {
+            self.message("Save the current mask before leaving the image", true);
+            return;
+        }
+        let Some((reference, _, width, height)) = self.opened_image.clone() else {
+            return;
+        };
+        if width == 0 || height == 0 {
+            self.message("Image has no area", true);
+            return;
+        }
+        let old_image = self.doc.layers[self.doc.active_layer]
+            .image
+            .as_ref()
+            .unwrap();
+        let old_dimensions = match document::decode_reference(&old_image.reference) {
+            Ok(image) => (image.width() as f32, image.height() as f32),
+            Err(error) => {
+                self.message(format!("Could not read selected image: {error:#}"), true);
+                return;
+            }
+        };
+        let embedded = self
+            .doc
+            .embedded_image_bytes()
+            .saturating_sub(old_image.reference.image.len());
+        if embedded.saturating_add(reference.image.len()) > 64 * 1024 * 1024 {
+            self.message(
+                "Project images exceed 64 MB. Use a smaller image or remove unused project images.",
+                true,
+            );
+            return;
+        }
+        let [crop_x, crop_y, crop_width, crop_height] =
+            old_image
+                .crop
+                .unwrap_or([0, 0, old_dimensions.0 as u32, old_dimensions.1 as u32]);
+        let (scale_x, scale_y) = (
+            crop_width as f32 / width as f32,
+            crop_height as f32 / height as f32,
+        );
+        let scale = if fill {
+            scale_x.max(scale_y)
+        } else {
+            scale_x.min(scale_y)
+        };
+        let (source_x, source_y, visible_width, visible_height) = if fill {
+            let visible_width = ((crop_width as f32 / scale).floor() as u32).clamp(1, width);
+            let visible_height = ((crop_height as f32 / scale).floor() as u32).clamp(1, height);
+            (
+                (width - visible_width) / 2,
+                (height - visible_height) / 2,
+                visible_width,
+                visible_height,
+            )
+        } else {
+            (0, 0, width, height)
+        };
+        let offset_x = crop_x as f32 + (crop_width as f32 - visible_width as f32 * scale) / 2.
+            - source_x as f32 * scale;
+        let offset_y = crop_y as f32 + (crop_height as f32 - visible_height as f32 * scale) / 2.
+            - source_y as f32 * scale;
+        let [a, b, c, d, x, y] = old_image.transform;
+        let transform = [
+            a * scale,
+            b * scale,
+            c * scale,
+            d * scale,
+            x + a * offset_x + c * offset_y,
+            y + b * offset_x + d * offset_y,
+        ];
+        let mut next = self.doc.clone();
+        next.layers[self.doc.active_layer].image = Some(document::ImageLayer {
+            reference,
+            transform,
+            crop: ([source_x, source_y, visible_width, visible_height] != [0, 0, width, height])
+                .then_some([source_x, source_y, visible_width, visible_height]),
+        });
+        if next.uses_extended_layer_features() {
+            next.version = 3;
+        }
+        if let Err(error) = next.validate() {
+            self.message(format!("Could not replace image: {error:#}"), true);
+            return;
+        }
+        self.checkpoint();
+        self.doc = next;
+        self.changed();
+        self.page = Page::Draw;
+        self.panel = Panel::None;
+        self.dock = true;
+        self.dock_view = DockView::Layers;
+        self.tool = Tool::Hand;
+        self.moving_image = true;
+        self.selecting_generation_region = false;
+        self.sync_inputs(window, cx);
+        window.focus(&self.focus, cx);
+        self.message(
+            if fill {
+                "Image replaced · filled its previous frame"
+            } else {
+                "Image replaced · fitted within its previous bounds"
+            },
+            false,
+        );
         cx.notify();
     }
 }

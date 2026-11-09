@@ -65,8 +65,7 @@ fn save_with_renderer(
         }
         let accepted = canvas.artwork();
         if !accepted.layers.iter().any(|layer| {
-            layer.visible
-                && layer.opacity > 0.
+            accepted.layer_is_visible(layer)
                 && (layer.image.is_some()
                     || layer.strokes.iter().any(|stroke| !stroke.points.is_empty()))
         }) {

@@ -959,6 +959,12 @@ The broader product and UX assessments still need the review tracked below.
     candidate review, undo and generation routing. Verify each stage with
     workspace checks and manual UI acceptance against the approved Atelier
     concept images (2026-11-02).
+    Layers sidebar design and outstanding acceptance criteria are recorded in
+    [the sidebar specification](atelier-layers-sidebar-spec.md). Selection,
+    grouping, transforms, cropping and scoped image import have an initial
+    implementation. A native check verified image import preserves selection
+    and the paint target, and that keyboard Undo restores the paint target.
+    Broader keyboard, group, candidate and small-window acceptance remain open.
 - [ ] **SF-PLAN-12 — Extend workspace language tooling.** Add workspace navigation
   and concrete code actions once the multi-file contract in SF-PLAN-08 is defined.
   Done when Studio and external editors agree on analysis, rename touches only

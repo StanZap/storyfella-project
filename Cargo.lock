@@ -11861,6 +11861,7 @@ dependencies = [
  "anyhow",
  "clap",
  "serde",
+ "storyfella-studio-core",
  "toml 1.1.4+spec-1.1.0",
 ]
 

@@ -36,7 +36,16 @@ impl QueuedRequest {
 
     /// A short description of what will run, for the queue list.
     pub fn summary(&self) -> String {
-        let kind = if self.editing { "Edit" } else { "Create" };
+        let kind = if matches!(
+            self.destination,
+            crate::workflow::Destination::NewLayer { .. }
+        ) {
+            "Create layer"
+        } else if self.editing {
+            "Edit"
+        } else {
+            "Create"
+        };
         let (width, height) = self.size();
         let mut summary = format!("{kind} · {width}×{height}");
         if let Some(steps) = self.settings.steps {

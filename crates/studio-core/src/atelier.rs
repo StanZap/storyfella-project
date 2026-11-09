@@ -164,6 +164,44 @@ impl Mailbox {
             Err(e) => Err(e.into()),
         }
     }
+    /// Ask the instance holding this mailbox's lease to save recovery and exit.
+    pub fn request_restart(&self) -> Result<PathBuf> {
+        self.setup()?;
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = self
+            .root
+            .join(format!("restart-{}-{time}.restart", std::process::id()));
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?
+            .sync_all()?;
+        Ok(path)
+    }
+
+    /// Consume a restart request addressed to this data directory.
+    pub fn take_restart(&self) -> Result<bool> {
+        if !self.root.exists() {
+            return Ok(false);
+        }
+        for entry in fs::read_dir(&self.root)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("restart-") && name.ends_with(".restart") {
+                let path = entry.path();
+                ensure!(
+                    fs::symlink_metadata(&path)?.is_file(),
+                    "Invalid restart request"
+                );
+                fs::remove_file(path)?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
     pub fn send(&self, request: &OpenRequest) -> Result<()> {
         self.setup()?;
         let bytes = serde_json::to_vec(request)?;
@@ -289,7 +327,10 @@ fn launch() -> Result<()> {
         let status = Command::new("open")
             .args(["-b", "com.storyfella.atelier"])
             .status()?;
-        ensure!(status.success(), "Atelier could not be found. Build Atelier or set STORYFELLA_ATELIER to its application path");
+        ensure!(
+            status.success(),
+            "Atelier could not be found. Build Atelier or set STORYFELLA_ATELIER to its application path"
+        );
         Ok(())
     }
     #[cfg(not(target_os = "macos"))]

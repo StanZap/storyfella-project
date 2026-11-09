@@ -104,3 +104,41 @@ fn inbox_supports_cold_start_running_receiver_fifo_cancel_and_owned_results() {
     assert!(mailbox.take().is_err());
     assert!(mailbox.take().unwrap().is_none());
 }
+
+#[test]
+fn restart_requests_are_scoped_to_the_data_directory_and_consumed_once() {
+    let first = fixture();
+    let second = fixture();
+    let sender = Mailbox::new(first.path());
+    let receiver = Mailbox::new(first.path());
+    let other = Mailbox::new(second.path());
+    let lease = receiver.claim().unwrap().unwrap();
+
+    let request = sender.request_restart().unwrap();
+    assert!(request.is_file());
+    assert!(!other.take_restart().unwrap());
+    assert!(receiver.take_restart().unwrap());
+    assert!(!receiver.take_restart().unwrap());
+    assert!(!request.exists());
+    assert!(sender.claim().unwrap().is_none());
+
+    drop(lease);
+    assert!(sender.claim().unwrap().is_some());
+}
+
+#[cfg(unix)]
+#[test]
+fn restart_request_rejects_symlinks() {
+    let root = fixture();
+    let mailbox = Mailbox::new(root.path());
+    let _lease = mailbox.claim().unwrap().unwrap();
+    let outside = root.path().join("unrelated");
+    fs::write(&outside, "keep").unwrap();
+    std::os::unix::fs::symlink(
+        &outside,
+        root.path().join("handoff/restart-invalid.restart"),
+    )
+    .unwrap();
+    assert!(mailbox.take_restart().is_err());
+    assert_eq!(fs::read_to_string(outside).unwrap(), "keep");
+}

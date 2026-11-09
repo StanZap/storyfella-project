@@ -21,6 +21,7 @@ use crate::workspace::Profile;
     after_help = "Examples:\n  \
         cargo xtask run                          build (debug) and launch Studio\n  \
         cargo xtask atelier                      build and launch GPUI Atelier\n  \
+        cargo xtask atelier --restart            safely restart the same Atelier instance\n  \
         cargo xtask run -r                       build and launch a release binary\n  \
         cargo xtask run -l                       …logging the app to .svs-e2e/logs/\n  \
         cargo xtask plan config/plans/smoke.yaml\n  \
@@ -40,7 +41,7 @@ pub enum Command {
     /// Build Dioxus Studio, then launch it.
     Run(RunArgs),
     /// Build and launch the separate GPUI Atelier app with Cargo.
-    Atelier(RunArgs),
+    Atelier(AtelierArgs),
     /// Build, then play a YAML plan through the app (`--plan <file> --mode …`).
     Plan(PlanArgs),
     /// Serve the desktop app with hot reload (`dx serve`).
@@ -110,6 +111,15 @@ pub struct RunArgs {
     /// Arguments forwarded to the app binary, after `--`.
     #[arg(last = true, value_name = "APP_ARGS")]
     pub app_args: Vec<String>,
+}
+
+#[derive(Args)]
+pub struct AtelierArgs {
+    #[command(flatten)]
+    pub run: RunArgs,
+    /// Save recovery and close the instance using the same data directory before launch.
+    #[arg(long)]
+    pub restart: bool,
 }
 
 #[derive(Args)]
