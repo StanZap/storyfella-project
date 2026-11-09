@@ -55,6 +55,29 @@ pub fn PlaybackPanel(
     #[props(default)] on_source: Option<EventHandler<Span>>,
     #[props(default)] draft_changed: bool,
 ) -> Element {
+    let mut autoplay = use_signal(|| false);
+    use_resource(move || async move {
+        while autoplay() {
+            let mut timer = document::eval("setTimeout(() => dioxus.send(true), 3000)");
+            if timer.recv::<bool>().await.is_ok() && autoplay() {
+                let mut state = model.write();
+                let playable = state.session.as_ref().is_some_and(|s| {
+                    s.runtime.state().phase == Phase::Text && !s.runtime.state().paused
+                });
+                if playable {
+                    state.dispatch(Command::Advance);
+                }
+                if !playable
+                    || state.error.is_some()
+                    || state.session.as_ref().is_none_or(|s| {
+                        s.runtime.state().phase != Phase::Text || s.runtime.state().paused
+                    })
+                {
+                    autoplay.set(false);
+                }
+            }
+        }
+    });
     let mut panel = use_signal(|| None::<ExtraPanel>);
     let visible = panel();
     use_effect(use_reactive((&visible,), move |(visible,)| {
@@ -177,7 +200,7 @@ pub fn PlaybackPanel(
             }
             div { class: "{stage_class}", tabindex: "0", aria_label: "Story stage",
                 if let Some(asset) = missing_location {
-                    div { class: "sf-placeholder-location", "Location · {asset.name.value} · missing artwork" }
+                    div { class: "sf-placeholder-location", aria_label: "Location {asset.name.value}: missing artwork" }
                 }
                 if let Some(backdrop) = backdrop {
                     div { class: "sf-backdrop-frame",
@@ -207,11 +230,11 @@ pub fn PlaybackPanel(
                 }
                 if !missing_objects.is_empty() {
                     div { class: "sf-placeholders", aria_label: "Missing artwork; positions are approximate",
-                        for asset in missing_objects {
-                            div { class: if asset.kind == AssetKind::Character { "sf-placeholder sf-placeholder-character" } else { "sf-placeholder sf-placeholder-prop" },
+                        for (index, asset) in missing_objects.iter().enumerate() {
+                            { let x = if index % 2 == 0 { 22 + (index / 2) * 9 } else { 78_usize.saturating_sub((index / 2) * 9) }; rsx! { div { class: if asset.kind == AssetKind::Character { "sf-placeholder sf-placeholder-character" } else { "sf-placeholder sf-placeholder-prop" }, style: "left: {x}%;",
                                 span { if asset.kind == AssetKind::Character { "Character" } else { "Prop" } }
                                 strong { "{asset.name.value}" }
-                            }
+                            } } }
                         }
                     }
                 }
@@ -264,18 +287,13 @@ pub fn PlaybackPanel(
                             },
                         }
                         div { class: "sf-story-actions", onkeydown: control_keys,
-                            if paused { span { class: "sf-secondary", role: "status", "Paused" } }
+                            button { class: "sf-nav", aria_label: "Previous passage", title: "Previous passage", disabled: !snapshot.can_back(), onclick: move |_| { autoplay.set(false); model.write().back(); }, Icon { symbol: Symbol::Previous } }
+                            button { class: "sf-nav", aria_label: if autoplay() { "Pause automatic playback" } else { "Play automatically" }, title: if autoplay() { "Pause automatic playback" } else { "Play automatically (every 3 seconds)" }, disabled: phase != Some(Phase::Text) || paused, onclick: move |_| autoplay.toggle(), Icon { symbol: if autoplay() { Symbol::Pause } else { Symbol::Play } } }
                             if matches!(phase, Some(Phase::Text | Phase::Budget)) {
-                                button { class: "sf-continue", disabled: paused, onclick: move |_| model.write().dispatch(Command::Advance), "Continue" Icon { symbol: Symbol::Arrow } }
+                                button { class: "sf-nav", aria_label: "Next passage", title: "Next passage", disabled: paused, onclick: move |_| model.write().dispatch(Command::Advance), Icon { symbol: Symbol::Next } }
                             }
-                            if phase == Some(Phase::Complete) {
-                                button { class: "sf-continue", onclick: move |_| { model.write().dispatch(Command::Restart); focus_stage(); }, "Read again" Icon { symbol: Symbol::Arrow } }
-                            } else {
-                                button { class: "sf-icon-button", aria_label: if paused { "Resume" } else { "Pause" }, title: if paused { "Resume (Space)" } else { "Pause (Space)" },
-                                    onclick: move |_| model.write().dispatch(if paused { Command::Resume } else { Command::Pause }),
-                                    Icon { symbol: if paused { Symbol::Play } else { Symbol::Pause } }
-                                }
-                            }
+                            if phase == Some(Phase::Complete) { button { class: "sf-continue", onclick: move |_| { model.write().dispatch(Command::Restart); focus_stage(); }, "Read again" Icon { symbol: Symbol::Arrow } } }
+                            if paused { button { class: "sf-nav", aria_label: "Resume playback", onclick: move |_| model.write().dispatch(Command::Resume), Icon { symbol: Symbol::Play } } }
                         }
                     } else {
                         h2 { if on_apply.is_some() { "See your story" } else { "A story awaits" } }

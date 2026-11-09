@@ -1,5 +1,13 @@
 # Storyfella Studio design standard and UX audit
 
+### Playback navigation
+
+The shared playback stage offers previous and next passage controls and optional
+automatic advancement at three-second intervals. Previous restores earlier
+playback states; restart, jump and restore clear that history. Automatic playback
+stops when a passage cannot advance or an error occurs. Native visual and
+accessibility acceptance of these controls remains open.
+
 ### Story project explorer · 2026-11-08
 
 The Story workspace presents user-facing files and catalog assets together at

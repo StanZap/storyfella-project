@@ -3,6 +3,8 @@ use dioxus::prelude::*;
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Symbol {
     Arrow,
+    Previous,
+    Next,
     Pause,
     Play,
     More,
@@ -12,6 +14,8 @@ pub(crate) enum Symbol {
 #[component]
 pub(crate) fn Icon(symbol: Symbol) -> Element {
     let path = match symbol {
+        Symbol::Previous => "m15 6-6 6 6 6",
+        Symbol::Next => "m9 6 6 6-6 6",
         Symbol::Arrow => "M4 12h16m-6-6 6 6-6 6",
         Symbol::Pause => "M8 5v14M16 5v14",
         Symbol::Play => "m7 5 11 7-11 7V5Z",
