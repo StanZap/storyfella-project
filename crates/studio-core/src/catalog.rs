@@ -26,6 +26,7 @@ pub struct SavedCanvas {
 pub struct CanvasPublication {
     pub asset_id: Uuid,
     pub canvas_id: u32,
+    pub expected_revision: Option<Uuid>,
     pub revision_id: Uuid,
 }
 
@@ -93,6 +94,7 @@ pub fn save_canvases(
         publications.push(CanvasPublication {
             asset_id: canvas.asset_id,
             canvas_id: canvas.canvas_id,
+            expected_revision: canvas.expected_revision,
             revision_id,
         });
     }

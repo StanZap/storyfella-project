@@ -5890,8 +5890,12 @@ impl DrawingApp {
                 Event::ProjectClosed {
                     epoch,
                     revision,
+                    publications,
                     result,
-                } => self.finish_project_close(epoch, revision, result, window, cx),
+                } => {
+                    self.apply_save_publications(epoch, &publications);
+                    self.finish_project_close(epoch, revision, result, window, cx);
+                }
                 Event::ClipforgeOpened(result) => match result {
                     Ok(()) => {
                         self.activity.resolve(
@@ -6028,19 +6032,9 @@ impl DrawingApp {
                     if !automatic {
                         self.manual_pending = false;
                     }
+                    self.apply_save_publications(epoch, &publications);
                     match result {
                         Ok(()) => {
-                            if epoch == self.epoch {
-                                crate::shared_save::apply_publications(
-                                    &mut self.doc,
-                                    &publications,
-                                );
-                            }
-                            if let Some(tab) =
-                                self.project_tabs.iter_mut().find(|tab| tab.epoch == epoch)
-                            {
-                                crate::shared_save::apply_publications(&mut tab.doc, &publications);
-                            }
                             let scope = crate::activity::Scope::Project(epoch);
                             let task = if automatic {
                                 crate::activity::Task::Recovery

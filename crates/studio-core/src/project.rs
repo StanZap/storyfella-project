@@ -1,9 +1,10 @@
 //! Portable, application-owned project folders. In-memory image paths remain
 //! absolute; only the shared folder's database stores relative resource paths.
 use std::{
-    fs,
-    io::Write,
+    fs::{self, File, OpenOptions},
+    io::{self, Write},
     path::{Component, Path, PathBuf},
+    sync::Arc,
 };
 
 use anyhow::{bail, ensure, Context, Result};
@@ -19,6 +20,7 @@ pub const MANIFEST: &str = "storyfella.toml";
 const DATABASE: &str = "story.db";
 const ASSETS_SOURCE: &str = "assets/story.sf";
 const CURRENT_VERSION: u32 = 2;
+const AUTHORING_LOCK: &str = ".storyfella-studio.lock";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,6 +35,26 @@ pub struct ProjectFolder {
     root: PathBuf,
     id: Uuid,
     entry: &'static str,
+}
+
+/// Retained by Studio while the project owns editable Writer buffers.
+#[derive(Clone, Debug)]
+pub struct AuthoringLease {
+    root: PathBuf,
+    project_id: Uuid,
+    lock: Arc<File>,
+}
+
+impl PartialEq for AuthoringLease {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.lock, &other.lock)
+    }
+}
+
+impl AuthoringLease {
+    pub fn belongs_to(&self, folder: &ProjectFolder) -> bool {
+        self.root == folder.root && self.project_id == folder.id
+    }
 }
 
 impl ProjectFolder {
@@ -145,6 +167,39 @@ impl ProjectFolder {
     }
 
     pub fn open(path: &Path) -> Result<Self> {
+        let folder = Self::locate(path)?;
+        folder.load()?;
+        Ok(folder)
+    }
+
+    /// Resolve Studio's shared-project entry points before loading SQLite,
+    /// which can migrate storage and recover a pending authoring write.
+    pub fn locate_for_authoring(path: &Path) -> Result<Option<Self>> {
+        let path = path.canonicalize()?;
+        if path.is_dir() || path.file_name().is_some_and(|name| name == MANIFEST) {
+            return Self::locate(&path).map(Some);
+        }
+        let path = if path.extension().is_some_and(|ext| ext == "sf") {
+            if let Some(database) = database_for_source(&path)? {
+                database
+            } else {
+                let database = path.with_extension("db");
+                if !database.is_file() {
+                    return Ok(None);
+                }
+                database.canonicalize()?
+            }
+        } else {
+            path
+        };
+        let folder = for_database(&path)?;
+        if let Some(folder) = &folder {
+            folder.check_layout()?;
+        }
+        Ok(folder)
+    }
+
+    fn locate(path: &Path) -> Result<Self> {
         let root = if path.is_dir() {
             path
         } else {
@@ -156,21 +211,63 @@ impl ProjectFolder {
         }
         .canonicalize()?;
         let folder = Self::read_manifest(root)?;
-        ensure!(folder.database().is_file(), "Project database is missing");
-        folder.resolve(DATABASE)?;
-        folder.resolve(folder.entry)?;
-        folder.resolve("artwork")?;
-        folder.resolve("atelier")?;
+        folder.check_layout()?;
+        Ok(folder)
+    }
+
+    fn check_layout(&self) -> Result<()> {
+        ensure!(self.database().is_file(), "Project database is missing");
+        self.resolve(DATABASE)?;
+        self.resolve(self.entry)?;
+        self.resolve("artwork")?;
+        self.resolve("atelier")?;
         ensure!(
-            folder.root.join(folder.entry).is_file(),
+            self.root.join(self.entry).is_file(),
             "Story source is missing"
         );
-        // Do not create a missing database or export an empty replacement source.
+        Ok(())
+    }
+
+    pub fn load(&self) -> Result<StoredProject> {
+        let stored = ProjectDb::open_existing(self.database())?.load()?;
         ensure!(
-            ProjectDb::open(folder.database())?.load()?.id == folder.id,
+            stored.id == self.id,
             "Manifest and database project identities differ"
         );
-        Ok(folder)
+        Ok(stored)
+    }
+
+    pub fn claim_authoring(&self) -> Result<AuthoringLease> {
+        let path = self.root.join(AUTHORING_LOCK);
+        let mut options = OpenOptions::new();
+        options.read(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = match options.clone().create_new(true).open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                ensure!(
+                    fs::symlink_metadata(&path)?.is_file(),
+                    "Invalid Studio lock file"
+                );
+                options.open(&path)?
+            }
+            Err(error) => return Err(error.into()),
+        };
+        match file.try_lock().map_err(io::Error::from) {
+            Ok(()) => Ok(AuthoringLease {
+                root: self.root.clone(),
+                project_id: self.id,
+                lock: Arc::new(file),
+            }),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                bail!("This project is open for editing in another Studio window. Close it there, then try again.");
+            }
+            Err(error) => Err(error).context("Could not claim the Studio project lock"),
+        }
     }
 
     fn read_manifest(root: PathBuf) -> Result<Self> {

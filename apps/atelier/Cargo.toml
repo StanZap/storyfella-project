@@ -31,5 +31,9 @@ metal.workspace = true
 core-video = { workspace = true, features = ["metal"] }
 core-foundation.workspace = true
 
+[dev-dependencies]
+storyfella-runtime.workspace = true
+tempfile.workspace = true
+
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 gpui-pre-apple = { workspace = true, features = ["test-support"] }

@@ -253,7 +253,7 @@ pub(crate) fn validate_studio_operations(operations: &[Operation]) -> Result<(),
 pub fn create_project(
     project_dir: &Path,
     story_name: &str,
-    mut app_state: Signal<AppState>,
+    app_state: Signal<AppState>,
 ) -> Result<PathBuf, ReportedError> {
     ensure_project_idle(app_state)?;
     // An unbound Writer draft becomes this project's first source; switching
@@ -276,12 +276,8 @@ pub fn create_project(
         &source,
     )
     .map_err(|error| ReportedError::plain(ErrorCode::StoreSave, format!("{error:#}")))?;
-    let path = folder.database();
-    let stored = ProjectDb::open(&path)
-        .and_then(|db| db.load())
-        .map_err(|error| error.report())?;
-    app_state.write().open_project(stored, path.clone());
-    Ok(path)
+    install_shared_project(&folder, app_state)?;
+    Ok(folder.database())
 }
 
 /// Opens a project database or its `.sf` source in place. A standalone `.sf`
@@ -291,28 +287,41 @@ pub fn open_project(path: &Path, mut app_state: Signal<AppState>) -> Result<(), 
     if app_state.read().has_unsaved_changes {
         save_project(app_state)?;
     }
+    if let Some(folder) = ProjectFolder::locate_for_authoring(path).map_err(shared_open_error)? {
+        return install_shared_project(&folder, app_state);
+    }
     let path = path
         .canonicalize()
         .map_err(|error| ReportedError::plain(ErrorCode::StoreOpen, error.to_string()))?;
-    let project_path = if path.is_dir()
-        || path
-            .file_name()
-            .is_some_and(|name| name == storyfella_studio_core::project::MANIFEST)
-    {
-        ProjectFolder::open(&path)
-            .map_err(|error| ReportedError::plain(ErrorCode::StoreOpen, format!("{error:#}")))?
-            .database()
-    } else if path.extension().is_some_and(|extension| extension == "sf") {
-        storyfella_studio_core::project::database_for_source(&path)
-            .map_err(|error| ReportedError::plain(ErrorCode::StoreOpen, format!("{error:#}")))?
-            .unwrap_or_else(|| path.with_extension("db"))
+    let project_path = if path.extension().is_some_and(|extension| extension == "sf") {
+        path.with_extension("db")
     } else {
         path
     };
     let stored = ProjectDb::open(&project_path)
         .and_then(|db| db.load())
         .map_err(|error| error.report())?;
-    app_state.write().open_project(stored, project_path);
+    app_state.write().open_project(stored, project_path, None);
+    Ok(())
+}
+
+fn shared_open_error(error: anyhow::Error) -> ReportedError {
+    ReportedError::plain(ErrorCode::StoreOpen, format!("{error:#}"))
+}
+
+fn install_shared_project(
+    folder: &ProjectFolder,
+    mut app_state: Signal<AppState>,
+) -> Result<(), ReportedError> {
+    let existing = app_state.read().authoring_lease.clone();
+    let lease = match existing.filter(|lease| lease.belongs_to(folder)) {
+        Some(lease) => lease,
+        None => folder.claim_authoring().map_err(shared_open_error)?,
+    };
+    let stored = folder.load().map_err(shared_open_error)?;
+    app_state
+        .write()
+        .open_project(stored, folder.database(), Some(lease));
     Ok(())
 }
 
@@ -346,14 +355,16 @@ pub fn save_new_project(path: &Path, mut app_state: Signal<AppState>) -> Result<
     let mut stored = db.load().map_err(|error| error.report())?;
     stored.story.set_source(source);
     stored.story.save().map_err(|error| error.report())?;
-    app_state.write().open_project(stored, path.to_owned());
+    app_state
+        .write()
+        .open_project(stored, path.to_owned(), None);
     Ok(())
 }
 
 /// Explicit, nondestructive adoption of an existing source/database pair.
 pub fn copy_to_project_folder(
     parent: &Path,
-    mut app_state: Signal<AppState>,
+    app_state: Signal<AppState>,
 ) -> Result<(), ReportedError> {
     ensure_project_idle(app_state)?;
     save_project(app_state)?;
@@ -369,11 +380,7 @@ pub fn copy_to_project_folder(
     let folder = ProjectFolder::import(&destination, &stored)
         .map_err(|error| ReportedError::plain(ErrorCode::StoreSave, format!("{error:#}")))?;
     drop(state);
-    let stored = ProjectDb::open(folder.database())
-        .and_then(|db| db.load())
-        .map_err(|error| error.report())?;
-    app_state.write().open_project(stored, folder.database());
-    Ok(())
+    install_shared_project(&folder, app_state)
 }
 
 fn ensure_project_idle(app_state: Signal<AppState>) -> Result<(), ReportedError> {
@@ -537,12 +544,12 @@ mod tests {
     }
     use super::unique_project_path;
     use dioxus::prelude::*;
-    use std::path::PathBuf;
+    use std::{cell::Cell, path::PathBuf, rc::Rc};
 
     use storyfella_studio_core::registry::{ops::Operation, ArtifactKind, Ref, VariantAxis};
 
     #[component]
-    fn PersistenceProbe(directory: PathBuf) -> Element {
+    fn PersistenceProbe(directory: PathBuf, complete: Rc<Cell<bool>>) -> Element {
         let mut state = use_signal(crate::state::AppState::default);
         let mut unbound = use_signal(crate::state::AppState::default);
         use_hook(move || {
@@ -581,6 +588,42 @@ mod tests {
                 state.read().story.source()
             );
             assert!(!state.read().has_unsaved_changes);
+
+            // Every way of opening the shared project must meet the same
+            // owner check, even before the first Studio saves its draft.
+            let folder = project.parent().unwrap();
+            let manifest = folder.join(storyfella_studio_core::project::MANIFEST);
+            state
+                .write()
+                .set_story_source("scene still_editing\n  end\n".into());
+            for alias in [
+                folder,
+                manifest.as_path(),
+                project.as_path(),
+                source.as_path(),
+            ] {
+                let error = super::open_project(alias, unbound).unwrap_err();
+                assert!(error.details.contains("open for editing in another Studio"));
+            }
+            #[cfg(unix)]
+            {
+                let alias = directory.join("shared-alias.sf");
+                std::fs::write(&alias, "scene alias\n  end\n").unwrap();
+                std::os::unix::fs::symlink(&project, alias.with_extension("db")).unwrap();
+                let error = super::open_project(&alias, unbound).unwrap_err();
+                assert!(error.details.contains("open for editing in another Studio"));
+            }
+            assert_eq!(
+                unbound.read().project_path.as_deref(),
+                Some(exact.as_path())
+            );
+            assert!(state.read().story.is_dirty());
+            assert_ne!(
+                std::fs::read_to_string(&source).unwrap(),
+                state.read().story.source()
+            );
+            super::open_project(&manifest, state).unwrap();
+            assert_eq!(state.read().story.source(), "scene still_editing\n  end\n");
 
             // An external edit prevents both saving and switching projects.
             state.write().set_story_source("local edits".into());
@@ -643,10 +686,12 @@ mod tests {
                 saved_scene,
                 "reload reattaches saved identities after an unsaved rename"
             );
-            state
-                .write()
-                .create_pending_asset("lantern", storyfella_language::AssetKind::Prop)
-                .unwrap();
+            assert!(state
+                .read()
+                .registry
+                .artifacts
+                .iter()
+                .any(|asset| { asset.name == "lantern" && asset.kind == ArtifactKind::Object }));
             super::save_project(state).unwrap();
             std::fs::write(
                 &source,
@@ -669,6 +714,13 @@ mod tests {
             super::open_project(&another, state).unwrap();
             assert_eq!(state.read().story.source(), "scene another\n  end\n");
             assert!(another.with_extension("db").exists());
+            super::open_project(&source, unbound).unwrap();
+            assert_eq!(
+                unbound.read().project_path.as_deref(),
+                Some(project.as_path())
+            );
+            assert_eq!(unbound.read().registry, reopened.registry);
+            complete.set(true);
         });
         rsx! {}
     }
@@ -679,15 +731,21 @@ mod tests {
             .join("../../.svs-e2e/tests")
             .join(format!("project-commands-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&directory).unwrap();
+        let complete = Rc::new(Cell::new(false));
         let mut dom = VirtualDom::new_with_props(
             PersistenceProbe,
             PersistenceProbeProps {
                 directory: directory.clone(),
+                complete: complete.clone(),
             },
         );
         dom.rebuild_in_place();
         drop(dom);
         std::fs::remove_dir_all(directory).unwrap();
+        assert!(
+            complete.get(),
+            "The Studio project command probe did not finish"
+        );
     }
 
     #[component]

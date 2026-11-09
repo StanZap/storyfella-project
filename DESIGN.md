@@ -196,6 +196,14 @@ rendering and the visible cross-app refresh remain user acceptance.
 User acceptance (2026-11-02): Atelier Save updates the image in Studio. Remaining
 edge-case native checks are not implied by that reported round trip.
 
+Save errors now distinguish failure to save the drawing, failure to publish
+artwork after saving the drawing, and failure to record revision links after
+publishing artwork. Save and Save-and-close carry committed revisions back to
+the matching open artboard without replacing a newer relink. The project
+stays open on failure and the saved drawing can be reopened and retried.
+The offline chapter test injects the final write failure and verifies
+recovery. Native error presentation still needs a live check.
+
 ### Open in Atelier · 2026-11-01
 
 The shared Open in Atelier action appears in Canvas details, resolved Writer
@@ -334,6 +342,12 @@ native parent-folder picker. This copies source, registry identities and artwork
 opens the copy on success and retains the original on failure. Existing folders
 are never overwritten. Atelier opens the same manifest and saves its working
 document inside the folder. No model call or export/approval gate is involved.
+
+A shared folder already open for editing in another Studio window shows an
+open error with instructions to close it in that window and retry. Its saved
+story remains searchable in Projects. Automated command tests cover blocked
+opens while the first window has a dirty draft and successful open after
+that owner switches away.
 
 Deterministic storage/adapter tests verify relocation with original paths removed,
 exact source and image retention, saved Atelier documents, invalid versions/IDs,

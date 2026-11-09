@@ -151,6 +151,14 @@ impl ProjectDb {
     }
 
     fn open_with_flags(path: &Path, flags: rusqlite::OpenFlags) -> Result<Self, StoreError> {
+        let db = Self::connect(path, flags)?;
+        db.configure()?;
+        db.migrate()?;
+        db.seed_project_row()?;
+        Ok(db)
+    }
+
+    fn connect(path: &Path, flags: rusqlite::OpenFlags) -> Result<Self, StoreError> {
         let path = path.to_path_buf();
         let conn =
             Connection::open_with_flags(&path, flags).map_err(|source| StoreError::Open {
@@ -161,14 +169,21 @@ impl ProjectDb {
             path: path.clone(),
             source,
         })?;
-        let db = Self {
+        Ok(Self {
             conn: Mutex::new(conn),
             path,
-        };
-        db.configure()?;
-        db.migrate()?;
-        db.seed_project_row()?;
-        Ok(db)
+        })
+    }
+
+    /// Inspect saved files for discovery. During a pending source write, the
+    /// catalog can be ahead of the source on disk. Opening for authoring
+    /// handles recovery and migrations before treating the pair as a snapshot.
+    pub fn inspect_existing(path: &Path) -> Result<StoredProject, StoreError> {
+        Self::connect(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?
+        .load_snapshot(false)
     }
 
     /// Replaces the stored snapshot with `registry` in one transaction,
@@ -575,16 +590,27 @@ impl ProjectDb {
 
     /// Loads the project row and the full registry snapshot.
     pub fn load(&self) -> Result<StoredProject, StoreError> {
+        self.load_snapshot(true)
+    }
+
+    fn load_snapshot(&self, recover: bool) -> Result<StoredProject, StoreError> {
         let mut connection = self.conn.lock();
+        let behavior = if recover {
+            rusqlite::TransactionBehavior::Immediate
+        } else {
+            rusqlite::TransactionBehavior::Deferred
+        };
         let conn = connection
             // Source lives beside SQLite. Serialize its short snapshot read
             // with cooperating source publishers, including pending recovery.
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .transaction_with_behavior(behavior)
             .map_err(|source| StoreError::Load {
                 path: self.path.clone(),
                 source,
             })?;
-        self.recover_source_in(&conn)?;
+        if recover {
+            self.recover_source_in(&conn)?;
+        }
         let (row_id, row_name, registry_version) = conn
             .query_row(
                 "SELECT id, name, registry_version FROM projects ORDER BY rowid LIMIT 1",
@@ -1771,6 +1797,13 @@ mod tests {
             std::fs::read_to_string(source_path(&path)).unwrap(),
             baseline.story.source()
         );
+        let inspected = ProjectDb::inspect_existing(&path).unwrap();
+        assert_eq!(inspected.story.source(), baseline.story.source());
+        assert_eq!(
+            inspected.registry.artifact(id).unwrap().name,
+            "captain_mara"
+        );
+        assert!(db.pending_source(&db.conn.lock()).unwrap().is_some());
         std::fs::write(source_path(&path), "unrelated external draft").unwrap();
         assert!(matches!(
             db.load(),

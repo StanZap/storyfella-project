@@ -27,10 +27,18 @@ pub fn CatalogSync(mut app_state: Signal<AppState>) -> Element {
     use_hook(move || {
         spawn(async move {
             loop {
-                let path = app_state.peek().project_path.clone();
-                if let Some(path) = path.filter(|_| !app_state.peek().operation_in_progress()) {
+                let (path, lease) = {
+                    let state = app_state.peek();
+                    let path = state
+                        .project_path
+                        .clone()
+                        .filter(|_| !state.operation_in_progress());
+                    (path, state.authoring_lease.clone())
+                };
+                if let Some(path) = path {
                     let captured_path = path.clone();
                     let result = tokio::task::spawn_blocking(move || {
+                        let _lease = lease;
                         ProjectDb::open_existing(&path).and_then(|db| db.load())
                     })
                     .await;
@@ -107,11 +115,18 @@ pub fn CatalogSync(mut app_state: Signal<AppState>) -> Element {
                 h2 { class: "text-lg font-semibold", "Recover interrupted save" }
                 p { class: "text-sm text-zinc-400", "The catalog was saved, but its story file changed before the matching text could be written. Keep a separate copy of the current file, then finish the interrupted save. Your unsaved editor text stays intact." }
                 button { class: "studio-button studio-button-primary", title: "Keep file copy and finish save", disabled: recovering(), onclick: move |_| {
-                    let Some(path) = app_state.peek().project_path.clone() else { return };
+                    let (path, lease) = {
+                        let state = app_state.peek();
+                        let Some(path) = state.project_path.clone() else { return };
+                        (path, state.authoring_lease.clone())
+                    };
                     recovering.set(true);
                     spawn(async move {
                         let expected_path = path.clone();
-                        let result = tokio::task::spawn_blocking(move || ProjectDb::open_existing(path).and_then(|db| db.preserve_source_and_recover())).await;
+                        let result = tokio::task::spawn_blocking(move || {
+                            let _lease = lease;
+                            ProjectDb::open_existing(path).and_then(|db| db.preserve_source_and_recover())
+                        }).await;
                         recovering.set(false);
                         if app_state.peek().project_path.as_ref() != Some(&expected_path) { return; }
                         match result {

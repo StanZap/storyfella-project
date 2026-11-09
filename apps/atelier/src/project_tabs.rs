@@ -297,6 +297,18 @@ impl DrawingApp {
         cx.notify();
     }
 
+    pub(crate) fn apply_save_publications(
+        &mut self,
+        epoch: u64,
+        publications: &[storyfella_studio_core::catalog::CanvasPublication],
+    ) {
+        if epoch == self.epoch {
+            crate::shared_save::apply_publications(&mut self.doc, publications);
+        } else if let Some(tab) = self.project_tabs.iter_mut().find(|tab| tab.epoch == epoch) {
+            crate::shared_save::apply_publications(&mut tab.doc, publications);
+        }
+    }
+
     pub fn finish_project_close(
         &mut self,
         epoch: u64,

@@ -12,6 +12,17 @@ use std::{
         Arc,
     },
 };
+use storyfella_studio_core::catalog::CanvasPublication;
+
+fn save_result(saved: Result<Vec<CanvasPublication>>) -> (Result<()>, Vec<CanvasPublication>) {
+    match saved {
+        Ok(publications) => (Ok(()), publications),
+        Err(error) => {
+            let publications = crate::shared_save::committed_publications(&error).to_vec();
+            (Err(error), publications)
+        }
+    }
+}
 
 pub struct ProjectPreview {
     pub title: String,
@@ -41,6 +52,7 @@ pub enum Event {
     ProjectClosed {
         epoch: u64,
         revision: u64,
+        publications: Vec<CanvasPublication>,
         result: Result<PathBuf>,
     },
     WorkspaceSaved(Result<()>),
@@ -54,7 +66,7 @@ pub enum Event {
     Projects(Result<Vec<ProjectPreview>>),
     Raster(u64, Result<crate::canvas_renderer::TileBatch>),
     Saved {
-        publications: Vec<storyfella_studio_core::catalog::CanvasPublication>,
+        publications: Vec<CanvasPublication>,
         revision: u64,
         epoch: u64,
         path: PathBuf,
@@ -217,11 +229,15 @@ pub fn start() -> Workers {
                     path,
                     epoch,
                     revision,
-                } => Event::ProjectClosed {
-                    epoch,
-                    revision,
-                    result: crate::shared_save::save(&path, &doc).map(|_| path),
-                },
+                } => {
+                    let (result, publications) = save_result(crate::shared_save::save(&path, &doc));
+                    Event::ProjectClosed {
+                        epoch,
+                        revision,
+                        publications,
+                        result: result.map(|()| path),
+                    }
+                }
                 Storage::WorkspaceRecovery(directory, projects) => {
                     Event::WorkspaceSaved(crate::project_tabs::save_session(&directory, projects))
                 }
@@ -366,10 +382,7 @@ pub fn start() -> Workers {
                     } else {
                         crate::shared_save::save(&path, &doc)
                     };
-                    let (result, publications) = match saved {
-                        Ok(publications) => (Ok(()), publications),
-                        Err(error) => (Err(error), Vec::new()),
-                    };
+                    let (result, publications) = save_result(saved);
                     Event::Saved {
                         result,
                         publications,

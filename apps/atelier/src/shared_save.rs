@@ -3,17 +3,54 @@
 //! the saved document, including after process exit.
 use crate::document::{self, Document};
 use anyhow::{Context, Result};
-use std::{io::Cursor, path::Path};
+use std::{fmt, io::Cursor, path::Path};
 use storyfella_studio_core::{
     catalog::{self, CanvasPublication, SavedCanvas},
     project::ProjectFolder,
 };
 
+/// Typed context for partial saves, including the exact revisions that committed
+/// if writing the new artwork baselines back into the document failed.
+#[derive(Debug)]
+pub(crate) enum SaveStage {
+    Document,
+    Artwork,
+    RevisionLinks(Vec<CanvasPublication>),
+}
+
+impl fmt::Display for SaveStage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Document => "Could not save the editable document",
+            Self::Artwork => {
+                "Editable document saved. Review the artwork error before retrying Save"
+            }
+            Self::RevisionLinks(_) => {
+                "Shared artwork saved. Retry Save to finish saving the document’s revision links"
+            }
+        })
+    }
+}
+
+pub(crate) fn committed_publications(error: &anyhow::Error) -> &[CanvasPublication] {
+    match error.downcast_ref::<SaveStage>() {
+        Some(SaveStage::RevisionLinks(publications)) => publications,
+        _ => &[],
+    }
+}
+
 pub(crate) fn apply_publications(doc: &mut Document, publications: &[CanvasPublication]) {
     for publication in publications {
-        if doc.asset_links.iter().any(|link| {
-            link.canvas_id == publication.canvas_id && link.asset_id == publication.asset_id
-        }) {
+        let baseline = doc
+            .artwork_bases
+            .get(&publication.canvas_id)
+            .copied()
+            .flatten();
+        if baseline == publication.expected_revision
+            && doc.asset_links.iter().any(|link| {
+                link.canvas_id == publication.canvas_id && link.asset_id == publication.asset_id
+            })
+        {
             doc.artwork_bases
                 .insert(publication.canvas_id, Some(publication.revision_id));
         }
@@ -27,9 +64,25 @@ pub(crate) fn save(path: &Path, doc: &Document) -> Result<Vec<CanvasPublication>
 fn save_with_renderer(
     path: &Path,
     doc: &Document,
+    render: impl FnMut(&Document) -> Result<image::RgbaImage>,
+) -> Result<Vec<CanvasPublication>> {
+    document::save(path, doc).context(SaveStage::Document)?;
+    let publications = publish(path, doc, render).context(SaveStage::Artwork)?;
+    if !publications.is_empty() {
+        let mut saved = doc.clone();
+        apply_publications(&mut saved, &publications);
+        if let Err(error) = document::save(path, &saved) {
+            return Err(error.context(SaveStage::RevisionLinks(publications)));
+        }
+    }
+    Ok(publications)
+}
+
+fn publish(
+    path: &Path,
+    doc: &Document,
     mut render: impl FnMut(&Document) -> Result<image::RgbaImage>,
 ) -> Result<Vec<CanvasPublication>> {
-    document::save(path, doc)?;
     let Some(parent) = path
         .parent()
         .filter(|parent| parent.file_name().is_some_and(|name| name == "atelier"))
@@ -84,13 +137,7 @@ fn save_with_renderer(
     if canvases.is_empty() {
         return Ok(Vec::new());
     }
-    let publications = catalog::save_canvases(&folder, &canvases).context("Editable document saved; shared artwork update failed. Retry Save after resolving the error")?;
-    let mut saved = doc.clone();
-    apply_publications(&mut saved, &publications);
-    document::save(path, &saved).context(
-        "Shared artwork saved; retry Save to finish saving the document's revision links",
-    )?;
-    Ok(publications)
+    catalog::save_canvases(&folder, &canvases)
 }
 
 fn render(doc: &Document) -> Result<image::RgbaImage> {
@@ -103,6 +150,9 @@ fn render(doc: &Document) -> Result<image::RgbaImage> {
         document::raster(doc, doc.width.max(doc.height), true)
     }
 }
+
+#[cfg(test)]
+mod production_slice;
 
 #[cfg(test)]
 mod tests {
@@ -250,7 +300,13 @@ mod tests {
         // A render failure keeps the editable drawing on disk and changes no
         // registry revision. A corrected normal Save can retry.
         doc.note = "Retain my latest editing".into();
-        assert!(save_with_renderer(&path, &doc, |_| anyhow::bail!("render failed")).is_err());
+        let error =
+            save_with_renderer(&path, &doc, |_| anyhow::bail!("render failed")).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<SaveStage>(),
+            Some(SaveStage::Artwork)
+        ));
+        assert!(committed_publications(&error).is_empty());
         assert_eq!(document::load(&path).unwrap().note, doc.note);
         assert_eq!(db.load().unwrap(), current);
         // An outside image change must not be overwritten by the stale canvas.

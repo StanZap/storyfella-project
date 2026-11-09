@@ -5,6 +5,7 @@ use dioxus::prelude::*;
 use storyfella_studio_core::config::AppConfig;
 use storyfella_studio_core::errors::ReportedError;
 use storyfella_studio_core::persistence::{ProjectDb, StoredProject};
+use storyfella_studio_core::project::ProjectFolder;
 
 use crate::{commands, state::AppState};
 
@@ -320,8 +321,9 @@ fn scan_projects(project_dir: &Path) -> (Vec<RecentProject>, Vec<String>) {
                             .join(storyfella_studio_core::project::MANIFEST)
                             .is_file() =>
                     {
-                        match storyfella_studio_core::project::ProjectFolder::open(&entry.path()) {
-                            Ok(folder) => discovered.push(folder.database()),
+                        match ProjectFolder::locate_for_authoring(&entry.path()) {
+                            Ok(Some(folder)) => discovered.push(folder.database()),
+                            Ok(None) => {}
                             Err(error) => errors
                                 .push(format!("Cannot load {}: {error:#}", entry.path().display())),
                         }
@@ -345,21 +347,28 @@ fn scan_projects(project_dir: &Path) -> (Vec<RecentProject>, Vec<String>) {
     }
     let projects = paths
         .into_iter()
-        .filter_map(|path| {
-            if !path.is_file() {
-                errors.push(format!("Recent project is unavailable: {}", path.display()));
-                return None;
-            }
-            match ProjectDb::open(&path).and_then(|db| db.load()) {
-                Ok(stored) => Some(RecentProject::from_stored(path, stored)),
-                Err(error) => {
-                    errors.push(format!("Cannot load {}: {error}", path.display()));
-                    None
-                }
+        .filter_map(|path| match inspect_project(&path) {
+            Ok(stored) => Some(RecentProject::from_stored(path, stored)),
+            Err(error) => {
+                errors.push(format!("Cannot load {}: {error}", path.display()));
+                None
             }
         })
         .collect();
     (projects, errors)
+}
+
+fn inspect_project(path: &Path) -> anyhow::Result<StoredProject> {
+    if let Some(folder) = ProjectFolder::locate_for_authoring(path)? {
+        let database = folder.database();
+        let stored = ProjectDb::inspect_existing(&database)?;
+        anyhow::ensure!(
+            stored.id == folder.id(),
+            "Manifest and database project identities differ"
+        );
+        return Ok(stored);
+    }
+    Ok(ProjectDb::open_existing(path)?.load()?)
 }
 
 #[cfg(test)]

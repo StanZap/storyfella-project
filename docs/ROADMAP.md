@@ -391,6 +391,21 @@ SF-PLAN-34–36. Expand capabilities and production scale from its findings;
 avoid completing broad inventories or every advanced feature before proving the
 shared workflow.
 
+First delivery evidence (2026-11-09): [app-owned coordination and the chapter
+contract](agentic-vn-production.md) defines the write boundary, recovery states,
+app work and MCP capabilities. Atelier now distinguishes editable-document
+failure, artwork publication failure and failure to save the links after
+publication. The offline *Last Signal* fixture covers checked authoring,
+masked candidate attachment, exact playback image bytes, both conditional
+routes, stale writes and retry after reopening. Workspace validation passed
+with 489 tests and 27 opt-in tests skipped. Studio now claims a shared-folder
+writer lease before loading it for editing, and browsing the project list
+leaves pending source writes for the editor to recover. The project command
+probe checks competing opens, aliases, dirty draft retention and takeover
+after switching away. Atelier document ownership, app command routing,
+restart-safe generation jobs, live frame capture and MCP client acceptance
+remain open.
+
 ### Studio for writing, Atelier for visual creation · 2026-10-28
 
 The proposed direction is Studio for writing and previewing stories with the

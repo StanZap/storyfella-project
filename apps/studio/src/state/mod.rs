@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use storyfella_studio_core::catalog::sync::{self, Conflict, Resolution};
 use storyfella_studio_core::persistence::StoredProject;
+use storyfella_studio_core::project::AuthoringLease;
 use storyfella_studio_core::registry::{Artifact, ArtifactRegistry, RevisionStatus};
 use storyfella_studio_core::story::{AdditionalSources, StoryDocument, StoryFileError};
 
@@ -29,6 +30,7 @@ pub struct AppState {
     /// The SQLite database file this project lives in (`None` until the
     /// project is created or opened from the Projects screen).
     pub project_path: Option<PathBuf>,
+    pub(crate) authoring_lease: Option<AuthoringLease>,
     pub registry_version: i64,
     saved_registry: ArtifactRegistry,
     project_id: Option<Uuid>,
@@ -195,7 +197,12 @@ impl AppState {
     }
     /// Replaces the in-memory state with a snapshot loaded from disk.
     /// The caller is responsible for saving before navigating away.
-    pub fn open_project(&mut self, stored: StoredProject, path: PathBuf) {
+    pub fn open_project(
+        &mut self,
+        stored: StoredProject,
+        path: PathBuf,
+        authoring_lease: Option<AuthoringLease>,
+    ) {
         self.project_id = Some(stored.id);
         self.saved_registry = stored.registry.clone();
         self.incoming_catalog = None;
@@ -209,6 +216,7 @@ impl AppState {
         self.active_source = None;
         self.source_notice = None;
         self.project_path = Some(path);
+        self.authoring_lease = authoring_lease;
         self.has_unsaved_changes = false;
         self.selected_artifact_id = None;
         self.description_drafts.clear();
@@ -1293,7 +1301,7 @@ mod tests {
             story: StoryDocument::default(),
         };
         let mut state = AppState::default();
-        state.open_project(stored.clone(), "shared.db".into());
+        state.open_project(stored.clone(), "shared.db".into(), None);
         (state, stored)
     }
 
@@ -1810,7 +1818,7 @@ mod tests {
             registry: character_registry("stored"),
             story: StoryDocument::default(),
         };
-        state.open_project(stored, std::path::PathBuf::from("/tmp/stored.db"));
+        state.open_project(stored, std::path::PathBuf::from("/tmp/stored.db"), None);
 
         assert_eq!(state.project_name, "Stored Story");
         assert_eq!(state.registry.artifacts.len(), 1);

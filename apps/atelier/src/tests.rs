@@ -567,8 +567,10 @@ fn closing_project_storage_saves_drafts_and_reports_failures_without_overwriting
             epoch,
             revision,
             result,
+            publications,
         } => {
             assert_eq!((epoch, revision), (3, 8));
+            assert!(publications.is_empty());
             assert_eq!(result.unwrap(), path);
         }
         _ => panic!("Expected close result"),
@@ -592,8 +594,10 @@ fn closing_project_storage_saves_drafts_and_reports_failures_without_overwriting
             epoch,
             revision,
             result,
+            publications,
         } => {
             assert_eq!((epoch, revision), (7, 12));
+            assert!(publications.is_empty());
             assert!(result.is_err());
         }
         _ => panic!("Expected close failure"),
