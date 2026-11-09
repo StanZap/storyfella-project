@@ -43,6 +43,13 @@ impl Line<'_> {
             Err(self.error("Unexpected or missing tokens"))
         }
     }
+    fn boolean(&self, index: usize) -> Result<bool, Diagnostic> {
+        match self.raw(index) {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err(self.error("Expected true or false")),
+        }
+    }
     fn text(&self, i: usize, quoted: bool) -> Result<Text, Diagnostic> {
         let Some(token) = self.tokens.get(i) else {
             return Err(self.error("Expected text"));
@@ -83,6 +90,7 @@ impl Line<'_> {
     }
     fn node(&self) -> Result<NodeKind, Diagnostic> {
         let head = self.raw(0);
+        let speech = self.raw(1) == ":" || (self.raw(1) == "think" && self.raw(2) == ":");
         match head {
             "scene" => {
                 self.count(2)?;
@@ -123,6 +131,31 @@ impl Line<'_> {
                 self.count(2)?;
                 Ok(NodeKind::Goto {
                     target: self.name(1)?,
+                })
+            }
+            "set" if !speech => {
+                self.count(3)?;
+                Ok(NodeKind::SetFlag {
+                    flag: self.name(1)?,
+                    value: self.boolean(2)?,
+                })
+            }
+            "if" if !speech => {
+                let negated = self.tokens.len() == 7 && self.raw(1) == "not";
+                let flag = if negated { 2 } else { 1 };
+                if self.tokens.len() != flag + 5
+                    || self.raw(flag + 1) != "goto"
+                    || self.raw(flag + 3) != "else"
+                {
+                    return Err(self.error("Expected if [not] flag goto scene else scene"));
+                }
+                Ok(NodeKind::Conditional {
+                    condition: Condition {
+                        flag: self.name(flag)?,
+                        negated,
+                    },
+                    when_true: self.name(flag + 2)?,
+                    when_false: self.name(flag + 4)?,
                 })
             }
             "end" => {
@@ -324,6 +357,33 @@ pub fn parse(text: &str) -> ParsedDocument {
         close_scopes(&mut story.scenes, &path, depth, span.start);
         path.truncate(depth);
         parents.truncate(depth);
+        if let Some(include) = parse_include(raw, span.start) {
+            match include {
+                Ok(path) => story.includes.push(path),
+                Err(error) => diagnostics.push(error),
+            }
+            continue;
+        }
+        if line.raw(0) == "flag"
+            && (depth == 0
+                || !(line.raw(1) == ":" || (line.raw(1) == "think" && line.raw(2) == ":")))
+        {
+            let declaration = if depth != 0 {
+                Err(line.error("Declare story flags at the top level"))
+            } else {
+                line.count(3).and_then(|_| {
+                    Ok(Flag {
+                        name: line.name(1)?,
+                        initial: line.boolean(2)?,
+                    })
+                })
+            };
+            match declaration {
+                Ok(flag) => story.flags.push(flag),
+                Err(error) => diagnostics.push(error),
+            }
+            continue;
+        }
         if line.raw(0) == "story" {
             if depth != 0 || story.title.is_some() || !story.scenes.is_empty() {
                 diagnostics.push(

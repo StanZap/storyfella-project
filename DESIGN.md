@@ -1,5 +1,35 @@
 # Storyfella Studio design standard and UX audit
 
+### Story project explorer · 2026-11-08
+
+The Story workspace presents user-facing files and catalog assets together at
+the project root, with no extra Files or Assets group. New shared projects store
+those files in `assets/`; a minimal project shows only `story.sf`. Internal
+database, manifest and working-artwork files are hidden. Standalone projects
+show files beside their entry source, including the entry itself when its name
+starts with a dot. Enter opens the focused file. F2 opens Rename for non-entry
+files. Studio protects story files with unsaved edits or saved or unsaved include
+references. Renaming or deleting an unreferenced chapter clears source undo
+history. Empty and nested folders are visible. Users select a folder and create
+files or folders there, or drop external files into it. File imports copy without
+overwriting. New `.sf` files are included in the entry draft; imported `.sf`
+files remain unlinked until the author includes them. Images open in the work
+area. Opening a catalog asset replaces the editor content while retaining the
+explorer and the open source draft. Returning to a file restores its draft.
+Cmd+B (Ctrl+B elsewhere) toggles the explorer and workspace navigation together.
+Assets navigation opens the gallery. The Story file toolbar offers Play story
+and Play scene, starting at the scene containing the caret; the latter continues
+according to normal story flow. Preview is no longer a primary sidebar destination.
+Additional source files use the shared language analysis for highlighting, completion and file-specific
+problems; included files use the project snapshot for completion and diagnostics.
+This is shared language-service integration, not a separate LSP client. Native
+interaction and accessibility acceptance remain open.
+
+The New asset dialog uses the shared task-form spacing, grouped field labels,
+close control and aligned actions, preserving drafts and validation feedback.
+Add to project opens a compact anchored action menu. File and folder forms open
+inline at their destination. Asset creation opens a task dialog.
+
 ### Initial visual directions
 
 The shared playback stage renders close framing, a tense overlay and

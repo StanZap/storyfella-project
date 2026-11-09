@@ -50,9 +50,10 @@ const KEY_BRIDGE: &str = r#"
             const active = document.activeElement;
             const tag = active ? active.tagName : "";
             if (document.querySelector('dialog[open]')) { return; }
-            if ((event.ctrlKey || event.metaKey) && ['s', 'k'].includes(event.key.toLowerCase())) {
+            if ((event.ctrlKey || event.metaKey) && ['s', 'k', 'b'].includes(event.key.toLowerCase())) {
                 event.preventDefault();
-                dioxus.send([event.key.toLowerCase() === 's' ? 'save' : 'palette', 1]);
+                const action = {s: 'save', k: 'palette', b: 'sidebar'}[event.key.toLowerCase()];
+                dioxus.send([action, 1]);
                 return;
             }
             // A focused text field owns every key it receives.

@@ -12,12 +12,14 @@ an explicit terminal continues to the next declared scene, as selected by the
 owner. The last scene's implicit boundary ends the story. Empty scenes pass
 through; an empty document/title-only draft cannot produce a plan.
 
-`choice`, `goto` and `end` are terminal for the entire scene. Choice selects one
+`choice`, `goto`, `if` and `end` are terminal for the entire scene. Choice selects one
 of its resolved scene targets; goto immediately targets a scene; end ends the
 story. There is no resume-after-choice continuation. Statements after a terminal,
 including another beat, are errors. Choice prompts/labels must be nonempty, and
 option labels distinct. Intentional cycles are allowed. A graph walk warns about
-scenes unreachable from entry; warnings do not prevent compilation.
+scenes unreachable from entry; warnings do not prevent compilation. A conditional
+contributes both targets to the graph. Flag declarations carry initial booleans
+and source spans. Flag assignments and conditionals lower to typed instructions.
 
 The compiler records implicit flow as an instruction with `origin: SceneBoundary`
 and a zero-width source span at the boundary. Explicit terminals have
@@ -37,6 +39,10 @@ yield a valid plan with blocked readiness; they never result in dropped instruct
   text retain their own spans; branch options retain their label/target spans.
 - The plan retains the exact original UTF-8 source, title, entry, ordered scenes
   and instructions. Decoded text is distinct from the original source snapshot.
+- A workspace plan also retains the entry filename, each authored file and the
+  mapping from expanded byte ranges to those files. The runtime reconstructs
+  the expansion and verifies the map while validating imported plans. Player
+  and Studio Preview display the authored file for the current instruction.
 - The host supplies `{id, name, kind, revision}` bindings with nonempty immutable
   IDs/revisions and unique IDs/names. Kind is `Character`, `Location` or `Prop`.
   Lookup is case-insensitive, as in shared language analysis. Wrong kinds and
@@ -44,9 +50,8 @@ yield a valid plan with blocked readiness; they never result in dropped instruct
 - Each asset use snapshots its exact binding. An unbound use retains its authored
   name/kind and becomes a source-mapped pending requirement. Catalog order never
   selects an arbitrary duplicate.
-- Shot/style/mood instructions are retained and listed as unsupported direction
-  requirements. Their execution semantics have not been implemented. A complete
-  asset catalog cannot make them ready.
+- Recognized shot, style and mood values have scene-scoped playback effects.
+  Unrecognized values remain explicit unsupported direction requirements.
 
 `Compilation::ready()` checks source validity plus all represented linking and
 direction requirements. It does not certify voice synthesis, load assets, check

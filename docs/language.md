@@ -14,15 +14,14 @@ enables the same behavior with `--allow-missing-assets`.
 
 ## File encoding and layout
 
-The CLI also supports an initial multi-file compilation slice: a top-level
-`include "chapter.sf"` expands that file at the directive's position. Paths are
-relative to the containing file, must stay inside the entry file's folder, and
-may not use `.` or `..` components. A file can be included once; cycles and
-missing files are errors. CLI diagnostics identify the original file. Studio
-Preview can play open unsaved drafts together with saved included files. Studio's
-explorer opens existing sources, but Writer diagnostics and LSP do not yet
-fully support this project syntax. Compiled plans retain an
-expanded source snapshot rather than a durable multi-file source map.
+A top-level `include "chapter.sf"` expands that file at the directive's
+position. Paths are relative to the containing file, use forward slashes, and
+stay inside the entry file's folder. Path components cannot be `.` or `..`.
+Each file can be included once. Invalid, missing, duplicate, or cyclic includes
+report SF308 at the responsible directive. Studio and configured LSP clients
+combine unsaved buffers with saved files. The CLI reports diagnostics in the
+authored files. Compiled workspace plans carry the exact source texts and the
+mapping to their authored byte ranges, so playback can inspect them offline.
 
 - Source is UTF-8.
 - LF and CRLF line endings are accepted and preserved.
@@ -37,6 +36,40 @@ Studio is case-insensitive, but catalog names that differ only by case are
 ambiguous and invalid.
 
     NAME := [A-Za-z_][A-Za-z0-9_]*
+
+## Story flags and conditional flow
+
+A story can declare named booleans at the top level of any included source.
+Names are unique across the project. Every new playthrough starts from the
+declared values. A scene or beat can set a flag, and a conditional can branch
+on its value or its negation.
+
+```storyfella
+flag has_key false
+scene entrance
+  choice "Which route?"
+    option "Take the key": take_key
+    option "Go to the door": door
+scene take_key
+  set has_key true
+  goto door
+scene door
+  if has_key goto inside else locked
+scene inside
+  narrate: The door opens.
+  end
+scene locked
+  narrate: The door stays locked.
+  end
+```
+
+`flag NAME true|false` declares the initial value. `set NAME true|false`
+updates it immediately. `if [not] NAME goto SCENE else SCENE` checks the flag
+and ends the scene with one of the two explicit jumps. Unknown or duplicate
+flags and invalid scene targets are errors. Static reachability considers
+both conditional targets. Flags survive scene changes and restore through
+verified replay. Restart resets them to the declared values. Explicit scene
+jumps keep the current values.
 
 ## Lexical rules
 
@@ -63,20 +96,23 @@ Other escapes are errors. Text after a closing quote is an error.
 The following grammar describes the accepted structure. `TEXT` means either
 raw text to the end of the line or one quoted string, as required by the rule.
 
-    document       = { blank-or-comment | story-header }, { scene } ;
+    document       = { blank-or-comment | story-header | include | flag | scene } ;
     story-header   = "story", quoted-text ;
+    include        = "include", quoted-path ;
+    flag           = "flag", NAME, BOOLEAN ;
+    BOOLEAN        = "true" | "false" ;
 
     scene          = "scene", NAME, { scene-statement } ;
     scene-statement
                    = asset-statement | beat | choice | direction-statement
                    | speech-statement | narration-statement
-                   | goto-statement | end-statement ;
+                   | goto-statement | set-statement | if-statement | end-statement ;
 
     beat           = "beat", NAME, { beat-statement } ;
     beat-statement
                    = asset-statement | choice | direction-statement
                    | speech-statement | narration-statement
-                   | goto-statement | end-statement ;
+                   | goto-statement | set-statement | if-statement | end-statement ;
 
     asset-statement
                    = "cast", ":", NAME, { ",", NAME }
@@ -97,12 +133,14 @@ raw text to the end of the line or one quoted string, as required by the rule.
     choice         = "choice", quoted-text, { option } ;
     option          = "option", quoted-text, ":", NAME ;
     goto-statement = "goto", NAME ;
+    set-statement  = "set", NAME, BOOLEAN ;
+    if-statement   = "if", [ "not" ], NAME, "goto", NAME, "else", NAME ;
     end-statement  = "end" ;
 
 The grammar is indentation-sensitive. `scene` declarations occur only at the
-top level; `beat` declarations occur only inside scenes; `option`
-declarations occur only immediately inside a choice. All other statements
-occur inside a scene or beat.
+top level alongside story titles, includes and flags. A title appears at most
+once, before scenes. Beats occur only inside scenes. Options occur only
+immediately inside a choice. Other statements occur inside a scene or beat.
 
 The `story` header is optional, may occur at most once, and must precede every
 scene. Its title must be quoted.
@@ -327,17 +365,15 @@ Studio Preview can play it before the artwork is available.
 
 ## Explicitly unsupported in version 1
 
-- variables or expressions;
-- conditions and loops;
-- imports or includes in the single-document parser and external LSP; Studio,
-  the CLI and Player resolve the initial workspace include syntax separately;
+- values other than booleans, compound expressions, and dedicated loop syntax;
+- localized text catalogs and locale selection;
 - functions or macros;
 - multiline blocks or heredocs;
 - automatic timing or duration units;
 - voice selection or speech synthesis annotations;
 - audio, music, video, or transition declarations;
 - asset definitions inside `.sf` files;
-- executable semantics for `style`, `shot`, or `mood`;
+- `style`, `shot`, or `mood` values outside the documented visual effects;
 - implicit asset creation or image generation.
 
 Generators must not emit these constructs as if they were supported.
@@ -377,13 +413,14 @@ The server uses standard Content-Length-framed JSON-RPC on stdin/stdout; stderr
 is for process failures. It follows the
 [LSP 3.17 specification](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/).
 
-Supported: initialize/shutdown/exit, full-document open/change/close, versioned
+Supported: initialize/shutdown/exit, open/change/close with incremental or full-document edits, versioned
 published diagnostics, completion, definitions, references and hierarchical
-scene/beat document symbols. Position encoding is UTF-16. Older document versions
-are ignored; incremental changes are rejected because the server advertises full
-sync. Closing a file clears published diagnostics.
+scene/beat and flag document symbols. Position encoding is UTF-16. Older document versions
+are ignored; incremental edits use UTF-16 ranges and are applied atomically.
+Closing a standalone file clears its diagnostics. Closing a workspace file
+returns its diagnostics to the saved source.
 
-Resolved scene/beat rename, prepare-rename, conservative formatting and full
+Resolved scene, beat and flag rename, prepare-rename, conservative formatting and full
 semantic tokens are supported. Rename changes declarations and resolved targets,
 rejects collisions, and leaves prose/comments untouched. Asset rename is rejected:
 it needs a host operation that persists the catalog name. Writer's explicit Rename
@@ -406,5 +443,16 @@ with Writer and CLI.
 Formatting edits whitespace gaps between structural tokens only. Indentation,
 line endings, comments, quoted strings and raw prose are preserved; formatting
 is idempotent. Syntax-invalid drafts are rejected without edits. Semantic tokens
-cover keywords, text, comments, asset names and scene/beat names. No imports,
-external asset definition locations or code actions are advertised.
+cover keywords, text, comments, asset names and scene, beat and flag names.
+External asset definition locations are outside the LSP catalog contract.
+
+External LSP clients may supply an absolute `initializationOptions.entryPath` for a
+project's entry `.sf` file. Completion, definitions, references, and symbol
+rename then use the included workspace and open unsaved buffers. Go to Definition
+on an include path opens its source file. Rename returns versioned edits for
+open files and unversioned edits for closed files. Workspace diagnostics are
+published against the original files, including closed files. Changes in any
+open draft and save or catalog refresh events recompute them. The quick fix
+for an unresolved scene target offers the exact spelling when just one
+declaration matches by case. Formatting and semantic tokens operate per file.
+Invalid include graphs report the include location and block workspace symbol edits.

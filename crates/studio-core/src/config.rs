@@ -543,9 +543,10 @@ impl AppConfig {
         {
             deployment.model = model.clone();
         }
-        let same_provider = configured_vision_provider_id.is_some()
-            && configured_vision_provider_id == text_provider_id;
-        let separate_vision = file.models.separate_vision.unwrap_or(!same_provider);
+        let same_model = text.is_some()
+            && configured_vision_provider_id == text_provider_id
+            && configured_vision == text;
+        let separate_vision = file.models.separate_vision.unwrap_or(!same_model);
         let (vision, vision_provider_id) = if separate_vision {
             (configured_vision, configured_vision_provider_id.clone())
         } else {
@@ -1815,6 +1816,29 @@ mod tests {
         let missing = AppConfig::load_split(Some(app), Some(ai)).unwrap();
         assert_eq!(missing.text_provider_id.as_deref(), Some("missing"));
         assert!(missing.text.is_none());
+    }
+
+    #[test]
+    fn distinct_models_on_one_provider_remain_separate_without_a_toggle_preference() {
+        let scratch = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
+        fs::create_dir_all(&scratch).unwrap();
+        let directory = tempfile::tempdir_in(scratch).unwrap();
+        let app = directory.path().join("studio.toml");
+        let ai = directory.path().join("clipforge.toml");
+        fs::write(&ai, TWO_TEXT_PROVIDERS).unwrap();
+        let config = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+        config
+            .persist_model_selection(ChatCapability::Text, "deepseek", Some("text-model"))
+            .unwrap();
+        config
+            .persist_model_selection(ChatCapability::Vision, "deepseek", Some("vision-model"))
+            .unwrap();
+        let reloaded = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+        assert!(reloaded.separate_vision);
+        assert_eq!(reloaded.vision.as_ref().unwrap().model, "vision-model");
+        reloaded.persist_separate_vision(false).unwrap();
+        let linked = AppConfig::load_split(Some(app), Some(ai)).unwrap();
+        assert_eq!(linked.vision, linked.text);
     }
 
     #[test]

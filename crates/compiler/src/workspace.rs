@@ -1,18 +1,27 @@
 //! Ordered project sources and the mapping back to their authored locations.
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
-use storyfella_language::{analyze, Asset, Span};
+use serde::{Deserialize, Serialize};
+use storyfella_language::{
+    analyze, normalize_diagnostics, parse, parse_include, valid_source_path, Asset, Diagnostic,
+    Position, Severity, Source, Span,
+};
 
 use crate::{compile_analysis, AssetBinding, Compilation};
 
 /// A snapshot supplied by a host. Keys are project-relative paths.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceWorkspace {
     pub entry: String,
     pub files: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceSegment {
     pub path: String,
     pub expanded: Span,
@@ -30,8 +39,50 @@ pub struct WorkspaceError {
     pub path: String,
     pub span: Span,
     pub message: String,
-    missing_path: Option<String>,
+    pub start: Position,
+    pub end: Position,
 }
+
+impl WorkspaceError {
+    pub fn entry(path: String, message: String) -> Self {
+        Self::at(&path, Span::new(0, 0), "", message)
+    }
+
+    fn at(path: &str, span: Span, text: &str, message: String) -> Self {
+        let source = Source::new(text);
+        Self {
+            path: path.to_owned(),
+            span,
+            message,
+            start: source.position(span.start).unwrap_or_default(),
+            end: source.position(span.end).unwrap_or_default(),
+        }
+    }
+
+    pub fn diagnostic(&self) -> Diagnostic {
+        Diagnostic {
+            code: "SF308".into(),
+            severity: Severity::Error,
+            message: self.message.clone(),
+            span: self.span,
+        }
+    }
+}
+
+impl fmt::Display for WorkspaceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}:{}:{}: {}",
+            self.path,
+            self.start.line + 1,
+            self.start.character + 1,
+            self.message
+        )
+    }
+}
+
+impl std::error::Error for WorkspaceError {}
 
 /// Compile one immutable project snapshot with the same compiler as a single
 /// source. The mapping lets hosts report diagnostics in the authored files.
@@ -58,7 +109,28 @@ pub fn compile_workspace_with_catalog(
 ) -> Result<(Compilation, ExpandedWorkspace), WorkspaceError> {
     let expanded = workspace.expand()?;
     let analysis = analyze(&expanded.source, assets);
-    let compilation = compile_analysis(&analysis, bindings);
+    let mut compilation = compile_analysis(&analysis, bindings);
+    // A chapter cannot continue the indentation scope of its including file.
+    // Check each file's own structure before accepting the combined plan.
+    for (path, text) in &workspace.files {
+        for mut diagnostic in parse(text).diagnostics {
+            if let Some(start) = expanded.expanded_offset(path, diagnostic.span.start) {
+                diagnostic.span =
+                    Span::new(start, start + diagnostic.span.end - diagnostic.span.start);
+                compilation.diagnostics.push(diagnostic);
+            }
+        }
+    }
+    normalize_diagnostics(&mut compilation.diagnostics);
+    if compilation.has_errors() {
+        compilation.plan = None;
+    }
+    if let Some(plan) = &mut compilation.plan {
+        plan.source_map = Some(crate::PlanSourceMap {
+            workspace: workspace.clone(),
+            segments: expanded.segments.clone(),
+        });
+    }
     Ok((compilation, expanded))
 }
 
@@ -76,30 +148,51 @@ impl ExpandedWorkspace {
     }
     /// Translate an expanded span only when it lies within one original segment.
     pub fn original_span(&self, span: Span) -> Option<(&str, Span)> {
-        let segment = self.segments.iter().find(|segment| {
+        original_span(&self.segments, span)
+    }
+
+    /// Diagnostics can cover a whole scene across a file boundary. Anchor
+    /// those to the authored portion of their first segment.
+    pub fn diagnostic_span<'a>(&'a self, entry: &'a str, span: Span) -> (&'a str, Span) {
+        self.original_span(span)
+            .or_else(|| {
+                let first = self
+                    .segments
+                    .iter()
+                    .find(|segment| segment.expanded.contains(span.start))?;
+                self.original_span(Span::new(span.start, span.end.min(first.expanded.end)))
+            })
+            .unwrap_or((entry, Span::default()))
+    }
+}
+
+pub(crate) fn original_span(segments: &[SourceSegment], span: Span) -> Option<(&str, Span)> {
+    let segment = segments
+        .iter()
+        .find(|segment| {
             span.start >= segment.expanded.start
                 && span.end <= segment.expanded.end
                 && (span.start < segment.expanded.end
                     || segment.expanded.start == segment.expanded.end)
+        })
+        .or_else(|| {
+            (span.start == span.end)
+                .then(|| {
+                    segments
+                        .iter()
+                        .rev()
+                        .find(|segment| segment.expanded.end == span.start)
+                })
+                .flatten()
         })?;
-        let offset = segment.original.start;
-        Some((
-            &segment.path,
-            Span::new(
-                offset + span.start - segment.expanded.start,
-                offset + span.end - segment.expanded.start,
-            ),
-        ))
-    }
-}
-
-fn valid_path(path: &str) -> bool {
-    !path.is_empty()
-        && path.ends_with(".sf")
-        && !path.contains('\\')
-        && path
-            .split('/')
-            .all(|part| !part.is_empty() && part != "." && part != "..")
+    let offset = segment.original.start;
+    Some((
+        &segment.path,
+        Span::new(
+            offset + span.start - segment.expanded.start,
+            offset + span.end - segment.expanded.start,
+        ),
+    ))
 }
 
 impl SourceWorkspace {
@@ -109,118 +202,106 @@ impl SourceWorkspace {
     where
         F: FnMut(&str) -> Result<String, String>,
     {
-        let mut workspace = Self {
-            entry: entry.clone(),
-            files: BTreeMap::new(),
-        };
-        loop {
-            match workspace.expand() {
-                Ok(_) => return Ok(workspace),
-                Err(mut error) => {
-                    let Some(missing) = error.missing_path.take() else {
-                        return Err(error);
-                    };
-                    if workspace.files.len() >= 256 {
-                        error.message = "Story contains more than 256 source files".into();
-                        return Err(error);
-                    }
-                    let text = load(&missing).map_err(|message| {
-                        error.message = message;
-                        error
-                    })?;
-                    workspace.files.insert(missing, text);
-                }
-            }
-        }
+        let mut files = BTreeMap::new();
+        Expander::new(
+            |path: &str| {
+                let text = load(path)?;
+                files.insert(path.to_owned(), text.clone());
+                Ok(text)
+            },
+            None,
+        )
+        .visit(&entry)?;
+        Ok(Self { entry, files })
     }
 
     /// Expand top-level `include "relative.sf"` in place. Paths are relative to
     /// the including file, and a file may appear only once in a project graph.
     pub fn expand(&self) -> Result<ExpandedWorkspace, WorkspaceError> {
-        let mut output = ExpandedWorkspace {
+        let output = ExpandedWorkspace {
             source: String::new(),
             segments: Vec::new(),
         };
-        let mut seen = BTreeSet::new();
-        let mut active = BTreeSet::new();
-        self.expand_file(&self.entry, &mut seen, &mut active, &mut output)?;
-        Ok(output)
+        let mut expander = Expander::new(
+            |path: &str| {
+                self.files
+                    .get(path)
+                    .ok_or_else(|| format!("Source not found: {path}"))
+            },
+            Some(output),
+        );
+        expander.visit(&self.entry)?;
+        if self.files.len() != expander.seen.len() {
+            return Err(WorkspaceError::entry(
+                self.entry.clone(),
+                "Snapshot contains sources that are outside the entry's include graph".into(),
+            ));
+        }
+        Ok(expander.output.expect("expansion keeps its output"))
+    }
+}
+
+struct Expander<F> {
+    load: F,
+    seen: BTreeSet<String>,
+    active: BTreeSet<String>,
+    output: Option<ExpandedWorkspace>,
+}
+
+impl<F, T> Expander<F>
+where
+    F: FnMut(&str) -> Result<T, String>,
+    T: AsRef<str>,
+{
+    fn new(load: F, output: Option<ExpandedWorkspace>) -> Self {
+        Self {
+            load,
+            output,
+            seen: BTreeSet::new(),
+            active: BTreeSet::new(),
+        }
     }
 
-    fn expand_file(
-        &self,
-        path: &str,
-        seen: &mut BTreeSet<String>,
-        active: &mut BTreeSet<String>,
-        output: &mut ExpandedWorkspace,
-    ) -> Result<(), WorkspaceError> {
-        let fail = |span, message: String| WorkspaceError {
-            path: path.to_owned(),
-            span,
-            message,
-            missing_path: None,
-        };
-        if !valid_path(path) {
-            return Err(fail(Span::new(0, 0), "Invalid project source path".into()));
+    fn visit(&mut self, path: &str) -> Result<(), WorkspaceError> {
+        let fail = |message| WorkspaceError::entry(path.to_owned(), message);
+        if !valid_source_path(path) {
+            return Err(fail("Invalid project source path".into()));
         }
-        if active.contains(path) {
-            return Err(fail(
-                Span::new(0, 0),
-                format!("Include cycle involving {path}"),
-            ));
+        if self.active.contains(path) {
+            return Err(fail(format!("Include cycle involving {path}")));
         }
-        if !seen.insert(path.to_owned()) {
-            return Err(fail(
-                Span::new(0, 0),
-                format!("Source included more than once: {path}"),
-            ));
+        if self.seen.contains(path) {
+            return Err(fail(format!("Source included more than once: {path}")));
         }
-        if active.len() >= 256 {
-            return Err(fail(
-                Span::new(0, 0),
-                "Include nesting exceeds 256 files".into(),
-            ));
+        if self.seen.len() >= 256 {
+            return Err(fail("Story contains more than 256 source files".into()));
         }
-        let text = self.files.get(path).ok_or_else(|| {
-            let mut error = fail(Span::new(0, 0), format!("Source not found: {path}"));
-            error.missing_path = Some(path.to_owned());
-            error
-        })?;
-        active.insert(path.to_owned());
+        let text = (self.load)(path).map_err(fail)?;
+        let text = text.as_ref();
+        let fail = |span, message| WorkspaceError::at(path, span, text, message);
+        self.seen.insert(path.to_owned());
+        self.active.insert(path.to_owned());
         let mut offset = 0;
         for line in text.split_inclusive('\n') {
             let content = line.trim_end_matches(['\r', '\n']);
-            if let Some(argument) = content.strip_prefix("include ") {
-                let argument = argument.trim();
-                let target = argument
-                    .strip_prefix('"')
-                    .and_then(|s| s.strip_suffix('"'))
-                    .filter(|s| valid_path(s))
-                    .ok_or_else(|| {
-                        fail(
-                            Span::new(offset, offset + content.len()),
-                            "Expected include followed by a quoted relative .sf path".into(),
-                        )
-                    })?;
-                let child = match path.rsplit_once('/') {
-                    Some((parent, _)) => format!("{parent}/{target}"),
-                    None => target.to_owned(),
-                };
-                self.expand_file(&child, seen, active, output)
-                    .map_err(|error| {
-                        if error.path == child && error.span == Span::new(0, 0) {
-                            let mut mapped =
-                                fail(Span::new(offset, offset + content.len()), error.message);
-                            mapped.missing_path = error.missing_path;
-                            mapped
-                        } else {
-                            error
-                        }
-                    })?;
-                if !output.source.is_empty() && !output.source.ends_with('\n') {
-                    output.source.push('\n');
+            if let Some(include) = parse_include(content, offset) {
+                let target = include
+                    .map_err(|error| fail(error.span, error.message))?
+                    .value;
+                let child = include_path(path, &target);
+                self.visit(&child).map_err(|error| {
+                    if error.path == child && error.span == Span::new(0, 0) {
+                        fail(Span::new(offset, offset + content.len()), error.message)
+                    } else {
+                        error
+                    }
+                })?;
+                if let Some(output) = &mut self.output {
+                    if !output.source.is_empty() && !output.source.ends_with('\n') {
+                        output.source.push('\n');
+                    }
                 }
-            } else {
+            } else if let Some(output) = &mut self.output {
                 let start = output.source.len();
                 output.source.push_str(line);
                 if let Some(previous) = output.segments.last_mut().filter(|segment| {
@@ -240,9 +321,17 @@ impl SourceWorkspace {
             }
             offset += line.len();
         }
-        active.remove(path);
+        self.active.remove(path);
         Ok(())
     }
+}
+
+/// Project-relative identity of an include whose argument has been parsed.
+pub fn include_path(including: &str, target: &str) -> String {
+    including.rsplit_once('/').map_or_else(
+        || target.to_owned(),
+        |(parent, _)| format!("{parent}/{target}"),
+    )
 }
 
 #[cfg(test)]
@@ -326,5 +415,28 @@ mod tests {
         let (path, span) = expanded.original_span(diagnostic.span).unwrap();
         assert_eq!(path, "first.sf");
         assert_eq!(&workspace.files[path][span.start..span.end], "missing");
+    }
+
+    #[test]
+    fn included_files_cannot_inherit_the_callers_indentation() {
+        let workspace = SourceWorkspace {
+            entry: "story.sf".into(),
+            files: BTreeMap::from([
+                (
+                    "story.sf".into(),
+                    "scene start\n  narrate: Start\ninclude \"chapter.sf\"\n".into(),
+                ),
+                ("chapter.sf".into(), "  end\n".into()),
+            ]),
+        };
+        let (result, expanded) = compile_workspace(&workspace, &[]).unwrap();
+        assert!(result.plan.is_none());
+        let diagnostic = result
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "SF102")
+            .unwrap();
+        let (path, _) = expanded.original_span(diagnostic.span).unwrap();
+        assert_eq!(path, "chapter.sf");
     }
 }

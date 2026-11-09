@@ -37,7 +37,7 @@ fn handoff_carries_exact_identity_and_relevant_authored_context_without_rewritin
     assert!(!request.context.contains("unrelated text"));
     assert_eq!(request.validate().unwrap().id(), project.id());
     assert_eq!(
-        fs::read_to_string(project.root().join("story.sf")).unwrap(),
+        fs::read_to_string(project.root().join("assets/story.sf")).unwrap(),
         source
     );
     assert!(OpenRequest::prepare(&project.database(), "unsaved draft", id).is_err());

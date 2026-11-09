@@ -46,6 +46,89 @@ pub fn IconButton(
 #[derive(Clone, Copy)]
 pub struct ErrorDetails(pub Signal<Option<ReportedError>>);
 
+/// An anchored action menu for short lists of immediate choices.
+#[derive(Clone, PartialEq)]
+pub struct MenuOption {
+    pub label: String,
+    pub icon: IconName,
+    pub disabled: bool,
+}
+
+#[component]
+pub fn ActionMenu(
+    label: String,
+    icon: IconName,
+    options: Vec<MenuOption>,
+    onselect: EventHandler<usize>,
+) -> Element {
+    let id = use_hook(|| format!("action-menu-{}", uuid::Uuid::new_v4()));
+    let mount_id = id.clone();
+    let cleanup_id = id.clone();
+    use_drop(move || {
+        document::eval(&format!(
+            "window.__studioMenus?.[{}]?.abort(); delete window.__studioMenus?.[{}];",
+            serde_json::to_string(&cleanup_id).unwrap(),
+            serde_json::to_string(&cleanup_id).unwrap()
+        ));
+    });
+    rsx! {
+        details { id, class: "studio-action-menu", onmounted: move |_| {
+            document::eval(&format!(r#"
+                const root = document.getElementById({});
+                const trigger = root?.querySelector('summary');
+                const menu = root?.querySelector('[role="menu"]');
+                if (root && trigger && menu) {{
+                    const controller = new AbortController();
+                    window.__studioMenus ??= {{}};
+                    window.__studioMenus[root.id] = controller;
+                    const opts = {{ signal: controller.signal }};
+                    const place = () => {{
+                        if (!root.open) return;
+                        const anchor = trigger.getBoundingClientRect();
+                        const bounds = menu.getBoundingClientRect();
+                        const left = Math.max(8, Math.min(anchor.left, window.innerWidth - bounds.width - 8));
+                        const below = anchor.bottom + 4;
+                        const top = below + bounds.height <= window.innerHeight - 8 ? below : Math.max(8, anchor.top - bounds.height - 4);
+                        menu.style.left = left + 'px'; menu.style.top = top + 'px';
+                    }};
+                    root.addEventListener('toggle', () => {{ trigger.setAttribute('aria-expanded', String(root.open)); if (root.open) place(); }}, opts);
+                    document.addEventListener('pointerdown', e => {{ if (root.open && !root.contains(e.target)) root.open = false; }}, opts);
+                    root.addEventListener('focusout', e => {{
+                        if (e.relatedTarget && !root.contains(e.relatedTarget)) root.open = false;
+                    }}, opts);
+                    menu.addEventListener('click', e => {{
+                        if (e.target.closest('button:not(:disabled)')) {{
+                            root.open = false;
+                            trigger.focus();
+                        }}
+                    }}, opts);
+                    root.addEventListener('keydown', e => {{
+                        if (!root.open) return;
+                        if (e.key === 'Escape') {{ e.preventDefault(); e.stopImmediatePropagation(); root.open = false; trigger.focus(); return; }}
+                        const items = [...menu.querySelectorAll('button:not(:disabled)')];
+                        if (!items.length || !['ArrowDown','ArrowUp','Home','End'].includes(e.key)) return;
+                        e.preventDefault(); e.stopImmediatePropagation();
+                        const index = items.indexOf(document.activeElement);
+                        const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : e.key === 'ArrowDown' ? (index + 1) % items.length : (index <= 0 ? items.length - 1 : index - 1);
+                        items[next].focus();
+                    }}, {{ capture: true, signal: controller.signal }});
+                    window.addEventListener('resize', place, opts);
+                    document.addEventListener('scroll', place, {{ capture: true, signal: controller.signal }});
+                }}
+            "#, serde_json::to_string(&mount_id).unwrap()));
+        },
+            summary { class: "studio-icon-button", aria_label: label.clone(), title: label, aria_haspopup: "menu", aria_expanded: "false", Icon { name: icon, class: "size-[18px]" } }
+            div { class: "studio-action-menu-list", role: "menu",
+                for (index, option) in options.into_iter().enumerate() {
+                    button { r#type: "button", role: "menuitem", class: "studio-action-menu-item", disabled: option.disabled, onclick: move |_| onselect.call(index),
+                        Icon { name: option.icon, class: "size-4" } span { "{option.label}" }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[component]
 pub fn ErrorDetailsHost() -> Element {
     let mut details = use_context::<ErrorDetails>().0;

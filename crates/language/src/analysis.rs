@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub enum SymbolKind {
     Scene,
     Beat,
+    Flag,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,6 +20,7 @@ pub struct Symbol {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReferenceKind {
     Scene,
+    Flag,
     Asset(AssetKind),
 }
 
@@ -53,6 +55,24 @@ pub fn analyze(source: &str, assets: &[Asset]) -> Analysis {
     let mut symbols = Vec::new();
     let mut references = Vec::new();
     let mut diagnostics = document.diagnostics.clone();
+    for flag in &document.story.flags {
+        if symbols
+            .iter()
+            .any(|symbol: &Symbol| symbol.name.value == flag.name.value)
+        {
+            diagnostics.push(Diagnostic::error(
+                "SF208",
+                format!("Duplicate flag '{}'", flag.name.value),
+                flag.name.span,
+            ));
+        }
+        symbols.push(Symbol {
+            name: flag.name.clone(),
+            kind: SymbolKind::Flag,
+            scene: None,
+            span: flag.name.span,
+        });
+    }
     fn visit(
         nodes: &[Node],
         scene: &str,
@@ -64,6 +84,14 @@ pub fn analyze(source: &str, assets: &[Asset]) -> Analysis {
         for node in nodes {
             let mut scene = scene;
             let mut beat = beat;
+            let reference = |name: &Name, kind| Reference {
+                name: name.clone(),
+                kind,
+                scene: scene.into(),
+                beat: beat.map(str::to_owned),
+                definition: None,
+                asset_id: None,
+            };
             match &node.kind {
                 NodeKind::Scene { name } | NodeKind::Beat { name } => {
                     let is_scene = matches!(node.kind, NodeKind::Scene { .. });
@@ -101,14 +129,19 @@ pub fn analyze(source: &str, assets: &[Asset]) -> Analysis {
                     }
                 }
                 NodeKind::Option { target, .. } | NodeKind::Goto { target } => {
-                    references.push(Reference {
-                        name: target.clone(),
-                        kind: ReferenceKind::Scene,
-                        scene: scene.into(),
-                        beat: beat.map(str::to_owned),
-                        definition: None,
-                        asset_id: None,
-                    })
+                    references.push(reference(target, ReferenceKind::Scene));
+                }
+                NodeKind::SetFlag { flag, .. } => {
+                    references.push(reference(flag, ReferenceKind::Flag));
+                }
+                NodeKind::Conditional {
+                    condition,
+                    when_true,
+                    when_false,
+                } => {
+                    references.push(reference(&condition.flag, ReferenceKind::Flag));
+                    references.push(reference(when_true, ReferenceKind::Scene));
+                    references.push(reference(when_false, ReferenceKind::Scene));
                 }
                 NodeKind::Asset { kind, names } => {
                     for name in names {
@@ -165,18 +198,22 @@ pub fn analyze(source: &str, assets: &[Asset]) -> Analysis {
     );
     for reference in &mut references {
         match reference.kind {
-            ReferenceKind::Scene => {
+            ReferenceKind::Scene | ReferenceKind::Flag => {
+                let (kind, label, code) = match reference.kind {
+                    ReferenceKind::Flag => (SymbolKind::Flag, "flag", "SF208"),
+                    _ => (SymbolKind::Scene, "scene", "SF202"),
+                };
                 let matches: Vec<_> = symbols
                     .iter()
-                    .filter(|s| s.kind == SymbolKind::Scene && s.name.value == reference.name.value)
+                    .filter(|s| s.kind == kind && s.name.value == reference.name.value)
                     .collect();
                 if matches.len() == 1 {
                     reference.definition = Some(matches[0].name.span);
                 } else {
                     diagnostics.push(Diagnostic::error(
-                        "SF202",
+                        code,
                         format!(
-                            "{} scene '{}'",
+                            "{} {label} '{}'",
                             if matches.is_empty() {
                                 "Unknown"
                             } else {
@@ -295,6 +332,7 @@ impl Analysis {
 pub enum CompletionKind {
     Keyword,
     Scene,
+    Flag,
     Asset,
 }
 
@@ -349,13 +387,25 @@ pub fn complete(analysis: &Analysis, offset: usize, assets: &[Asset]) -> Vec<Com
                 && token.span.start >= line.start
                 && token.span.end <= start
         });
-    if before == "goto" || option_target {
+    let words: Vec<_> = before.split_whitespace().collect();
+    let branch_target = matches!(words.as_slice(), ["if", .., "goto" | "else"]);
+    if before == "goto" || option_target || branch_target {
         for symbol in &analysis.symbols {
             if symbol.kind == SymbolKind::Scene && symbol.name.value.starts_with(fragment) {
                 result.push(Completion {
                     label: symbol.name.value.clone(),
                     replace,
                     kind: CompletionKind::Scene,
+                });
+            }
+        }
+    } else if matches!(words.as_slice(), ["set"] | ["if"] | ["if", "not"]) {
+        for symbol in &analysis.symbols {
+            if symbol.kind == SymbolKind::Flag && symbol.name.value.starts_with(fragment) {
+                result.push(Completion {
+                    label: symbol.name.value.clone(),
+                    replace,
+                    kind: CompletionKind::Flag,
                 });
             }
         }
@@ -412,6 +462,8 @@ pub fn complete(analysis: &Analysis, offset: usize, assets: &[Asset]) -> Vec<Com
             let statements: &[&str] = &[
                 "choice",
                 "goto",
+                "set",
+                "if",
                 "end",
                 "cast",
                 "character",
@@ -426,7 +478,7 @@ pub fn complete(analysis: &Analysis, offset: usize, assets: &[Asset]) -> Vec<Com
                 "narrate",
             ];
             let keywords: &[&str] = if indentation == 0 {
-                &["story", "scene"]
+                &["story", "include", "flag", "scene"]
             } else {
                 match parent {
                     Some(NodeKind::Choice { .. }) => &["option"],

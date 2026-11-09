@@ -303,7 +303,9 @@ pub fn open_project(path: &Path, mut app_state: Signal<AppState>) -> Result<(), 
             .map_err(|error| ReportedError::plain(ErrorCode::StoreOpen, format!("{error:#}")))?
             .database()
     } else if path.extension().is_some_and(|extension| extension == "sf") {
-        path.with_extension("db")
+        storyfella_studio_core::project::database_for_source(&path)
+            .map_err(|error| ReportedError::plain(ErrorCode::StoreOpen, format!("{error:#}")))?
+            .unwrap_or_else(|| path.with_extension("db"))
     } else {
         path
     };

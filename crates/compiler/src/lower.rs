@@ -1,6 +1,7 @@
 use crate::{
-    AssetBinding, AssetUse, BeatId, ChoiceOption, Instruction, InstructionKind, Origin,
-    PendingAsset, Readiness, SceneId, ScenePlan, StoryPlan, UnsupportedDirection, PLAN_VERSION,
+    AssetBinding, AssetUse, BeatId, BranchTarget, ChoiceOption, Instruction, InstructionKind,
+    Origin, PendingAsset, Readiness, SceneId, ScenePlan, StoryPlan, UnsupportedDirection,
+    PLAN_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -91,7 +92,7 @@ impl Lowerer<'_> {
             if instructions.last().is_some_and(|i| i.kind.terminal()) {
                 self.diagnostics.push(error(
                     "SF301",
-                    "Unreachable statement after choice, goto or end; these terminate the scene",
+                    "Unreachable statement after choice, goto, if or end; these terminate the scene",
                     self.header(node.span),
                 ));
                 continue;
@@ -196,6 +197,25 @@ impl Lowerer<'_> {
                     target: SceneId(target.value.clone()),
                     target_source: target.span,
                 },
+                NodeKind::SetFlag { flag, value } => InstructionKind::SetFlag {
+                    flag: flag.clone(),
+                    value: *value,
+                },
+                NodeKind::Conditional {
+                    condition,
+                    when_true,
+                    when_false,
+                } => {
+                    let target = |name: &Name| BranchTarget {
+                        scene: SceneId(name.value.clone()),
+                        source: name.span,
+                    };
+                    InstructionKind::Conditional {
+                        condition: condition.clone(),
+                        when_true: target(when_true),
+                        when_false: target(when_false),
+                    }
+                }
                 NodeKind::End => InstructionKind::End,
                 NodeKind::Choice { prompt } => {
                     let mut options = Vec::new();
@@ -263,6 +283,13 @@ pub fn compile(source: &str, bindings: &[AssetBinding]) -> Compilation {
 /// Reuse the host's shared analysis, including catalog entries without artwork.
 pub fn compile_analysis(analysis: &Analysis, bindings: &[AssetBinding]) -> Compilation {
     let mut diagnostics = analysis.diagnostics.clone();
+    for include in &analysis.document.story.includes {
+        diagnostics.push(error(
+            "SF308",
+            "Resolve this include from the project entry before compiling",
+            include.span,
+        ));
+    }
     let mut ids = BTreeSet::new();
     let mut names = BTreeSet::new();
     for binding in bindings {
@@ -360,6 +387,13 @@ pub fn compile_analysis(analysis: &Analysis, bindings: &[AssetBinding]) -> Compi
         let scene = by_id[id];
         match &scene.instructions.last().unwrap().kind {
             InstructionKind::Jump { target, .. } => queue.push(target),
+            InstructionKind::Conditional {
+                when_true,
+                when_false,
+                ..
+            } => {
+                queue.extend([&when_true.scene, &when_false.scene]);
+            }
             InstructionKind::Choice { options, .. } => {
                 queue.extend(options.iter().map(|option| &option.target))
             }
@@ -380,6 +414,8 @@ pub fn compile_analysis(analysis: &Analysis, bindings: &[AssetBinding]) -> Compi
     normalize_diagnostics(&mut lowerer.diagnostics);
     Compilation {
         plan: Some(StoryPlan {
+            source_map: None,
+            flags: analysis.document.story.flags.clone(),
             version: PLAN_VERSION,
             source: analysis.document.source.text().into(),
             title: analysis.document.story.title.clone(),

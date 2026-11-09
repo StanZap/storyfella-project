@@ -3,7 +3,8 @@ use clap::{Args, Subcommand};
 use serde::Serialize;
 use std::path::PathBuf;
 use storyfella_compiler::{
-    compile_analysis, Compilation, ExpandedWorkspace, Readiness, SourceWorkspace,
+    compile_analysis, compile_workspace_with_catalog, Compilation, ExpandedWorkspace, Readiness,
+    SourceWorkspace,
 };
 use storyfella_language::{Diagnostic, Position, Source};
 use storyfella_studio_core::authoring::{AssetCatalog, CatalogEntry};
@@ -65,16 +66,15 @@ fn check_report<'a>(
             .map(|diagnostic| {
                 let mut diagnostic = diagnostic.clone();
                 if let Some((snapshot, expanded)) = workspace {
-                    if let Some((path, span)) = expanded.original_span(diagnostic.span) {
-                        let original = Source::new(&snapshot.files[path]);
-                        diagnostic.span = span;
-                        return PositionedDiagnostic {
-                            start: original.position(span.start).unwrap(),
-                            end: original.position(span.end).unwrap(),
-                            file: Some(path.to_owned()),
-                            diagnostic,
-                        };
-                    }
+                    let (path, span) = expanded.diagnostic_span(&snapshot.entry, diagnostic.span);
+                    let original = Source::new(&snapshot.files[path]);
+                    diagnostic.span = span;
+                    return PositionedDiagnostic {
+                        start: original.position(span.start).unwrap(),
+                        end: original.position(span.end).unwrap(),
+                        file: Some(path.to_owned()),
+                        diagnostic,
+                    };
                 }
                 PositionedDiagnostic {
                     start: source.position(diagnostic.span.start).unwrap(),
@@ -126,7 +126,7 @@ pub fn run(command: StoryCommand) -> Result<()> {
         None => Vec::new(),
     };
     let catalog = AssetCatalog::from_entries(entries).map_err(anyhow::Error::msg)?;
-    let multi_file = text.lines().any(|line| line.starts_with("include "));
+    let multi_file = storyfella_language::has_includes(&text);
     let workspace = if multi_file {
         let canonical_entry = args.path.canonicalize()?;
         let entry = canonical_entry
@@ -134,26 +134,38 @@ pub fn run(command: StoryCommand) -> Result<()> {
             .and_then(|name| name.to_str())
             .context("story filename is not UTF-8")?;
         let drafts = std::collections::BTreeMap::from([(entry.to_owned(), text.clone())]);
-        Some(
-            storyfella_studio_core::story::load_source_workspace(&args.path, &drafts)
-                .map_err(anyhow::Error::msg)?,
-        )
+        match storyfella_studio_core::story::load_source_workspace(&args.path, &drafts) {
+            Ok(workspace) => Some(workspace),
+            Err(error) => {
+                let report = CheckReport {
+                    valid: false,
+                    ready: false,
+                    readiness: None,
+                    diagnostics: vec![PositionedDiagnostic {
+                        diagnostic: error.diagnostic(),
+                        file: Some(error.path),
+                        start: error.start,
+                        end: error.end,
+                    }],
+                };
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                bail!("story compilation failed; see source diagnostics");
+            }
+        }
     } else {
         None
     };
-    let expanded = workspace
-        .as_ref()
-        .map(|workspace| {
-            workspace.expand().map_err(|error| {
-                anyhow::anyhow!("{}:{}: {}", error.path, error.span.start, error.message)
-            })
-        })
-        .transpose()?;
+    let (result, expanded) = if let Some(workspace) = &workspace {
+        let (result, expanded) =
+            compile_workspace_with_catalog(workspace, &catalog.assets, &catalog.bindings)?;
+        (result, Some(expanded))
+    } else {
+        let analysis = storyfella_language::analyze(&text, &catalog.assets);
+        (compile_analysis(&analysis, &catalog.bindings), None)
+    };
     let source_text = expanded
         .as_ref()
         .map_or(text.as_str(), |expanded| expanded.source.as_str());
-    let analysis = storyfella_language::analyze(source_text, &catalog.assets);
-    let result = compile_analysis(&analysis, &catalog.bindings);
     if !emit_plan || result.has_errors() || (args.require_ready && !result.ready()) {
         println!(
             "{}",

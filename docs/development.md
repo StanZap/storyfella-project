@@ -476,7 +476,7 @@ to defaults. The keys below are app settings unless the note says otherwise.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `appearance.theme` | `dark` | Studio interface: `dark`, `light` or live OS-following `system`; applies without restart |
-| `models.separate_vision` | Infer from configured providers | `false` makes Vision follow Text; `true` uses the separately selected Vision provider and shows its fields. Existing routing, including an unconfigured capability, is preserved when absent. |
+| `models.separate_vision` | Infer from configured providers and models | `false` makes Vision follow Text. `true` uses the separately selected Vision provider and model and shows their fields. When absent, Studio links identical selections and preserves distinct selections, including an unconfigured capability. |
 | `generation.steps` | `25` | CLI default steps per generation (Qwen-Image-2.1 has no few-step turbo path) |
 | `generation.cfg_scale` | `6.0` | Text-guidance scale (`sample_params.guidance.txt_cfg`) |
 | `generation.sample_method` | `euler` | Sampler (`sample_params.sample_method`) |

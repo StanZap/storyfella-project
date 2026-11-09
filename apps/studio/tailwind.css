@@ -201,6 +201,13 @@ button { min-width: 24px; min-height: 24px; }
 .studio-button-danger:hover:not(:disabled) { background: rgb(244 63 94 / .16); }
 .studio-task-form { display: flex; flex-direction: column; gap: 20px; width: min(540px, calc(100vw - 32px)); padding: 24px; }
 .studio-field { display: flex; flex-direction: column; gap: 8px; font-size: .8125rem; color: var(--studio-text); }
+.studio-action-menu { position: relative; }
+.studio-action-menu > summary { list-style: none; cursor: pointer; }
+.studio-action-menu > summary::-webkit-details-marker { display: none; }
+.studio-action-menu-list { position: fixed; z-index: 90; min-width: 180px; max-width: calc(100vw - 16px); padding: 4px; border: 1px solid rgb(var(--studio-contrast) / .16); border-radius: 8px; background: var(--studio-bg); box-shadow: 0 12px 30px rgb(0 0 0 / .3); }
+.studio-action-menu-item { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 36px; padding: 6px 10px; border-radius: 5px; text-align: left; font-size: 13px; color: var(--studio-text); }
+.studio-action-menu-item:hover, .studio-action-menu-item:focus-visible { background: rgb(167 139 250 / .18); }
+.studio-action-menu-item:disabled { opacity: .4; }
 .studio-textarea { width: 100%; resize: vertical; border-radius: 10px; padding: 12px; font-size: .875rem; line-height: 1.6; background: rgb(var(--studio-contrast) / .04); }
 .studio-editable { min-width: 0; }
 .studio-editable-heading { display: flex; align-items: center; gap: 4px; min-height: 36px; color: var(--studio-muted); font-size: .75rem; }
@@ -289,3 +296,29 @@ button { min-width: 24px; min-height: 24px; }
     .studio-shell [class*="grid-cols-[210px"] > aside nav { display: flex; flex-wrap: wrap; }
     .studio-shell aside { max-width: 40vw; }
 }
+
+.studio-explorer-form { width: 100%; min-width: 0; padding: 12px 0; gap: 10px; }
+.studio-explorer-form .studio-input { min-width: 0; }
+
+.studio-shell .studio-explorer-form .studio-input:focus-within { box-shadow: inset 0 0 0 1px #a9a3b080; }
+.studio-shell .studio-explorer-rename:focus-visible { outline: 1px solid #a9a3b080; outline-offset: 0; box-shadow: none; }
+
+.studio-explorer-menu-dismiss { position: fixed; inset: 0; z-index: 89; }
+.studio-explorer-rename { display: block; min-width: 0; padding-top: 4px; padding-bottom: 4px; padding-right: 8px; border-radius: 4px; line-height: inherit; }
+
+.studio-explorer-header .studio-icon-button { width: auto; height: auto; padding: 0; background: transparent; }
+.studio-explorer-header .studio-icon-button:hover:not(:disabled), .studio-explorer-header .studio-action-menu[open] > .studio-icon-button { background: transparent; color: var(--studio-accent-text); }
+
+.studio-explorer-header .studio-icon-button svg { width: 18px; height: 18px; }
+
+.studio-writer-surface { background: #14181c; }
+.studio-shell .studio-writer-surface textarea:focus-visible { outline: none; box-shadow: none; }
+
+.studio-completions { position: fixed; z-index: 100; min-width: 150px; max-height: 200px; overflow: auto; padding: 4px; border: 1px solid #52616a; border-radius: 6px; background: #20282d; box-shadow: 0 8px 24px #0009; }
+.studio-completion { display: block; width: 100%; padding: 6px 10px; text-align: left; color: #bdcbd0; font: 12px ui-monospace, monospace; }
+.studio-completion.is-selected { background: #34464e; color: #effaff; }
+.studio-completion:not(.is-selected):hover { background: #29343a; color: #e1edf0; }
+/* Match the optical bounds of the wider refresh glyph to the plus. */
+.studio-explorer-header .studio-action-menu { display: flex; align-items: center; }
+.studio-explorer-header .studio-icon-button { line-height: 0; }
+.studio-explorer-header .studio-icon-button[aria-label="Refresh project files"] svg { transform: scale(.78); }

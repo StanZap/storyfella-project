@@ -76,7 +76,7 @@ pub fn Assets(mut app_state: Signal<AppState>) -> Element {
     rsx! {
         section { class: "flex h-full min-h-0 flex-col",
             if let Some(artifact) = selected {
-                AssetDetail { key: "{artifact.id}", app_state, artifact, disabled }
+                AssetDetail { key: "{artifact.id}", app_state, artifact, disabled, on_back: move |_| app_state.write().clear_selection(), on_new_variant: move |id| pending.set(Some(ArtAction::Variant(id))) }
             } else {
                 Gallery { app_state, filter, cursor, disabled }
             }
@@ -86,7 +86,13 @@ pub fn Assets(mut app_state: Signal<AppState>) -> Element {
 }
 
 #[component]
-fn AssetDetail(mut app_state: Signal<AppState>, artifact: Artifact, disabled: bool) -> Element {
+pub(super) fn AssetDetail(
+    mut app_state: Signal<AppState>,
+    artifact: Artifact,
+    disabled: bool,
+    on_back: EventHandler<()>,
+    on_new_variant: EventHandler<uuid::Uuid>,
+) -> Element {
     let mut metadata = use_signal(|| true);
     let mut screen = use_context::<Signal<super::AppScreen>>();
     let caret = use_context::<super::WriterCaret>();
@@ -114,12 +120,10 @@ fn AssetDetail(mut app_state: Signal<AppState>, artifact: Artifact, disabled: bo
         .filter(|item| item.id == base || item.variant_of == Some(base))
         .map(|item| (item.id, item.name.clone()))
         .collect();
-    let mut actions = use_context::<ActionRequest>().0;
     rsx! {
         div { class: "flex min-h-0 flex-1",
             div { class: "flex min-h-0 min-w-0 flex-1 flex-col",
                 header { class: "flex flex-wrap items-center gap-2 border-b border-white/10 p-3",
-                    IconButton { label: "Back to assets", icon: IconName::Arrow, onclick: move |_| app_state.write().clear_selection() }
                     h2 { class: "min-w-0 flex-1 truncate text-sm font-semibold", "{artifact.name}" }
                     if image.is_some() { super::artwork::PreviewBackgroundPicker {} }
                     super::atelier::OpenInAtelier { target: Some(artifact.id) }
@@ -128,7 +132,7 @@ fn AssetDetail(mut app_state: Signal<AppState>, artifact: Artifact, disabled: bo
                 if !links.is_empty() {
                     div { class: "flex flex-wrap gap-2 px-4 py-2",
                         for (label, position) in links {
-                            button { class: "studio-button", title: "Open this story reference", onclick: move |_| { app_state.write().active_source = None; caret.navigate(position); screen.set(super::AppScreen::Writer); }, "{label}" }
+                            button { class: "studio-button", title: "Open this story reference", onclick: move |_| { on_back.call(()); app_state.write().active_source = None; caret.navigate(position); screen.set(super::AppScreen::Writer); }, "{label}" }
                         }
                     }
                 }
@@ -146,7 +150,7 @@ fn AssetDetail(mut app_state: Signal<AppState>, artifact: Artifact, disabled: bo
                         if artifact.kind.supports_variants() {
                             IconButton {
                                 label: "New variation definition", icon: IconName::Add, disabled,
-                                onclick: move |_| actions.set(Some(ArtAction::Variant(base))),
+                                onclick: move |_| on_new_variant.call(base),
                             }
                         }
                     }

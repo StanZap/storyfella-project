@@ -13,6 +13,18 @@ pub struct Text {
     pub span: Span,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Flag {
+    pub name: Name,
+    pub initial: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Condition {
+    pub flag: Name,
+    pub negated: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AssetKind {
     Character,
@@ -91,11 +103,22 @@ pub enum NodeKind {
     Goto {
         target: Name,
     },
+    SetFlag {
+        flag: Name,
+        value: bool,
+    },
+    Conditional {
+        condition: Condition,
+        when_true: Name,
+        when_false: Name,
+    },
     End,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Story {
     pub title: Option<Text>,
+    pub includes: Vec<Text>,
+    pub flags: Vec<Flag>,
     pub scenes: Vec<Node>,
 }

@@ -8,6 +8,7 @@
 //! Uses the same tokens, AST and reference analysis as the external LSP.
 //! Unresolved assets remain pending, with a Create affordance.
 
+use dioxus::html::HasFileData;
 use dioxus::prelude::*;
 use storyfella_language::{analyze, Analysis, AssetKind, ReferenceKind, Severity, TokenKind};
 use uuid::Uuid;
@@ -24,54 +25,238 @@ use super::{
     icons::{Icon, IconName},
 };
 
+#[derive(Clone, Copy)]
+struct WriterAssetView(Signal<bool>);
+
 fn project_diagnostics(
     state: &AppState,
-) -> Result<
-    Vec<(
-        String,
-        storyfella_language::Diagnostic,
-        storyfella_language::Position,
-    )>,
+) -> Vec<(
     String,
-> {
-    let sources = super::preview::workspace(state)?;
+    storyfella_language::Diagnostic,
+    storyfella_language::Position,
+)> {
     let catalog = AssetCatalog::from_registry(&state.registry);
-    let (compilation, expanded) = storyfella_compiler::compile_workspace_with_catalog(
-        &sources,
-        &catalog.assets,
-        &catalog.bindings,
-    )
-    .map_err(|error| format!("{}: {}", error.path, error.message))?;
-    Ok(compilation
+    let compiled = super::preview::workspace(state).and_then(|sources| {
+        let (compilation, expanded) = storyfella_compiler::compile_workspace_with_catalog(
+            &sources,
+            &catalog.assets,
+            &catalog.bindings,
+        )?;
+        Ok((sources, compilation, expanded))
+    });
+    let (sources, compilation, expanded) = match compiled {
+        Ok(compiled) => compiled,
+        Err(error) => return vec![(error.path.clone(), error.diagnostic(), error.start)],
+    };
+    compilation
         .diagnostics
         .into_iter()
         .filter_map(|mut diagnostic| {
-            let (path, span) = expanded.original_span(diagnostic.span)?;
+            let (path, span) = expanded.diagnostic_span(&sources.entry, diagnostic.span);
             let position =
                 storyfella_language::Source::new(&sources.files[path]).position(span.start)?;
             diagnostic.span = span;
             Some((path.to_owned(), diagnostic, position))
         })
-        .collect())
+        .collect()
 }
 
-fn workspace_symbol(state: &AppState, file: &str, offset: usize) -> Result<String, String> {
-    let sources = super::preview::workspace(state)?;
-    let expanded = sources.expand().map_err(|error| error.message)?;
-    let offset = expanded
-        .expanded_offset(file, offset)
-        .ok_or("Select a scene or beat in an included file")?;
+type SourcePosition = (String, storyfella_language::Position);
+
+#[derive(Default)]
+struct SymbolNavigation {
+    definition: Option<SourcePosition>,
+    references: Vec<SourcePosition>,
+    rename: Option<String>,
+}
+
+fn symbol_navigation(
+    state: &AppState,
+    file: &str,
+    local: &Analysis,
+    offset: usize,
+    catalog: &AssetCatalog,
+) -> SymbolNavigation {
+    use storyfella_language::{Position, Source, Span};
+    let locations = |analysis: &Analysis, offset, map: &dyn Fn(Span) -> Option<SourcePosition>| {
+        let definition = analysis.definition_at(offset);
+        SymbolNavigation {
+            definition: definition.and_then(map),
+            references: analysis
+                .references_at(offset, true)
+                .into_iter()
+                .filter_map(map)
+                .collect(),
+            rename: analysis
+                .symbols
+                .iter()
+                .find(|symbol| Some(symbol.name.span) == definition)
+                .map(|symbol| symbol.name.value.clone()),
+        }
+    };
+    if storyfella_language::has_includes(state.story.source()) {
+        if let Some(include) = local
+            .document
+            .story
+            .includes
+            .iter()
+            .find(|include| include.span.contains(offset))
+        {
+            return SymbolNavigation {
+                definition: Some((
+                    storyfella_compiler::include_path(file, &include.value),
+                    Position::default(),
+                )),
+                ..Default::default()
+            };
+        }
+        if let Ok(sources) = super::preview::workspace(state) {
+            if let Ok(expanded) = sources.expand() {
+                if let Some(offset) = expanded.expanded_offset(file, offset) {
+                    let analysis = analyze(&expanded.source, &catalog.assets);
+                    return locations(&analysis, offset, &|span| {
+                        let (file, span) = expanded.original_span(span)?;
+                        let position = Source::new(&sources.files[file]).position(span.start)?;
+                        Some((file.to_owned(), position))
+                    });
+                }
+            }
+        }
+    }
+    locations(local, offset, &|span| {
+        let position = local.document.source.position(span.start)?;
+        Some((file.to_owned(), position))
+    })
+}
+
+pub(super) fn navigate_source(
+    state: &mut AppState,
+    caret: super::WriterCaret,
+    file: &str,
+    position: storyfella_language::Position,
+) -> Result<(), storyfella_studio_core::story::StoryFileError> {
+    let entry = state
+        .story
+        .path()
+        .and_then(std::path::Path::file_name)
+        .and_then(|name| name.to_str());
+    if file.is_empty() || entry == Some(file) {
+        state.active_source = None;
+    } else if state.active_source.as_deref() != Some(file) {
+        state.open_additional_source(file)?;
+    }
+    caret.navigate(position);
+    Ok(())
+}
+
+#[component]
+fn ReferenceButtons(
+    positions: Vec<SourcePosition>,
+    on_navigate: EventHandler<SourcePosition>,
+) -> Element {
+    rsx! {
+        for (file, position) in positions {
+            button { class: "mr-2 font-mono text-[11px] text-violet-300",
+                onclick: { let file = file.clone(); move |_| on_navigate.call((file.clone(), position)) },
+                if !file.is_empty() { "{file} · " }
+                "{position.line + 1}:{position.character + 1}"
+            }
+        }
+    }
+}
+
+fn ancestors_visible(path: &str, collapsed: &std::collections::BTreeSet<String>) -> bool {
+    let mut parent = std::path::Path::new(path).parent();
+    while let Some(current) = parent {
+        if current.as_os_str().is_empty() {
+            break;
+        }
+        if collapsed.contains(
+            &current
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/"),
+        ) {
+            return false;
+        }
+        parent = current.parent();
+    }
+    true
+}
+
+fn workspace_completions(
+    state: &AppState,
+    path: &str,
+    offset: usize,
+) -> Option<Vec<storyfella_language::Completion>> {
+    let sources = super::preview::workspace(state).ok()?;
+    let expanded = sources.expand().ok()?;
+    let offset = expanded.expanded_offset(path, offset).or_else(|| {
+        offset.checked_sub(1).and_then(|previous| {
+            expanded
+                .expanded_offset(path, previous)
+                .map(|mapped| mapped + 1)
+        })
+    })?;
     let catalog = AssetCatalog::from_registry(&state.registry);
     let analysis = analyze(&expanded.source, &catalog.assets);
-    let definition = analysis
-        .definition_at(offset)
-        .ok_or("Select a scene or beat name")?;
-    analysis
-        .symbols
-        .iter()
-        .find(|symbol| symbol.name.span == definition)
-        .map(|symbol| symbol.name.value.clone())
-        .ok_or_else(|| "Select a scene or beat name".into())
+    Some(
+        storyfella_language::complete(&analysis, offset, &catalog.assets)
+            .into_iter()
+            .filter_map(|mut completion| {
+                let (file, span) = expanded.original_span(completion.replace).or_else(|| {
+                    if completion.replace.start != completion.replace.end {
+                        return None;
+                    }
+                    let previous = completion.replace.start.checked_sub(1)?;
+                    let (file, span) = expanded
+                        .original_span(storyfella_language::Span::new(previous, previous + 1))?;
+                    Some((file, storyfella_language::Span::new(span.end, span.end)))
+                })?;
+                if file != path {
+                    return None;
+                }
+                completion.replace = span;
+                Some(completion)
+            })
+            .collect(),
+    )
+}
+
+fn accept_additional_completion(
+    mut state: Signal<AppState>,
+    path: &str,
+    completion: &storyfella_language::Completion,
+    mut navigation: Signal<Option<storyfella_language::Position>>,
+) {
+    let source = state
+        .read()
+        .additional_sources
+        .as_ref()
+        .and_then(|sources| sources.get(path))
+        .map(|document| document.source().to_owned());
+    let Some(source) = source else {
+        return;
+    };
+    if let Ok(edited) = storyfella_language::apply_edits(
+        &source,
+        &[storyfella_language::TextEdit {
+            replace: completion.replace,
+            new_text: completion.label.clone(),
+        }],
+    ) {
+        let position = storyfella_language::Source::new(&edited)
+            .position(completion.replace.start + completion.label.len());
+        if state
+            .write()
+            .set_additional_source(path, edited.clone())
+            .is_ok()
+        {
+            if let Some(position) = position {
+                update_editor_after_completion("svs-extra-writer", &source, &edited, position);
+                navigation.set(None);
+            }
+        }
+    }
 }
 
 /// The starter document, so the screen explains itself rather than opening
@@ -100,11 +285,21 @@ const CARET_BRIDGE: &str = r#"
             const lines = el.value.slice(0, caret).split("\n");
             dioxus.send({line: lines.length - 1, character: lines.at(-1).length});
         };
+        el.addEventListener("keydown", event => {
+            if (event.key === "Tab" && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) event.preventDefault();
+        });
         for (const name of ["input", "keyup", "click", "focus", "select"]) {
             el.addEventListener(name, push);
         }
     }
 "#;
+
+fn insert_indent(id: &str) {
+    document::eval(&format!(
+        r#"const el = document.getElementById({}); if (el) {{ el.setRangeText('  ', el.selectionStart, el.selectionEnd, 'end'); el.dispatchEvent(new Event('input', {{ bubbles: true }})); el.focus(); }}"#,
+        serde_json::to_string(id).unwrap()
+    ));
+}
 
 fn focus_position(position: storyfella_language::Position) {
     focus_in("svs-writer", position);
@@ -120,6 +315,28 @@ fn focus_in(id: &str, position: storyfella_language::Position) {
         serde_json::to_string(id).unwrap(),
         position.line,
         position.character
+    ));
+}
+
+fn update_editor_after_completion(
+    id: &str,
+    previous: &str,
+    edited: &str,
+    position: storyfella_language::Position,
+) {
+    let previous = serde_json::to_string(&previous.replace("\r\n", "\n")).unwrap();
+    let edited = serde_json::to_string(&edited.replace("\r\n", "\n")).unwrap();
+    let id = serde_json::to_string(id).unwrap();
+    document::eval(&format!(
+        r#"const el = document.getElementById({id});
+        if (el && el.value === {previous}) {{
+            el.value = {edited};
+            const lines = el.value.split('\n');
+            const line = Math.min({}, lines.length - 1);
+            const offset = lines.slice(0, line).reduce((n, s) => n + s.length + 1, 0) + Math.min({}, lines[line].length);
+            el.focus(); el.setSelectionRange(offset, offset);
+        }}"#,
+        position.line, position.character
     ));
 }
 
@@ -139,8 +356,10 @@ fn accept_completion(
         let position = storyfella_language::Source::new(&edited)
             .position(completion.replace.start + completion.label.len())
             .unwrap();
-        state.write().set_story_source(edited);
-        caret.navigate(position);
+        state.write().set_story_source(edited.clone());
+        update_editor_after_completion("svs-writer", &source, &edited, position);
+        let mut caret = caret;
+        caret.position.set(position);
     }
 }
 
@@ -232,7 +451,9 @@ fn mentions_in(
             .into_iter()
             .map(|name| {
                 let reference = analysis.references.iter().find(|r| {
-                    r.name.value == name && here.scene.as_deref() == Some(r.scene.as_str())
+                    matches!(r.kind, ReferenceKind::Asset(_))
+                        && r.name.value == name
+                        && here.scene.as_deref() == Some(r.scene.as_str())
                 });
                 let artifact = reference
                     .and_then(|r| r.asset_id.as_ref())
@@ -241,7 +462,7 @@ fn mentions_in(
                     ReferenceKind::Asset(AssetKind::Character) => Some(ArtifactKind::Character),
                     ReferenceKind::Asset(AssetKind::Location) => Some(ArtifactKind::Environment),
                     ReferenceKind::Asset(AssetKind::Prop) => Some(ArtifactKind::Object),
-                    ReferenceKind::Scene => None,
+                    ReferenceKind::Scene | ReferenceKind::Flag => None,
                 });
                 Mention {
                     can_create: reference.is_some_and(|r| {
@@ -297,13 +518,13 @@ pub(super) fn highlight_span(analysis: &Analysis, span: storyfella_language::Spa
         let reference = analysis.references.iter().find(|r| r.name.span == token.span && matches!(r.kind, ReferenceKind::Asset(_)));
         let class = if let Some(reference) = reference {
             if reference.asset_id.is_some() {
-                "rounded-sm bg-violet-400/15 text-violet-200 shadow-[0_0_0_2px_rgba(167,139,250,.15)]"
+                "rounded-sm bg-sky-400/15 text-sky-200 shadow-[0_0_0_2px_rgba(56,189,248,.15)]"
             } else {
                 "rounded-sm bg-amber-400/15 text-amber-300 shadow-[0_0_0_2px_rgba(251,191,36,.15)]"
             }
         } else {
             match token.kind {
-                TokenKind::Keyword => "text-violet-300 font-semibold",
+                TokenKind::Keyword => "text-sky-300 font-semibold",
                 TokenKind::String | TokenKind::Text => "text-emerald-300",
                 TokenKind::Comment => "text-zinc-700 italic",
                 TokenKind::Whitespace => "",
@@ -349,7 +570,7 @@ fn RenameSymbolDialog(
     let mut error = use_signal(|| None::<String>);
     let (id, mount) = super::text_input::use_text_value(replacement(), None);
     rsx! {
-        super::dialog::Dialog { title: "Rename scene or beat", on_close: onclose,
+        super::dialog::Dialog { title: "Rename symbol", on_close: onclose,
             form { class: "studio-task-form", onsubmit: move |event| {
                 event.prevent_default();
                 let result = if let Some(file) = &file { app_state.write().rename_workspace_symbol(file, offset, replacement().trim()) } else { app_state.write().rename_story_symbol(offset, replacement().trim()) };
@@ -377,27 +598,107 @@ fn RenameSymbolDialog(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ProjectEntryKind {
+    StoryFile,
+    Folder,
+}
+
+#[component]
+fn CreateProjectEntry(
+    kind: ProjectEntryKind,
+    folder: String,
+    mut app_state: Signal<AppState>,
+    oncreated: EventHandler<()>,
+    onclose: EventHandler<()>,
+) -> Element {
+    let mut name = use_signal(String::new);
+    let mut error = use_signal(|| None::<String>);
+    let (label, placeholder) = match kind {
+        ProjectEntryKind::StoryFile => ("File name", "New file name"),
+        ProjectEntryKind::Folder => ("Folder name", "New folder name"),
+    };
+    rsx! {
+        form { class: "studio-task-form studio-explorer-form",
+            onsubmit: move |event| {
+                event.prevent_default();
+                let mut name = name().trim().to_owned();
+                if name.is_empty() {
+                    error.set(Some(format!("Enter a {}", label.to_lowercase())));
+                    return;
+                }
+                let root = app_state.read().story.path().and_then(|path| path.parent()).map(std::path::Path::to_path_buf);
+                let Some(root) = root else { return; };
+                let result = match kind {
+                    ProjectEntryKind::StoryFile => {
+                        if !name.ends_with(".sf") {
+                            name.push_str(".sf");
+                        }
+                        super::project_files::destination(&root, &folder, &name)
+                            .map_err(|error| error.to_string())
+                            .and_then(|path| app_state.write().create_additional_source(&path).map_err(|error| error.to_string()))
+                    }
+                    ProjectEntryKind::Folder => {
+                        super::project_files::create_folder(&root, &folder, &name).map_err(|error| error.to_string())
+                    }
+                };
+                match result {
+                    Ok(()) => oncreated.call(()),
+                    Err(message) => error.set(Some(message)),
+                }
+            },
+            super::inputs::DismissibleTextInput {
+                label, value: name(), placeholder, autofocus: true,
+                oninput: move |value| { name.set(value); error.set(None); },
+                ondismiss: move |_| onclose.call(()),
+            }
+            if let Some(message) = error() {
+                p { role: "alert", class: "studio-inline-error", "{message}" }
+            }
+        }
+    }
+}
+
 #[component]
 pub fn Writer(
     mut app_state: Signal<AppState>,
     backend: Signal<storyfella_studio_core::registry::backend::CreativeBackend>,
 ) -> Element {
     let mut error_report = use_context::<Signal<Option<ReportedError>>>();
-    let mut screen = use_context::<Signal<super::AppScreen>>();
-    let mut files = use_signal(Vec::<String>::new);
+    let sidebar_visible = use_context::<super::SidebarVisibility>().0;
+    let mut files = use_signal(Vec::<super::project_files::Entry>::new);
+    let mut folder = use_signal(String::new);
+    let mut item_menu = use_signal(|| None::<String>);
+    let mut rename_item = use_signal(|| None::<String>);
+    let mut rename_name = use_signal(String::new);
+    let mut create_entry = use_signal(|| None::<(ProjectEntryKind, String)>);
+    let mut file_preview = use_context::<super::ProjectFilePreview>().0;
+    let mut open_asset = use_signal(|| false);
+    use_context_provider(|| WriterAssetView(open_asset));
+    let mut new_asset = use_signal(|| None::<super::actions::ArtAction>);
+    let mut collapsed = use_signal(std::collections::BTreeSet::<String>::new);
     let mut scan_error = use_signal(|| None::<String>);
+    let mut drop_error = use_signal(|| None::<String>);
     let mut refresh = use_signal(|| 0u64);
     let path = app_state
         .read()
         .story
         .path()
         .map(std::path::Path::to_path_buf);
+    use_effect(use_reactive((&path,), move |_| {
+        open_asset.set(false);
+        file_preview.set(None);
+        folder.set(String::new());
+        collapsed.set(Default::default());
+        create_entry.set(None);
+        item_menu.set(None);
+        rename_item.set(None);
+        drop_error.set(None);
+    }));
     let revision = refresh();
     use_effect(use_reactive(
         (&path, &revision),
-        move |(path, _)| match path
-            .map(|path| storyfella_studio_core::story::list_source_files(&path))
-        {
+        move |(path, _)| match path.as_deref().map(super::project_files::list) {
             Some(Ok(found)) => {
                 files.set(found);
                 scan_error.set(None);
@@ -426,18 +727,32 @@ pub fn Writer(
                 .into_keys()
                 .collect::<std::collections::BTreeSet<_>>()
         });
-    let caret = use_context::<super::WriterCaret>();
-    let project_problems = if app_state
-        .read()
-        .story
-        .source()
-        .lines()
-        .any(|line| line.starts_with("include "))
-    {
-        Some(project_diagnostics(&app_state.read()))
-    } else {
-        None
-    };
+    let mut caret = use_context::<super::WriterCaret>();
+    let selected_source = active
+        .as_ref()
+        .and_then(|path| {
+            app_state
+                .read()
+                .additional_sources
+                .as_ref()
+                .and_then(|sources| sources.get(path))
+                .map(|document| document.source().to_owned())
+        })
+        .unwrap_or_else(|| app_state.read().story.source().to_owned());
+    let selected_analysis = analyze(&selected_source, &[]);
+    let selected_offset = selected_analysis
+        .document
+        .source
+        .offset((caret.position)())
+        .unwrap_or(0);
+    let selected_scene = selected_analysis
+        .scope_at(selected_offset)
+        .0
+        .map(str::to_owned);
+    let mut scene_signal = use_context::<Signal<Option<String>>>();
+    use_effect(use_reactive((&selected_scene,), move |(scene,)| {
+        scene_signal.set(scene)
+    }));
     let assets: Vec<_> = app_state
         .read()
         .registry
@@ -454,79 +769,234 @@ pub fn Writer(
         })
         .map(|item| (item.id, item.name.clone()))
         .collect();
+    let creation = create_entry();
+    let creation_form = creation.as_ref().map(|(kind, target)| {
+        let kind = *kind;
+        let target = target.clone();
+        let key = format!("{kind:?}-{target}");
+        rsx! {
+            CreateProjectEntry { key: "{key}", kind, folder: target.clone(), app_state,
+                onclose: move |_| create_entry.set(None),
+                oncreated: move |_| {
+                    collapsed.write().remove(&target);
+                    refresh += 1;
+                    create_entry.set(None);
+                    if kind == ProjectEntryKind::StoryFile {
+                        file_preview.set(None);
+                        open_asset.set(false);
+                        caret.position.set(storyfella_language::Position::default());
+                    }
+                },
+            }
+        }
+    });
     rsx! {
         div { class: "flex h-full min-h-0 min-w-0",
-            aside { class: "flex w-52 shrink-0 flex-col overflow-y-auto border-r border-white/10 p-3", aria_label: "Project explorer",
+            aside { hidden: !sidebar_visible(), class: if sidebar_visible() { "flex w-52 shrink-0 flex-col overflow-y-auto border-r border-white/10 p-3" } else { "hidden" }, aria_label: "Project explorer", ondragover: move |event| event.prevent_default(), ondrop: move |event| {
+                event.prevent_default();
+                let root = app_state.read().story.path().and_then(|path| path.parent()).map(std::path::Path::to_path_buf);
+                if let Some(root) = root { for file in event.files() {
+                    if let Err(error) = super::project_files::import_file(&root, &folder(), &file.path()) { drop_error.set(Some(format!("Could not add {}: {error}", file.name()))); } else { refresh += 1; }
+                } }
+            },
                 if let Some(notice) = app_state.read().source_notice.clone() {
                     div { class: "mb-3 text-xs text-amber-300", role: "status", "{notice}"
                         button { class: "ml-1 underline", onclick: move |_| app_state.write().source_notice = None, "Dismiss" }
                     }
                 }
-                div { class: "flex items-center justify-between gap-2",
-                    h2 { class: "text-xs font-semibold text-zinc-400", "Story files" }
-                    IconButton { label: "Create story file", icon: IconName::Add, onclick: move |_| {
-                        let root = app_state.read().story.path().and_then(|path| path.parent()).map(std::path::Path::to_path_buf);
-                        let Some(root) = root else { return; };
-                        let Some(mut destination) = rfd::FileDialog::new().set_title("Create story file").set_directory(root).set_file_name("chapter.sf").add_filter("Storyfella source", &["sf"]).save_file() else { return; };
-                        if destination.extension().is_none() { destination.set_extension("sf"); }
-                        if let Err(error) = app_state.write().create_additional_source(&destination) { error_report.set(Some(error.report().log())); }
-                        else { refresh += 1; }
-                    } }
+                div { class: "studio-explorer-header flex items-center gap-2",
+                    button { class: "mr-auto text-xs font-semibold text-zinc-400", title: "Select project root", onclick: move |_| folder.set(String::new()), "Project" }
+                    super::components::ActionMenu { label: "Add to project", icon: IconName::Add,
+                        options: vec![
+                            super::components::MenuOption { label: "New story file".into(), icon: IconName::Book, disabled: false },
+                            super::components::MenuOption { label: "New folder".into(), icon: IconName::Folder, disabled: false },
+                            super::components::MenuOption { label: "New artifact".into(), icon: IconName::Image, disabled: false },
+                        ],
+                        onselect: move |index| match index {
+                            0 | 1 => {
+                                let target = folder();
+                                collapsed.write().remove(&target);
+                                let kind = if index == 0 { ProjectEntryKind::StoryFile } else { ProjectEntryKind::Folder };
+                                create_entry.set(Some((kind, target)));
+                            },
+                            2 => new_asset.set(Some(super::actions::ArtAction::Create(ArtifactKind::Character))),
+                            _ => {},
+                        },
+                    }
                     IconButton { label: "Refresh project files", icon: IconName::Refresh, onclick: move |_| refresh += 1 }
                 }
                 if let Some(error) = scan_error() { p { class: "text-xs text-red-400", role: "alert", "{error}" } }
-                for file in files() {
-                    {
-                        let is_entry = file == entry;
-                        let selected = if is_entry { active.is_none() } else { active.as_deref() == Some(file.as_str()) };
-                        let label = if is_entry { format!("{file} · entry") } else if included.as_ref().is_some_and(|sources| !sources.contains(&file)) { format!("{file} · not included") } else { file.clone() };
-                        let target = file.clone();
-                        rsx! { button { key: "{file}", class: if selected { "rounded bg-white/10 px-2 py-1 text-left text-xs text-zinc-100" } else { "rounded px-2 py-1 text-left text-xs text-zinc-400 hover:bg-white/5" },
-                            title: "{file}", onclick: move |_| {
-                                if is_entry { app_state.write().active_source = None; }
-                                else if let Err(error) = app_state.write().open_additional_source(&target) { error_report.set(Some(error.report().log())); }
-                            }, "{label}"
-                        } }
-                    }
+                if let Some(error) = drop_error() { div { class: "text-xs text-red-400", role: "alert", "{error}" button { class: "ml-1 underline", onclick: move |_| drop_error.set(None), "Dismiss" } } }
+                if creation.as_ref().is_some_and(|(_, target)| target.is_empty()) {
+                    {creation_form.clone()}
                 }
-                if project_problems.is_some() {
-                    h2 { class: "mt-5 text-xs font-semibold text-zinc-400", "Story problems" }
-                    if let Some(Ok(problems)) = project_problems.clone() {
-                        for (path, diagnostic, position) in problems.into_iter().filter(|(_, diagnostic, _)| diagnostic.severity != Severity::Information) {
-                            {
-                                let is_entry = path == entry;
-                                let target = path.clone();
-                                rsx! { button { class: "rounded px-2 py-1 text-left text-xs text-zinc-400 hover:bg-white/5", title: "{diagnostic.message}", onclick: move |_| {
-                                    if is_entry { app_state.write().active_source = None; }
-                                    else if let Err(error) = app_state.write().open_additional_source(&target) { error_report.set(Some(error.report().log())); return; }
-                                    caret.navigate(position);
-                                }, "{path}:{position.line + 1} · {diagnostic.message}" } }
+                for row in files() {
+                    {
+                        let menu_path = row.path.clone();
+                        let rename_path = row.path.clone();
+                        let item_path = row.path.clone();
+                        let item_name = row.name.clone();
+                        let entry_item = item_path == entry;
+                        let visible_item = ancestors_visible(&item_path, &collapsed.read());
+                        rsx! { if visible_item { div { class: "relative", oncontextmenu: move |event| { event.prevent_default(); event.stop_propagation(); item_menu.set(Some(menu_path.clone())); },
+                        if rename_item.read().as_deref() == Some(item_path.as_str()) {
+                            form { onsubmit: move |event| {
+                                event.prevent_default();
+                                let name = rename_name().trim().to_owned();
+                                let root = app_state.read().story.path().and_then(|p| p.parent()).map(std::path::Path::to_path_buf);
+                                if let Some(root) = root {
+                                    match super::project_files::rename(&mut app_state.write(), &root, &rename_path, &name) {
+                                        Ok(()) => { rename_item.set(None); refresh += 1; }
+                                        Err(error) => drop_error.set(Some(error.to_string())),
+                                    }
+                                }
+                            },
+                                input { onmounted: move |_| { document::eval("const input = document.querySelector('.studio-explorer-rename'); if (input) { input.focus(); input.select(); }"); }, class: "studio-explorer-rename w-full bg-zinc-800 text-xs", style: "padding-left: {8 + row.depth * 12}px", value: "{rename_name}", autofocus: true, onblur: move |_| rename_item.set(None), oninput: move |e| rename_name.set(e.value()), onkeydown: move |e| { if e.key() == Key::Escape { e.prevent_default(); e.stop_propagation(); rename_item.set(None); } } }
+                            }
+                        } else {
+                        { if row.folder {
+                            let folder_path = row.path.clone();
+                            let drop_folder = folder_path.clone();
+                            let is_open = !collapsed.read().contains(&folder_path);
+                            let visible = ancestors_visible(&folder_path, &collapsed.read());
+                            rsx! { if visible { button { key: "folder-{folder_path}", style: "padding-left: {8 + row.depth * 12}px", class: if folder() == folder_path { "flex items-center gap-1 rounded bg-white/10 py-1 text-left text-xs text-zinc-100" } else { "flex items-center gap-1 rounded py-1 text-left text-xs text-zinc-400 hover:bg-white/5" }, aria_expanded: is_open, onclick: move |_| { let mut set = collapsed.write(); if !set.remove(&folder_path) { set.insert(folder_path.clone()); } folder.set(folder_path.clone()); }, ondragover: move |event| event.prevent_default(), ondrop: move |event| {
+                                event.prevent_default(); event.stop_propagation();
+                                let root = app_state.read().story.path().and_then(|path| path.parent()).map(std::path::Path::to_path_buf);
+                                if let Some(root) = root { for file in event.files() { if let Err(error) = super::project_files::import_file(&root, &drop_folder, &file.path()) { drop_error.set(Some(format!("Could not add {}: {error}", file.name()))); } else { collapsed.write().remove(&drop_folder); refresh += 1; } } }
+                            },
+                                Icon { name: if is_open { IconName::ChevronDown } else { IconName::Arrow }, class: "size-3" } Icon { name: IconName::Folder, class: "size-4" } "{row.name}"
+                            } } }
+                        } else {
+                        let file = row.path;
+                        let visible = ancestors_visible(&file, &collapsed.read());
+                        let is_story = file.ends_with(".sf");
+                        let is_entry = file == entry;
+                        let selected = match file_preview.read().as_deref() {
+                            Some(preview) => path.as_deref().and_then(std::path::Path::parent).is_some_and(|root| preview == root.join(&file)),
+                            None => !open_asset() && if is_entry { active.is_none() } else { active.as_deref() == Some(file.as_str()) },
+                        };
+                        let label = if is_story && !is_entry && included.as_ref().is_some_and(|sources| !sources.contains(&file)) { format!("{} · not included", row.name) } else { row.name };
+                        let target = file.clone();
+                        let rename_target = file.clone();
+                        let rename_label = item_name.clone();
+                        rsx! { if visible { button { key: "{file}", style: "padding-left: {8 + row.depth * 12}px", class: if selected { "w-full rounded bg-white/10 py-1 text-left text-xs text-zinc-100" } else { "w-full rounded py-1 text-left text-xs text-zinc-400 hover:bg-white/5" },
+                            title: "{file}", onkeydown: move |event| {
+                                if event.key() == Key::F2 && !is_entry {
+                                    event.prevent_default();
+                                    event.stop_propagation();
+                                    rename_name.set(rename_label.clone());
+                                    rename_item.set(Some(rename_target.clone()));
+                                }
+                            }, onclick: move |_| {
+                                if !is_story {
+                                    let root = app_state.read().story.path().and_then(|path| path.parent()).map(std::path::Path::to_path_buf);
+                                    if let Some(root) = root {
+                                        match super::project_files::existing(&root, &target) {
+                                            Ok(path) => file_preview.set(Some(path)),
+                                            Err(error) => { drop_error.set(Some(error.to_string())); return; }
+                                        }
+                                    }
+                                }
+                                else { file_preview.set(None); if is_entry { app_state.write().active_source = None; }
+                                else if let Err(error) = app_state.write().open_additional_source(&target) { error_report.set(Some(error.report().log())); }
+                                caret.position.set(storyfella_language::Position::default()); }
+                                open_asset.set(false);
+                            }, "{label}"
+                        } } }
+                        } }
+                        }
+                        if row.folder && creation.as_ref().is_some_and(|(_, target)| target == &item_path) {
+                            {creation_form.clone()}
+                        }
+                        if item_menu.read().as_deref() == Some(item_path.as_str()) {
+                            div { class: "studio-explorer-menu-dismiss", aria_hidden: "true", onclick: move |_| item_menu.set(None), oncontextmenu: move |event| { event.prevent_default(); item_menu.set(None); } }
+                            div { class: "studio-action-menu-list", style: "position:absolute;left:20px;top:20px", role: "menu",
+                                button { class: "studio-action-menu-item", disabled: entry_item, onclick: { let p = item_path.clone(); let n = item_name.clone(); move |_| { rename_name.set(n.clone()); rename_item.set(Some(p.clone())); item_menu.set(None); } }, "Rename" }
+                                button { class: "studio-action-menu-item", onclick: { let p = item_path.clone(); move |_| { let root = app_state.read().story.path().and_then(|p| p.parent()).map(std::path::Path::to_path_buf); if let Some(root) = root { if let Err(e) = super::project_files::duplicate(&root, &p) { drop_error.set(Some(e.to_string())); } else { refresh += 1; } } item_menu.set(None); } }, "Duplicate" }
+                                button { class: "studio-action-menu-item", onclick: { let p = item_path.clone(); move |_| { let root = app_state.read().story.path().and_then(|p| p.parent()).map(std::path::Path::to_path_buf); if let Some(root) = root { match super::project_files::existing(&root, &p) { Ok(path) => { let value = serde_json::to_string(&path.to_string_lossy().to_string()).unwrap(); document::eval(&format!("navigator.clipboard.writeText({value})")); }, Err(e) => drop_error.set(Some(e.to_string())) } } item_menu.set(None); } }, "Copy absolute path" }
+                                button { class: "studio-action-menu-item", onclick: { let p = item_path.clone(); move |_| { let root = app_state.read().story.path().and_then(|p| p.parent()).map(std::path::Path::to_path_buf); if let Some(root) = root { match super::project_files::existing(&root, &p) { Ok(path) => { if let Err(e) = super::project_files::copy_item(&path) { drop_error.set(Some(e.to_string())); } }, Err(e) => drop_error.set(Some(e.to_string())) } } item_menu.set(None); } }, "Copy" }
+                                button { class: "studio-action-menu-item", disabled: entry_item, onclick: { let p = item_path.clone(); move |_| {
+                                    let confirmed = rfd::MessageDialog::new().set_title("Delete item?").set_description(format!("Delete {p}? This cannot be undone.")).set_buttons(rfd::MessageButtons::OkCancel).show() == rfd::MessageDialogResult::Ok;
+                                    if confirmed {
+                                        let root = app_state.read().story.path().and_then(|p| p.parent()).map(std::path::Path::to_path_buf);
+                                        if let Some(root) = root {
+                                            match super::project_files::remove(&mut app_state.write(), &root, &p) {
+                                                Ok(()) => refresh += 1,
+                                                Err(error) => drop_error.set(Some(error.to_string())),
+                                            }
+                                        }
+                                    }
+                                    item_menu.set(None);
+                                } }, "Delete" }
                             }
                         }
-                    }
-                    if let Some(Err(message)) = project_problems {
-                        p { class: "px-2 py-1 text-xs text-rose-300", role: "alert", "{message}" }
+                        } } }
                     }
                 }
-                h2 { class: "mt-5 text-xs font-semibold text-zinc-400", "Assets" }
                 for (id, name) in assets {
-                    button { key: "{id}", class: "rounded px-2 py-1 text-left text-xs text-zinc-400 hover:bg-white/5", onclick: move |_| { app_state.write().select_artifact(id); screen.set(super::AppScreen::Assets); }, "{name}" }
+                    button { key: "{id}", class: if open_asset() && app_state.read().selected_artifact_id == Some(id) { "rounded bg-white/10 px-2 py-1 text-left text-xs text-zinc-100" } else { "rounded px-2 py-1 text-left text-xs text-zinc-400 hover:bg-white/5" }, onclick: move |_| { file_preview.set(None); app_state.write().select_artifact(id); open_asset.set(true); }, "{name}" }
                 }
             }
-            div { class: "min-w-0 flex-1",
-                div { hidden: active.is_some(), class: "h-full", MainWriter { app_state, backend } }
-                if let Some(path) = active.clone() { AdditionalWriter { key: "{path}", path, app_state } }
+            div { class: "flex min-w-0 flex-1 flex-col",
+                div { hidden: active.is_some() || open_asset() || file_preview.read().is_some(), class: "min-h-0 flex-1", MainWriter { app_state, backend } }
+                if let Some(path) = active.clone() { div { hidden: open_asset() || file_preview.read().is_some(), class: "min-h-0 flex-1", AdditionalWriter { key: "{path}", path, app_state } } }
+                if let Some(path) = file_preview() { div { class: "flex h-full flex-col", header { class: "border-b border-white/10 p-3 text-sm", "{path.file_name().unwrap_or_default().to_string_lossy()}" }
+                    if path.extension().and_then(|s| s.to_str()).is_some_and(|ext| ["png", "jpg", "jpeg", "webp"].iter().any(|supported| ext.eq_ignore_ascii_case(supported))) {
+                        if let Some(url) = path.canonicalize().ok().and_then(|path| path.to_str().and_then(generated_asset_url)) { img { class: "min-h-0 flex-1 object-contain p-4", src: url, alt: "Project image" } }
+                    } else { p { class: "p-4 text-sm text-zinc-400", "File in project · open with its associated application to edit." } }
+                } }
+                if open_asset() { if let Some(artifact) = app_state.read().selected_artifact().cloned() {
+                    super::assets::AssetDetail { key: "{artifact.id}", app_state, artifact, disabled: app_state.read().operation_in_progress(), on_back: move |_| open_asset.set(false), on_new_variant: move |id| new_asset.set(Some(super::actions::ArtAction::Variant(id))) }
+                } }
             }
         }
+        if let Some(action) = new_asset() { super::art_actions::ArtActionDialog { action, app_state, onclose: move |_| new_asset.set(None), oncreated: move |_| { file_preview.set(None); open_asset.set(true); } } }
     }
 }
+
+const COMPLETION_POSITION: &str = r#"
+const menu = document.querySelector('.studio-completions');
+const editor = document.getElementById(EDITOR_ID);
+if (menu && editor) {
+  const place = () => {
+    if (!menu.isConnected) { controller.abort(); observer.disconnect(); return; }
+    const style = getComputedStyle(editor), rect = editor.getBoundingClientRect();
+    const mirror = document.createElement('div');
+    for (const key of ['font','letterSpacing','lineHeight','padding','border','boxSizing','whiteSpace','overflowWrap','wordBreak']) mirror.style[key] = style[key];
+    Object.assign(mirror.style, {position:'fixed', visibility:'hidden', width:rect.width+'px', whiteSpace:'pre-wrap', overflowWrap:'break-word', left:'-10000px', top:'0'});
+    mirror.textContent = editor.value.slice(0, editor.selectionStart);
+    const caret = document.createElement('span'); caret.textContent = '\u200b'; mirror.appendChild(caret); document.body.appendChild(mirror);
+    const x = rect.left + caret.offsetLeft - editor.scrollLeft;
+    const y = rect.top + caret.offsetTop - editor.scrollTop + parseFloat(style.lineHeight);
+    mirror.remove();
+    menu.style.left = Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8))+'px';
+    menu.style.top = Math.max(8, Math.min(y, innerHeight - menu.offsetHeight - 8))+'px';
+  };
+  const controller = new AbortController();
+  const observer = new MutationObserver(() => {
+    if (!menu.isConnected) { controller.abort(); observer.disconnect(); }
+  });
+  observer.observe(menu.parentNode, { childList: true });
+  const schedule = () => requestAnimationFrame(place);
+  for (const event of ['input', 'keyup', 'click', 'select', 'scroll']) editor.addEventListener(event, schedule, { signal: controller.signal });
+  window.addEventListener('resize', schedule, { signal: controller.signal });
+  document.addEventListener('scroll', schedule, { capture: true, signal: controller.signal });
+  requestAnimationFrame(place);
+}
+"#;
 
 #[component]
 fn AdditionalWriter(path: String, mut app_state: Signal<AppState>) -> Element {
     let mut error_report = use_context::<Signal<Option<ReportedError>>>();
-    let mut navigation = use_context::<super::WriterCaret>().target;
+    let writer_caret = use_context::<super::WriterCaret>();
+    let mut navigation = writer_caret.target;
+    let mut writer_position = writer_caret.position;
     let mut mounted = use_signal(|| false);
     let mut rename_target = use_signal(|| None::<(usize, String)>);
+    let mut cursor = use_signal(storyfella_language::Position::default);
+    let mut show_completions = use_signal(|| false);
+    let mut show_references = use_signal(|| false);
+    let mut completion_index = use_signal(|| 0usize);
     let source = app_state
         .read()
         .additional_sources
@@ -534,12 +1004,58 @@ fn AdditionalWriter(path: String, mut app_state: Signal<AppState>) -> Element {
         .and_then(|sources| sources.get(&path))
         .map(|document| document.source().to_owned())
         .unwrap_or_default();
+    let catalog = AssetCatalog::from_registry(&app_state.read().registry);
+    let analysis = analyze(&source, &catalog.assets);
+    let offset = analysis.document.source.offset(cursor()).unwrap_or(0);
+    let completions = if show_completions() {
+        workspace_completions(&app_state.read(), &path, offset)
+            .unwrap_or_else(|| storyfella_language::complete(&analysis, offset, &catalog.assets))
+    } else {
+        Vec::new()
+    };
+    let selected_completion = completion_index().min(completions.len().saturating_sub(1));
+    let key_completions = completions.clone();
+    let included = match super::preview::workspace(&app_state.read()) {
+        Ok(workspace) => workspace.files.contains_key(&path),
+        Err(error) => error.path == path,
+    };
+    let symbols = symbol_navigation(&app_state.read(), &path, &analysis, offset, &catalog);
+    let definition = symbols.definition;
+    let rename_symbol = symbols.rename.filter(|_| included);
+    let reference_positions = symbols.references;
+    let on_navigate = EventHandler::new(move |(file, position): SourcePosition| {
+        if let Err(error) = navigate_source(&mut app_state.write(), writer_caret, &file, position) {
+            error_report.set(Some(error.report().log()));
+        }
+    });
+    let problems = if included {
+        project_diagnostics(&app_state.read())
+    } else {
+        analysis
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| {
+                analysis
+                    .document
+                    .source
+                    .position(diagnostic.span.start)
+                    .map(|position| (path.clone(), diagnostic.clone(), position))
+            })
+            .collect()
+    };
     let mut previous_source = use_signal(|| source.clone());
     use_effect(use_reactive((&source,), move |(source,)| {
         let previous = previous_source.peek().replace("\r\n", "\n");
         previous_source.set(source.clone());
         let next = source.replace("\r\n", "\n");
-        document::eval(&format!("const el = document.getElementById('svs-extra-writer'); if (el && el.value === {}) el.value = {};", serde_json::to_string(&previous).unwrap(), serde_json::to_string(&next).unwrap()));
+        document::eval(&format!(
+            "const el = document.getElementById('svs-extra-writer'); if (el && el.value === {}) el.value = {};",
+            serde_json::to_string(&previous).unwrap(),
+            serde_json::to_string(&next).unwrap()
+        ));
+        document::eval(
+            r#"const el = document.getElementById('svs-extra-writer'); if (el) { el.style.height = 'auto'; el.style.height = Math.max(el.scrollHeight, el.parentElement.clientHeight) + 'px'; }"#,
+        );
     }));
     let target = path.clone();
     use_effect(move || {
@@ -554,31 +1070,65 @@ fn AdditionalWriter(path: String, mut app_state: Signal<AppState>) -> Element {
         section { class: "flex h-full min-h-0 flex-col", aria_label: "Story file editor",
             header { class: "flex items-center gap-2 border-b border-white/10 px-4 py-2 text-xs text-zinc-400",
                 span { class: "min-w-0 flex-1 truncate", "{path}" }
-                IconButton { label: "Rename scene or beat at cursor", icon: IconName::Edit, onclick: { let path = path.clone(); move |_| {
-                    let path = path.clone();
-                    spawn(async move {
-                        let mut query = document::eval(r#"const el = document.getElementById('svs-extra-writer'); const lines = el.value.slice(0, el.selectionStart ?? 0).split('\n'); dioxus.send({line: lines.length - 1, character: lines.at(-1).length});"#);
-                        let Ok(position) = query.recv::<storyfella_language::Position>().await else { return; };
-                        let state = app_state.read();
-                        if state.active_source.as_deref() != Some(path.as_str()) { return; }
-                        let Some(source) = state.additional_sources.as_ref().and_then(|sources| sources.get(&path)).map(|document| document.source()) else { return; };
-                        let Some(offset) = storyfella_language::Source::new(source).offset(position) else { return; };
-                        let result = workspace_symbol(&state, &path, offset);
-                        drop(state);
-                        match result { Ok(name) => rename_target.set(Some((offset, name))), Err(message) => error_report.set(Some(ReportedError::plain(storyfella_studio_core::errors::ErrorCode::AppCommandInvalid, message))) }
-                    });
-                } } }
+                IconButton { label: "Go to definition", icon: IconName::Definition, disabled: definition.is_none(),
+                    onclick: move |_| { if let Some(location) = definition.clone() { on_navigate.call(location); } }
+                }
+                IconButton { label: if show_references() { "Hide references" } else { "Show references" }, icon: IconName::References,
+                    expanded: show_references(), disabled: reference_positions.is_empty() && !show_references(),
+                    onclick: move |_| show_references.toggle()
+                }
+                IconButton { label: "Rename symbol", icon: IconName::Edit, disabled: rename_symbol.is_none(),
+                    onclick: move |_| { if let Some(name) = rename_symbol.clone() { rename_target.set(Some((offset, name))); } }
+                }
             }
-            textarea { id: "svs-extra-writer", aria_label: "Story source", spellcheck: "false", autocomplete: "off",
-                class: "min-h-0 w-full flex-1 resize-none bg-transparent px-4 py-3 font-mono text-sm leading-relaxed text-zinc-100 outline-none",
-                onmounted: { let initial = source.clone(); move |_| { document::eval(&format!("document.getElementById('svs-extra-writer').value = {};", serde_json::to_string(&initial.replace("\r\n", "\n")).unwrap())); mounted.set(true); } },
+            if show_references() {
+                div { class: "max-h-24 overflow-auto px-4 py-1", role: "region", aria_label: "Story references",
+                    ReferenceButtons { positions: reference_positions, on_navigate }
+                }
+            }
+            div { class: "studio-writer-surface relative min-h-0 flex-1 overflow-auto",
+              div { aria_hidden: "true", class: "pointer-events-none absolute inset-0 z-10 whitespace-pre-wrap px-4 py-3 font-mono text-[12.5px] leading-[1.75]",
+                for index in 0..analysis.document.source.line_count() {
+                    div { for piece in highlight_line(&analysis, index) { span { class: piece.class, "{piece.text}" } } if analysis.document.source.line_span(index).is_some_and(|span| span.start == span.end) { span { "\u{200b}" } } }
+                }
+              }
+              textarea { id: "svs-extra-writer", aria_label: "Story source", spellcheck: "false", autocomplete: "off",
+                class: "absolute inset-x-0 top-0 z-20 min-h-full w-full resize-none overflow-hidden bg-transparent px-4 py-3 font-mono text-[12.5px] leading-[1.75] text-transparent caret-sky-300 outline-none",
+                onmounted: { let initial = source.clone(); move |_| {
+                    document::eval(&format!("const el = document.getElementById('svs-extra-writer'); el.value = {};", serde_json::to_string(&initial.replace("\r\n", "\n")).unwrap())); mounted.set(true);
+                    spawn(async move { let script = CARET_BRIDGE.replace("svs-writer", "svs-extra-writer"); let mut bridge = document::eval(&script); while let Ok(position) = bridge.recv::<storyfella_language::Position>().await { cursor.set(position); writer_position.set(position); } });
+                } },
                 oninput: move |event| {
                     let mut state = app_state.write();
                     if let Some(document) = state.additional_sources.as_ref().and_then(|sources| sources.get(&target)) {
                         let edited = storyfella_language::textarea_input(document.source(), &event.value());
                         if let Err(error) = state.set_additional_source(&target, edited) { error_report.set(Some(error.report().log())); }
                     }
+                    show_completions.set(true); completion_index.set(0);
                 },
+                onkeydown: { let file = path.clone(); move |event| {
+                    if event.key() == Key::Tab && !event.modifiers().contains(Modifiers::SHIFT) && (!show_completions() || key_completions.is_empty()) { event.prevent_default(); insert_indent("svs-extra-writer"); return; }
+                    if event.modifiers().ctrl() && event.key() == Key::Character(" ".into()) { event.prevent_default(); show_completions.set(true); }
+                    if show_completions() && !key_completions.is_empty() { match event.key() {
+                        Key::ArrowDown => { event.prevent_default(); completion_index.set((selected_completion + 1) % key_completions.len()); }
+                        Key::ArrowUp => { event.prevent_default(); completion_index.set((selected_completion + key_completions.len() - 1) % key_completions.len()); }
+                        Key::Enter | Key::Tab if !event.modifiers().contains(Modifiers::SHIFT) => { event.prevent_default(); accept_additional_completion(app_state, &file, &key_completions[selected_completion], navigation); show_completions.set(false); }
+                        Key::Escape => { event.prevent_default(); show_completions.set(false); }
+                        _ => {}
+                    } }
+                } },
+              }
+            }
+            if !completions.is_empty() { div { class: "studio-completions", role: "listbox", onmounted: move |_| { document::eval(&COMPLETION_POSITION.replace("EDITOR_ID", "'svs-extra-writer'")); },
+                for (index, completion) in completions.iter().enumerate() {
+                    button { class: if index == selected_completion { "studio-completion is-selected" } else { "studio-completion" }, onclick: { let completion = completion.clone(); let file = path.clone(); move |_| { accept_additional_completion(app_state, &file, &completion, navigation); show_completions.set(false); } }, "{completion.label}" }
+                }
+            } }
+            details { class: "max-h-40 overflow-auto border-t border-white/10 px-4 py-2 text-xs text-zinc-400",
+                    summary { "Problems ({problems.iter().filter(|(file, _, _)| file == &path).count()})" }
+                    for (_, diagnostic, position) in problems.into_iter().filter(|(file, _, _)| file == &path) {
+                        button { class: "block py-1 text-left", onclick: move |_| navigation.set(Some(position)), "{position.line + 1}:{position.character + 1} · {diagnostic.message}" }
+                    }
             }
             if let Some((offset, name)) = rename_target() {
                 RenameSymbolDialog { app_state, offset, name, file: Some(path.clone()), onclose: move |_| rename_target.set(None) }
@@ -604,7 +1154,7 @@ fn MainWriter(
     let mut problem_filter = use_signal(|| "all".to_owned());
     let mut show_problems = use_signal(|| false);
     let mut edit_error = use_signal(|| None::<String>);
-    let mut writing_help = use_signal(|| false);
+    let mut writing_help = use_context::<Signal<bool>>();
     let review_controller = super::writing_review::ReviewController {
         review: use_signal(|| None),
         mode: use_signal(super::writing_review::ReviewMode::default),
@@ -647,32 +1197,28 @@ fn MainWriter(
     let registry = app_state.read().registry.clone();
     let catalog = AssetCatalog::from_registry(&registry);
     let analysis = analyze(&source, &catalog.assets);
-    let mut compilation = storyfella_compiler::compile_analysis(&analysis, &catalog.bindings);
-    if source.lines().any(|line| line.starts_with("include ")) {
-        let entry = story_path
-            .as_ref()
-            .and_then(|path| path.file_name())
-            .and_then(|name| name.to_str())
-            .unwrap_or_default();
-        compilation.diagnostics = match project_diagnostics(&app_state.read()) {
-            Ok(problems) => problems
-                .into_iter()
-                .filter_map(|(path, diagnostic, _)| (path == entry).then_some(diagnostic))
-                .collect(),
-            Err(message) => vec![storyfella_language::Diagnostic {
-                code: "SF400".into(),
-                message,
-                severity: Severity::Error,
-                span: storyfella_language::Span::new(0, 0),
-            }],
-        };
-    }
-    let error_count = compilation
-        .diagnostics
+    let entry = story_path
+        .as_deref()
+        .and_then(std::path::Path::file_name)
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let problems = if storyfella_language::has_includes(&source) {
+        project_diagnostics(&app_state.read())
+    } else {
+        storyfella_compiler::compile_analysis(&analysis, &catalog.bindings)
+            .diagnostics
+            .into_iter()
+            .filter_map(|diagnostic| {
+                let position = analysis.document.source.position(diagnostic.span.start)?;
+                Some((entry.to_owned(), diagnostic, position))
+            })
+            .collect()
+    };
+    let error_count = problems
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|(_, d, _)| d.severity == Severity::Error)
         .count();
-    let warning_count = compilation.diagnostics.len() - error_count;
+    let warning_count = problems.len() - error_count;
     let problem_label = format!(
         "Problems · {error_count} {} · {warning_count} {}",
         if error_count == 1 { "error" } else { "errors" },
@@ -682,10 +1228,9 @@ fn MainWriter(
             "warnings"
         }
     );
-    let diagnostics: Vec<_> = compilation
-        .diagnostics
+    let diagnostics: Vec<_> = problems
         .iter()
-        .filter(|d| match problem_filter().as_str() {
+        .filter(|(_, d, _)| match problem_filter().as_str() {
             "errors" => d.severity == Severity::Error,
             "warnings" => d.severity != Severity::Error,
             _ => true,
@@ -693,39 +1238,29 @@ fn MainWriter(
         .collect();
     let offset = analysis.document.source.offset(cursor()).unwrap_or(0);
     let completions = if show_completions() {
-        storyfella_language::complete(&analysis, offset, &catalog.assets)
-    } else {
-        Vec::new()
-    };
-    let selected_completion = completion_index().min(completions.len().saturating_sub(1));
-    let key_completions = completions.clone();
-    let definition = analysis
-        .definition_at(offset)
-        .and_then(|span| analysis.document.source.position(span.start));
-    let rename_symbol = analysis
-        .definition_at(offset)
-        .and_then(|span| {
-            analysis
-                .symbols
-                .iter()
-                .find(|symbol| symbol.name.span == span)
-        })
-        .map(|symbol| symbol.name.value.clone());
-    let rename_symbol = if source.lines().any(|line| line.starts_with("include ")) {
         let entry = story_path
             .as_ref()
             .and_then(|path| path.file_name())
             .and_then(|name| name.to_str())
             .unwrap_or_default();
-        workspace_symbol(&app_state.read(), entry, offset).ok()
+        workspace_completions(&app_state.read(), entry, offset)
+            .unwrap_or_else(|| storyfella_language::complete(&analysis, offset, &catalog.assets))
     } else {
-        rename_symbol
+        Vec::new()
     };
-    let reference_positions: Vec<_> = analysis
-        .references_at(offset, true)
-        .iter()
-        .filter_map(|span| analysis.document.source.position(span.start))
-        .collect();
+    let selected_completion = completion_index().min(completions.len().saturating_sub(1));
+    let key_completions = completions.clone();
+    let symbols = symbol_navigation(&app_state.read(), entry, &analysis, offset, &catalog);
+    let definition = symbols.definition;
+    let rename_symbol = symbols.rename;
+    let reference_positions = symbols.references;
+    let on_navigate = EventHandler::new(move |(file, position): SourcePosition| {
+        let mut state = app_state;
+        let result = navigate_source(&mut state.write(), caret, &file, position);
+        if let Err(error) = result {
+            error_report.set(Some(error.report().log()));
+        }
+    });
 
     let lines: Vec<String> = if source.is_empty() {
         Vec::new()
@@ -746,7 +1281,8 @@ fn MainWriter(
         let next = source.replace("\r\n", "\n");
         document::eval(&format!(
             "const el = document.getElementById('svs-writer'); if (el && el.value === {}) el.value = {};",
-            serde_json::to_string(&previous).unwrap(), serde_json::to_string(&next).unwrap()
+            serde_json::to_string(&previous).unwrap(),
+            serde_json::to_string(&next).unwrap()
         ));
     }));
     use_effect(move || {
@@ -857,7 +1393,6 @@ fn MainWriter(
                             "—"
                         }
                     }
-                    IconButton { label: "Writing help", icon: IconName::Sparkles, active: writing_help(), onclick: move |_| writing_help.toggle() }
                 }
 
                 if reviewing {
@@ -893,13 +1428,13 @@ fn MainWriter(
                     // The rendered layer is the visible text; the textarea
                     // sits over it transparently, exactly as the command bar
                     // does, so highlighting and the caret share metrics.
-                    div { class: "relative min-h-0 flex-1 overflow-auto",
+                    div { class: "studio-writer-surface relative min-h-0 flex-1 overflow-auto",
                         div { aria_hidden: "true", class: "pointer-events-none absolute inset-0 z-10 px-4 py-3 font-mono text-[12.5px] leading-[1.75] whitespace-pre-wrap",
                             for (index , line) in lines.iter().enumerate() {
                                 div {
                                     key: "{index}",
                                     id: "svs-writer-line-{index}",
-                                    class: if index == at { "-mx-4 border-l-2 border-violet-400 bg-violet-400/[0.07] pl-[14px] pr-4" } else { "-mx-4 border-l-2 border-transparent pl-[14px] pr-4" },
+                                    class: if index == at { "-mx-4 border-l-2 border-sky-400 bg-sky-400/[0.07] pl-[14px] pr-4" } else { "-mx-4 border-l-2 border-transparent pl-[14px] pr-4" },
                                     for (slot , piece) in highlight_line(&analysis, index).iter().enumerate() {
                                         span { key: "{slot}", class: piece.class, "{piece.text}" }
                                     }
@@ -912,7 +1447,7 @@ fn MainWriter(
                         textarea {
                             aria_label: "Story source",
                             id: "svs-writer",
-                            class: "absolute inset-x-0 top-0 z-20 min-h-full w-full resize-none overflow-hidden bg-transparent px-4 py-3 font-mono text-[12.5px] leading-[1.75] text-transparent caret-violet-400 outline-none",
+                            class: "absolute inset-x-0 top-0 z-20 min-h-full w-full resize-none overflow-hidden bg-transparent px-4 py-3 font-mono text-[12.5px] leading-[1.75] text-transparent caret-sky-300 outline-none",
                             spellcheck: "false",
                             autocomplete: "off",
                             onmounted: { let initial = source.clone(); move |_| {
@@ -931,6 +1466,7 @@ fn MainWriter(
                                 completion_index.set(0);
                             },
                             onkeydown: move |event| {
+                                if event.key() == Key::Tab && !event.modifiers().contains(Modifiers::SHIFT) && (!show_completions() || key_completions.is_empty()) { event.prevent_default(); insert_indent("svs-writer"); return; }
                                 if event.modifiers().ctrl() && event.key() == Key::Character(" ".into()) { event.prevent_default(); show_completions.set(true); }
                                 if show_completions() && !key_completions.is_empty() {
                                     match event.key() {
@@ -946,10 +1482,10 @@ fn MainWriter(
                         }
                     }
                     if !completions.is_empty() {
-                        div { class: "max-h-32 overflow-y-auto border-t border-white/[0.05] px-4 py-2",
+                        div { class: "studio-completions", role: "listbox", onmounted: move |_| { document::eval(&COMPLETION_POSITION.replace("EDITOR_ID", "'svs-writer'")); },
                             for (index, completion) in completions.iter().enumerate() {
                                 button {
-                                    class: if index == selected_completion { "mr-2 rounded bg-violet-400/15 px-2 py-1 font-mono text-[11px] text-violet-200" } else { "mr-2 px-2 py-1 font-mono text-[11px] text-zinc-400" },
+                                    class: if index == selected_completion { "studio-completion is-selected" } else { "studio-completion" },
                                     onclick: { let completion = completion.clone(); move |_| { accept_completion(app_state, caret, &completion); show_completions.set(false); } },
                                     "{completion.label}"
                                 }
@@ -957,7 +1493,9 @@ fn MainWriter(
                         }
                     }
                     div { class: "flex flex-wrap items-center gap-2 border-t border-white/[0.05] px-4 py-2 text-[11px] text-zinc-400",
-                        IconButton { label: "Go to definition", icon: IconName::Definition, disabled: definition.is_none(), onclick: move |_| { if let Some(position) = definition { cursor.set(position); focus_position(position); } } }
+                        IconButton { label: "Go to definition", icon: IconName::Definition, disabled: definition.is_none(),
+                            onclick: move |_| { if let Some(location) = definition.clone() { on_navigate.call(location); } }
+                        }
                         IconButton { label: if show_references() { "Hide references" } else { "Show references" }, icon: IconName::References, active: show_references(), expanded: show_references(), controls: "studio-writer-references", disabled: reference_positions.is_empty() && !show_references(), onclick: move |_| show_references.toggle() }
                         IconButton { label: "Format story", icon: IconName::Format, onclick: move |_| {
                             let catalog = AssetCatalog::from_registry(&app_state.read().registry);
@@ -965,7 +1503,7 @@ fn MainWriter(
                             let result = storyfella_language::format(&analysis).and_then(|edits| storyfella_language::apply_edits(analysis.document.source.text(), &edits));
                             match result { Ok(source) => { app_state.write().set_story_source(source); edit_error.set(None); }, Err(error) => edit_error.set(Some(error)) }
                         } }
-                        IconButton { label: "Rename scene or beat", icon: IconName::Edit, disabled: rename_symbol.is_none(), onclick: move |_| {
+                        IconButton { label: "Rename symbol", icon: IconName::Edit, disabled: rename_symbol.is_none(), onclick: move |_| {
                             if let Some(name) = rename_symbol.clone() { rename_target.set(Some((offset, name))); }
                         } }
                         super::atelier::OpenInAtelier { target: atelier_target, show_label: false }
@@ -974,7 +1512,7 @@ fn MainWriter(
                                 IconButton { label: problem_label, icon: IconName::List, show_label: true,
                                     tooltip: if show_problems() { "Hide story problems" } else { "Show story problems" },
                                     expanded: show_problems(), controls: "studio-writer-problems",
-                                    disabled: compilation.diagnostics.is_empty() && !show_problems(),
+                                    disabled: problems.is_empty() && !show_problems(),
                                     onclick: move |_| show_problems.toggle()
                                 }
                             }
@@ -983,9 +1521,7 @@ fn MainWriter(
                     }
                     if let Some(error) = edit_error() { p { class: "px-4 py-1 text-[11px] text-rose-300", "{error}" } }
                     div { id: "studio-writer-references", role: "region", aria_label: "Story references", hidden: !show_references(), class: "max-h-24 overflow-auto px-4 py-1",
-                        for position in reference_positions {
-                            button { class: "mr-2 font-mono text-[11px] text-violet-300", onclick: move |_| { cursor.set(position); focus_position(position); }, "{position.line + 1}:{position.character + 1}" }
-                        }
+                        ReferenceButtons { positions: reference_positions, on_navigate }
                     }
                     div { id: "studio-writer-problems", role: "region", aria_label: "Story problems", hidden: !show_problems(), class: "shrink-0 border-t border-white/[0.05]",
                         div { class: "px-4 py-2",
@@ -996,14 +1532,21 @@ fn MainWriter(
                             }
                         }
                         div { class: "max-h-40 overflow-y-auto flex flex-col pb-2",
-                            for diagnostic in &diagnostics {
-                                if let Some(position) = analysis.document.source.position(diagnostic.span.start) {
-                                    button { class: "flex items-start gap-2 px-4 py-2 text-left text-xs text-zinc-300 hover:bg-white/[0.04]",
-                                        onclick: move |_| { cursor.set(position); focus_position(position); },
+                            for (file, diagnostic, position) in diagnostics.iter().copied() {
+                                {
+                                    let position = *position;
+                                    let other_file = !file.is_empty() && file != entry;
+                                    rsx! { button { class: "flex items-start gap-2 px-4 py-2 text-left text-xs text-zinc-300 hover:bg-white/[0.04]",
+                                        onclick: { let file = file.clone(); move |_| {
+                                            on_navigate.call((file.clone(), position));
+                                        } },
                                         span { class: if diagnostic.severity == Severity::Error { "mt-1 size-1.5 shrink-0 rounded-full bg-rose-400" } else { "mt-1 size-1.5 shrink-0 rounded-full bg-amber-400" } }
                                         span { class: "min-w-0 flex-1 break-words", "{diagnostic.message}" }
-                                        span { class: "shrink-0 font-mono text-[10px] text-zinc-500", "{diagnostic.code} · {position.line + 1}:{position.character + 1}" }
-                                    }
+                                        span { class: "shrink-0 font-mono text-[10px] text-zinc-500",
+                                            if other_file { "{file} · " }
+                                            "{diagnostic.code} · {position.line + 1}:{position.character + 1}"
+                                        }
+                                    } }
                                 }
                             }
                         }
@@ -1077,7 +1620,7 @@ fn MainWriter(
 
 #[component]
 fn MentionGroup(title: String, mentions: Vec<Mention>, app_state: Signal<AppState>) -> Element {
-    let mut screen = use_context::<Signal<super::AppScreen>>();
+    let mut open_asset = use_context::<WriterAssetView>().0;
     rsx! {
         section {
             div { class: "mb-2 flex items-center gap-2 px-1",
@@ -1144,13 +1687,13 @@ fn MentionGroup(title: String, mentions: Vec<Mention>, app_state: Signal<AppStat
                             super::atelier::OpenInAtelier { target: mention.artifact, show_label: false }
                             button {
                                 class: "shrink-0 rounded-md px-2 py-1 text-[10px] text-zinc-600 transition hover:text-zinc-200",
-                                title: "Open in Assets",
+                                title: "Open asset",
                                 onclick: {
                                     let id = mention.artifact;
                                     move |_| {
                                         if let Some(id) = id {
                                             app_state.write().select_artifact(id);
-                                            screen.set(super::AppScreen::Assets);
+                                            open_asset.set(true);
                                         }
                                     }
                                 },
@@ -1170,6 +1713,14 @@ mod tests {
     use storyfella_studio_core::registry::CreateArtifact;
 
     #[test]
+    fn explorer_groups_nested_sources_and_hides_collapsed_descendants() {
+        let collapsed = std::collections::BTreeSet::from(["chapters/part".to_owned()]);
+        assert!(ancestors_visible("chapters/part", &collapsed));
+        assert!(!ancestors_visible("chapters/part/two.sf", &collapsed));
+        assert!(ancestors_visible("chapters/one.sf", &collapsed));
+    }
+
+    #[test]
     fn project_problems_follow_unsaved_chapter_locations() {
         let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../.svs-e2e/tests")
@@ -1184,7 +1735,7 @@ mod tests {
         state
             .set_additional_source("chapter.sf", "scene start\n  goto missing\n".into())
             .unwrap();
-        let problems = project_diagnostics(&state).unwrap();
+        let problems = project_diagnostics(&state);
         assert!(problems
             .iter()
             .any(|(path, diagnostic, position)| path == "chapter.sf"
@@ -1194,6 +1745,52 @@ mod tests {
             .iter()
             .any(|(path, diagnostic, _)| path == "story.sf"
                 && diagnostic.severity == Severity::Error));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn completion_resolves_scenes_in_other_files_and_maps_the_edit_back() {
+        let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.svs-e2e/tests")
+            .join(format!("writer-completion-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let entry = directory.join("story.sf");
+        std::fs::write(&entry, "include \"chapter.sf\"\nscene lighthouse\n  end\n").unwrap();
+        let chapter = "scene start\n  goto li";
+        std::fs::write(directory.join("chapter.sf"), chapter).unwrap();
+        let mut state = AppState::default();
+        state.story = storyfella_studio_core::story::StoryDocument::open(&entry).unwrap();
+        state.open_additional_source("chapter.sf").unwrap();
+        let completions = workspace_completions(&state, "chapter.sf", chapter.len()).unwrap();
+        let result = completions
+            .iter()
+            .find(|completion| completion.label == "lighthouse")
+            .unwrap();
+        assert_eq!(&chapter[result.replace.start..result.replace.end], "li");
+        let chapter = "scene start\n  goto lighthouse\n";
+        state
+            .set_additional_source("chapter.sf", chapter.into())
+            .unwrap();
+        let catalog = AssetCatalog::from_registry(&state.registry);
+        let navigation = symbol_navigation(
+            &state,
+            "chapter.sf",
+            &analyze(chapter, &catalog.assets),
+            chapter.find("lighthouse").unwrap(),
+            &catalog,
+        );
+        assert_eq!(
+            navigation.definition,
+            Some((
+                "story.sf".into(),
+                storyfella_language::Position {
+                    line: 1,
+                    character: 6
+                }
+            ))
+        );
+        assert_eq!(navigation.references.len(), 2);
+        assert_eq!(navigation.rename.as_deref(), Some("lighthouse"));
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -1308,7 +1905,7 @@ mod tests {
         let pieces = highlight("  cast: mara, tam", &["mara".to_owned()]);
         let mara = pieces.iter().find(|p| p.text.starts_with("mara")).unwrap();
         let tam = pieces.iter().find(|p| p.text == "tam").unwrap();
-        assert!(mara.class.contains("violet"), "resolved reads as resolved");
+        assert!(mara.class.contains("sky"), "resolved reads as resolved");
         assert!(tam.class.contains("amber"), "pending is amber, never red");
     }
 }

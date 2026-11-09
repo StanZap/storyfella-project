@@ -79,13 +79,14 @@ promoted revision, experiment an edit that has not been made canonical.
 ### Portable project folders
 
 New Studio projects use the [shared project folder](shared-project.md):
-`storyfella.toml`, `story.sf`, `story.db`, immutable `artwork/` revisions and
+`storyfella.toml`, `assets/story.sf`, `story.db`, immutable `artwork/` revisions and
 `atelier/` working documents. The existing registry/schema stays authoritative;
 shared databases store image paths relative to their root and resolve them on
 load. Existing standalone source/database pairs remain readable and can be
 explicitly copied into a project folder with identities and artwork preserved.
 The standalone pair behavior described below still applies to CLI and older
-projects. Live synchronization and canvas-save publication remain SF-PLAN-04–06.
+projects. Version-1 folders keep the entry and its included files in place
+beside the database.
 
 `ProjectDb` (`crates/studio-core/src/persistence/mod.rs`) is SQLite storage for the project: one
 `projects` row, then `artifacts`, `revisions`, `layers`,

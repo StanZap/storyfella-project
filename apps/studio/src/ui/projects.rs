@@ -434,7 +434,7 @@ mod tests {
             .iter()
             .any(|item| item.matches_query("unknown words")));
         std::fs::write(
-            folder.root().join("story.sf"),
+            folder.root().join("assets/story.sf"),
             "scene harbor\n  narrate: An unexpected sunrise.\n  end\n",
         )
         .unwrap();

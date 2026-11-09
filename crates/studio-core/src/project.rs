@@ -17,11 +17,14 @@ use crate::{
 
 pub const MANIFEST: &str = "storyfella.toml";
 const DATABASE: &str = "story.db";
+const ASSETS_SOURCE: &str = "assets/story.sf";
+const CURRENT_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {
-    version: u32,
+    // Development builds of the assets layout omitted this field.
+    version: Option<u32>,
     project_id: Uuid,
 }
 
@@ -29,6 +32,7 @@ struct Manifest {
 pub struct ProjectFolder {
     root: PathBuf,
     id: Uuid,
+    entry: &'static str,
 }
 
 impl ProjectFolder {
@@ -46,9 +50,16 @@ impl ProjectFolder {
     /// The original database/source/images are never modified or removed.
     pub fn import(root: &Path, stored: &StoredProject) -> Result<Self> {
         ensure!(
-            !stored.story.path().is_some_and(|path| path
-                .parent()
-                .is_some_and(|parent| parent.join(MANIFEST).exists())),
+            stored
+                .story
+                .path()
+                .is_none_or(|path| path.parent().is_none_or(|parent| {
+                    !(parent.join(MANIFEST).exists()
+                        || (parent.file_name().is_some_and(|name| name == "assets")
+                            && parent
+                                .parent()
+                                .is_some_and(|root| root.join(MANIFEST).exists())))
+                })),
             "This project already uses a shared folder; move or copy the complete folder instead"
         );
         let mut registry = stored.registry.clone();
@@ -98,9 +109,14 @@ impl ProjectFolder {
         }
         db.rename_project(name)?;
         let id = db.load()?.id;
+        fs::create_dir(root.join("assets"))?;
         fs::create_dir(root.join("artwork"))?;
         fs::create_dir(root.join("atelier"))?;
-        let folder = Self { root, id };
+        let folder = Self {
+            root,
+            id,
+            entry: ASSETS_SOURCE,
+        };
         let mut registry = registry.clone();
         crate::catalog::reconcile_declarations(&mut registry, source, false);
         let catalog = crate::authoring::AssetCatalog::from_registry(&registry);
@@ -111,8 +127,12 @@ impl ProjectFolder {
         let mut story = db.load()?.story;
         story.set_source(source.to_owned());
         story.save()?;
+        fs::rename(
+            folder.root.join("story.sf"),
+            folder.root.join(ASSETS_SOURCE),
+        )?;
         let manifest = toml::to_string_pretty(&Manifest {
-            version: 1,
+            version: Some(CURRENT_VERSION),
             project_id: id,
         })?;
         let mut file = fs::OpenOptions::new()
@@ -135,23 +155,14 @@ impl ProjectFolder {
             path.parent().context("Manifest has no project directory")?
         }
         .canonicalize()?;
-        let manifest: Manifest = toml::from_str(&fs::read_to_string(root.join(MANIFEST))?)?;
-        ensure!(
-            manifest.version == 1,
-            "Unsupported Storyfella project version {}",
-            manifest.version
-        );
-        let folder = Self {
-            root,
-            id: manifest.project_id,
-        };
+        let folder = Self::read_manifest(root)?;
         ensure!(folder.database().is_file(), "Project database is missing");
         folder.resolve(DATABASE)?;
-        folder.resolve("story.sf")?;
+        folder.resolve(folder.entry)?;
         folder.resolve("artwork")?;
         folder.resolve("atelier")?;
         ensure!(
-            folder.root.join("story.sf").is_file(),
+            folder.root.join(folder.entry).is_file(),
             "Story source is missing"
         );
         // Do not create a missing database or export an empty replacement source.
@@ -160,6 +171,20 @@ impl ProjectFolder {
             "Manifest and database project identities differ"
         );
         Ok(folder)
+    }
+
+    fn read_manifest(root: PathBuf) -> Result<Self> {
+        let manifest: Manifest = toml::from_str(&fs::read_to_string(root.join(MANIFEST))?)?;
+        let entry = match manifest.version {
+            Some(1) => "story.sf",
+            Some(CURRENT_VERSION) | None => ASSETS_SOURCE,
+            Some(version) => bail!("Unsupported Storyfella project version {version}"),
+        };
+        Ok(Self {
+            root,
+            id: manifest.project_id,
+            entry,
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -253,20 +278,43 @@ impl ProjectFolder {
 pub(crate) fn for_database(path: &Path) -> Result<Option<ProjectFolder>> {
     if path.file_name().is_some_and(|name| name == DATABASE) {
         if let Some(parent) = path.parent().filter(|p| p.join(MANIFEST).exists()) {
-            let root = parent.canonicalize()?;
-            let manifest: Manifest = toml::from_str(&fs::read_to_string(root.join(MANIFEST))?)?;
-            ensure!(
-                manifest.version == 1,
-                "Unsupported Storyfella project version {}",
-                manifest.version
-            );
-            return Ok(Some(ProjectFolder {
-                root,
-                id: manifest.project_id,
-            }));
+            return ProjectFolder::read_manifest(parent.canonicalize()?).map(Some);
         }
     }
     Ok(None)
+}
+
+/// Resolve a shared entry source back to its database without confusing an
+/// included chapter with the entry point.
+pub fn database_for_source(source: &Path) -> Result<Option<PathBuf>> {
+    let source = source.canonicalize()?;
+    let Some(parent) = source
+        .parent()
+        .filter(|_| source.file_name().is_some_and(|name| name == "story.sf"))
+    else {
+        return Ok(None);
+    };
+    let root = if parent.join(MANIFEST).exists() {
+        Some(parent)
+    } else {
+        parent
+            .parent()
+            .filter(|root| parent.ends_with("assets") && root.join(MANIFEST).exists())
+    };
+    let Some(root) = root else { return Ok(None) };
+    let folder = ProjectFolder::read_manifest(root.to_owned())?;
+    ensure!(
+        folder.resolve(folder.entry)? == source,
+        "Open the project's entry story or manifest instead"
+    );
+    let database = folder.database();
+    ensure!(database.is_file(), "Project database is missing");
+    Ok(Some(database))
+}
+
+pub(crate) fn shared_source_path(database: &Path) -> Option<PathBuf> {
+    let folder = for_database(database).ok()??;
+    Some(folder.root.join(folder.entry))
 }
 
 pub(crate) fn prepare_registry(

@@ -64,12 +64,7 @@ impl AppState {
         let mut source = self.story.source().to_owned();
         if let (Some(before), Some(after)) = (self.registry.artifact(id), registry.artifact(id)) {
             if before.name != after.name {
-                if self
-                    .story
-                    .source()
-                    .lines()
-                    .any(|line| line.starts_with("include "))
-                {
+                if storyfella_language::has_includes(self.story.source()) {
                     let name = after.name.clone();
                     self.rename_workspace_asset(id, &name, registry)?;
                     self.selected_artifact_id = Some(id);
@@ -290,6 +285,23 @@ impl AppState {
         Ok(())
     }
 
+    pub fn forget_source_file(&mut self, relative: &str) {
+        if let Some(sources) = &mut self.additional_sources {
+            sources.forget(relative);
+        }
+        if self.active_source.as_deref() == Some(relative) {
+            self.active_source = None;
+        }
+        // Earlier snapshots can still contain an include targeting this path.
+        if !self.undo_stack.is_empty() || !self.redo_stack.is_empty() {
+            self.undo_stack.clear();
+            self.redo_stack.clear();
+            self.source_notice = Some(
+                "Undo history was cleared because a story file was renamed or removed.".into(),
+            );
+        }
+    }
+
     pub fn set_additional_source(
         &mut self,
         relative: &str,
@@ -318,12 +330,7 @@ impl AppState {
         if self.story.source() != source {
             self.snapshot_for_undo();
             self.story.set_source(source);
-            if self
-                .story
-                .source()
-                .lines()
-                .any(|line| line.starts_with("include "))
-            {
+            if storyfella_language::has_includes(self.story.source()) {
                 self.reconcile_multi(true);
                 self.has_unsaved_changes = true;
                 return;
@@ -360,6 +367,7 @@ impl AppState {
                                 && s.beats.iter().any(|b| b.name == symbol.name.value)
                         })
                     }
+                    storyfella_language::SymbolKind::Flag => true,
                 };
                 unterminated && !known
             });
@@ -371,12 +379,7 @@ impl AppState {
     }
 
     pub fn rename_story_symbol(&mut self, offset: usize, name: &str) -> Result<(), String> {
-        if self
-            .story
-            .source()
-            .lines()
-            .any(|line| line.starts_with("include "))
-        {
+        if storyfella_language::has_includes(self.story.source()) {
             let entry = self
                 .story
                 .path()
@@ -423,7 +426,7 @@ impl AppState {
         Ok(())
     }
 
-    /// Rename a resolved scene or beat throughout one immutable project
+    /// Rename a resolved symbol throughout one immutable project
     /// snapshot, retaining identities and applying all draft edits as one undo.
     pub fn rename_workspace_symbol(
         &mut self,
@@ -435,7 +438,7 @@ impl AppState {
         let expanded = workspace.expand().map_err(|error| error.message)?;
         let global_offset = expanded
             .expanded_offset(file, offset)
-            .ok_or("Select a resolved scene or beat in the story")?;
+            .ok_or("Select a resolved symbol in the story")?;
         let catalog = AssetCatalog::from_registry(&self.registry);
         let analysis = analyze(&expanded.source, &catalog.assets);
         if analysis.has_errors() {
@@ -443,7 +446,7 @@ impl AppState {
         }
         let definition = analysis
             .definition_at(global_offset)
-            .ok_or("Select a resolved scene or beat")?;
+            .ok_or("Select a resolved symbol")?;
         let symbol = analysis
             .symbols
             .iter()
@@ -486,6 +489,7 @@ impl AppState {
             .map_or_else(Default::default, AdditionalSources::overrides);
         drafts.insert(entry.to_owned(), self.story.source().to_owned());
         storyfella_studio_core::story::load_source_workspace(path, &drafts)
+            .map_err(|error| error.to_string())
     }
 
     fn rename_workspace_asset(
@@ -591,12 +595,7 @@ impl AppState {
     }
 
     pub fn reconcile_story(&mut self) {
-        if self
-            .story
-            .source()
-            .lines()
-            .any(|line| line.starts_with("include "))
-        {
+        if storyfella_language::has_includes(self.story.source()) {
             self.reconcile_multi(false);
             return;
         }

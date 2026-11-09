@@ -17,6 +17,93 @@ fn fixture() -> tempfile::TempDir {
 }
 
 #[test]
+fn new_projects_keep_only_the_entry_in_the_visible_asset_root() {
+    let fixture = fixture();
+    let folder = ProjectFolder::create(
+        &fixture.path().join("new"),
+        "New",
+        &ArtifactRegistry::default(),
+        "scene start\n  end\n",
+    )
+    .unwrap();
+    let entries: Vec<_> = fs::read_dir(folder.root().join("assets"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(entries, ["story.sf"]);
+    let entry = folder.root().join("assets/story.sf");
+    assert_eq!(
+        ProjectDb::open(folder.database())
+            .unwrap()
+            .load()
+            .unwrap()
+            .story
+            .path(),
+        Some(entry.as_path())
+    );
+    assert_eq!(
+        storyfella_studio_core::project::database_for_source(&entry).unwrap(),
+        Some(folder.database())
+    );
+}
+
+#[test]
+fn version_one_projects_keep_their_entry_and_includes_in_place() {
+    let fixture = fixture();
+    let folder = ProjectFolder::create(
+        &fixture.path().join("old"),
+        "Old",
+        &ArtifactRegistry::default(),
+        "include \"chapter.sf\"\r\n",
+    )
+    .unwrap();
+    fs::rename(
+        folder.root().join("assets/story.sf"),
+        folder.root().join("story.sf"),
+    )
+    .unwrap();
+    let manifest = fs::read_to_string(folder.manifest()).unwrap();
+    let manifest = manifest.replace("version = 2\n", "version = 1\n");
+    fs::write(folder.manifest(), &manifest).unwrap();
+    fs::write(
+        folder.root().join("chapter.sf"),
+        "scene chapter\n  narrate: Hello\n  end\n",
+    )
+    .unwrap();
+    let reopened = ProjectFolder::open(folder.root()).unwrap();
+    let entry = reopened.root().join("story.sf");
+    let mut stored = ProjectDb::open(reopened.database())
+        .unwrap()
+        .load()
+        .unwrap();
+    assert_eq!(stored.story.path(), Some(entry.as_path()));
+    assert_eq!(stored.story.source(), "include \"chapter.sf\"\r\n");
+    assert_eq!(
+        storyfella_studio_core::project::database_for_source(&entry).unwrap(),
+        Some(reopened.database())
+    );
+    assert_eq!(
+        storyfella_studio_core::playback::PlaybackSession::open(&entry, None)
+            .unwrap()
+            .runtime
+            .plan()
+            .entry
+            .0,
+        "chapter"
+    );
+    stored
+        .story
+        .set_source("# Retained layout\r\ninclude \"chapter.sf\"\r\n".into());
+    ProjectDb::open(reopened.database())
+        .unwrap()
+        .save_authoring_checked(&stored.registry, stored.registry_version, &mut stored.story)
+        .unwrap();
+    assert_eq!(fs::read_to_string(&entry).unwrap(), stored.story.source());
+    assert_eq!(fs::read_to_string(reopened.manifest()).unwrap(), manifest);
+    assert!(!reopened.root().join("assets/story.sf").exists());
+}
+
+#[test]
 fn adoption_and_relocation_preserve_source_identities_associations_and_every_revision() {
     let fixture = fixture();
     let old = fixture.path().join("old");
@@ -124,11 +211,7 @@ fn invalid_manifests_and_nonportable_resources_never_create_replacements() {
     )
     .unwrap();
     let manifest = fs::read_to_string(folder.manifest()).unwrap();
-    fs::write(
-        folder.manifest(),
-        manifest.replace("version = 1", "version = 999"),
-    )
-    .unwrap();
+    fs::write(folder.manifest(), "project_id = \"invalid\"\n").unwrap();
     assert!(ProjectFolder::open(folder.root()).is_err());
     fs::write(
         folder.manifest(),
@@ -137,7 +220,7 @@ fn invalid_manifests_and_nonportable_resources_never_create_replacements() {
     .unwrap();
     assert!(ProjectFolder::open(folder.root()).is_err());
     fs::write(folder.manifest(), &manifest).unwrap();
-    let source = folder.root().join("story.sf");
+    let source = folder.root().join("assets/story.sf");
     fs::remove_file(&source).unwrap();
     assert!(ProjectFolder::open(folder.root()).is_err());
     assert!(!source.exists());

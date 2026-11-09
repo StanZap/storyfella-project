@@ -232,6 +232,33 @@ fn trace_executes_real_runtime_and_rejects_corrupt_imported_plan() {
 }
 
 #[test]
+fn workspace_plan_and_graph_diagnostics_keep_original_file_locations() {
+    let fixture = Fixture::new();
+    fixture.write("story.sf", "story \"Title\"\r\ninclude  \"chapter.sf\"\r\n");
+    let report = fixture.json(&["story", "check", "story.sf"], false);
+    let diagnostic = &report["diagnostics"][0];
+    assert_eq!(diagnostic["code"], "SF308");
+    assert_eq!(diagnostic["file"], "story.sf");
+    assert_eq!(diagnostic["start"], json!({"line": 1, "character": 0}));
+    let chapter = "scene chapter\r\n  narrate: 🌊\r\n  end\r\n";
+    fixture.write("chapter.sf", chapter);
+    let plan = fixture.json(&["story", "compile", "story.sf"], true);
+    assert_eq!(
+        plan["source_map"]["workspace"]["files"]["chapter.sf"],
+        chapter
+    );
+    fixture.write("plan.json", &plan.to_string());
+    fixture.write("commands.json", r#"["Advance"]"#);
+    std::fs::remove_file(fixture.dir.join("chapter.sf")).unwrap();
+    let events = fixture.json(&["story", "trace", "plan.json", "commands.json"], true);
+    assert!(events
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| event.get("Completed").is_some()));
+}
+
+#[test]
 fn catalog_entries_without_images_are_resolved_but_report_pending_artwork() {
     let fixture = Fixture::new();
     fixture.write("story.sf", "scene first\n  prop: lantern\n");

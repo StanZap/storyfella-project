@@ -50,13 +50,12 @@ impl PlaybackSession {
     pub fn compile(source: &str, registry: &ArtifactRegistry) -> Result<Self, String> {
         Self::compile_with_policy(source, registry, AssetPolicy::RequireCompleted)
     }
-    /// Build one playback snapshot from all referenced story files. The
-    /// returned mapping is retained by the host for source navigation.
+    /// Build one playback snapshot from all referenced story files.
     pub fn compile_workspace(
         workspace: &storyfella_compiler::SourceWorkspace,
         registry: &ArtifactRegistry,
         asset_policy: AssetPolicy,
-    ) -> Result<(Self, storyfella_compiler::ExpandedWorkspace), String> {
+    ) -> Result<Self, String> {
         let catalog = AssetCatalog::from_registry(registry);
         let (compilation, expanded) = storyfella_compiler::compile_workspace_with_catalog(
             workspace,
@@ -70,28 +69,24 @@ impl PlaybackSession {
                 .iter()
                 .filter(|diagnostic| diagnostic.severity == storyfella_language::Severity::Error)
                 .map(|diagnostic| {
-                    if let Some((path, span)) = expanded.original_span(diagnostic.span) {
-                        let source = Source::new(&workspace.files[path]);
-                        if let Some(position) = source.position(span.start) {
-                            return format!(
-                                "{} at {}:{}:{}: {}",
-                                diagnostic.code,
-                                path,
-                                position.line + 1,
-                                position.character + 1,
-                                diagnostic.message
-                            );
-                        }
+                    let (path, span) = expanded.diagnostic_span(&workspace.entry, diagnostic.span);
+                    let source = Source::new(&workspace.files[path]);
+                    if let Some(position) = source.position(span.start) {
+                        return format!(
+                            "{} at {}:{}:{}: {}",
+                            diagnostic.code,
+                            path,
+                            position.line + 1,
+                            position.character + 1,
+                            diagnostic.message
+                        );
                     }
                     format!("{}: {}", diagnostic.code, diagnostic.message)
                 })
                 .collect::<Vec<_>>()
                 .join("\n")
         })?;
-        Ok((
-            Self::from_plan_with_policy(plan, registry, asset_policy)?,
-            expanded,
-        ))
+        Self::from_plan_with_policy(plan, registry, asset_policy)
     }
     pub fn compile_with_policy(
         source: &str,
@@ -228,14 +223,11 @@ impl PlaybackSession {
                 if project.is_some() {
                     return Err("--project is only used with compiled JSON plans".into());
                 }
-                let database = input.with_extension("db");
+                let database = crate::project::database_for_source(input)
+                    .map_err(|error| error.to_string())?
+                    .unwrap_or_else(|| input.with_extension("db"));
                 let stored = load_project(&database)?;
-                if stored
-                    .story
-                    .source()
-                    .lines()
-                    .any(|line| line.starts_with("include "))
-                {
+                if storyfella_language::has_includes(stored.story.source()) {
                     let path = stored.story.path().ok_or("Story source has no path")?;
                     let name = path
                         .file_name()
@@ -245,9 +237,9 @@ impl PlaybackSession {
                         name.to_owned(),
                         stored.story.source().to_owned(),
                     )]);
-                    let workspace = crate::story::load_source_workspace(path, &drafts)?;
+                    let workspace = crate::story::load_source_workspace(path, &drafts)
+                        .map_err(|error| error.to_string())?;
                     Self::compile_workspace(&workspace, &stored.registry, asset_policy)
-                        .map(|(session, _)| session)
                 } else {
                     Self::compile_with_policy(stored.story.source(), &stored.registry, asset_policy)
                 }

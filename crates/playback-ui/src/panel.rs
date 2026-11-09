@@ -72,9 +72,19 @@ pub fn PlaybackPanel(
             "const stage = document.querySelector('.sf-stage'); if (stage) stage.scrollTop = 0;",
         );
     }));
-    let position = session.zip(span).and_then(|(session, span)| {
-        Source::new(&session.runtime.plan().source).position(span.start)
+    let source_snapshot = session.zip(span).map(|(session, span)| {
+        let plan = session.runtime.plan();
+        if let Some((map, path, original)) = plan.source_map.as_ref().and_then(|map| {
+            map.original_span(span)
+                .map(|(path, original)| (map, path, original))
+        }) {
+            (Some(path), map.workspace.files[path].as_str(), original)
+        } else {
+            (None, plan.source.as_str(), span)
+        }
     });
+    let position =
+        source_snapshot.and_then(|(_, text, span)| Source::new(text).position(span.start));
     let title = session
         .and_then(|s| s.runtime.plan().title.as_ref())
         .map(|t| t.value.as_str())
@@ -306,12 +316,13 @@ pub fn PlaybackPanel(
                                 }
                             },
                             ExtraPanel::Source => rsx! {
-                                if let Some(session) = session {
+                                if let Some((file, source, _)) = source_snapshot {
                                     p { class: "sf-secondary", "Source snapshot"
+                                        if let Some(file) = file { " · {file}" }
                                         if let Some(position) = position { " · line {position.line + 1}:{position.character + 1}" }
                                     }
                                     pre {
-                                        for (line, text) in session.runtime.plan().source.lines().enumerate() {
+                                        for (line, text) in source.lines().enumerate() {
                                             span { class: if position.is_some_and(|p| p.line as usize == line) { "sf-executing" } else { "" }, "{line + 1}: {text}\n" }
                                         }
                                     }

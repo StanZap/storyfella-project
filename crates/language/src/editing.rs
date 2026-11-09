@@ -65,7 +65,7 @@ pub fn textarea_input(original: &str, input: &str) -> String {
     format!("{}{}{}", &original[..start], replacement, &original[end..])
 }
 
-/// Rename only resolved scene/beat declarations and their resolved targets.
+/// Rename only resolved declarations and their resolved targets.
 /// Asset identity lives in the host catalog and needs host persistence first.
 pub fn rename(analysis: &Analysis, offset: usize, name: &str) -> Result<Vec<TextEdit>, String> {
     if !crate::lexer::identifier(name) {
@@ -80,7 +80,7 @@ pub fn rename(analysis: &Analysis, offset: usize, name: &str) -> Result<Vec<Text
     }
     let definition = analysis
         .definition_at(offset)
-        .ok_or("Select a resolved scene or beat name")?;
+        .ok_or("Select a resolved scene, beat or flag name")?;
     let symbol = analysis
         .symbols
         .iter()
@@ -102,6 +102,31 @@ pub fn rename(analysis: &Analysis, offset: usize, name: &str) -> Result<Vec<Text
             new_text: name.into(),
         })
         .collect())
+}
+
+/// Offer an exact spelling only when one scene differs from an unresolved
+/// target solely by case. Ambiguous declarations have no automatic edit.
+pub fn scene_case_fixes(analysis: &Analysis) -> impl Iterator<Item = TextEdit> + '_ {
+    analysis.references.iter().filter_map(|reference| {
+        if reference.kind != ReferenceKind::Scene || reference.definition.is_some() {
+            return None;
+        }
+        let mut matches = analysis.symbols.iter().filter(|symbol| {
+            symbol.kind == SymbolKind::Scene
+                && symbol
+                    .name
+                    .value
+                    .eq_ignore_ascii_case(&reference.name.value)
+        });
+        let target = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        Some(TextEdit {
+            replace: reference.name.span,
+            new_text: target.name.value.clone(),
+        })
+    })
 }
 
 /// Canonicalize only whitespace gaps between structural tokens. Never change
@@ -171,7 +196,8 @@ pub fn semantic_tokens(analysis: &Analysis) -> Vec<SemanticToken> {
                 TokenKind::Word
                     if analysis.symbols.iter().any(|s| s.name.span == token.span)
                         || analysis.references.iter().any(|r| {
-                            r.name.span == token.span && r.kind == ReferenceKind::Scene
+                            r.name.span == token.span
+                                && matches!(r.kind, ReferenceKind::Scene | ReferenceKind::Flag)
                         }) =>
                 {
                     4

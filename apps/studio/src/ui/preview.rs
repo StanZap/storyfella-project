@@ -1,23 +1,27 @@
 use super::{AppScreen, WriterCaret};
 use crate::state::AppState;
 use dioxus::prelude::*;
+use storyfella_compiler::{SourceWorkspace, WorkspaceError};
 use storyfella_playback_ui::{PlaybackModel, PlaybackPanel};
 use storyfella_runtime::AssetPolicy;
 use storyfella_studio_core::playback::PlaybackSession;
 
-fn has_includes(source: &str) -> bool {
-    source.lines().any(|line| line.starts_with("include "))
-}
+use storyfella_language::has_includes;
 
-pub(super) fn workspace(state: &AppState) -> Result<storyfella_compiler::SourceWorkspace, String> {
-    let path = state
-        .story
-        .path()
-        .ok_or("Save this story before previewing included files")?;
+pub(super) fn workspace(state: &AppState) -> Result<SourceWorkspace, WorkspaceError> {
+    let unbound = || {
+        WorkspaceError::entry(
+            String::new(),
+            "Save this story before previewing included files".into(),
+        )
+    };
+    let path = state.story.path().ok_or_else(unbound)?;
     let entry = path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or("Story filename is not UTF-8")?;
+        .ok_or_else(|| {
+            WorkspaceError::entry(String::new(), "Story filename is not UTF-8".into())
+        })?;
     let mut drafts = state
         .additional_sources
         .as_ref()
@@ -31,18 +35,15 @@ fn workspace_position(
     span: storyfella_language::Span,
     expected: &storyfella_compiler::StoryPlan,
 ) -> Result<(String, storyfella_language::Position), String> {
-    let sources = workspace(state)?;
-    let catalog = storyfella_studio_core::authoring::AssetCatalog::from_registry(&state.registry);
-    let (compilation, expanded) = storyfella_compiler::compile_workspace_with_catalog(
-        &sources,
-        &catalog.assets,
-        &catalog.bindings,
-    )
-    .map_err(|error| error.message)?;
-    if compilation.plan.as_ref() != Some(expected) {
+    let sources = workspace(state).map_err(|error| error.to_string())?;
+    let map = expected
+        .source_map
+        .as_ref()
+        .ok_or("Preview has no project source map")?;
+    if sources != map.workspace {
         return Err("The story changed. Restart Preview before opening its source.".into());
     }
-    let (path, span) = expanded
+    let (path, span) = map
         .original_span(span)
         .ok_or("This playback position has no source location")?;
     let position = storyfella_language::Source::new(&sources.files[path])
@@ -52,20 +53,32 @@ fn workspace_position(
 }
 
 pub fn start_preview(mut model: Signal<PlaybackModel>, app_state: Signal<AppState>) {
-    let state = app_state.read();
-    let result = if has_includes(state.story.source()) {
-        workspace(&state).and_then(|sources| {
-            PlaybackSession::compile_workspace(&sources, &state.registry, AssetPolicy::Preview)
-                .map(|(session, _)| session)
-        })
+    model.write().install(compile_preview(&app_state.read()));
+}
+
+fn compile_preview(state: &AppState) -> Result<PlaybackSession, String> {
+    if has_includes(state.story.source()) {
+        workspace(state)
+            .map_err(|error| error.to_string())
+            .and_then(|sources| {
+                PlaybackSession::compile_workspace(&sources, &state.registry, AssetPolicy::Preview)
+            })
     } else {
         PlaybackSession::compile_with_policy(
             state.story.source(),
             &state.registry,
             AssetPolicy::Preview,
         )
-    };
-    drop(state);
+    }
+}
+
+pub fn start_scene(mut model: Signal<PlaybackModel>, app_state: Signal<AppState>, scene: String) {
+    let result = compile_preview(&app_state.read()).and_then(|mut session| {
+        session.dispatch(storyfella_runtime::Command::Jump {
+            scene: storyfella_compiler::SceneId(scene),
+        })?;
+        Ok(session)
+    });
     model.write().install(result);
 }
 
@@ -121,13 +134,10 @@ pub fn Preview(app_state: Signal<AppState>) -> Element {
                     };
                     match destination {
                         Ok(Some((path, position))) => {
-                            let entry = app_state.read().story.path().and_then(|path| path.file_name()).and_then(|name| name.to_str()).unwrap_or_default().to_owned();
-                            if path.is_empty() || path == entry { app_state.write().active_source = None; }
-                            else if let Err(error) = app_state.write().open_additional_source(&path) {
+                            if let Err(error) = super::writer::navigate_source(&mut app_state.write(), caret, &path, position) {
                                 use storyfella_studio_core::errors::CodedError;
                                 error_report.set(Some(error.report().log())); return;
                             }
-                            caret.navigate(position);
                             screen.set(AppScreen::Writer);
                         }
                         Ok(None) => {}
@@ -144,6 +154,31 @@ pub fn Preview(app_state: Signal<AppState>) -> Element {
 mod tests {
     use super::*;
     use storyfella_studio_core::story::StoryDocument;
+
+    #[test]
+    fn play_scene_uses_the_full_story_and_starts_at_the_requested_scene() {
+        let mut state = AppState::default();
+        state.story.set_source(
+            "scene first\n  narrate: First\nscene second\n  narrate: Second\n  end\n".into(),
+        );
+        let mut session = compile_preview(&state).unwrap();
+        session
+            .dispatch(storyfella_runtime::Command::Jump {
+                scene: storyfella_compiler::SceneId("second".into()),
+            })
+            .unwrap();
+        assert_eq!(
+            session.runtime.plan().scenes[session.runtime.state().scene]
+                .id
+                .0,
+            "second"
+        );
+        assert!(session
+            .dispatch(storyfella_runtime::Command::Jump {
+                scene: storyfella_compiler::SceneId("missing".into())
+            })
+            .is_err());
+    }
 
     #[test]
     fn workspace_preview_uses_the_unsaved_entry_draft() {
@@ -169,7 +204,7 @@ mod tests {
             )
             .unwrap();
         let sources = workspace(&state).unwrap();
-        let (session, _) =
+        let session =
             PlaybackSession::compile_workspace(&sources, &state.registry, AssetPolicy::Preview)
                 .unwrap();
         assert_eq!(session.runtime.plan().entry.0, "chapter");

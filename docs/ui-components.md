@@ -7,6 +7,13 @@ components in `apps/studio/src/ui`; Atelier has its own GPUI vocabulary.
 
 ## Contextual app action
 
+`components::ActionMenu` provides a compact menu anchored to an icon button.
+Pass a label, icon, `Vec<MenuOption>` and an `onselect` handler receiving the
+selected index. Each option has a label, icon and disabled state. The menu fits
+itself inside the viewport, closes on outside click or focus departure, and
+supports arrows, Home/End, Escape and focus return. Use it for short immediate
+choices; use a dialog for a form or consequential decision.
+
 The task-specific `atelier::OpenInAtelier` component is shared by Assets details
 and Writer references/scene actions. Pass `target: Option<Uuid>` and optionally
 `show_label: false` for compact toolbars. It owns save prerequisites, busy state,
@@ -33,6 +40,7 @@ TextInput → TextInputWithAction → SearchInput
 | --- | --- | --- |
 | `TextInput` | Plain single-line text and named form fields | `value: String`, `label: String`, `oninput: EventHandler<String>` |
 | `TextInputWithAction` | Text with one icon action inside the right edge | TextInput's required props, `action_icon: IconName`, `action_label: String`, `onaction: EventHandler<MouseEvent>` |
+| `DismissibleTextInput` | Inline text entry with a trailing discard action and Escape dismissal | TextInput's required props, `ondismiss: EventHandler<()>` |
 | `SearchInput` | Filtering/search with one × action and Escape cancellation | TextInput's required props, `oncancel: EventHandler<()>` |
 
 Common options:
@@ -68,7 +76,7 @@ An optional `onkeydown` handles other keys after the built-in Escape behavior;
 the palette uses it for result navigation without intercepting native button
 activation or Tab traversal.
 
-All three retain native typing, selection and editing undo through
+All four retain native typing, selection and editing undo through
 [`use_text_value`](../apps/studio/src/ui/text_input.rs). They do not use a
 controlled native `value` attribute: delayed state updates must not overwrite
 newer native keystrokes. Programmatic values and initial values still synchronize.

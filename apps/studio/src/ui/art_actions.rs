@@ -12,6 +12,7 @@ pub fn ArtActionDialog(
     action: ArtAction,
     app_state: Signal<AppState>,
     onclose: EventHandler<()>,
+    #[props(default)] oncreated: Option<EventHandler<uuid::Uuid>>,
 ) -> Element {
     let mut app_state = app_state;
     // The selector belongs only to new definitions. Variations resolve their
@@ -31,10 +32,10 @@ pub fn ArtActionDialog(
     let stale = project.is_none() || project != app_state.read().project_path;
     rsx! {
         Dialog {
-            title: "New catalog entry",
+            title: "New asset",
             on_close: move |_| onclose.call(()),
             form {
-                class: "space-y-4",
+                class: "studio-task-form",
                 onsubmit: move |event| {
                     event.prevent_default();
                     if stale { return; }
@@ -53,14 +54,17 @@ pub fn ArtActionDialog(
                         kind, name: name(), description: description(), variant_of,
                     };
                     match app_state.write().edit_catalog(edit) {
-                        Ok(_) => onclose.call(()),
+                        Ok(id) => { if let Some(oncreated) = oncreated { oncreated.call(id); } onclose.call(()); },
                         Err(message) => error.set(Some(message)),
                     }
                 },
-                h2 { class: "text-lg font-semibold", "New catalog entry" }
+                header { class: "flex items-center gap-3",
+                    h2 { class: "flex-1 text-lg font-semibold", "New asset" }
+                    super::components::IconButton { label: "Close", icon: super::icons::IconName::Close, onclick: move |_| onclose.call(()) }
+                }
                 if matches!(action, ArtAction::Create(_)) {
                     label {
-                        class: "block text-xs text-zinc-400", "Kind"
+                        class: "studio-field", span { "Kind" }
                         select {
                             class: "setting-control w-full",
                             value: kind().as_str(),
@@ -78,17 +82,20 @@ pub fn ArtActionDialog(
                         }
                     }
                 }
-                label { r#for: name_id.clone(), class: "block text-xs text-zinc-400", "Reference name" }
+                div { class: "studio-field",
+                label { r#for: name_id.clone(), "Reference name" }
                 TextInput {
                     id: Some(name_id.clone()), label: "Reference name", value: name(),
                     placeholder: "e.g. mara", autofocus: true,
                     oninput: move |value| name.set(value),
                 }
-                label { r#for: description_id.clone(), class: "block text-xs text-zinc-400", "Description" }
+                }
+                label { r#for: description_id.clone(), class: "studio-field", span { "Description" }
                 textarea {
                     id: description_id, onmounted: description_mount,
                     class: "setting-control min-h-28 w-full",
                     oninput: move |event| description.set(event.value()),
+                }
                 }
                 if stale { p { role: "alert", "The open project changed. Close this form and try again." } }
                 if let Some(message) = error() { p { role: "alert", class: "studio-inline-error", "{message}" } }
@@ -101,7 +108,7 @@ pub fn ArtActionDialog(
                     button {
                         r#type: "submit", class: "studio-button studio-button-primary",
                         disabled: stale || name().trim().is_empty() || app_state.read().operation_in_progress(),
-                        "Create catalog entry"
+                        "Create asset"
                     }
                 }
             }

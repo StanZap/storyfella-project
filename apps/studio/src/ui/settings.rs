@@ -421,6 +421,7 @@ fn ChatEndpointGroup(
     on_fetch: EventHandler<()>,
 ) -> Element {
     let provider_label = format!("{title} provider");
+    let provider_available = providers.iter().any(|option| option.value == provider_id);
     rsx! {
         div { class: "flex flex-wrap items-center justify-between gap-3",
             div { class: "flex min-w-0 items-center gap-3",
@@ -437,6 +438,10 @@ fn ChatEndpointGroup(
             }
             if provider_id.is_empty() {
                 p { class: "py-4 text-xs text-zinc-400", "Set up a provider in Clipforge, then refresh." }
+            } else if !provider_available {
+                p { class: "py-4 text-xs text-amber-300", role: "status",
+                    "Saved provider \"{provider_id}\" is unavailable. Choose another provider or restore it in Clipforge, then refresh."
+                }
             } else {
                 SettingRow { title: "Model".to_owned(), description: String::new(), last: true,
                     ModelSelect { models, value: model, on_select: on_select_model, on_fetch }
@@ -629,6 +634,21 @@ mod tests {
         let rendered = format!("{:?}", dom.rebuild_to_vec());
         assert!(rendered.contains("SVS-LLM-102"));
         assert!(!rendered.contains("saved-model"));
+    }
+
+    #[test]
+    fn removed_provider_shows_its_saved_id_and_recovery() {
+        let mut config = AppConfig::load_from(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../config/studio-startup-test-missing.toml"),
+        )
+        .unwrap();
+        config.text_provider_id = Some("removed-provider".into());
+        config.text = None;
+        let mut dom = VirtualDom::new_with_props(SettingsProbe, SettingsProbeProps { config });
+        let rendered = format!("{:?}", dom.rebuild_to_vec());
+        assert!(rendered.contains("removed-provider"));
+        assert!(rendered.contains("restore it in Clipforge, then refresh"));
     }
 
     #[tokio::test]

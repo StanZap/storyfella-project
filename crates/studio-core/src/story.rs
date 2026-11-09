@@ -1,7 +1,7 @@
 //! The editable `.sf` source file. SQLite owns project metadata and artwork,
 //! while this document owns exact authored text and its last disk snapshot.
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
@@ -37,43 +37,7 @@ impl CodedError for StoryFileError {
 
 /// The `.sf` file beside a project database; the pair can move together.
 pub fn source_path(project: &Path) -> PathBuf {
-    project.with_extension("sf")
-}
-
-/// List source files for the project explorer without following symlinks.
-pub fn list_source_files(entry: &Path) -> io::Result<Vec<String>> {
-    let entry = entry.canonicalize()?;
-    let root = entry
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Story has no folder"))?;
-    let mut pending = vec![root.to_owned()];
-    let mut files = Vec::new();
-    let mut directories = 0usize;
-    while let Some(directory) = pending.pop() {
-        directories += 1;
-        if directories > 1024 {
-            return Err(io::Error::other("Too many project folders"));
-        }
-        for item in fs::read_dir(directory)? {
-            let item = item?;
-            let kind = item.file_type()?;
-            if kind.is_dir() && !item.file_name().to_string_lossy().starts_with('.') {
-                pending.push(item.path());
-            } else if kind.is_file() && item.path().extension().is_some_and(|ext| ext == "sf") {
-                let path = item.path();
-                let relative = path.strip_prefix(root).map_err(io::Error::other)?;
-                let name = relative.to_str().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "Source path is not UTF-8")
-                })?;
-                files.push(name.replace(std::path::MAIN_SEPARATOR, "/"));
-                if files.len() > 4096 {
-                    return Err(io::Error::other("Too many story files"));
-                }
-            }
-        }
-    }
-    files.sort();
-    Ok(files)
+    crate::project::shared_source_path(project).unwrap_or_else(|| project.with_extension("sf"))
 }
 
 /// Load the reachable source snapshot without allowing links to escape the
@@ -82,30 +46,70 @@ pub fn list_source_files(entry: &Path) -> io::Result<Vec<String>> {
 pub fn load_source_workspace(
     entry: &Path,
     drafts: &std::collections::BTreeMap<String, String>,
-) -> Result<storyfella_compiler::SourceWorkspace, String> {
+) -> Result<storyfella_compiler::SourceWorkspace, storyfella_compiler::WorkspaceError> {
+    use storyfella_compiler::WorkspaceError;
+    let fail = |message| {
+        WorkspaceError::entry(
+            entry
+                .file_name()
+                .unwrap_or(entry.as_os_str())
+                .to_string_lossy()
+                .into_owned(),
+            message,
+        )
+    };
     let entry = entry
         .canonicalize()
-        .map_err(|error| format!("Cannot open {}: {error}", entry.display()))?;
-    let root = entry.parent().ok_or("Story source has no parent folder")?;
+        .map_err(|error| fail(format!("Cannot open {}: {error}", entry.display())))?;
+    let root = entry
+        .parent()
+        .ok_or_else(|| fail("Story source has no parent folder".into()))?;
     let name = entry
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or("Story filename is not UTF-8")?
+        .ok_or_else(|| fail("Story filename is not UTF-8".into()))?
         .to_owned();
-    storyfella_compiler::SourceWorkspace::load_with(name.clone(), |relative| {
-        if let Some(draft) = drafts.get(relative) {
-            return Ok(draft.clone());
+    let mut loaded = BTreeSet::new();
+    storyfella_compiler::SourceWorkspace::load_with(name, |relative| {
+        if cfg!(windows) && relative.contains(':') {
+            return Err(format!("Source path is not valid on Windows: {relative}"));
         }
         let candidate = root.join(relative);
-        let canonical = candidate
-            .canonicalize()
-            .map_err(|error| format!("Cannot open {relative}: {error}"))?;
+        let draft = drafts.get(relative);
+        let canonical = match candidate.canonicalize() {
+            Ok(path) => path,
+            Err(error) if error.kind() == io::ErrorKind::NotFound && draft.is_some() => {
+                if !matches!(fs::symlink_metadata(&candidate), Err(error) if error.kind() == io::ErrorKind::NotFound)
+                {
+                    return Err(format!("Cannot open {relative}: {error}"));
+                }
+                let parent = candidate
+                    .parent()
+                    .expect("source is relative to its workspace");
+                parent
+                    .canonicalize()
+                    .map_err(|error| format!("Cannot open {relative}: {error}"))?
+                    .join(
+                        candidate
+                            .file_name()
+                            .expect("valid source path has a filename"),
+                    )
+            }
+            Err(error) => return Err(format!("Cannot open {relative}: {error}")),
+        };
         if !canonical.starts_with(root) {
             return Err(format!("Source escapes the project folder: {relative}"));
         }
+        if !loaded.insert(canonical.clone()) {
+            return Err(format!(
+                "Source included more than once through different paths: {relative}"
+            ));
+        }
+        if let Some(draft) = draft {
+            return Ok(draft.clone());
+        }
         fs::read_to_string(canonical).map_err(|error| format!("Cannot read {relative}: {error}"))
     })
-    .map_err(|error| format!("{}:{}: {}", error.path, error.span.start, error.message))
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -284,6 +288,11 @@ impl AdditionalSources {
         self.documents.get(relative)
     }
 
+    /// Forget a clean file after its guarded removal from the project tree.
+    pub fn forget(&mut self, relative: &str) {
+        self.documents.remove(relative);
+    }
+
     /// Create an empty source without replacing any existing file.
     pub fn create(&mut self, path: &Path) -> Result<String, StoryFileError> {
         let fail = |message: &str| StoryFileError::Write {
@@ -318,7 +327,7 @@ impl AdditionalSources {
             .to_str()
             .ok_or_else(|| fail("Source path must be UTF-8"))?
             .replace(std::path::MAIN_SEPARATOR, "/");
-        if relative.contains(['"', '\n', '\r', '\\']) {
+        if !storyfella_language::valid_source_path(&relative) {
             return Err(fail("Source path contains unsupported characters"));
         }
         write_new(&destination, "")?;

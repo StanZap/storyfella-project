@@ -2,9 +2,10 @@ You are working on **Storyfella**, the workspace for story authoring and playbac
 
 Current shape: the artifact registry + typed operation layer (`crates/studio-core/src/registry/`), the SQLite project store, the native generation runtime (`crates/studio-core/src/runtime/`, adapting the shared `agentkit-ai` crate; its image deployment is resolved from the shared `clipforge.toml`), and the canvas are implemented and driven by the `svs` CLI and the desktop app (see `# Current status` below). Read `docs/ROADMAP.md` §12 (the feature/status tracker) before planning changes.
 
-Shared user projects now use `studio-core::project::ProjectFolder`: a versioned
-`storyfella.toml`, `story.sf`/`story.db`, portable immutable `artwork/` revisions
-and `atelier/` working documents. Studio creates these folders and explicitly
+Shared user projects now use `studio-core::project::ProjectFolder`:
+`storyfella.toml`, `assets/story.sf` and `story.db`, portable immutable `artwork/` revisions
+and `atelier/` working documents. Version-1 projects retain their root source
+files and relative includes. Studio creates new folders and explicitly
 adopts standalone pairs; Atelier opens the manifest. `studio-core::catalog`
 reuses registry UUIDs for definitions, variations and independent illustrations.
 GUI registry saves use the loaded `StoredProject::registry_version`; preserve

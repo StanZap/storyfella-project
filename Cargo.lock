@@ -8925,6 +8925,7 @@ dependencies = [
  "storyfella-compiler",
  "storyfella-language",
  "storyfella-studio-core",
+ "url",
 ]
 
 [[package]]

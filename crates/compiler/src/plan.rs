@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
-use storyfella_language::{AssetKind, DirectionKind, Name, Span, StageGroup, Text};
+use storyfella_language::{
+    AssetKind, Condition, DirectionKind, Flag, Name, Span, StageGroup, Text,
+};
+
+use crate::workspace::{original_span, SourceSegment, SourceWorkspace};
 
 pub const PLAN_VERSION: u32 = 1;
 
@@ -78,6 +82,12 @@ pub struct ChoiceOption {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchTarget {
+    pub scene: SceneId,
+    pub source: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InstructionKind {
     BeginBeat {
         id: BeatId,
@@ -121,12 +131,24 @@ pub enum InstructionKind {
         target: SceneId,
         target_source: Span,
     },
+    SetFlag {
+        flag: Name,
+        value: bool,
+    },
+    Conditional {
+        condition: Condition,
+        when_true: BranchTarget,
+        when_false: BranchTarget,
+    },
     End,
 }
 
 impl InstructionKind {
     pub(crate) fn terminal(&self) -> bool {
-        matches!(self, Self::Choice { .. } | Self::Jump { .. } | Self::End)
+        matches!(
+            self,
+            Self::Choice { .. } | Self::Jump { .. } | Self::Conditional { .. } | Self::End
+        )
     }
 }
 
@@ -165,11 +187,29 @@ impl Readiness {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanSourceMap {
+    pub workspace: SourceWorkspace,
+    pub segments: Vec<SourceSegment>,
+}
+
+impl PlanSourceMap {
+    pub fn original_span(&self, span: Span) -> Option<(&str, Span)> {
+        original_span(&self.segments, span)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoryPlan {
     pub version: u32,
     pub source: String,
+    /// Multi-file plans embed exact authored sources and their expansion map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_map: Option<PlanSourceMap>,
     pub title: Option<Text>,
     pub entry: SceneId,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flags: Vec<Flag>,
     pub scenes: Vec<ScenePlan>,
     pub readiness: Readiness,
 }

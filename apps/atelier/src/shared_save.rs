@@ -280,7 +280,7 @@ mod tests {
         assert_eq!(db.load().unwrap(), external);
         assert_eq!(document::load(&path).unwrap().note, doc.note);
         assert_eq!(
-            std::fs::read_to_string(folder.root().join("story.sf")).unwrap(),
+            std::fs::read_to_string(folder.root().join("assets/story.sf")).unwrap(),
             source
         );
         // Explicitly relinking acknowledges the current image for conflict recovery.

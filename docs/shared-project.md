@@ -7,20 +7,26 @@ SF-PLAN-02 storage contract · 2026-11-01. [ROADMAP](ROADMAP.md) owns task statu
 
 ```text
 harbor/
-  storyfella.toml       version and stable project UUID
-  story.sf             entry UTF-8 source, preserved byte for byte
-  chapter.sf           optional included story source
+  storyfella.toml       stable project UUID
+  assets/
+    story.sf           entry UTF-8 source, preserved byte for byte
+    chapter.sf         optional included story source
   story.db             project metadata, registry, revisions, associations
   artwork/             immutable saved images named by revision UUID
   atelier/
     main.atelier       editable visual document with embedded references/layers
 ```
 
-Manifest version 1 fixes the entry source/database filenames. The entry source
+New manifests store layout version 2 and the stable project UUID. Their
+user-managed files live in `assets/`, which the explorer uses as its root.
+Version-1 folders retain `story.sf` and included chapters in their original
+locations beside `story.db`. Earlier development builds of the `assets/`
+layout wrote an unversioned manifest, which opens as layout version 2.
+`story.db` remains internal project storage. The entry source
 can include additional project-relative `.sf` files; SF-PLAN-08 tracks remaining
 editor and source-map work. Database schema migrations remain the existing
 `ProjectDb` migrations. The manifest UUID must match the database project UUID;
-unsupported versions, missing source/database or mismatched identity block opening.
+missing source/database or mismatched identity block opening.
 
 Studio writes source and its authoring associations. Atelier writes editable
 `.atelier` documents. GUI-free `studio-core` owns the shared registry and resource

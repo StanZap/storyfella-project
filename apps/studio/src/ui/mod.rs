@@ -16,6 +16,7 @@ mod keys;
 mod palette;
 mod plans;
 pub mod preview;
+mod project_files;
 mod projects;
 mod settings;
 pub mod shortcuts;
@@ -117,6 +118,11 @@ pub struct WriterCaret {
     pub position: Signal<storyfella_language::Position>,
     pub target: Signal<Option<storyfella_language::Position>>,
 }
+
+#[derive(Clone, Copy)]
+struct SidebarVisibility(Signal<bool>);
+#[derive(Clone, Copy)]
+struct ProjectFilePreview(Signal<Option<PathBuf>>);
 impl WriterCaret {
     pub fn navigate(mut self, position: storyfella_language::Position) {
         self.position.set(position);
@@ -219,7 +225,12 @@ pub fn Workspace(
     // Land on Projects so a story is opened before working with assets — the
     // asset catalog cannot save until a project file is bound.
     let mut screen = use_signal(|| AppScreen::Projects);
+    let mut writing_help = use_signal(|| false);
+    use_context_provider(|| writing_help);
+    let selected_scene = use_signal(|| None::<String>);
+    use_context_provider(|| selected_scene);
     let mut sidebar_visible = use_signal(|| true);
+    use_context_provider(|| SidebarVisibility(sidebar_visible));
     use_context_provider(|| screen);
     let action_request = actions::ActionRequest(use_signal(|| None));
     use_context_provider(|| action_request);
@@ -234,8 +245,20 @@ pub fn Workspace(
     // The backend lives in a signal so the Settings model picker can swap
     // the writing model; provider edits rebuild its client.
     let backend = use_signal(|| CreativeBackend::new(&backend_config));
+    let project_file_preview = use_signal(|| None::<PathBuf>);
+    use_context_provider(|| ProjectFilePreview(project_file_preview));
     dioxus::desktop::use_asset_handler("generated", move |request, responder| {
-        let path = registered_asset_path(&app_state.peek().registry, request.uri().path());
+        let state = app_state.peek();
+        let selected = project_file_preview.peek();
+        let path = registered_asset_path(&state.registry, request.uri().path()).or_else(|| {
+            let candidate = selected.as_ref()?.canonicalize().ok()?;
+            let root = state.story.path()?.parent()?.canonicalize().ok()?;
+            if !candidate.starts_with(root) {
+                return None;
+            }
+            let key = candidate.to_str().and_then(generated_asset_url)?;
+            (key == request.uri().path()).then_some(candidate)
+        });
         serve_generated_asset(path.as_deref(), responder);
     });
 
@@ -392,6 +415,11 @@ pub fn Workspace(
                 palette_open.set(true);
                 return;
             }
+            "sidebar" => {
+                let visible = *sidebar_visible.peek();
+                sidebar_visible.set(!visible);
+                return;
+            }
             "undo" => {
                 app_state.write().undo();
                 return;
@@ -415,6 +443,7 @@ pub fn Workspace(
                     return;
                 }
                 "a" if AppScreen::Assets.available(app_state.read().project_path.is_some()) => {
+                    app_state.write().clear_selection();
                     screen.set(AppScreen::Assets);
                     return;
                 }
@@ -457,6 +486,9 @@ pub fn Workspace(
     let dispatch = EventHandler::new(move |action| match action {
         palette::Action::Navigate(destination) => {
             if destination.available(app_state.read().project_path.is_some()) {
+                if destination == AppScreen::Assets {
+                    app_state.write().clear_selection();
+                }
                 screen.set(destination);
             }
         }
@@ -489,12 +521,17 @@ pub fn Workspace(
                 header { class: "studio-header",
                     IconButton {
                         icon: IconName::Sidebar,
-                        label: if sidebar_visible() { "Hide sidebar" } else { "Show sidebar" },
+                        label: shortcuts::tooltip(if sidebar_visible() { "Hide sidebar" } else { "Show sidebar" }, "sidebar"),
                         expanded: sidebar_visible(), controls: "studio-workspace-navigation",
                         onclick: move |_| { let visible = sidebar_visible(); sidebar_visible.set(!visible); },
                     }
                     span { class: "text-sm font-medium text-zinc-400", "{screen().label()}" }
                     div { class: "ml-auto flex items-center gap-1",
+                        if screen() == AppScreen::Writer {
+                            button { class: "studio-button", onclick: move |_| { preview::start_preview(playback, app_state); screen.set(AppScreen::Preview); }, "Play story" }
+                            button { class: "studio-button", disabled: selected_scene().is_none(), onclick: move |_| { if let Some(scene) = selected_scene() { preview::start_scene(playback, app_state, scene); screen.set(AppScreen::Preview); } }, "Play scene" }
+                            IconButton { label: "Writing help", icon: IconName::Sparkles, active: writing_help(), onclick: move |_| writing_help.toggle() }
+                        }
                         IconButton { label: shortcuts::tooltip("Commands and navigation", "palette"), icon: IconName::Search, onclick: move |_| palette_open.set(true) }
                         span { class: "mx-2 h-5 w-px bg-white/10" }
                         IconButton { label: shortcuts::tooltip("Undo", "undo"), icon: IconName::Undo, disabled: !app_state.read().can_undo(), onclick: move |_| { app_state.write().undo(); } }
@@ -510,9 +547,9 @@ pub fn Workspace(
                         hidden: !sidebar_visible(),
                         class: if sidebar_visible() { "studio-navigation" } else { "hidden" },
                         aria_label: "Workspace navigation",
-                        for destination in [AppScreen::Writer, AppScreen::Assets, AppScreen::Preview] {
+                        for destination in [AppScreen::Writer, AppScreen::Assets] {
                             if destination.available(app_state.read().project_path.is_some()) {
-                                ScreenTab { destination, active: screen() == destination, onclick: move |_| screen.set(destination) }
+                                ScreenTab { destination, active: screen() == destination, onclick: move |_| { if destination == AppScreen::Assets { app_state.write().clear_selection(); } screen.set(destination); } }
                             }
                         }
                         div { class: "min-h-4 flex-1" }

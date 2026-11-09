@@ -147,3 +147,30 @@ pub fn SearchInput(
         }
     }
 }
+
+/// A compact inline editor whose trailing action discards the pending edit.
+#[component]
+pub fn DismissibleTextInput(
+    value: String,
+    label: String,
+    oninput: EventHandler<String>,
+    ondismiss: EventHandler<()>,
+    #[props(default)] placeholder: String,
+    #[props(default)] autofocus: bool,
+) -> Element {
+    rsx! {
+        TextInputWithAction {
+            value, label, oninput, placeholder, autofocus,
+            action_icon: IconName::Close,
+            action_label: "Discard",
+            onaction: move |_| ondismiss.call(()),
+            onkeydown: move |event: KeyboardEvent| {
+                if event.key() == Key::Escape {
+                    event.prevent_default();
+                    event.stop_propagation();
+                    ondismiss.call(());
+                }
+            },
+        }
+    }
+}

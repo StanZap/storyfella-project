@@ -97,6 +97,14 @@ fn creating_additional_sources_never_replaces_or_escapes() {
     assert_eq!(fs::read_to_string(chapter).unwrap(), "existing text");
     assert!(sources.create(&fixture.0.join("../outside.sf")).is_err());
     assert!(sources.create(&fixture.0.join("bad\"name.sf")).is_err());
+    fs::create_dir_all(fixture.0.join("chapters/part")).unwrap();
+    assert_eq!(
+        sources
+            .create(&fixture.0.join("chapters/part/scene.sf"))
+            .unwrap(),
+        "chapters/part/scene.sf"
+    );
+    assert!(fixture.0.join("chapters/part/scene.sf").is_file());
 }
 
 #[test]

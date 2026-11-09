@@ -20,6 +20,56 @@ fn plan(source: &str) -> StoryPlan {
 const STORY: &str = "scene empty\nscene harbor\n  cast: mara\n  beat arrival\n    mara: Hello 🌊\n    mara think: A thought\n    narrate: Rain\n    choice \"Go?\"\n      option \"Light\": lighthouse\n      option \"Stay\": shore\nscene lighthouse\n  narrate: The light\n  end\nscene shore\n  narrate: The shore\n";
 
 #[test]
+fn version_one_save_without_flags_or_workspace_map_keeps_its_identity() {
+    use sha2::{Digest, Sha256};
+    let original = r#"{"version":1,"source":"scene start\n  end\n","title":null,"entry":"start","scenes":[{"id":"start","source":{"start":0,"end":18},"instructions":[{"source":{"start":14,"end":17},"origin":"Authored","beat":null,"kind":"End"}]}],"readiness":{"pending_assets":[],"unsupported_directions":[]}}"#;
+    let plan: StoryPlan = serde_json::from_str(original).unwrap();
+    assert_eq!(serde_json::to_string(&plan).unwrap(), original);
+    let saved = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "plan_identity": Sha256::digest(original).iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+        "commands": [],
+        "checkpoint": {
+            "scene": 0, "instruction": 0, "beat": null, "assets": [],
+            "phase": "Complete", "paused": false
+        }
+    })).unwrap();
+    assert_eq!(
+        Runtime::restore(plan, saved).unwrap().state().phase,
+        Phase::Complete
+    );
+}
+
+#[test]
+fn conditional_flow_replays_flag_assignments_and_restart_resets_them() {
+    let source = "flag key false\nscene entry\n  choice \"Take key?\"\n    option \"Take\": pickup\n    option \"Leave\": door\nscene pickup\n  set key true\n  goto door\nscene door\n  if not key goto locked else inside\nscene locked\n  narrate: Locked\n  end\nscene inside\n  narrate: Open\n  end\n";
+    let compiled = plan(source);
+    for (index, expected, value) in [(0, "Open", true), (1, "Locked", false)] {
+        let (mut runtime, _) = Runtime::start(compiled.clone()).unwrap();
+        let events = runtime.dispatch(Command::SelectChoice { index }).unwrap();
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, Event::Text { text, .. } if text.value == expected)));
+        assert_eq!(runtime.state().flags["key"], value);
+        assert_eq!(
+            events.iter().any(
+                |event| matches!(event, Event::FlagSet { name, value: true, .. } if name == "key")
+            ),
+            value
+        );
+        let save = runtime.save();
+        let mut restored = Runtime::restore(compiled.clone(), save.clone()).unwrap();
+        assert_eq!(restored.state(), runtime.state());
+        restored.dispatch(Command::Restart).unwrap();
+        assert!(!restored.state().flags["key"]);
+        assert_eq!(restored.state().phase, Phase::Choice);
+        let mut corrupted = save;
+        corrupted.checkpoint.flags.insert("key".into(), !value);
+        assert!(Runtime::restore(compiled.clone(), corrupted).is_err());
+    }
+}
+
+#[test]
 fn deterministic_traces_cover_every_text_kind_beats_fallthrough_and_both_routes() {
     for route in 0..2 {
         let trace = || {

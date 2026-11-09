@@ -273,6 +273,10 @@ built at the time, not the target ownership.
   and routing/refresh coverage remain open.
   Offline model discovery shows an actionable error code and refresh in the model
   row; the Settings regression test covers the unavailable state.
+  Studio preserves different Text and Vision model choices on the same provider
+  when the separate-Vision preference is unset. If a saved provider disappears
+  from Clipforge, Models names the missing provider and shows how to recover.
+  Regression coverage exercises persisted routing and the missing-provider row.
   Cleanup remains for superseded provider-administration helpers in Studio core.
 
 **Delivery order:** start SF-PLAN-27 early, before expanding the former Clipforge
@@ -509,9 +513,50 @@ The following checklist describes the shared-project workstream.
   back to the originating file. New chapters are created without overwrite and
   linked from the entry draft; the explorer lists project diagnostics by file.
   Resolved scene, beat and asset renames update all referenced files as one
-  undoable edit while retaining identities. File rename/removal, full
-  project-aware editor services, LSP, and durable
-  source maps in saved plans remain open. This slice does not complete SF-PLAN-08.
+  undoable edit while retaining identities.
+  Explorer pass (2026-11-08): source files and assets have separate expandable
+  groups, nested source folders are browsable, and assets open in the Story
+  workspace in place of the editor. The add dialog creates a source or catalog
+  definition, and Cmd+B/Ctrl+B toggles the sidebar. Additional files now display
+  shared syntax highlighting, completion and file-specific diagnostics, with
+  project-aware completion for included files. Unincluded files use local
+  analysis. Native UI and accessibility acceptance remain open.
+  Explorer correction (2026-11-08): show the actual project file tree, including
+  empty nested folders, alongside the catalog. Create files/folders in the
+  selected folder and copy externally dropped files without replacing existing
+  files; images can be viewed in the workspace. Imported sources are not
+  automatically included. The Story toolbar starts the full story or the scene
+  at the caret; Preview is removed from primary navigation.
+  Unified project tree (2026-11-08): new shared projects use `assets/story.sf`
+  with their visible files under `assets/`; internal metadata and revision
+  storage remain outside the tree. Catalog entries and files appear at the same
+  root without extra grouping. Version-1 projects keep their root entry file
+  and chapter paths. The explorer hides internal artwork and Atelier storage.
+  The asset-creation dialog uses the shared padded task-form layout.
+  Add to project uses the shared anchored action menu. Story-file and folder
+  forms open inline at the selected destination and retain that destination
+  during editing. The asset form opens in a dialog. The explorer reads from the
+  entry file's directory for both shared folders and standalone pairs, displays
+  hidden entry sources such as `.svs-project.sf`, and keeps Enter for opening
+  files. F2 opens Rename for ordinary files. Filesystem regression coverage
+  checks both layouts, link rejection and import collisions. Native pointer,
+  keyboard and assistive-technology acceptance remains open.
+  Automated evidence for this pass and the SF-PLAN-31 fixes: workspace tests
+  (476 passed, 27 ignored), strict Studio and Studio core Clippy, and format
+  checks. Logs: `.svs-e2e/logs/studio-gap-*`.
+  Language integration pass: includes are parsed and formatted by the shared
+  front end. Studio, CLI and LSP report missing, cyclic and duplicate includes
+  at the authored directive. Saved workspace plans contain exact source files
+  and byte maps, verified by recompilation on import. Preview and Player use
+  those maps for source inspection. Studio can rename or delete a clean,
+  unreferenced chapter after checking saved sources and unsaved drafts. The
+  operation clears source undo history so old snapshots cannot restore a
+  removed path. Automatic include rewrites during rename, folder operations
+  containing sources, internal drag-to-move and external-folder import remain
+  open, alongside native interaction acceptance.
+  Automated evidence for SF-PLAN-08/12/13: 481 workspace tests passed, 27
+  ignored. Workspace all-target checks, strict Clippy for changed packages,
+  formatting and diff checks passed. Logs: `.svs-e2e/logs/language-gaps-*`.
 - [ ] **SF-PLAN-14 — Atelier production backlog.** Present the shared catalog as
   actionable character, variation, place, prop and illustration work, including
   items without images. Group variations under their character and show saved
@@ -919,16 +964,27 @@ The broader product and UX assessments still need the review tracked below.
   Done when Studio and external editors agree on analysis, rename touches only
   resolved references, formatting preserves prose/comments and cyclic imports or
   invalid edits produce bounded, actionable diagnostics.
+  An explicitly configured entry enables workspace completion, definitions,
+  references, versioned rename edits, and diagnostics for open and closed
+  sources. Go to Definition opens include targets. The first quick fix corrects
+  a scene target when a unique declaration differs only by case. Studio
+  navigates resolved definitions, references and problems across source files.
+  Formatting preserves local source text and handles include syntax. Native
+  Studio and external-client acceptance remain open.
 - [ ] **SF-PLAN-13 — Specify further language semantics.** Design variables,
   conditions, expressions and localization with explicit grammar, semantics and
-  fixtures before implementing them. These are not implied by the current DSL.
+  fixtures before implementing them.
   Done when each adopted feature has a documented contract and shared
   language/compiler/runtime tests.
+  Boolean flags, assignment, negation and two-way conditional jumps now have
+  a [language contract](language.md#story-flags-and-conditional-flow), symbol
+  tooling, typed lowering and verified replay. General expression types,
+  compound expressions and localization remain open.
 
 ### Consolidated language and UI implementation notes
 
 The shared lossless front end, recovering AST, UTF-16 positions, diagnostics,
-completion/navigation, single-document LSP, rename, formatting and semantic tokens
+completion/navigation, workspace-aware LSP, rename, formatting and semantic tokens
 are implemented. The compiler supplies deterministic versioned plans, source
 maps, explicit flow, immutable asset bindings and readiness. Studio persists
 authoritative `.sf` files with conflict handling and scene/beat artwork
@@ -950,11 +1006,13 @@ use appropriate controls; revisions distinguish canon from experiments; commands
 and direct UI use shared operations; Enter submits and Tab completes. Prototype
 implementation instructions and line-number references are superseded.
 
-Acceptance follow-up under SF-PLAN-11: verify command entry, Canvas navigation,
-revision promotion and a complete keyboard-only workflow using the current
-`config/plans/` harness and native UI checks. For language changes, run focused
-language/LSP tests and the repository-required workspace checks; editor caret,
-highlighting and navigation behavior also need interactive verification.
+Studio acceptance under SF-PLAN-11 follows the current authoring flow: create,
+open and switch source files using the keyboard, navigate Problems, preview and
+return to source, then open saved artwork from Assets. Exercise drop handling,
+narrow windows and assistive technology in the native app. Visual production
+and revision publication acceptance belongs to Atelier. For language changes,
+run focused language/LSP tests and workspace checks, and verify caret,
+highlighting and navigation interactively.
 
 ### Supporting design and implementation history
 
@@ -1774,11 +1832,10 @@ collection images together. See [Atelier](atelier.md).
    in the options panel. See [playback reference](ROADMAP.md#story-execution-and-playback-reference). Portable image paths,
    packaging/export and expressive media/voice remain planned.
 10. **LSP tooling:** `storyfella-lsp` exposes shared language analysis to
-    external editors. — **🔧 single-document tooling implemented.** Stdio, full-document
-    sync, UTF-16, versioned diagnostics, completion, definitions, references and
-    scene/beat symbols, resolved rename, conservative formatting and semantic
-    tokens are supported. Explicit catalog export/refresh supplies shared
-    compiler diagnostics for unsaved buffers. Workspace imports remain planned.
+    external editors over stdio with incremental UTF-16 edits. Completion,
+    definitions, references, symbol rename, diagnostics, formatting and semantic
+    tokens are supported. With an explicit entry file, the server resolves
+    includes and publishes workspace diagnostics. SF-PLAN-12 tracks acceptance.
 11. **Self-contained distribution (no user-side dependencies):** one
    downloadable artifact per platform (AppImage/`.deb` on Linux, `.app`
    bundle on macOS, installer/portable zip on Windows) containing the app
@@ -1921,9 +1978,10 @@ Execution is manual and host-driven: no clocks, sleeps, audio or automatic text
 duration. `Advance` passes the current text, `SelectChoice { index }` uses a
 zero-based option, `Jump { scene }` targets a declared scene, and `End`, `Pause`,
 `Resume`, `Restart` are explicit. Paused execution rejects advancement/choices/
-jumps. Restart begins at entry, unpauses and clears command history. Invalid
-commands leave state unchanged. Choices, jumps and ends terminate the scene;
-implicit fallthrough and source-ordered beats follow the compiler.
+jumps. Restart begins at entry, resets flags, unpauses and clears command
+history. Invalid commands leave state unchanged. Choices, jumps, conditionals
+and ends terminate the scene. Implicit fallthrough and source-ordered beats
+follow the compiler. Flag assignments are immediate and emit `FlagSet`.
 
 Events report scene/beat entry, exact asset bindings, dialogue/thought/narration,
 choice presentation, completion, pause/resume and exhausted transitions. Authored

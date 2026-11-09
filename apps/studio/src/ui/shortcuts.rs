@@ -65,6 +65,12 @@ pub const fn request_keys() -> &'static str {
 pub const SHORTCUTS: &[Shortcut] = &[
     // ------------------------------------------------------------- global
     Shortcut {
+        action: "sidebar",
+        keys: primary("⌘B", "Ctrl+B"),
+        label: "Toggle the project sidebar",
+        scope: Scope::Global,
+    },
+    Shortcut {
         action: "palette",
         keys: primary("⌘K", "Ctrl+K"),
         label: "Open the command palette",

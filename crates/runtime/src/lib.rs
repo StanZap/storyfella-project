@@ -91,11 +91,14 @@ pub fn validate_plan_with_policy(
         }
     }
     let bindings: Vec<_> = bindings.into_values().collect();
-    if storyfella_compiler::compile(&plan.source, &bindings)
-        .plan
-        .as_ref()
-        != Some(plan)
-    {
+    let recompiled = if let Some(map) = &plan.source_map {
+        storyfella_compiler::compile_workspace(&map.workspace, &bindings)
+            .map_err(|error| Error::InvalidPlan(error.to_string()))?
+            .0
+    } else {
+        storyfella_compiler::compile(&plan.source, &bindings)
+    };
+    if recompiled.plan.as_ref() != Some(plan) {
         return Err(Error::InvalidPlan(
             "instructions, identities, ranges or requirements differ from the compiled source"
                 .into(),
@@ -174,6 +177,11 @@ pub enum Event {
     Completed {
         source: Span,
     },
+    FlagSet {
+        name: String,
+        value: bool,
+        source: Span,
+    },
     TransitionBudgetExceeded {
         source: Span,
     },
@@ -198,6 +206,8 @@ pub struct State {
     pub assets: Vec<AssetBinding>,
     pub phase: Phase,
     pub paused: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub flags: BTreeMap<String, bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -223,6 +233,13 @@ pub struct Runtime {
     staging_used: bool,
 }
 
+fn initial_flags(plan: &StoryPlan) -> BTreeMap<String, bool> {
+    plan.flags
+        .iter()
+        .map(|flag| (flag.name.value.clone(), flag.initial))
+        .collect()
+}
+
 impl Runtime {
     pub fn start(plan: StoryPlan) -> Result<(Self, Vec<Event>), Error> {
         Self::start_with_policy(plan, AssetPolicy::RequireCompleted)
@@ -237,6 +254,7 @@ impl Runtime {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect();
+        let flags = initial_flags(&plan);
         let mut runtime = Self {
             plan,
             identity,
@@ -247,6 +265,7 @@ impl Runtime {
                 assets: Vec::new(),
                 phase: Phase::Budget,
                 paused: false,
+                flags,
             },
             commands: Vec::new(),
             asset_policy,
@@ -351,6 +370,7 @@ impl Runtime {
             }
             Command::Restart => {
                 self.state.paused = false;
+                self.state.flags = initial_flags(&self.plan);
                 self.enter(0, &mut events);
                 self.pump(&mut events);
             }
@@ -551,6 +571,33 @@ impl Runtime {
                 }
                 InstructionKind::Jump { target, .. } => {
                     let scene = self.scene_index(&target).expect("validated target");
+                    self.enter(scene, events);
+                    continue;
+                }
+                InstructionKind::SetFlag { flag, value } => {
+                    let current = self
+                        .state
+                        .flags
+                        .get_mut(&flag.value)
+                        .expect("validated flag");
+                    *current = value;
+                    events.push(Event::FlagSet {
+                        name: flag.value,
+                        value,
+                        source: instruction.source,
+                    });
+                }
+                InstructionKind::Conditional {
+                    condition,
+                    when_true,
+                    when_false,
+                } => {
+                    let target = if self.state.flags[&condition.flag.value] != condition.negated {
+                        when_true
+                    } else {
+                        when_false
+                    };
+                    let scene = self.scene_index(&target.scene).expect("validated target");
                     self.enter(scene, events);
                     continue;
                 }

@@ -159,10 +159,20 @@ fn workspace_playback_branches_across_files_and_restores() {
         ]),
     };
     let registry = storyfella_studio_core::registry::ArtifactRegistry::new();
-    let (mut session, mapping) =
+    let mut session =
         PlaybackSession::compile_workspace(&workspace, &registry, AssetPolicy::Preview).unwrap();
     let source = session.runtime.current().source;
+    let plan = session.runtime.plan();
+    let serialized = serde_json::to_string(plan).unwrap();
+    let imported: storyfella_compiler::StoryPlan = serde_json::from_str(&serialized).unwrap();
+    let mapping = imported.source_map.as_ref().unwrap();
     assert_eq!(mapping.original_span(source).unwrap().0, "end.sf");
+    assert_eq!(imported, *plan);
+    let mut damaged = imported;
+    damaged.source_map.as_mut().unwrap().segments[0]
+        .original
+        .start += 1;
+    assert!(storyfella_runtime::validate_plan(&damaged).is_err());
     let saved = session.runtime.save();
     session.dispatch(Command::Advance).unwrap();
     assert_eq!(session.runtime.state().phase, Phase::Complete);
@@ -251,12 +261,14 @@ fn relocated_shared_project_opens_from_folder_or_manifest_with_chapters_and_artw
     let original = dir.join("original");
     let entry = "story \"Travel\"\ninclude \"chapter.sf\"\n";
     ProjectFolder::create(&original, "Travel", &registry, entry).unwrap();
-    std::fs::write(original.join("chapter.sf"), "scene harbor\n  location: harbor_dock\n  stage: lead, mara, left, 100, 1, 25, 0\n  mara: Hello\n").unwrap();
+    std::fs::write(original.join("assets/chapter.sf"), "scene harbor\n  location: harbor_dock\n  stage: lead, mara, left, 100, 1, 25, 0\n  mara: Hello\n").unwrap();
     let moved = dir.join("moved");
     std::fs::rename(&original, &moved).unwrap();
     let folder = PlaybackSession::open(&moved, None).unwrap();
     let manifest = PlaybackSession::open(&moved.join("storyfella.toml"), None).unwrap();
+    let source = PlaybackSession::open(&moved.join("assets/story.sf"), None).unwrap();
     assert_eq!(folder.runtime.plan(), manifest.runtime.plan());
+    assert_eq!(folder.runtime.plan(), source.runtime.plan());
     assert_eq!(folder.runtime.staged()[0].position, Some((25, 0)));
     assert_eq!(folder.visuals.len(), 2);
     assert!(folder
