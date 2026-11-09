@@ -403,7 +403,7 @@ writer lease before loading it for editing, and browsing the project list
 leaves pending source writes for the editor to recover. The project command
 probe checks competing opens, aliases, dirty draft retention and takeover
 after switching away. Atelier document ownership, app command routing,
-restart-safe generation jobs, live frame capture and MCP client acceptance
+restart-safe generation jobs, live frame capture and full visual MCP acceptance
 remain open.
 
 Text-first chat authoring is available through
@@ -415,6 +415,49 @@ and Agentkit's stdio client verify the initial text workflow. Workspace
 validation passed with 491 tests and 27 opt-in tests skipped. SF-PLAN-33
 still tracks live app command routing and SF-PLAN-37 tracks the full visual
 production workflow.
+
+In the first live Codex chat test, the server connected, but the chat's
+original draft failed with “Unexpected or missing tokens” and the diagnostic
+gave only byte offsets. Once supplied valid Storyfella source, the chat
+previewed and saved the chapter, then playtested both routes. “Share the code”
+ended with “Light the channel.” and `trusted = true`. “Keep it” ended with
+“The channel stays dark.” and `trusted = false`. The user confirmed that the
+saved project opened in Studio.
+
+The MCP server now provides a branching example that the stdio integration
+test retrieves, saves and plays through both endings. Edit diagnostics now
+include line and column ranges in the proposed entry or the included file.
+
+Live text-first acceptance (2026-11-09): A fresh Codex CLI chat received a
+plain-language premise for *The Seed Vault*. It retrieved the branching example
+and used only Storyfella MCP calls. Its first preview flagged the location
+statement at line 3 of `story.sf`. The chat revised the draft, previewed it
+successfully, saved with the proposal, checked the saved source and played both
+routes to completion.
+
+- “Thaw the shelter’s water” ended with “By dawn the shelter has water, and a
+  bead of dew rolls off the city’s last pouch of river rye.” `thawed = true`.
+- “Keep the seed freezer running” ended with “By dawn the river rye is still
+  frozen, and the shelter is melting snow in a saucepan over its last candle.”
+  `thawed = false`.
+
+After the chat disconnected, the rebuilt Studio opened the disposable project
+and displayed the saved opening passage in Preview. Evidence is in
+`.svs-e2e/logs/mcp-seed-vault-20261109.jsonl` and
+`.svs-e2e/logs/mcp-seed-vault-studio-20261109.log`. Workspace validation passed
+with 491 tests and 27 opt-in tests skipped. Strict CLI Clippy passed.
+
+Large projects are part of the SF-PLAN-35–37 acceptance target. Agents need
+to create and navigate many chapter files, track recurring characters and
+illustration revisions, and review routes and asset coverage without reading
+the entire project into chat. The text-first MCP server now supports checked
+edits to existing included files. Its integration test edits one of 96
+included chapters, plays choices across files, and verifies the saved
+catalog retains 96 characters and 64 existing illustration definitions.
+Schema v13 recovers an interrupted chapter save alongside its catalog.
+MCP chapter creation and linking, paginated story and catalog discovery,
+and validation at larger source sizes remain open. The current compiler
+limit is 256 source files and the MCP workspace limit is 1 MiB.
 
 ### Studio for writing, Atelier for visual creation · 2026-10-28
 

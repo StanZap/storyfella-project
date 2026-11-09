@@ -208,10 +208,13 @@ intent durable; load/retry finishes it if the file still equals either side.
 Reads serialize briefly with cooperating publishers so they cannot expose a
 catalog paired with an intermediate source. The record is removed after success;
 the standalone `.sf` remains the authoritative source during ordinary use.
+Schema v13 lets an MCP save journal one existing included file with its
+catalog. The save checks the entry and edited file's baselines. Recovery uses
+the recorded project-relative path and rejects aliases to other files.
 
 An unrelated source edit blocks automatic recovery. Studio exposes Recover
 interrupted save: an explicit confirmation first preserves the current file as
-`story.conflict-<UUID>.sf` beside the original, then finishes the committed save.
+`story.conflict-<UUID>.sf` beside the database, then finishes the committed save.
 The copy uses exclusive creation and preserves exact UTF-8 bytes; another file
 change still blocks replacement. Its location remains visible after success.
 Dirty editor text remains protected by its usual source conflict check and the

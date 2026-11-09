@@ -108,7 +108,10 @@ GUI writers commit against it and preserve newer work on a stale-write error.
 Schema v12 adds transient `source_write` intent: Studio commits its catalog and
 exact before/after source together, then publishes `.sf` and clears the intent.
 Load/retry recovers an interruption only against a matching file; unrelated
-source text requires explicit preserve-copy recovery. GUI catalog refresh uses
+source text requires explicit preserve-copy recovery. Schema v13 adds a
+project-relative filename to that intent for an MCP edit of one included
+source file. An intent with no filename targets the entry, including intents
+carried forward from v12. GUI catalog refresh uses
 UUID/field three-way merging, retaining drafts and rebasing undo. See the
 [concurrency contract](shared-project.md#synchronization-and-concurrent-editing).
 Catalog entries reuse artifact UUIDs; source requirements, saved image revisions

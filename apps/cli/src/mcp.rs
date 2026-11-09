@@ -11,14 +11,17 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use storyfella_compiler::{compile_workspace_with_catalog, SourceWorkspace};
-use storyfella_language::{apply_edits, Severity, Span, TextEdit};
+use storyfella_language::{apply_edits, Severity, Source, Span, TextEdit};
 use storyfella_studio_core::{
     authoring::{reconcile, AssetCatalog},
     catalog,
     persistence::{ProjectDb, StoreError, StoredProject},
     project::{AuthoringLease, ProjectFolder},
     registry::ArtifactRegistry,
-    story::{load_bounded_source_workspace, source_path, StoryFileError},
+    story::{
+        included_edit_path, load_bounded_source_workspace, source_path, StoryDocument,
+        StoryFileError,
+    },
 };
 use uuid::Uuid;
 
@@ -29,6 +32,7 @@ const READ_BYTES: usize = 24 * 1024;
 const EDIT_BYTES: usize = 64 * 1024;
 const MAX_STORY_BYTES: usize = 1024 * 1024;
 const MAX_DIAGNOSTICS: usize = 24;
+const BRANCHING_EXAMPLE: &str = include_str!("mcp/branching.sf");
 
 #[derive(Args)]
 pub struct McpArgs {
@@ -79,7 +83,7 @@ struct StoryTools {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Inspect {}
+struct NoArgs {}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -95,6 +99,7 @@ struct Read {
 struct Edit {
     session: Uuid,
     expected_version: String,
+    file: Option<String>,
     start: usize,
     end: usize,
     text: String,
@@ -169,7 +174,7 @@ impl StoryTools {
                 "The project identity changed. Restart this MCP session.",
             ));
         }
-        let workspace = workspace(&stored, stored.story.source())?;
+        let workspace = workspace(&stored.story, None)?;
         Ok((stored, workspace))
     }
 
@@ -202,12 +207,7 @@ impl StoryTools {
         self.check_session(args.session)?;
         let (stored, workspace) = self.snapshot()?;
         let file = args.file.as_deref().unwrap_or(&workspace.entry);
-        let source = workspace.files.get(file).ok_or_else(|| {
-            fail(
-                "unknown_file",
-                "Choose a source listed by project inspection.",
-            )
-        })?;
+        let source = workspace.files.get(file).ok_or_else(unknown_file)?;
         if !source.is_char_boundary(args.offset) {
             return Err(fail(
                 "invalid_offset",
@@ -241,7 +241,19 @@ impl StoryTools {
                 "Use replacements of at most 65536 UTF-8 bytes.",
             ));
         }
-        let before = stored.story.source();
+        let file = args.file.as_deref().unwrap_or(&current.entry);
+        let before = current.files.get(file).ok_or_else(unknown_file)?;
+        let included_path = if file == current.entry {
+            None
+        } else {
+            let entry = stored.story.path().ok_or_else(source_unavailable)?;
+            Some(included_edit_path(entry, file).map_err(|_| {
+                fail(
+                    "source_not_editable",
+                    "Use an included file at its canonical project-relative path.",
+                )
+            })?)
+        };
         let source = apply_edits(
             before,
             &[TextEdit {
@@ -252,10 +264,10 @@ impl StoryTools {
         .map_err(|_| {
             fail(
                 "invalid_range",
-                "Use an ordered range on UTF-8 byte boundaries in the entry source.",
+                "Use an ordered range on UTF-8 byte boundaries in the selected source file.",
             )
         })?;
-        let proposed = workspace(&stored, &source)?;
+        let proposed = workspace(&stored.story, Some((file, &source)))?;
         let expanded = proposed.expand().map_err(|_| source_unavailable())?;
         // Use the same declaration and association rules as Studio authoring.
         let mut registry = stored.registry.clone();
@@ -265,17 +277,23 @@ impl StoryTools {
             compile_workspace_with_catalog(&proposed, &catalog.assets, &catalog.bindings)
                 .map_err(|_| source_unavailable())?;
         let valid = compilation.plan.is_some() && !compilation.has_errors();
+        let mut diagnostic_sources = BTreeMap::new();
         let diagnostics: Vec<_> = [Severity::Error, Severity::Warning, Severity::Information]
             .into_iter()
             .flat_map(|severity| compilation.diagnostics.iter().filter(move |d| d.severity == severity))
             .take(MAX_DIAGNOSTICS)
             .map(|diagnostic| {
                 let (file, span) = expanded.diagnostic_span(&proposed.entry, diagnostic.span);
+                let source = diagnostic_sources
+                    .entry(file)
+                    .or_insert_with(|| Source::new(&proposed.files[file]));
                 json!({ "file": file, "start": span.start, "end": span.end, "code": diagnostic.code,
+                    "start_position": source.position(span.start),
+                    "end_position": source.position(span.end),
                     "severity": diagnostic.severity, "message": bounded_text(&diagnostic.message, 512) })
             })
             .collect();
-        let changed = source != before;
+        let changed = &source != before;
         let mut report = EditReport {
             saved: false,
             changed,
@@ -302,24 +320,42 @@ impl StoryTools {
                 "Preview this exact edit again before saving it.",
             ));
         }
-        // Check included files again before committing. The store separately
-        // compares the exact entry text and catalog version while saving.
-        let latest = workspace(&stored, before)?;
-        let latest_proposal = workspace(&stored, &source)?;
+        // Check the include graph again before the store checks the target,
+        // entry baseline and catalog version in its write transaction.
+        let latest = workspace(&stored.story, None)?;
+        let latest_proposal = workspace(&stored.story, Some((file, &source)))?;
         if latest != current || latest_proposal != proposed {
             return Err(fail(
                 "stale_version",
-                "An included file changed. Read the story and preview the edit again.",
+                "A source file changed. Read the story and preview the edit again.",
             ));
         }
         let analysis = storyfella_language::analyze(&expanded.source, &catalog.assets);
         reconcile(&mut registry, &analysis);
-        stored.story.set_source(source);
         self.check_owner()?;
         let db = ProjectDb::open_existing(self.folder.database()).map_err(store_failure)?;
-        let new_version = db
-            .save_authoring_checked(&registry, stored.registry_version, &mut stored.story)
-            .map_err(store_failure)?;
+        let new_version = if let Some(path) = included_path {
+            let mut document =
+                StoryDocument::open(&path).map_err(|error| store_failure(error.into()))?;
+            if document.source() != before {
+                return Err(fail(
+                    "save_conflict",
+                    "Source changed. Read the current file and preview again.",
+                ));
+            }
+            document.set_source(source);
+            db.save_included_authoring_checked(
+                &registry,
+                stored.registry_version,
+                &stored.story,
+                file,
+                &mut document,
+            )
+        } else {
+            stored.story.set_source(source);
+            db.save_authoring_checked(&registry, stored.registry_version, &mut stored.story)
+        }
+        .map_err(store_failure)?;
         report.saved = true;
         report.version = version(&proposed, new_version);
         report.proposal = None;
@@ -327,17 +363,27 @@ impl StoryTools {
     }
 }
 
+fn unknown_file() -> Failure {
+    fail(
+        "unknown_file",
+        "Choose a source listed by project inspection.",
+    )
+}
+
 fn source_unavailable() -> Failure {
     fail("source_unavailable", "Could not load the entry and its includes. Check that the files exist inside the project and total at most 1 MiB.")
 }
 
-fn workspace(stored: &StoredProject, source: &str) -> Reply<SourceWorkspace> {
-    let path = stored.story.path().ok_or_else(source_unavailable)?;
+fn workspace(story: &StoryDocument, edit: Option<(&str, &str)>) -> Reply<SourceWorkspace> {
+    let path = story.path().ok_or_else(source_unavailable)?;
     let entry = path
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(source_unavailable)?;
-    let drafts = BTreeMap::from([(entry.to_owned(), source.to_owned())]);
+    let mut drafts = BTreeMap::from([(entry.to_owned(), story.source().to_owned())]);
+    if let Some((file, source)) = edit {
+        drafts.insert(file.to_owned(), source.to_owned());
+    }
     load_bounded_source_workspace(path, &drafts, MAX_STORY_BYTES).map_err(|_| source_unavailable())
 }
 
@@ -417,12 +463,13 @@ impl McpToolRegistry for StoryTools {
         let offset = json!({"type":"integer","minimum":0});
         vec![
             tool("storyfella_project_inspect", "Inspect the one project authorized for this MCP process and get its session and current version.", McpPermission::ReadOnly, json!({}), &[]),
+            tool("storyfella_story_example", "Get a complete, playable Storyfella source example with narration, a choice, a persistent flag, and conditional endings. Use this syntax as a reference before drafting an original branching chapter.", McpPermission::ReadOnly, json!({}), &[]),
             tool("storyfella_story_read", "Read saved Storyfella source. Omit file for the entry. Offsets and lengths are UTF-8 bytes.", McpPermission::ReadOnly, json!({
                 "session": session, "file": {"type":"string"}, "offset": offset
             }), &["session"]),
-            tool("storyfella_story_edit", "Replace a UTF-8 byte range in the entry source. Omit proposal to validate without saving. Repeat the exact edit with the returned proposal to save. Check saved and valid in the response.", McpPermission::Mutating, json!({
+            tool("storyfella_story_edit", "Replace a UTF-8 byte range in one source file. Omit file for the entry, or name an included file from project inspection. Omit proposal to validate without saving. Repeat the exact edit with the returned proposal to save. Check saved and valid in the response. Diagnostic positions are zero-based lines and UTF-16 columns in the named file.", McpPermission::Mutating, json!({
                 "session": session, "expected_version": version, "start": offset, "end": offset,
-                "text": {"type":"string","maxLength":EDIT_BYTES}, "proposal": version
+                "file": {"type":"string"}, "text": {"type":"string","maxLength":EDIT_BYTES}, "proposal": version
             }), &["session", "expected_version", "start", "end", "text"]),
             tool("storyfella_story_playtest", "Run a bounded, text-only playtest of saved source with zero-based choice indexes. Omit choices to stop at the first choice.", McpPermission::ReadOnly, json!({
                 "session": session, "expected_version": version,
@@ -434,7 +481,10 @@ impl McpToolRegistry for StoryTools {
     fn call_tool(&self, call: McpToolCall) -> Result<McpToolResult, McpError> {
         let result = match call.name.as_str() {
             "storyfella_project_inspect" => {
-                arguments::<Inspect>(call.arguments).and_then(|_| self.inspect())
+                arguments::<NoArgs>(call.arguments).and_then(|_| self.inspect())
+            }
+            "storyfella_story_example" => {
+                arguments::<NoArgs>(call.arguments).map(|_| json!({ "source": BRANCHING_EXAMPLE }))
             }
             "storyfella_story_read" => arguments(call.arguments).and_then(|args| self.read(args)),
             "storyfella_story_edit" => arguments(call.arguments).and_then(|args| self.edit(args)),

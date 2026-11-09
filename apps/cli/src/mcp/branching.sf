@@ -1,0 +1,18 @@
+flag trusted false
+scene pier
+  location: harbor
+  mara: The signal is late. 🌊
+  choice "Trust Mara?"
+    option "Share the code": share
+    option "Keep it": gate
+scene share
+  set trusted true
+  goto gate
+scene gate
+  if trusted goto welcome else warning
+scene welcome
+  narrate: Light the channel.
+  end
+scene warning
+  narrate: The channel stays dark.
+  end

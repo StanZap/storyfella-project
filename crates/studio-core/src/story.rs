@@ -40,6 +40,32 @@ pub fn source_path(project: &Path) -> PathBuf {
     crate::project::shared_source_path(project).unwrap_or_else(|| project.with_extension("sf"))
 }
 
+/// Resolve a writable include by its exact path so a pending write cannot be
+/// redirected by changing a symlink between publication and recovery.
+pub fn included_edit_path(entry: &Path, relative: &str) -> Result<PathBuf, StoryFileError> {
+    let fail = |source| StoryFileError::Read {
+        path: PathBuf::from(relative),
+        source,
+    };
+    if !storyfella_language::valid_source_path(relative)
+        || (cfg!(windows) && relative.contains(':'))
+    {
+        return Err(fail(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Use a project-relative .sf path",
+        )));
+    }
+    let root = entry.parent().ok_or(StoryFileError::Unbound)?;
+    let path = root.join(relative);
+    if path == entry || path.canonicalize().map_err(fail)? != path {
+        return Err(fail(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Use the include's canonical project-relative path",
+        )));
+    }
+    Ok(path)
+}
+
 /// Load the reachable source snapshot without allowing links to escape the
 /// entry file's directory. Drafts are keyed by project-relative source path and
 /// remain owned by the host; they are never written by this loader.

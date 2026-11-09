@@ -31,16 +31,25 @@ and playtest both routes. The chat uses these tools.
 | Tool | What it does |
 | --- | --- |
 | `storyfella_project_inspect` | Returns the project identity, session, source filenames and current version. |
+| `storyfella_story_example` | Returns playable reference source with a choice, flag and conditional endings. Call this before drafting a branching chapter. |
 | `storyfella_story_read` | Reads the saved entry or one of its included files in UTF-8 byte pages. |
-| `storyfella_story_edit` | Validates one byte-range replacement in the entry against the full include workspace and current catalog. Repeat the exact request with the returned proposal to save. Syntax errors return diagnostics. |
+| `storyfella_story_edit` | Validates one byte-range replacement in the entry or a named included file against the full include workspace and current catalog. Repeat the exact request with the returned proposal to save. Diagnostics identify the source file. |
 | `storyfella_story_playtest` | Plays the saved version through the shared story runtime, taking zero-based choice indexes and returning dialogue, source positions, flags and pending artwork counts. |
 
-For a whole-entry edit within the 64 KiB replacement limit, use `start: 0`
-and the entry's reported `bytes` as `end`. An edit needs the session and
-the current version from inspection or reading. A saved source, include or
-catalog change requires a fresh preview. Playtests are text-only and stop at
-an unanswered choice, completion or the step limit. Included files are
-readable. The entry is the only editable file in this first interface.
+Edit diagnostics report the file, the half-open UTF-8 byte range
+(`start` and `end`), and the corresponding `start_position` and
+`end_position`. Each position has a zero-based `line` and a zero-based
+`character` column in UTF-16 code units.
+
+Omit `file` to edit the entry or pass an included filename from project
+inspection. For a whole-file edit within the 64 KiB replacement limit, use
+`start: 0` and that file's reported `bytes` as `end`. An edit needs the session
+and the current version from inspection or reading. A saved source, include
+or catalog change requires a fresh preview. Each request edits one existing
+file at its canonical path. Use Studio to create new chapter files and add
+their includes. The current workspace limit is 256 files and 1 MiB of source
+text. Playtests are text-only and stop at an unanswered choice, completion or
+the step limit.
 If a save is interrupted, restart the MCP server to recover it under the
 project lease. Inspection and edit preview leave a pending source save intact.
 Projects with broken include paths need repair in Studio before MCP edits.
@@ -97,9 +106,10 @@ path. An edit based on a saved version conflicts with a newer dirty buffer.
 Expose a bounded diff and the current revision so the client can reread and
 propose a fresh edit. Initially use one source file per command. Studio's
 normal Save writes included files separately before the checked entry/catalog
-commit. Report the files saved if that process stops partway. Entry/source
-intent recovery and catalog version checks stay in `ProjectDb`. Review sessions
-and pending suggestions remain separate from accepted Writer text.
+commit. Report the files saved if that process stops partway. Source intent
+recovery and catalog version checks stay in `ProjectDb`. The MCP edit of an
+existing included file journals that file and the catalog together. Review
+sessions and pending suggestions remain separate from accepted Writer text.
 
 Use registry UUIDs for assets and revision UUIDs for images. Scope numeric
 artboard IDs to the document. Gate operations on the document revision, and

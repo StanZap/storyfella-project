@@ -40,7 +40,7 @@ use crate::registry::{
     Artifact, ArtifactRegistry, ArtifactRevision, BeatComposition, CompositionMode, Layer,
     LoraEntry, StoryDraft,
 };
-use crate::story::{export_draft, source_path, StoryDocument, StoryFileError};
+use crate::story::{export_draft, included_edit_path, source_path, StoryDocument, StoryFileError};
 
 /// The `projects` row for a database, plus the full registry snapshot.
 ///
@@ -71,6 +71,17 @@ enum SnapshotMode {
     Discovery,
     ReadAuthoring,
     Recover,
+}
+
+struct SourceEdit<'a> {
+    document: &'a StoryDocument,
+    include: Option<(&'a StoryDocument, &'a str)>,
+}
+
+struct PendingSource {
+    file: Option<String>,
+    before: String,
+    after: String,
 }
 
 #[derive(Debug, Error)]
@@ -230,12 +241,39 @@ impl ProjectDb {
         version: i64,
         story: &mut StoryDocument,
     ) -> Result<i64, StoreError> {
+        self.save_source_checked(registry, version, story, None)
+    }
+
+    /// Save one included file with its reconciled catalog, while checking
+    /// the entry snapshot used to validate the edit.
+    pub fn save_included_authoring_checked(
+        &self,
+        registry: &ArtifactRegistry,
+        version: i64,
+        entry: &StoryDocument,
+        file: &str,
+        story: &mut StoryDocument,
+    ) -> Result<i64, StoreError> {
+        self.save_source_checked(registry, version, story, Some((entry, file)))
+    }
+
+    fn save_source_checked(
+        &self,
+        registry: &ArtifactRegistry,
+        version: i64,
+        story: &mut StoryDocument,
+        include: Option<(&StoryDocument, &str)>,
+    ) -> Result<i64, StoreError> {
         self.recover_source()?;
-        if story.path() != Some(source_path(&self.path).as_path()) {
-            return Err(StoreError::Story(StoryFileError::Unbound));
-        }
         let registry = self.prepare_registry(registry)?;
-        let version = self.write_snapshot(&registry, Some(version), Some(story))?;
+        let version = self.write_snapshot(
+            &registry,
+            Some(version),
+            Some(SourceEdit {
+                document: story,
+                include,
+            }),
+        )?;
         self.recover_source()?;
         story.reload()?;
         Ok(version)
@@ -259,11 +297,17 @@ impl ProjectDb {
         })
     }
 
-    fn pending_source(&self, conn: &Connection) -> Result<Option<(String, String)>, StoreError> {
+    fn pending_source(&self, conn: &Connection) -> Result<Option<PendingSource>, StoreError> {
         conn.query_row(
-            "SELECT before_source, after_source FROM source_write WHERE id = 1",
+            "SELECT source_file, before_source, after_source FROM source_write WHERE id = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| {
+                Ok(PendingSource {
+                    file: row.get(0)?,
+                    before: row.get(1)?,
+                    after: row.get(2)?,
+                })
+            },
         )
         .optional()
         .map_err(|source| StoreError::Load {
@@ -272,17 +316,30 @@ impl ProjectDb {
         })
     }
 
+    fn open_pending_source(&self, pending: &PendingSource) -> Result<StoryDocument, StoreError> {
+        let entry = source_path(&self.path);
+        let Some(file) = &pending.file else {
+            return Ok(StoryDocument::open(&entry)?);
+        };
+        let path = included_edit_path(&entry, file)?;
+        let story = StoryDocument::open(&path)?;
+        if story.path() != Some(path.as_path()) {
+            return Err(StoryFileError::Conflict { path }.into());
+        }
+        Ok(story)
+    }
+
     fn recover_source_in(&self, conn: &Connection) -> Result<(), StoreError> {
-        if let Some((before, after)) = self.pending_source(conn)? {
+        if let Some(pending) = self.pending_source(conn)? {
             self.validate_identity(conn)?;
-            let mut story = StoryDocument::open(&source_path(&self.path))?;
-            if story.source() != after {
-                if story.source() != before {
+            let mut story = self.open_pending_source(&pending)?;
+            if story.source() != pending.after {
+                if story.source() != pending.before {
                     return Err(StoreError::Story(StoryFileError::Conflict {
-                        path: source_path(&self.path),
+                        path: story.path().ok_or(StoryFileError::Unbound)?.to_owned(),
                     }));
                 }
-                story.set_source(after);
+                story.set_source(pending.after);
                 story.save()?;
             }
             conn.execute("DELETE FROM source_write WHERE id = 1", [])
@@ -306,16 +363,16 @@ impl ProjectDb {
                 source,
             })?;
         let mut preserved = None;
-        if let Some((before, after)) = self.pending_source(&tx)? {
+        if let Some(pending) = self.pending_source(&tx)? {
             self.validate_identity(&tx)?;
-            let mut story = StoryDocument::open(&source_path(&self.path))?;
-            if story.source() != before && story.source() != after {
+            let mut story = self.open_pending_source(&pending)?;
+            if story.source() != pending.before && story.source() != pending.after {
                 let copy = self
                     .path
                     .with_extension(format!("conflict-{}.sf", Uuid::new_v4()));
                 story.save_copy(&copy)?;
                 preserved = Some(copy);
-                story.set_source(after);
+                story.set_source(pending.after);
                 story.save()?;
             }
         }
@@ -388,7 +445,7 @@ impl ProjectDb {
         &self,
         registry: &ArtifactRegistry,
         expected: Option<i64>,
-        story: Option<&StoryDocument>,
+        source_edit: Option<SourceEdit<'_>>,
     ) -> Result<i64, StoreError> {
         crate::authoring::validate_associations(registry).map_err(|value| StoreError::Corrupt {
             path: self.path.clone(),
@@ -586,12 +643,28 @@ impl ProjectDb {
             })?;
         }
 
-        if let Some(story) = story {
+        if let Some(SourceEdit {
+            document: story,
+            include,
+        }) = source_edit
+        {
+            let entry_path = source_path(&self.path);
+            let (target, file) = match include {
+                Some((entry, file)) if entry.path() == Some(entry_path.as_path()) => {
+                    entry.check_disk()?;
+                    (included_edit_path(&entry_path, file)?, Some(file))
+                }
+                Some(_) => return Err(StoryFileError::Unbound.into()),
+                None => (entry_path, None),
+            };
+            if story.path() != Some(target.as_path()) {
+                return Err(StoryFileError::Unbound.into());
+            }
             story.check_disk()?;
             if story.is_dirty() {
                 tx.execute(
-                    "INSERT INTO source_write (id, before_source, after_source) VALUES (1, ?1, ?2)",
-                    params![story.saved_source(), story.source()],
+                    "INSERT INTO source_write (id, before_source, after_source, source_file) VALUES (1, ?1, ?2, ?3)",
+                    params![story.saved_source(), story.source(), file],
                 )
                 .map_err(|source| StoreError::Save {
                     path: self.path.clone(),
@@ -1188,8 +1261,11 @@ impl ProjectDb {
 /// databases; `schema_meta` records what has been applied.
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
-    SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12,
+    SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13,
 ];
+
+// A NULL path identifies the entry, including any pending v12 save.
+const SCHEMA_V13: &str = "ALTER TABLE source_write ADD COLUMN source_file TEXT;";
 
 const SCHEMA_V12: &str = "
 CREATE TABLE source_write (
@@ -1814,8 +1890,15 @@ mod tests {
         registry.artifact_mut(id).unwrap().name = "captain_mara".into();
         // Simulate process exit after the catalog/intent commit and before the
         // source publish. This is the actual production transaction boundary.
-        db.write_snapshot(&registry, Some(baseline.registry_version), Some(&story))
-            .unwrap();
+        db.write_snapshot(
+            &registry,
+            Some(baseline.registry_version),
+            Some(SourceEdit {
+                document: &story,
+                include: None,
+            }),
+        )
+        .unwrap();
         assert_eq!(
             std::fs::read_to_string(source_path(&path)).unwrap(),
             baseline.story.source()
@@ -1846,6 +1929,10 @@ mod tests {
         );
         assert!(db.pending_source(&db.conn.lock()).unwrap().is_some());
         std::fs::write(source_path(&path), baseline.story.source()).unwrap();
+        // Simulate opening a v12 database that already has a pending entry save.
+        db.conn.lock().execute_batch(
+            "ALTER TABLE source_write DROP COLUMN source_file; DELETE FROM schema_meta WHERE version = 13;",
+        ).unwrap();
         drop(db);
         let reopened = ProjectDb::open_existing(&path).unwrap();
         let stored = reopened.load().unwrap();
@@ -1862,7 +1949,10 @@ mod tests {
             .write_snapshot(
                 &stored.registry,
                 Some(stored.registry_version),
-                Some(&next_source),
+                Some(SourceEdit {
+                    document: &next_source,
+                    include: None,
+                }),
             )
             .unwrap();
         std::fs::write(source_path(&path), "// external 🌊\r\n").unwrap();
@@ -1878,6 +1968,90 @@ mod tests {
         assert!(reopened.preserve_source_and_recover().unwrap().is_none());
         std::fs::remove_file(preserved).unwrap();
         clean_up(&path);
+    }
+
+    #[test]
+    fn interrupted_include_publish_recovers_only_the_intended_chapter() {
+        let fixture = tempfile::tempdir_in(test_dir()).unwrap();
+        let folder = crate::project::ProjectFolder::create(
+            &fixture.path().join("story"),
+            "Story",
+            &ArtifactRegistry::default(),
+            "include \"chapter.sf\"\n",
+        )
+        .unwrap();
+        let db_path = folder.database();
+        let db = ProjectDb::open_existing(&db_path).unwrap();
+        let stored = db.load().unwrap();
+        let entry = stored.story.path().unwrap();
+        let path = entry.with_file_name("chapter.sf");
+        let before = "scene original\n  end\n";
+        std::fs::write(&path, before).unwrap();
+        let mut chapter = StoryDocument::open(&path).unwrap();
+        chapter.set_source("scene revised\n  cast: mara\n  end\n".into());
+        let mut registry = stored.registry.clone();
+        crate::catalog::reconcile_declarations(&mut registry, chapter.source(), false);
+
+        std::fs::write(entry, "# External edit\ninclude \"chapter.sf\"\n").unwrap();
+        assert!(matches!(
+            db.save_included_authoring_checked(
+                &registry,
+                stored.registry_version,
+                &stored.story,
+                "chapter.sf",
+                &mut chapter
+            ),
+            Err(StoreError::Story(StoryFileError::Conflict { .. }))
+        ));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert!(db.pending_source(&db.conn.lock()).unwrap().is_none());
+        std::fs::write(entry, stored.story.source()).unwrap();
+
+        db.write_snapshot(
+            &registry,
+            Some(stored.registry_version),
+            Some(SourceEdit {
+                document: &chapter,
+                include: Some((&stored.story, "chapter.sf")),
+            }),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert!(matches!(
+            ProjectDb::read_authoring_snapshot(&db_path),
+            Err(StoreError::PendingSource)
+        ));
+        drop(db);
+        let db = ProjectDb::open_existing(&db_path).unwrap();
+        #[cfg(unix)]
+        {
+            let other = entry.with_file_name("other.sf");
+            std::fs::rename(&path, &other).unwrap();
+            std::os::unix::fs::symlink(&other, &path).unwrap();
+            assert!(db.load().is_err());
+            assert_eq!(std::fs::read_to_string(&other).unwrap(), before);
+            std::fs::remove_file(&path).unwrap();
+            std::fs::rename(&other, &path).unwrap();
+        }
+        std::fs::write(&path, "External chapter draft.").unwrap();
+        assert!(matches!(
+            db.load(),
+            Err(StoreError::Story(StoryFileError::Conflict { .. }))
+        ));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "External chapter draft."
+        );
+        let preserved = db.preserve_source_and_recover().unwrap().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(preserved).unwrap(),
+            "External chapter draft."
+        );
+        let recovered = db.load().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), chapter.source());
+        assert_eq!(recovered.story, stored.story);
+        assert_eq!(recovered.registry, registry);
+        assert!(db.pending_source(&db.conn.lock()).unwrap().is_none());
     }
 
     #[test]
