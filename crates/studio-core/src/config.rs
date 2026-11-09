@@ -189,6 +189,7 @@ impl ThemePreference {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppConfig {
     pub theme: ThemePreference,
+    pub preview: PreviewSettings,
     /// False routes Vision through Text while retaining the shared registry's
     /// separate Vision selection for when the user enables it again.
     pub separate_vision: bool,
@@ -307,6 +308,8 @@ struct FileConfig {
     #[serde(default)]
     appearance: AppearanceConfig,
     #[serde(default)]
+    preview: PreviewSettings,
+    #[serde(default)]
     models: ModelsConfig,
     #[serde(default)]
     paths: PathOverrides,
@@ -314,6 +317,45 @@ struct FileConfig {
     generation: GenerationFileConfig,
     #[serde(default)]
     lora: LoraFileConfig,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct PreviewSettings {
+    pub autoplay_seconds: u32,
+    pub text_percent: u32,
+    pub contain_artwork: bool,
+    pub show_diagnostics: bool,
+}
+
+impl Default for PreviewSettings {
+    fn default() -> Self {
+        Self {
+            autoplay_seconds: 3,
+            text_percent: 100,
+            contain_artwork: false,
+            show_diagnostics: true,
+        }
+    }
+}
+
+impl PreviewSettings {
+    fn bounded(self) -> Self {
+        Self {
+            autoplay_seconds: self.autoplay_seconds.clamp(1, 30),
+            text_percent: self.text_percent.clamp(75, 150),
+            ..self
+        }
+    }
+
+    /// Read Studio's playback preferences without initializing inference providers.
+    pub fn load() -> Result<Self, ConfigError> {
+        let path = paths::config_path().ok_or(ConfigError::PlatformDirectories)?;
+        let contents = read_config_contents(&path)?;
+        let file: FileConfig =
+            toml::from_str(&contents).map_err(|source| ConfigError::Parse { path, source })?;
+        Ok(file.preview.bounded())
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -594,6 +636,7 @@ impl AppConfig {
         };
         Ok(Self {
             theme: file.appearance.theme,
+            preview: file.preview.bounded(),
             separate_vision,
             configured_vision_provider_id,
             text,
@@ -651,6 +694,25 @@ impl AppConfig {
 
     pub fn persist_theme(&self, theme: ThemePreference) -> Result<(), ConfigError> {
         self.persist_app_setting("appearance", "theme", format!("{:?}", theme.as_str()))
+    }
+
+    pub fn persist_preview_settings(&self, settings: PreviewSettings) -> Result<(), ConfigError> {
+        let path = self
+            .app_config_path
+            .as_deref()
+            .ok_or(ConfigError::PlatformDirectories)?;
+        let contents = read_config_contents(path)?;
+        let mut lines: Vec<_> = contents.lines().map(str::to_owned).collect();
+        let settings = settings.bounded();
+        for (key, value) in [
+            ("autoplay_seconds", settings.autoplay_seconds.to_string()),
+            ("text_percent", settings.text_percent.to_string()),
+            ("contain_artwork", settings.contain_artwork.to_string()),
+            ("show_diagnostics", settings.show_diagnostics.to_string()),
+        ] {
+            write_key(&mut lines, "preview", key, Some(value));
+        }
+        write_config_file(path, lines.join("\n"))
     }
 
     pub fn persist_separate_vision(&self, separate: bool) -> Result<(), ConfigError> {
@@ -1659,6 +1721,53 @@ fn parse_size_config(path: &Path, key: &str, value: &str) -> Result<(u32, u32), 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_preferences_persist_and_bound_numeric_values() {
+        let directory = tempfile::tempdir().unwrap();
+        let app = directory.path().join("studio.toml");
+        let ai = directory.path().join("clipforge.toml");
+        fs::write(&app, "[paths]\ncache_dir = 'cache'\n").unwrap();
+        fs::write(&ai, TWO_TEXT_PROVIDERS).unwrap();
+        let config = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+        assert_eq!(config.preview, PreviewSettings::default());
+        config
+            .persist_preview_settings(PreviewSettings {
+                autoplay_seconds: 12,
+                text_percent: 125,
+                contain_artwork: true,
+                show_diagnostics: false,
+            })
+            .unwrap();
+        let loaded = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+        assert_eq!(
+            loaded.preview,
+            PreviewSettings {
+                autoplay_seconds: 12,
+                text_percent: 125,
+                contain_artwork: true,
+                show_diagnostics: false
+            }
+        );
+        loaded
+            .persist_preview_settings(PreviewSettings {
+                autoplay_seconds: 999,
+                ..loaded.preview
+            })
+            .unwrap();
+        assert_eq!(
+            AppConfig::load_split(Some(app), Some(ai))
+                .unwrap()
+                .preview
+                .autoplay_seconds,
+            30
+        );
+        let mut blocked = loaded;
+        let parent_file = directory.path().join("not-a-directory");
+        fs::write(&parent_file, "blocked").unwrap();
+        blocked.app_config_path = Some(parent_file.join("studio.toml"));
+        assert!(blocked.persist_preview_settings(blocked.preview).is_err());
+    }
 
     #[test]
     fn theme_and_vision_preferences_preserve_separate_provider_settings() {

@@ -229,8 +229,14 @@ fn GeneralSettings(mut config: Signal<AppConfig>) -> Element {
     let mut autosave = autosave;
     let mut theme = use_context::<Signal<ThemePreference>>();
     let mut error_report = use_context::<Signal<Option<ReportedError>>>();
+    let preview = use_context::<Signal<storyfella_studio_core::config::PreviewSettings>>();
     let theme_id = use_hook(|| format!("theme-{}", Uuid::new_v4()));
     let restore_theme_id = theme_id.clone();
+    let preview_id = use_hook(|| format!("preview-{}", Uuid::new_v4()));
+    let seconds_id = format!("{preview_id}-seconds");
+    let text_id = format!("{preview_id}-text");
+    let fit_id = format!("{preview_id}-fit");
+    let diagnostics_id = format!("{preview_id}-diagnostics");
     rsx! {
         SectionHeading {
             eyebrow: "Application",
@@ -262,7 +268,7 @@ fn GeneralSettings(mut config: Signal<AppConfig>) -> Element {
                     }
                 }
             }
-            SettingRow { title: "Autosave", description: "Save project changes locally as you work.", last: true,
+            SettingRow { title: "Autosave", description: "Save project changes locally as you work.",
                 select {
                     aria_label: "Autosave for this session",
                     class: "setting-control",
@@ -274,6 +280,49 @@ fn GeneralSettings(mut config: Signal<AppConfig>) -> Element {
                     option { selected: autosave() == AutosaveMode::Off, value: "off", "Off" }
                 }
             }
+            SettingRow { title: "Autoplay interval", description: "Seconds between passages during automatic playback.",
+                select { id: seconds_id.clone(), class: "setting-control", aria_label: "Autoplay interval", value: "{preview().autoplay_seconds}",
+                    oninput: move |event| { if let Ok(value) = event.value().parse::<u32>() { let old = preview(); let mut next = old; next.autoplay_seconds = value; save_preview(config, preview, error_report, next, &seconds_id, old.autoplay_seconds.to_string()); } },
+                    for seconds in 1..=30 { option { value: "{seconds}", selected: preview().autoplay_seconds == seconds, "{seconds} seconds" } }
+                }
+            }
+            SettingRow { title: "Preview text size", description: "Scale the story text in Preview.",
+                select { id: text_id.clone(), class: "setting-control", aria_label: "Preview text size", value: "{preview().text_percent}",
+                    oninput: move |event| { if let Ok(value) = event.value().parse::<u32>() { let old = preview(); let mut next = old; next.text_percent = value; save_preview(config, preview, error_report, next, &text_id, old.text_percent.to_string()); } },
+                    for percent in 75..=150 { option { value: "{percent}", selected: preview().text_percent == percent, "{percent}%" } }
+                }
+            }
+            SettingRow { title: "Preview artwork fit", description: "Choose how location artwork fits the stage.",
+                select { id: fit_id.clone(), class: "setting-control", aria_label: "Preview artwork fit", value: "{preview().contain_artwork}",
+                    oninput: move |event| { let old = preview(); let mut next = old; next.contain_artwork = event.value() == "true"; save_preview(config, preview, error_report, next, &fit_id, old.contain_artwork.to_string()); },
+                    option { value: "false", selected: !preview().contain_artwork, "Cover stage" } option { value: "true", selected: preview().contain_artwork, "Show entire image" }
+                }
+            }
+            SettingRow { title: "Preview diagnostics", description: "Show missing-artwork placeholders and unsupported-direction notices.", last: true,
+                select { id: diagnostics_id.clone(), class: "setting-control", aria_label: "Preview diagnostics", value: "{preview().show_diagnostics}",
+                    oninput: move |event| { let old = preview(); let mut next = old; next.show_diagnostics = event.value() == "true"; save_preview(config, preview, error_report, next, &diagnostics_id, old.show_diagnostics.to_string()); },
+                    option { value: "true", selected: preview().show_diagnostics, "Show" } option { value: "false", selected: !preview().show_diagnostics, "Hide" }
+                }
+            }
+        }
+    }
+}
+
+fn save_preview(
+    config: Signal<AppConfig>,
+    mut preview: Signal<storyfella_studio_core::config::PreviewSettings>,
+    mut error_report: Signal<Option<ReportedError>>,
+    next: storyfella_studio_core::config::PreviewSettings,
+    select_id: &str,
+    previous: String,
+) {
+    match config.read().persist_preview_settings(next) {
+        Ok(()) => preview.set(next),
+        Err(error) => {
+            let id = serde_json::to_string(select_id).expect("serialize select id");
+            let value = serde_json::to_string(&previous).expect("serialize select value");
+            let _ = document::eval(&format!("document.getElementById({id}).value = {value};"));
+            error_report.set(Some(error.report().log()));
         }
     }
 }
@@ -310,7 +359,7 @@ fn ModelsSettings(
         .unwrap_or_default();
     let text_id = text_provider.clone();
     let vision_id = vision_provider.clone();
-    let mut launch_error = use_signal(|| None::<String>);
+    let mut error_report = use_context::<Signal<Option<ReportedError>>>();
     rsx! {
         div { class: "flex flex-wrap items-end justify-between gap-x-4",
             SectionHeading { eyebrow: "Capabilities", title: "Models", description: "" }
@@ -343,10 +392,9 @@ fn ModelsSettings(
         button {
             class: "mt-3 rounded bg-white/10 px-3 py-2 text-xs",
             title: "Manage providers, credentials, models and services in Clipforge",
-            onclick: move |_| launch_error.set(open_clipforge().err()),
+            onclick: move |_| if let Err(error) = open_clipforge() { error_report.set(Some(ReportedError::plain(storyfella_studio_core::errors::ErrorCode::AppCommandInvalid, error).log())); },
             "Manage providers in Clipforge"
         }
-        if let Some(error) = launch_error() { p { role: "alert", class: "mt-2 text-xs text-amber-300", "{error}" } }
     }
 }
 
@@ -587,14 +635,13 @@ fn PathRow(
     path: String,
     #[props(default)] last: bool,
 ) -> Element {
-    let mut error = use_signal(|| None::<String>);
+    let mut error_report = use_context::<Signal<Option<ReportedError>>>();
     let reveal_path = path.clone();
     rsx! {
         SettingRow { title, description, last,
             div { class: "flex min-w-0 items-center gap-3",
                 code { class: "min-w-0 flex-1 truncate text-[10px] text-zinc-500", title: "{path}", "{path}" }
-                button { class: "shrink-0 rounded-lg bg-white/[0.05] px-2.5 py-1.5 text-[9px] text-zinc-500 hover:text-white", onclick: move |_| error.set(super::components::open_path(std::path::Path::new(&reveal_path)).err()), "Reveal" }
-                if let Some(message) = error() { p { role: "alert", class: "text-xs text-rose-300", "{message}" } }
+                button { class: "shrink-0 rounded-lg bg-white/[0.05] px-2.5 py-1.5 text-[9px] text-zinc-500 hover:text-white", title: "Reveal location", onclick: move |_| if let Err(error) = super::components::open_path(std::path::Path::new(&reveal_path)) { error_report.set(Some(ReportedError::plain(storyfella_studio_core::errors::ErrorCode::AppCommandInvalid, error).log())); }, "Reveal" }
             }
         }
     }
@@ -607,6 +654,7 @@ mod tests {
 
     #[component]
     fn SettingsProbe(config: AppConfig) -> Element {
+        use_context_provider(|| Signal::new(config.preview));
         use_context_provider(|| Signal::new(None::<ReportedError>));
         use_context_provider(|| Signal::new(AutosaveMode::OnChange));
         use_context_provider(|| Signal::new(ThemePreference::System));

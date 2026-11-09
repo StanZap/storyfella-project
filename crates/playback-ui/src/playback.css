@@ -65,7 +65,7 @@
 }
 .sf-scene-label { position: absolute; z-index: 1; top: 24px; left: 28px; max-width: calc(100% - 56px); padding: 10px 14px; border: 1px solid #ffffff18; border-radius: 8px; background: #10191dc9; font-size: 12px; line-height: 1.5; letter-spacing: .02em; color: #d0d4d6; text-shadow: 0 1px 6px #000; }
 .sf-reading { width: min(860px, calc(100% - 64px)); margin: auto auto 30px; padding: 28px 32px 20px; position: relative; z-index: 1; border: 1px solid #ffffff20; border-radius: 14px; background: #11191eea; box-shadow: 0 20px 60px #0006; }
-.sf-reading h2 { font-size: clamp(24px, 2.2vw, 32px); font-weight: 400; line-height: 1.4; margin: 0 0 16px; }
+.sf-reading h2 { font-size: calc(clamp(24px, 2.2vw, 32px) * var(--sf-text-scale, 1)); font-weight: 400; line-height: 1.4; margin: 0 0 16px; }
 .sf-dialogue { display: flex; align-items: flex-start; gap: 20px; }
 .sf-portrait { width: 48px; height: 48px; object-fit: cover; border-radius: 50%; flex: none; margin-top: 3px; }
 .sf-missing-portrait {
@@ -74,7 +74,7 @@
 }
 .sf-dialogue-text { min-width: 0; flex: 1; }
 .sf-speaker { color: #dfbd82; margin: 0 0 6px; font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; }
-.sf-story-text { font-size: clamp(20px, 1.7vw, 27px); font-weight: 400; line-height: 1.45; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.sf-story-text { font-size: calc(clamp(20px, 1.7vw, 27px) * var(--sf-text-scale, 1)); font-weight: 400; line-height: 1.45; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .sf-thought { font-style: italic; }
 .sf-secondary { color: var(--sf-muted); font-size: 14px; line-height: 1.65; }
 .sf-story-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 16px; min-height: 40px; }
@@ -83,7 +83,7 @@
 .sf-reading-choice { max-width: 640px; }
 .sf-choice-prompt { text-align: center; margin-bottom: 28px !important; }
 .sf-choices { display: grid; gap: 8px; }
-.sf-choice { display: flex; justify-content: space-between; align-items: center; gap: 24px; text-align: left; padding: 14px 18px; min-height: 48px; border-bottom: 1px solid #ffffff26 !important; background: #11191f99 !important; font-size: 17px !important; }
+.sf-choice { display: flex; justify-content: space-between; align-items: center; gap: 24px; text-align: left; padding: 14px 18px; min-height: 48px; border-bottom: 1px solid #ffffff26 !important; background: #11191f99 !important; font-size: calc(17px * var(--sf-text-scale, 1)) !important; }
 .sf-choice span { overflow-wrap: anywhere; }
 .sf-choice:hover { background: #263038c9 !important; }
 .sf-error { color: #ffd2cc; background: #301a1ed9; border-left: 2px solid #db9590; padding: 12px 16px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.7; }

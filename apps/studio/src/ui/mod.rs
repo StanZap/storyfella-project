@@ -237,6 +237,8 @@ pub fn Workspace(
     use_context_provider(|| app_state);
     let mut playback = use_signal(storyfella_playback_ui::PlaybackModel::default);
     use_context_provider(|| playback);
+    let preview_settings = use_signal(|| config.preview);
+    use_context_provider(|| preview_settings);
     let project_path = app_state.read().project_path.clone();
     use_effect(use_reactive((&project_path,), move |_| {
         playback.set(storyfella_playback_ui::PlaybackModel::default());
@@ -528,8 +530,8 @@ pub fn Workspace(
                     span { class: "text-sm font-medium text-zinc-400", "{screen().label()}" }
                     div { class: "ml-auto flex items-center gap-1",
                         if screen() == AppScreen::Writer {
-                            button { class: "studio-button", onclick: move |_| { preview::start_preview(playback, app_state); screen.set(AppScreen::Preview); }, "Play story" }
-                            button { class: "studio-button", disabled: selected_scene().is_none(), onclick: move |_| { if let Some(scene) = selected_scene() { preview::start_scene(playback, app_state, scene); screen.set(AppScreen::Preview); } }, "Play scene" }
+                            IconButton { label: "Play story", icon: IconName::Play, onclick: move |_| { preview::start_preview(playback, app_state); screen.set(AppScreen::Preview); } }
+                            IconButton { label: "Play scene", icon: IconName::Scene, disabled: selected_scene().is_none(), onclick: move |_| { if let Some(scene) = selected_scene() { preview::start_scene(playback, app_state, scene); screen.set(AppScreen::Preview); } } }
                             IconButton { label: "Writing help", icon: IconName::Sparkles, active: writing_help(), onclick: move |_| writing_help.toggle() }
                         }
                         IconButton { label: shortcuts::tooltip("Commands and navigation", "palette"), icon: IconName::Search, onclick: move |_| palette_open.set(true) }

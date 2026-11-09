@@ -106,8 +106,8 @@ pub fn Projects(
     let result_count = filtered.len();
     let recent_items = filtered.into_iter().map(|item| {
         let path = item.path.clone();
-        let title = path.display().to_string();
         let name = item.name.clone();
+        let title = format!("Open {name} · {}", path.display());
         let artifacts = item.artifacts;
         rsx! {
             button {

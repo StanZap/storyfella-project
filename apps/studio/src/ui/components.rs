@@ -26,6 +26,11 @@ pub fn IconButton(
         (false, _) => "studio-icon-button",
     };
     let active_class = if active { "is-active" } else { "" };
+    let title = match tooltip {
+        Some(detail) if !detail.starts_with(&label) => format!("{label} — {detail}"),
+        Some(detail) => detail,
+        None => label.clone(),
+    };
     rsx! {
         button {
             id,
@@ -34,7 +39,7 @@ pub fn IconButton(
             aria_label: label.clone(),
             aria_expanded: expanded,
             aria_controls: controls,
-            title: tooltip.unwrap_or_else(|| label.clone()),
+            title,
             disabled,
             onclick,
             Icon { name: icon, class: "size-[18px]" }
@@ -120,7 +125,7 @@ pub fn ActionMenu(
             summary { class: "studio-icon-button", aria_label: label.clone(), title: label, aria_haspopup: "menu", aria_expanded: "false", Icon { name: icon, class: "size-[18px]" } }
             div { class: "studio-action-menu-list", role: "menu",
                 for (index, option) in options.into_iter().enumerate() {
-                    button { r#type: "button", role: "menuitem", class: "studio-action-menu-item", disabled: option.disabled, onclick: move |_| onselect.call(index),
+                    button { r#type: "button", role: "menuitem", class: "studio-action-menu-item", title: "{option.label}", disabled: option.disabled, onclick: move |_| onselect.call(index),
                         Icon { name: option.icon, class: "size-4" } span { "{option.label}" }
                     }
                 }
@@ -287,7 +292,7 @@ pub fn ErrorToast(error_report: Signal<Option<ReportedError>>) -> Element {
                     button {
                         class: "shrink-0 rounded-lg p-1.5 text-zinc-600 transition hover:bg-white/[0.06] hover:text-zinc-300",
                         aria_label: "Dismiss error",
-                        title: "Dismiss",
+                        title: "Dismiss error",
                         onclick: move |_| error_report.set(None),
                         Icon { name: IconName::Close, class: "size-3" }
                     }
@@ -344,6 +349,7 @@ fn ErrorDetailsModal(error: ReportedError, on_close: EventHandler<()>) -> Elemen
                 div { class: "mt-5 flex justify-end gap-2",
                     button {
                         class: "studio-button",
+                        title: "Copy report",
                         onclick: copy_action,
                         if copy_status() == "Copied" {
                             Icon { name: IconName::Check, class: "size-3" }
@@ -533,7 +539,7 @@ pub fn SearchSelect(
         div { class: "relative min-w-0",
             button {
                 class: "setting-control flex items-center justify-between gap-2 text-left",
-                title: "{display}",
+                title: "{label}: {display}",
                 aria_label: label.clone(),
                 aria_haspopup: "dialog",
                 aria_expanded: open(),

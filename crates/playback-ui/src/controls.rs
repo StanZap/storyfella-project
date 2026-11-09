@@ -8,6 +8,7 @@ pub(crate) enum ExtraPanel {
     Options,
     Artwork,
     Source,
+    Error,
 }
 
 pub(crate) fn close_panel(mut panel: Signal<Option<ExtraPanel>>) {

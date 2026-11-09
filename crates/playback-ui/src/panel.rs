@@ -54,12 +54,23 @@ pub fn PlaybackPanel(
     #[props(default)] on_apply: Option<EventHandler<()>>,
     #[props(default)] on_source: Option<EventHandler<Span>>,
     #[props(default)] draft_changed: bool,
+    #[props(default)] settings: storyfella_studio_core::config::PreviewSettings,
 ) -> Element {
     let mut autoplay = use_signal(|| false);
+    let mut live_settings = use_signal(|| settings);
+    use_effect(use_reactive((&settings,), move |(settings,)| {
+        live_settings.set(settings)
+    }));
     use_resource(move || async move {
         while autoplay() {
-            let mut timer = document::eval("setTimeout(() => dioxus.send(true), 3000)");
-            if timer.recv::<bool>().await.is_ok() && autoplay() {
+            let delay = live_settings().autoplay_seconds.clamp(1, 30) * 1000;
+            let mut timer =
+                document::eval(&format!("setTimeout(() => dioxus.send(true), {delay})"));
+            if timer.recv::<bool>().await.is_err() {
+                autoplay.set(false);
+                break;
+            }
+            if autoplay() {
                 let mut state = model.write();
                 let playable = state.session.as_ref().is_some_and(|s| {
                     s.runtime.state().phase == Phase::Text && !s.runtime.state().paused
@@ -119,7 +130,7 @@ pub fn PlaybackPanel(
         .unwrap_or_default();
     let stage_class = stage_class(presentation);
     let visuals = session.map(|s| s.active_visuals()).unwrap_or_default();
-    let missing = if on_apply.is_some() {
+    let missing = if on_apply.is_some() && settings.show_diagnostics {
         session.map(|s| s.missing_uses()).unwrap_or_default()
     } else {
         Vec::new()
@@ -144,7 +155,9 @@ pub fn PlaybackPanel(
         })
         .collect();
     let ignored_directions = session.is_some_and(|s| {
-        on_apply.is_some() && !s.runtime.plan().readiness.unsupported_directions.is_empty()
+        on_apply.is_some()
+            && settings.show_diagnostics
+            && !s.runtime.plan().readiness.unsupported_directions.is_empty()
     });
     let location = visuals
         .iter()
@@ -167,7 +180,7 @@ pub fn PlaybackPanel(
         .filter(|v| backdrop.is_none_or(|b| b.binding != v.binding));
     rsx! {
         style { {include_str!("playback.css")} }
-        div { class: "sf-play", tabindex: "0", aria_label: "Story playback", "data-owns-keys": "true",
+        div { class: "sf-play", style: "--sf-text-scale: {settings.text_percent as f32 / 100.0};", tabindex: "0", aria_label: "Story playback", "data-owns-keys": "true",
             onkeydown: move |event| {
                 if event.key() == Key::Escape && panel().is_some() {
                     event.prevent_default(); close_panel(panel); return;
@@ -191,8 +204,8 @@ pub fn PlaybackPanel(
                     if let (Some(on_source), Some(span)) = (on_source, span) {
                         button { class: "sf-text-button", onclick: move |_| on_source.call(span), "Edit source" }
                     }
-                    button { class: "sf-icon-button sf-options-trigger", aria_label: "Playback options", aria_expanded: visible.is_some(),
-                        title: "Playback options", onclick: move |_| {
+                    button { class: "sf-icon-button sf-options-trigger", aria_label: "Playback options", title: "Playback options", aria_expanded: visible.is_some(),
+                        onclick: move |_| {
                             if panel().is_some() { close_panel(panel); } else { panel.set(Some(ExtraPanel::Options)); }
                         }, Icon { symbol: Symbol::More }
                     }
@@ -204,10 +217,10 @@ pub fn PlaybackPanel(
                 }
                 if let Some(backdrop) = backdrop {
                     div { class: "sf-backdrop-frame",
-                        img { class: if location.is_some() { "sf-backdrop" } else { "sf-backdrop sf-backdrop-contained" },
+                        img { class: if location.is_some() && !settings.contain_artwork { "sf-backdrop" } else { "sf-backdrop sf-backdrop-contained" },
                             src: "{backdrop.image_url}", alt: "{backdrop.binding.name}" }
                     }
-                } else if missing_location.is_none() {
+                } else if missing_location.is_none() && settings.show_diagnostics {
                     div { class: "sf-missing-backdrop", aria_label: "Artwork unavailable", "Artwork unavailable" }
                 }
                 if let Some(session) = session {
@@ -220,7 +233,7 @@ pub fn PlaybackPanel(
                               rsx! {
                                   if let Some(visual) = visual {
                                       img { key: "{actor.instance}", class: "sf-actor", style: "{style}", src: "{visual.image_url}", alt: "{actor.asset.name.value}" }
-                                  } else {
+                                  } else if settings.show_diagnostics {
                                       div { key: "{actor.instance}", class: "sf-actor sf-staged-missing", style: "{style}", "{actor.asset.name.value} · missing artwork" }
                                   }
                               }
@@ -247,7 +260,7 @@ pub fn PlaybackPanel(
                     }
                 }
                 section { class: if phase == Some(Phase::Choice) { "sf-reading sf-reading-choice" } else { "sf-reading" }, aria_label: "Current story",
-                    if let Some(error) = &snapshot.error { p { class: "sf-error", role: "alert", "{error}" } }
+                    if snapshot.error.is_some() { div { class: "sf-error", role: "alert", "Playback problem" button { class: "sf-text-button", title: "Show playback error details", onclick: move |_| panel.set(Some(ExtraPanel::Error)), "Details" } } }
                     if let Some(instruction) = current {
                         match phase {
                             Some(Phase::Complete) => rsx! { h2 { "Story complete" } },
@@ -260,7 +273,7 @@ pub fn PlaybackPanel(
                                     div { class: "sf-dialogue",
                                         if let Some(portrait) = portrait {
                                             img { class: "sf-portrait", src: "{portrait.image_url}", alt: "{portrait.binding.name}" }
-                                        } else {
+                                        } else if settings.show_diagnostics {
                                             div { class: "sf-portrait sf-missing-portrait", aria_label: "Portrait unavailable", "?" }
                                         }
                                         div { class: "sf-dialogue-text",
@@ -274,7 +287,7 @@ pub fn PlaybackPanel(
                                     h2 { class: "sf-choice-prompt", "{prompt.value}" }
                                     div { class: "sf-choices", onkeydown: control_keys,
                                         for (index, option) in options.iter().enumerate() {
-                                            button { class: "sf-choice", disabled: paused, onclick: move |_| {
+                                            button { class: "sf-choice", title: "{option.label.value}", disabled: paused, onclick: move |_| {
                                                 model.write().dispatch(Command::SelectChoice { index });
                                                 focus_stage();
                                             },
@@ -288,12 +301,12 @@ pub fn PlaybackPanel(
                         }
                         div { class: "sf-story-actions", onkeydown: control_keys,
                             button { class: "sf-nav", aria_label: "Previous passage", title: "Previous passage", disabled: !snapshot.can_back(), onclick: move |_| { autoplay.set(false); model.write().back(); }, Icon { symbol: Symbol::Previous } }
-                            button { class: "sf-nav", aria_label: if autoplay() { "Pause automatic playback" } else { "Play automatically" }, title: if autoplay() { "Pause automatic playback" } else { "Play automatically (every 3 seconds)" }, disabled: phase != Some(Phase::Text) || paused, onclick: move |_| autoplay.toggle(), Icon { symbol: if autoplay() { Symbol::Pause } else { Symbol::Play } } }
+                            button { class: "sf-nav", aria_label: if autoplay() { "Pause automatic playback" } else { "Play automatically" }, title: if autoplay() { "Pause automatic playback".to_owned() } else { format!("Play automatically (every {} seconds)", settings.autoplay_seconds) }, disabled: phase != Some(Phase::Text) || paused, onclick: move |_| autoplay.toggle(), Icon { symbol: if autoplay() { Symbol::Pause } else { Symbol::Play } } }
                             if matches!(phase, Some(Phase::Text | Phase::Budget)) {
-                                button { class: "sf-nav", aria_label: "Next passage", title: "Next passage", disabled: paused, onclick: move |_| model.write().dispatch(Command::Advance), Icon { symbol: Symbol::Next } }
+                                button { class: "sf-nav", aria_label: "Next passage", title: "Next passage (Right arrow)", disabled: paused, onclick: move |_| model.write().dispatch(Command::Advance), Icon { symbol: Symbol::Next } }
                             }
-                            if phase == Some(Phase::Complete) { button { class: "sf-continue", onclick: move |_| { model.write().dispatch(Command::Restart); focus_stage(); }, "Read again" Icon { symbol: Symbol::Arrow } } }
-                            if paused { button { class: "sf-nav", aria_label: "Resume playback", onclick: move |_| model.write().dispatch(Command::Resume), Icon { symbol: Symbol::Play } } }
+                            if phase == Some(Phase::Complete) { button { class: "sf-continue", title: "Read again", onclick: move |_| { model.write().dispatch(Command::Restart); focus_stage(); }, "Read again" Icon { symbol: Symbol::Arrow } } }
+                            if paused { button { class: "sf-nav", aria_label: "Resume playback", title: "Resume playback (Space)", onclick: move |_| model.write().dispatch(Command::Resume), Icon { symbol: Symbol::Play } } }
                         }
                     } else {
                         h2 { if on_apply.is_some() { "See your story" } else { "A story awaits" } }
@@ -301,7 +314,7 @@ pub fn PlaybackPanel(
                             p { class: "sf-secondary", if on_apply.is_some() { "Apply your draft to start a preview." } else { "Open a Storyfella project to begin." } }
                         }
                         if let Some(on_open) = on_open {
-                            button { class: "sf-continue", onclick: move |_| on_open.call(()), "Open story" Icon { symbol: Symbol::Arrow } }
+                            button { class: "sf-continue", title: "Open story", onclick: move |_| on_open.call(()), "Open story" Icon { symbol: Symbol::Arrow } }
                         }
                     }
                 }
@@ -309,12 +322,12 @@ pub fn PlaybackPanel(
             if let Some(visible) = visible {
                 div { class: "sf-dismiss", aria_hidden: "true", onclick: move |_| close_panel(panel) }
                 aside { class: if visible == ExtraPanel::Options { "sf-playback-panel" } else { "sf-playback-panel sf-panel-wide" }, "data-playback-panel": "true",
-                    aria_label: match visible { ExtraPanel::Options => "Playback options", ExtraPanel::Artwork => "Artwork", ExtraPanel::Source => "Source snapshot" },
+                    aria_label: match visible { ExtraPanel::Options => "Playback options", ExtraPanel::Artwork => "Artwork", ExtraPanel::Source => "Source snapshot", ExtraPanel::Error => "Playback error details" },
                     onkeydown: move |event| { event.stop_propagation(); if event.key() == Key::Escape { event.prevent_default(); close_panel(panel); } },
                     header { class: "sf-panel-header",
                         if visible != ExtraPanel::Options { button { class: "sf-text-button", onclick: move |_| panel.set(Some(ExtraPanel::Options)), "Back" } }
-                        strong { match visible { ExtraPanel::Options => "Options", ExtraPanel::Artwork => "Artwork", ExtraPanel::Source => "Source snapshot" } }
-                        button { class: "sf-icon-button sf-panel-close", aria_label: "Close playback options", onclick: move |_| close_panel(panel), Icon { symbol: Symbol::Close } }
+                        strong { match visible { ExtraPanel::Options => "Options", ExtraPanel::Artwork => "Artwork", ExtraPanel::Source => "Source snapshot", ExtraPanel::Error => "Playback error details" } }
+                        button { class: "sf-icon-button sf-panel-close", aria_label: "Close panel", title: "Close panel (Escape)", onclick: move |_| close_panel(panel), Icon { symbol: Symbol::Close } }
                     }
                     div { class: "sf-panel-content",
                         match visible {
@@ -346,6 +359,7 @@ pub fn PlaybackPanel(
                                     }
                                 }
                             },
+                            ExtraPanel::Error => rsx! { if let Some(error) = &snapshot.error { pre { "{error}" } } },
                         }
                     }
                 }

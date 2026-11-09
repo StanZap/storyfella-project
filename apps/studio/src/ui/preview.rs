@@ -85,6 +85,7 @@ pub fn start_scene(mut model: Signal<PlaybackModel>, app_state: Signal<AppState>
 #[component]
 pub fn Preview(app_state: Signal<AppState>) -> Element {
     let model = use_context::<Signal<PlaybackModel>>();
+    let settings = use_context::<Signal<storyfella_studio_core::config::PreviewSettings>>();
     let mut screen = use_context::<Signal<AppScreen>>();
     let mut app_state = app_state;
     let mut error_report =
@@ -121,7 +122,7 @@ pub fn Preview(app_state: Signal<AppState>) -> Element {
             }
         }
         div { class: "min-h-0 flex-1",
-        PlaybackPanel { model, draft_changed: changed,
+        PlaybackPanel { model, settings: settings(), draft_changed: changed,
             on_apply: move |_| start_preview(model, app_state),
             on_source: if changed { None } else { Some(EventHandler::new(move |span: storyfella_language::Span| {
                     let destination = if multiple {

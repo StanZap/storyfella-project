@@ -31,6 +31,10 @@ fn main() {
 #[component]
 fn Player() -> Element {
     let options = use_context::<Options>();
+    let settings = use_hook(|| {
+        storyfella_studio_core::config::PreviewSettings::load().map_err(|error| error.to_string())
+    });
+    let settings_error = settings.as_ref().err().cloned();
     let model = use_signal(|| {
         let mut model = PlaybackModel::default();
         let policy = if options.allow_missing_assets {
@@ -47,11 +51,14 @@ fn Player() -> Element {
         } else if options.project.is_some() {
             model.error = Some("--project requires a compiled JSON input".into());
         }
+        if model.error.is_none() {
+            model.error = settings_error;
+        }
         model
     });
     rsx! {
         style { "html,body,#main {{height:100%;margin:0;background:#121619}}" }
-        PlaybackPanel { model, on_open: move |_| {
+        PlaybackPanel { model, settings: settings.as_ref().copied().unwrap_or_default(), on_open: move |_| {
             spawn(open_story(model, options.allow_missing_assets));
         } }
     }

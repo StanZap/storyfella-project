@@ -825,8 +825,8 @@ pub fn Writer(
                     }
                     IconButton { label: "Refresh project files", icon: IconName::Refresh, onclick: move |_| refresh += 1 }
                 }
-                if let Some(error) = scan_error() { p { class: "text-xs text-red-400", role: "alert", "{error}" } }
-                if let Some(error) = drop_error() { div { class: "text-xs text-red-400", role: "alert", "{error}" button { class: "ml-1 underline", onclick: move |_| drop_error.set(None), "Dismiss" } } }
+                if let Some(error) = scan_error() { div { class: "text-xs text-red-400", role: "alert", "Couldn't load project files" super::components::ErrorDetailsButton { error: ReportedError::plain(storyfella_studio_core::errors::ErrorCode::AppCommandInvalid, error) } } }
+                if let Some(error) = drop_error() { div { class: "text-xs text-red-400", role: "alert", "Couldn't update project files" super::components::ErrorDetailsButton { error: ReportedError::plain(storyfella_studio_core::errors::ErrorCode::AppCommandInvalid, error) } button { class: "ml-1 underline", title: "Dismiss error", onclick: move |_| drop_error.set(None), "Dismiss" } } }
                 if creation.as_ref().is_some_and(|(_, target)| target.is_empty()) {
                     {creation_form.clone()}
                 }
@@ -859,7 +859,7 @@ pub fn Writer(
                             let drop_folder = folder_path.clone();
                             let is_open = !collapsed.read().contains(&folder_path);
                             let visible = ancestors_visible(&folder_path, &collapsed.read());
-                            rsx! { if visible { button { key: "folder-{folder_path}", style: "padding-left: {8 + row.depth * 12}px", class: if folder() == folder_path { "flex items-center gap-1 rounded bg-white/10 py-1 text-left text-xs text-zinc-100" } else { "flex items-center gap-1 rounded py-1 text-left text-xs text-zinc-400 hover:bg-white/5" }, aria_expanded: is_open, onclick: move |_| { let mut set = collapsed.write(); if !set.remove(&folder_path) { set.insert(folder_path.clone()); } folder.set(folder_path.clone()); }, ondragover: move |event| event.prevent_default(), ondrop: move |event| {
+                            rsx! { if visible { button { key: "folder-{folder_path}", title: if is_open { format!("Collapse {}", row.name) } else { format!("Expand {}", row.name) }, style: "padding-left: {8 + row.depth * 12}px", class: if folder() == folder_path { "flex items-center gap-1 rounded bg-white/10 py-1 text-left text-xs text-zinc-100" } else { "flex items-center gap-1 rounded py-1 text-left text-xs text-zinc-400 hover:bg-white/5" }, aria_expanded: is_open, onclick: move |_| { let mut set = collapsed.write(); if !set.remove(&folder_path) { set.insert(folder_path.clone()); } folder.set(folder_path.clone()); }, ondragover: move |event| event.prevent_default(), ondrop: move |event| {
                                 event.prevent_default(); event.stop_propagation();
                                 let root = app_state.read().story.path().and_then(|path| path.parent()).map(std::path::Path::to_path_buf);
                                 if let Some(root) = root { for file in event.files() { if let Err(error) = super::project_files::import_file(&root, &drop_folder, &file.path()) { drop_error.set(Some(format!("Could not add {}: {error}", file.name()))); } else { collapsed.write().remove(&drop_folder); refresh += 1; } } }

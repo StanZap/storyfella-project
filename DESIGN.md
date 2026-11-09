@@ -1,5 +1,19 @@
 # Storyfella Studio design standard and UX audit
 
+### Contextual playback actions
+
+The Story toolbar exposes Play story and Play scene as named icon actions. The
+scene action is disabled when the caret does not identify a scene. Shared
+playback controls expose their labels and available shortcuts as tooltips. Native
+visual and keyboard acceptance remains open.
+
+Studio General settings persist playback autoplay timing, text size, location
+artwork fit and diagnostic visibility for Preview and the standalone Player.
+Playback failures show a compact notice;
+the full diagnostic opens in the playback details panel. Settings launch and
+reveal failures use Studio's shared error report. Native interaction, visual
+and accessibility acceptance for these changes remains open.
+
 ### Playback navigation
 
 The shared playback stage offers previous and next passage controls and optional
