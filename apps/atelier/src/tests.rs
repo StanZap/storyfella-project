@@ -438,6 +438,7 @@ fn open_project_recovery_keeps_each_document_path_dirty_state_and_drafts() {
         vec![
             (
                 RecoveryTab {
+                    shared: None,
                     epoch: 3,
                     path: Some(directory.join("first.atelier")),
                     dirty: true,
@@ -447,6 +448,7 @@ fn open_project_recovery_keeps_each_document_path_dirty_state_and_drafts() {
             ),
             (
                 RecoveryTab {
+                    shared: None,
                     epoch: 7,
                     path: Some(directory.join("second.atelier")),
                     dirty: false,
@@ -494,6 +496,7 @@ fn reordered_project_recovery_keeps_active_identity_and_closed_tabs_out() {
                     .insert("new".into(), format!("draft {epoch}"));
                 (
                     RecoveryTab {
+                        shared: None,
                         epoch: *epoch,
                         path: Some(directory.join(format!("{epoch}.atelier"))),
                         dirty: true,
@@ -556,6 +559,7 @@ fn closing_project_storage_saves_drafts_and_reports_failures_without_overwriting
     workers
         .storage
         .send(Storage::CloseProject {
+            owner: None,
             doc: project.clone(),
             path: path.clone(),
             epoch: 3,
@@ -583,6 +587,7 @@ fn closing_project_storage_saves_drafts_and_reports_failures_without_overwriting
     workers
         .storage
         .send(Storage::CloseProject {
+            owner: None,
             doc: project,
             path: invalid_path.clone(),
             epoch: 7,
@@ -633,6 +638,7 @@ fn prepare_project_tabs_fixture() {
         projects.push((
             RecoveryTab {
                 epoch,
+                shared: None,
                 path: Some(path),
                 dirty: true,
                 active: epoch == 7,
@@ -1675,6 +1681,7 @@ fn queued_saves_keep_latest_recovery() {
         workers
             .storage
             .send(Storage::Save {
+                owner: None,
                 doc,
                 path: path.clone(),
                 revision,
@@ -1830,6 +1837,7 @@ fn comfy_workflow_roundtrip_stores_output_and_reopens_in_atelier() {
             cancel: Arc::new(AtomicBool::new(false)),
         },
         &directory,
+        providers::generate,
     )
     .unwrap();
     assert_eq!(document::decode_reference(&reference).unwrap().width(), 32);
@@ -1929,6 +1937,7 @@ fn serve_activity_ui_fixture() {
         projects.push((
             RecoveryTab {
                 epoch,
+                shared: None,
                 path: Some(path),
                 dirty: true,
                 active: epoch == 3,
@@ -2047,6 +2056,7 @@ fn generation_cancellation_prevents_network_submission() {
             cancel: Arc::new(AtomicBool::new(true)),
         },
         &directory,
+        providers::generate,
     );
     assert!(result.unwrap_err().to_string().contains("cancelled"));
     assert!(!directory.join("generated").exists());
@@ -2065,6 +2075,8 @@ fn switching_saves_current_project_before_opening_and_reports_failure() {
     workers
         .storage
         .send(Storage::Switch {
+            previous_owner: None,
+            data_dir: directory.clone(),
             epoch: 7,
             previous: previous.clone(),
             archive: archive.clone(),
@@ -2089,6 +2101,8 @@ fn switching_saves_current_project_before_opening_and_reports_failure() {
     workers
         .storage
         .send(Storage::Switch {
+            previous_owner: None,
+            data_dir: directory.clone(),
             epoch: 7,
             previous,
             archive: blocked.join("project.atelier"),
@@ -2356,12 +2370,13 @@ fn shared_catalog_worker_refreshes_items_and_document_links_survive_save_rename_
     .unwrap();
     let path = crate::document::project_document(&folder.manifest()).unwrap();
     let snapshot = ProjectDb::open(folder.database()).unwrap().load().unwrap();
+    let owner = crate::ownership::Owner::desktop(folder.clone(), &root, None).unwrap();
     let workers = worker::start();
     workers
         .storage
         .send(Storage::CatalogEdit {
             epoch: 7,
-            path: folder.database(),
+            owner: owner.clone(),
             snapshot,
             resolution: storyfella_studio_core::catalog::EditResolution::Check,
             edit: CatalogEdit::Create {
@@ -2390,7 +2405,7 @@ fn shared_catalog_worker_refreshes_items_and_document_links_survive_save_rename_
         .storage
         .send(Storage::CatalogEdit {
             epoch: 7,
-            path: folder.database(),
+            owner: owner.clone(),
             snapshot,
             resolution: storyfella_studio_core::catalog::EditResolution::Check,
             edit: CatalogEdit::Describe {
@@ -2491,6 +2506,12 @@ fn studio_handoff_reuses_artboard_preserves_prompt_and_drawing_and_embeds_existi
         }
         _ => panic!("Handoff should resolve on the storage worker"),
     };
+    assert!(
+        !target.path.exists(),
+        "Handoff inspection must not write before opening"
+    );
+    let _owner = crate::ownership::Owner::desktop(folder.clone(), &root, None).unwrap();
+    crate::document::initialize_shared(&folder, "Harbor".into()).unwrap();
     let mut doc = crate::document::load(&target.path).unwrap();
     let canvas = target.apply(&mut doc, &request).unwrap();
     assert_eq!(doc.asset_links[0].asset_id, id);

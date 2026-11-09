@@ -34,6 +34,25 @@ impl QueuedRequest {
             .unwrap_or((self.settings.width, self.settings.height))
     }
 
+    pub(crate) fn into_provider_request(
+        self,
+        native: Arc<crate::native_images::NativeImages>,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+    ) -> crate::providers::Request {
+        let size = self.size();
+        crate::providers::Request {
+            native,
+            settings: self.settings,
+            prompt: self.prompt,
+            size,
+            source: self.source,
+            references: self.references,
+            mask: self.mask,
+            progress: None,
+            cancel,
+        }
+    }
+
     /// A short description of what will run, for the queue list.
     pub fn summary(&self) -> String {
         let kind = if matches!(

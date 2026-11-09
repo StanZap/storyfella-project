@@ -9115,9 +9115,11 @@ name = "storyfella-atelier"
 version = "0.1.0"
 dependencies = [
  "agentkit-ai",
+ "agentkit-mcp",
  "anyhow",
  "base64 0.23.0",
  "block2 0.6.2",
+ "clap",
  "core-foundation 0.10.1",
  "core-video",
  "gpui-kit",
@@ -9127,6 +9129,7 @@ dependencies = [
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "reqwest 0.13.5",
+ "same-file",
  "serde",
  "serde_json",
  "sha2 0.11.0",

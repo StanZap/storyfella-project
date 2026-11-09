@@ -38,7 +38,7 @@ pub fn save_canvases(
     use std::fmt::Write as _;
     use std::io::Write;
     let db = ProjectDb::open_existing(folder.database())?;
-    let stored = db.load()?;
+    let stored = db.load_catalog()?;
     ensure!(
         stored.id == folder.id(),
         "The artwork belongs to another project"
@@ -99,7 +99,7 @@ pub fn save_canvases(
         });
     }
     if registry != stored.registry {
-        db.save_registry_checked(&registry, stored.registry_version)?;
+        db.save_catalog_checked(&registry, stored.registry_version)?;
     }
     Ok(publications)
 }
@@ -236,7 +236,7 @@ pub fn save_edit(
     edit: CatalogEdit,
     resolution: EditResolution,
 ) -> Result<(Uuid, StoredProject)> {
-    let current = db.load()?;
+    let current = db.load_catalog()?;
     ensure!(
         current.id == snapshot.id,
         "This catalog snapshot belongs to another project"
@@ -264,8 +264,8 @@ pub fn save_edit(
             saved_version: current.registry_version,
             conflict,
         })?;
-    db.save_registry_checked(&registry, current.registry_version)?;
-    Ok((id, db.load()?))
+    db.save_catalog_checked(&registry, current.registry_version)?;
+    Ok((id, db.inspect_catalog()?))
 }
 
 /// Rename only references resolved to this exact identity. Prose and unrelated

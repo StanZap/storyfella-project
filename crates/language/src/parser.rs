@@ -238,6 +238,13 @@ impl Line<'_> {
                     instance: self.name(2)?,
                 })
             }
+            "show" if self.raw(1) == "illustration" => {
+                self.count(3)?;
+                Ok(NodeKind::Asset {
+                    kind: AssetKind::Illustration,
+                    names: vec![self.name(2)?],
+                })
+            }
             "cast" | "character" | "location" | "prop" => {
                 if self.raw(1) != ":" {
                     return Err(self.error("Expected ':' after asset slot"));

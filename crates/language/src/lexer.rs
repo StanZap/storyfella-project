@@ -35,6 +35,8 @@ pub const KEYWORDS: &[&str] = &[
     "character",
     "location",
     "prop",
+    "show",
+    "illustration",
     "stage",
     "swap",
     "hide",

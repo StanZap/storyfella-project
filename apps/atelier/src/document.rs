@@ -2,6 +2,7 @@ use anyhow::{ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use image::{DynamicImage, RgbaImage};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{fs, io::Write, path::Path};
 
 pub const MAX_EDGE: u32 = 8192;
@@ -746,45 +747,59 @@ impl History {
         );
     }
 }
-/// Resolve a shared story project to its editable visual document. Opening an
-/// empty shared project creates only its first Atelier document, never source.
-pub fn project_document(path: &Path) -> Result<std::path::PathBuf> {
-    if path.is_dir()
-        || path
-            .file_name()
-            .is_some_and(|name| name == storyfella_studio_core::project::MANIFEST)
-    {
-        let folder = storyfella_studio_core::project::ProjectFolder::open(path)?;
-        let target = folder.atelier_document()?;
-        if !target.exists() {
-            let title = storyfella_studio_core::persistence::ProjectDb::open(folder.database())?
-                .load()?
-                .name;
-            let doc = Document {
+/// Initialize the designated shared document while its owner holds the lease.
+pub(crate) fn initialize_shared(
+    folder: &storyfella_studio_core::project::ProjectFolder,
+    title: String,
+) -> Result<()> {
+    let target = folder.atelier_document()?;
+    if !target.exists() {
+        save(
+            &target,
+            &Document {
                 title,
                 ..Default::default()
-            };
-            let bytes = serde_json::to_vec(&doc)?;
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&target)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-        }
-        Ok(target)
-    } else {
-        Ok(path.to_owned())
+            },
+        )?;
     }
+    Ok(())
+}
+
+#[cfg(test)]
+pub fn project_document(path: &Path) -> Result<std::path::PathBuf> {
+    let (target, folder) = crate::ownership::target(path)?;
+    if let Some(folder) = folder {
+        initialize_shared(&folder, folder.load()?.name)?;
+    }
+    Ok(target)
 }
 
 pub fn load(path: &Path) -> Result<Document> {
+    read(path).and_then(|bytes| decode_document(&bytes))
+}
+
+pub(crate) fn load_versioned(path: &Path) -> Result<(Document, String)> {
+    let bytes = read(path)?;
+    Ok((
+        decode_document(&bytes)?,
+        STANDARD.encode(Sha256::digest(&bytes)),
+    ))
+}
+
+pub(crate) fn version(doc: &Document) -> Result<String> {
+    Ok(STANDARD.encode(Sha256::digest(serde_json::to_vec(doc)?)))
+}
+
+fn read(path: &Path) -> Result<Vec<u8>> {
     ensure!(
         fs::metadata(path)?.len() <= 128 * 1024 * 1024,
         "Project exceeds 128 MB"
     );
-    let mut doc: Document =
-        serde_json::from_slice(&fs::read(path)?).context("Not an Atelier project")?;
+    Ok(fs::read(path)?)
+}
+
+fn decode_document(bytes: &[u8]) -> Result<Document> {
+    let mut doc: Document = serde_json::from_slice(bytes).context("Not an Atelier project")?;
     doc.migrate()?;
     doc.validate()?;
     for reference in &mut doc.references {
@@ -821,15 +836,15 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         path.file_name().unwrap_or_default().to_string_lossy(),
         std::process::id()
     ));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temporary)?;
     let result = (|| {
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&temporary)?;
         file.write_all(bytes)?;
         file.sync_all()?;
         fs::rename(&temporary, path)?;

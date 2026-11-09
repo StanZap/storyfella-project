@@ -47,6 +47,14 @@ playback states; restart, jump and restore clear that history. Automatic playbac
 stops when a passage cannot advance or an error occurs. Native visual and
 accessibility acceptance of these controls remains open.
 
+### Published illustrations in Preview
+
+`show illustration NAME` fits the full published illustration into the
+shared playback stage. The illustration takes precedence over the location
+backdrop. The deterministic Atelier MCP fixture checks the published pixels,
+and a native Studio Preview run verified the exact published revision UUID.
+Evidence is recorded in `.svs-e2e/logs/atelier-mcp-studio-preview.log`.
+
 ### Story project explorer · 2026-11-08
 
 The Story workspace presents user-facing files and catalog assets together at

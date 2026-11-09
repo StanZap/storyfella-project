@@ -13,6 +13,8 @@ use std::path::PathBuf;
 pub struct RecoveryTab {
     pub epoch: u64,
     pub path: Option<PathBuf>,
+    #[serde(default)]
+    pub(crate) shared: Option<crate::ownership::RecoveryIdentity>,
     pub dirty: bool,
     #[serde(default)]
     pub active: bool,
@@ -22,6 +24,7 @@ pub struct RecoveredProjects {
     pub tabs: Vec<ProjectTab>,
     pub active: Option<ProjectTab>,
     pub order: Vec<u64>,
+    pub detached: bool,
 }
 
 pub fn recover(directory: &std::path::Path) -> anyhow::Result<RecoveredProjects> {
@@ -45,11 +48,33 @@ pub fn recover(directory: &std::path::Path) -> anyhow::Result<RecoveredProjects>
     }
     let mut ids = std::collections::HashSet::new();
     let mut tabs = Vec::new();
+    let mut detached = false;
     for entry in entries {
         anyhow::ensure!(
             ids.insert(entry.epoch),
             "Duplicate project recovery identity"
         );
+        let (path, owner) = match entry.path {
+            Some(path) => match crate::ownership::target(&path).and_then(|(path, folder)| {
+                let owner = match (folder, entry.shared) {
+                    (None, None) => None,
+                    (Some(folder), Some(identity)) => Some(crate::ownership::Owner::desktop(
+                        folder,
+                        directory,
+                        Some(identity),
+                    )?),
+                    _ => anyhow::bail!("Cannot verify the recovered shared drawing's owner"),
+                };
+                Ok((Some(path), owner))
+            }) {
+                Ok(opened) => opened,
+                Err(_) => {
+                    detached = true;
+                    (None, None)
+                }
+            },
+            None => (None, None),
+        };
         tabs.push(ProjectTab {
             doc: crate::document::load(
                 &directory
@@ -57,8 +82,9 @@ pub fn recover(directory: &std::path::Path) -> anyhow::Result<RecoveredProjects>
                     .join(format!("{}.atelier", entry.epoch)),
             )?,
             epoch: entry.epoch,
-            path: entry.path,
-            dirty: entry.dirty,
+            dirty: entry.dirty || path.is_none(),
+            path,
+            owner,
             revision: 1,
             history: History::new(),
             view: Viewport::default(),
@@ -74,6 +100,7 @@ pub fn recover(directory: &std::path::Path) -> anyhow::Result<RecoveredProjects>
         tabs,
         active,
         order,
+        detached,
     })
 }
 
@@ -129,6 +156,7 @@ pub struct ProjectTab {
     pub doc: Document,
     pub history: History,
     pub path: Option<PathBuf>,
+    pub(crate) owner: Option<crate::ownership::Owner>,
     pub dirty: bool,
     pub revision: u64,
     pub view: Viewport,
@@ -148,6 +176,7 @@ impl DrawingApp {
             doc: self.doc.clone(),
             history: std::mem::replace(&mut self.history, History::new()),
             path: self.path.clone(),
+            owner: self.project_owner.clone(),
             dirty: self.dirty,
             revision: self.revision,
             view: self.view,
@@ -200,6 +229,7 @@ impl DrawingApp {
         self.doc = selected.doc;
         self.history = selected.history;
         self.path = selected.path;
+        self.project_owner = selected.owner;
         self.epoch = selected.epoch;
         self.dirty = selected.dirty;
         self.revision = selected.revision;
@@ -264,10 +294,20 @@ impl DrawingApp {
         }
         self.capture_prompt(cx);
         self.finish_stroke();
-        let (doc, path, revision) = if epoch == self.epoch {
-            (self.doc.clone(), self.path.clone(), self.revision)
+        let (doc, path, revision, owner) = if epoch == self.epoch {
+            (
+                self.doc.clone(),
+                self.path.clone(),
+                self.revision,
+                self.project_owner.clone(),
+            )
         } else if let Some(tab) = self.project_tabs.iter().find(|tab| tab.epoch == epoch) {
-            (tab.doc.clone(), tab.path.clone(), tab.revision)
+            (
+                tab.doc.clone(),
+                tab.path.clone(),
+                tab.revision,
+                tab.owner.clone(),
+            )
         } else {
             return;
         };
@@ -281,6 +321,7 @@ impl DrawingApp {
             path,
             epoch,
             revision,
+            owner,
         }) {
             Ok(()) => {
                 self.closing_project = Some(epoch);
@@ -371,6 +412,20 @@ impl DrawingApp {
             self.persist_open_projects();
             return;
         }
+        let owner = if epoch == self.epoch {
+            self.project_owner.as_ref()
+        } else {
+            self.project_tabs
+                .iter()
+                .find(|tab| tab.epoch == epoch)
+                .and_then(|tab| tab.owner.as_ref())
+        };
+        if let Some(owner) = owner {
+            if let Err(error) = owner.release_desktop() {
+                self.message(format!("Project stays open: {error:#}"), true);
+                return;
+            }
+        }
         let index = self
             .project_tab_order
             .iter()
@@ -402,6 +457,7 @@ impl DrawingApp {
                         doc: Document::default(),
                         history: History::new(),
                         path: None,
+                        owner: None,
                         dirty: false,
                         revision: 1,
                         view: Viewport::default(),
@@ -458,6 +514,10 @@ impl DrawingApp {
                         RecoveryTab {
                             epoch: *epoch,
                             path: self.path.clone(),
+                            shared: self
+                                .project_owner
+                                .as_ref()
+                                .and_then(crate::ownership::Owner::recovery_identity),
                             dirty: self.dirty,
                             active: true,
                         },
@@ -472,6 +532,10 @@ impl DrawingApp {
                                 RecoveryTab {
                                     epoch: *epoch,
                                     path: tab.path.clone(),
+                                    shared: tab
+                                        .owner
+                                        .as_ref()
+                                        .and_then(crate::ownership::Owner::recovery_identity),
                                     dirty: tab.dirty,
                                     active: false,
                                 },

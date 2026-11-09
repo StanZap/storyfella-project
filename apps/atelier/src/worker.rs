@@ -1,5 +1,6 @@
 use crate::{
     document::{self, Document, Reference},
+    ownership::{self, Owner},
     providers::{self, Request},
     viewport::Viewport,
 };
@@ -74,7 +75,7 @@ pub enum Event {
         result: Result<()>,
     },
     Exported(crate::activity::Scope, Result<PathBuf>),
-    Switched(u64, Result<(Document, Vec<RgbaImage>, Option<PathBuf>)>),
+    Switched(u64, Result<OpenedDocument>),
     Imported(u64, bool, Result<Vec<(Reference, RgbaImage)>>),
     ArtworkImported {
         epoch: u64,
@@ -89,6 +90,12 @@ pub enum Event {
     SettingsApplied(Result<()>),
     ServerStatus(crate::native_images::ServerStatus),
 }
+pub struct OpenedDocument {
+    pub doc: Document,
+    pub images: Vec<RgbaImage>,
+    pub path: Option<PathBuf>,
+    pub owner: Option<Owner>,
+}
 pub enum ArtworkImport {
     File(PathBuf),
     Clipboard(Vec<u8>),
@@ -101,7 +108,7 @@ pub enum Storage {
     },
     CatalogEdit {
         epoch: u64,
-        path: PathBuf,
+        owner: Owner,
         snapshot: storyfella_studio_core::persistence::StoredProject,
         edit: storyfella_studio_core::catalog::CatalogEdit,
         resolution: storyfella_studio_core::catalog::EditResolution,
@@ -109,6 +116,7 @@ pub enum Storage {
     CloseProject {
         doc: Document,
         path: PathBuf,
+        owner: Option<Owner>,
         epoch: u64,
         revision: u64,
     },
@@ -127,6 +135,7 @@ pub enum Storage {
     Save {
         doc: Document,
         path: PathBuf,
+        owner: Option<Owner>,
         revision: u64,
         epoch: u64,
         automatic: bool,
@@ -137,7 +146,9 @@ pub enum Storage {
         previous: Document,
         archive: PathBuf,
         previous_path: Option<PathBuf>,
+        previous_owner: Option<Owner>,
         next: Option<PathBuf>,
+        data_dir: PathBuf,
     },
     Import(u64, Vec<PathBuf>, PathBuf, bool),
     ImportArtwork {
@@ -191,8 +202,9 @@ pub fn start() -> Workers {
                 Storage::RefreshCatalog { epoch, path } => {
                     let result = (|| {
                         Ok(
-                            storyfella_studio_core::persistence::ProjectDb::open_existing(&path)?
-                                .load()?,
+                            storyfella_studio_core::persistence::ProjectDb::inspect_existing(
+                                &path,
+                            )?,
                         )
                     })();
                     Event::CatalogRefreshed {
@@ -203,16 +215,18 @@ pub fn start() -> Workers {
                 }
                 Storage::CatalogEdit {
                     epoch,
-                    path,
+                    owner,
                     snapshot,
                     edit,
                     resolution,
                 } => {
+                    let path = owner.database();
                     let details_saved = !matches!(
                         &edit,
                         storyfella_studio_core::catalog::CatalogEdit::ImportImage { .. }
                     );
                     let result = (|| {
+                        owner.verify()?;
                         let db =
                             storyfella_studio_core::persistence::ProjectDb::open_existing(&path)?;
                         storyfella_studio_core::catalog::save_edit(&db, &snapshot, edit, resolution)
@@ -229,8 +243,11 @@ pub fn start() -> Workers {
                     path,
                     epoch,
                     revision,
+                    owner,
                 } => {
-                    let (result, publications) = save_result(crate::shared_save::save(&path, &doc));
+                    let saved = ownership::verify_write(&path, owner.as_ref())
+                        .and_then(|()| crate::shared_save::save(&path, &doc));
+                    let (result, publications) = save_result(saved);
                     Event::ProjectClosed {
                         epoch,
                         revision,
@@ -376,12 +393,15 @@ pub fn start() -> Workers {
                     revision,
                     epoch,
                     automatic,
+                    owner,
                 } => {
-                    let saved = if automatic {
-                        document::save(&path, &doc).map(|_| Vec::new())
-                    } else {
-                        crate::shared_save::save(&path, &doc)
-                    };
+                    let saved = ownership::verify_write(&path, owner.as_ref()).and_then(|()| {
+                        if automatic {
+                            document::save(&path, &doc).map(|_| Vec::new())
+                        } else {
+                            crate::shared_save::save(&path, &doc)
+                        }
+                    });
                     let (result, publications) = save_result(saved);
                     Event::Saved {
                         result,
@@ -413,18 +433,37 @@ pub fn start() -> Workers {
                     previous,
                     archive,
                     previous_path,
+                    previous_owner,
                     next,
+                    data_dir,
                 } => Event::Switched(
                     epoch,
                     (|| {
                         document::save(&archive, &previous)?;
                         if let Some(path) = previous_path {
+                            ownership::verify_write(&path, previous_owner.as_ref())?;
                             document::save(&path, &previous)?;
                         }
-                        let doc = if let Some(path) = &next {
-                            document::load(path)?
+                        let (doc, path, owner) = if let Some(next) = &next {
+                            let (path, folder) = ownership::target(next)?;
+                            let owner = if let Some(folder) = folder {
+                                let owner = Owner::desktop(folder.clone(), &data_dir, None)?;
+                                let database = folder.database();
+                                // Preserve older shared-project schemas without recovering source.
+                                storyfella_studio_core::persistence::ProjectDb::open_existing(
+                                    &database,
+                                )?;
+                                if !path.exists() {
+                                    let stored = storyfella_studio_core::persistence::ProjectDb::inspect_existing(&database)?;
+                                    document::initialize_shared(&folder, stored.name)?;
+                                }
+                                Some(owner)
+                            } else {
+                                None
+                            };
+                            (document::load(&path)?, Some(path), owner)
                         } else {
-                            Document::default()
+                            (Document::default(), None, None)
                         };
                         let images = doc
                             .references
@@ -434,7 +473,12 @@ pub fn start() -> Workers {
                                     .map(|i| document::thumbnail(i, 800).to_rgba8())
                             })
                             .collect::<Result<Vec<_>>>()?;
-                        Ok((doc, images, next))
+                        Ok(OpenedDocument {
+                            doc,
+                            images,
+                            path,
+                            owner,
+                        })
                     })(),
                 ),
                 Storage::ImportArtwork {
@@ -620,13 +664,23 @@ pub(crate) fn apply_settings(settings: &providers::Settings, path: &std::path::P
     let bytes = serde_json::to_vec(settings)?;
     document::atomic_write(path, &bytes).context("Settings file was not saved")
 }
-pub fn generate(mut request: Request, id: u64, sender: Sender<Event>, directory: PathBuf) {
+pub fn generate(request: Request, id: u64, sender: Sender<Event>, directory: PathBuf) {
+    generate_using(request, id, sender, directory, providers::generate);
+}
+
+pub(crate) fn generate_using(
+    mut request: Request,
+    id: u64,
+    sender: Sender<Event>,
+    directory: PathBuf,
+    provider: fn(Request) -> Result<Reference>,
+) {
     std::thread::spawn(move || {
         let progress_sender = sender.clone();
         request.progress = Some(Box::new(move |message| {
             let _ = progress_sender.send(Event::GenerationProgress(id, message));
         }));
-        let result = crate::creative_workflow::generate(request, &directory);
+        let result = crate::creative_workflow::generate(request, &directory, provider);
         let _ = sender.send(Event::Generated(id, result));
     });
 }

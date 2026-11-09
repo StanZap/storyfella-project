@@ -19,13 +19,17 @@ use storyfella_studio_core::workflows::{
 
 use crate::{
     document::{self, Reference},
-    providers::{self, Request},
+    providers::Request,
 };
 
 const IMAGE_STEP: &str = "atelier_image_iteration";
 const SAVE_STEP: &str = "atelier_store_iteration";
 
-pub fn generate(request: Request, directory: &Path) -> Result<(Reference, RgbaImage)> {
+pub fn generate(
+    request: Request,
+    directory: &Path,
+    provider: fn(Request) -> Result<Reference>,
+) -> Result<(Reference, RgbaImage)> {
     std::fs::create_dir_all(directory)?;
     let store = RunStore::open(&directory.join("workflows.sqlite3"))?;
     // No keys, endpoint URLs, encoded images or full provider Settings enter
@@ -79,7 +83,7 @@ pub fn generate(request: Request, directory: &Path) -> Result<(Reference, RgbaIm
                         "An image request cannot be submitted twice",
                     )
                 })?;
-                let reference = tokio::task::spawn_blocking(move || providers::generate(request))
+                let reference = tokio::task::spawn_blocking(move || provider(request))
                     .await
                     .map_err(|error| RunError::new(RunErrorCode::BadInput, error.to_string()))?
                     .map_err(|error| RunError::new(RunErrorCode::ModelCall, error.to_string()))?;

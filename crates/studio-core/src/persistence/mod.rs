@@ -231,6 +231,15 @@ impl ProjectDb {
         self.persist_registry(registry, Some(version))
     }
 
+    /// Atelier can update the catalog without taking ownership of source recovery.
+    pub(crate) fn save_catalog_checked(
+        &self,
+        registry: &ArtifactRegistry,
+        version: i64,
+    ) -> Result<i64, StoreError> {
+        self.write_snapshot(&self.prepare_registry(registry)?, Some(version), None)
+    }
+
     /// Commit artwork and a recoverable source intent together. A failed source
     /// publish leaves the exact old/new text in SQLite; load/retry completes it
     /// only if disk still matches either side. No source rewrite precedes a
@@ -467,6 +476,9 @@ impl ProjectDb {
                 path: self.path.clone(),
                 source,
             })?;
+        if self.pending_source(&tx)?.is_some() {
+            return Err(StoreError::PendingSource);
+        }
         let changed = tx.execute(
             "UPDATE projects SET registry_version = registry_version + 1 WHERE ?1 IS NULL OR registry_version = ?1",
             params![expected],
@@ -682,6 +694,14 @@ impl ProjectDb {
     /// Loads the project row and the full registry snapshot.
     pub fn load(&self) -> Result<StoredProject, StoreError> {
         self.load_snapshot(SnapshotMode::Recover)
+    }
+
+    pub(crate) fn inspect_catalog(&self) -> Result<StoredProject, StoreError> {
+        self.load_snapshot(SnapshotMode::Discovery)
+    }
+
+    pub(crate) fn load_catalog(&self) -> Result<StoredProject, StoreError> {
+        self.load_snapshot(SnapshotMode::ReadAuthoring)
     }
 
     fn load_snapshot(&self, mode: SnapshotMode) -> Result<StoredProject, StoreError> {
@@ -1910,6 +1930,15 @@ mod tests {
             "captain_mara"
         );
         assert!(db.pending_source(&db.conn.lock()).unwrap().is_some());
+        assert!(matches!(db.load_catalog(), Err(StoreError::PendingSource)));
+        assert!(matches!(
+            db.save_catalog_checked(&inspected.registry, inspected.registry_version),
+            Err(StoreError::PendingSource)
+        ));
+        assert_eq!(
+            std::fs::read_to_string(source_path(&path)).unwrap(),
+            baseline.story.source()
+        );
         assert!(matches!(
             ProjectDb::read_authoring_snapshot(&path),
             Err(StoreError::PendingSource)

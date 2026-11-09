@@ -127,6 +127,7 @@ pub struct PlaybackExpectation {
     pub scene: String,
     pub phase: storyfella_runtime::Phase,
     pub text: Option<String>,
+    pub artwork_revision: Option<uuid::Uuid>,
 }
 
 impl StepVerb {
@@ -840,6 +841,11 @@ async fn execute_step(
             let valid = runtime.state().phase == expected.phase
                 && runtime.plan().scenes[runtime.state().scene].id.0 == expected.scene
                 && expected.text.as_deref().is_none_or(|t| Some(t) == text)
+                && expected.artwork_revision.is_none_or(|revision| {
+                    visuals
+                        .iter()
+                        .any(|visual| visual.binding.revision == revision.to_string())
+                })
                 && visuals.len() == runtime.state().assets.len()
                 && visuals.iter().all(|v| {
                     v.image_url.starts_with("data:image/png;base64,")

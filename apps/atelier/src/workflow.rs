@@ -705,6 +705,45 @@ impl Document {
         Ok(())
     }
 
+    /// Apply a review decision to the active candidate layer.
+    pub(crate) fn review_candidate_layer(&mut self, review: Review) {
+        debug_assert!(self.layers[self.active_layer].candidate);
+        match review {
+            Review::Accept => self.layers[self.active_layer].candidate = false,
+            Review::Discard | Review::Reference => self.remove_reviewed_candidate(),
+        }
+        self.prune_layer_groups();
+    }
+
+    fn remove_reviewed_candidate(&mut self) {
+        if self.layers.len() == 1 {
+            self.layers[0] = Layer {
+                name: "Paint".into(),
+                visible: true,
+                locked: false,
+                opacity: 1.,
+                group: None,
+                candidate: false,
+                strokes: vec![],
+                image: None,
+            };
+            self.paint_layer = Some(0);
+        } else {
+            let removed = self.active_layer;
+            self.layers.remove(removed);
+            self.paint_layer = self.paint_layer.and_then(|index| {
+                if index == removed {
+                    None
+                } else if index > removed {
+                    Some(index - 1)
+                } else {
+                    Some(index)
+                }
+            });
+            self.active_layer = self.active_layer.min(self.layers.len() - 1);
+        }
+    }
+
     /// Attach to the captured artboard, even if the user has since opened another.
     /// Validate on a clone so a failed attachment never changes the document.
     pub fn attach_result(

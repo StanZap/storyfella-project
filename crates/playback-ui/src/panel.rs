@@ -152,13 +152,18 @@ pub fn PlaybackPanel(
     };
     let staged = session.map(|s| s.runtime.staged()).unwrap_or_default();
     let staging_used = session.is_some_and(|s| s.runtime.has_staging());
-    let missing_location = missing
+    let missing_backdrop = missing
         .iter()
-        .find(|asset| asset.kind == AssetKind::Location);
+        .find(|asset| asset.kind == AssetKind::Illustration)
+        .or_else(|| {
+            missing
+                .iter()
+                .find(|asset| asset.kind == AssetKind::Location)
+        });
     let missing_objects: Vec<_> = missing
         .iter()
         .filter(|asset| {
-            asset.kind != AssetKind::Location
+            !matches!(asset.kind, AssetKind::Location | AssetKind::Illustration)
                 && !staged.iter().any(|actor| {
                     actor.asset.kind == asset.kind
                         && actor
@@ -174,12 +179,17 @@ pub fn PlaybackPanel(
             && settings.show_diagnostics
             && !s.runtime.plan().readiness.unsupported_directions.is_empty()
     });
-    let location = visuals
+    let scene_backdrop = visuals
         .iter()
-        .find(|v| v.binding.kind == AssetKind::Location);
+        .find(|v| v.binding.kind == AssetKind::Illustration)
+        .or_else(|| {
+            visuals
+                .iter()
+                .find(|v| v.binding.kind == AssetKind::Location)
+        });
     // With no location, keep the available artwork intact rather than treating
     // a portrait or prop as a landscape. Every active asset remains inspectable.
-    let backdrop = location.copied().or_else(|| {
+    let backdrop = scene_backdrop.copied().or_else(|| {
         if staging_used {
             None
         } else {
@@ -227,15 +237,15 @@ pub fn PlaybackPanel(
                 }
             }
             div { class: "{stage_class}", tabindex: "0", aria_label: "Story stage",
-                if let Some(asset) = missing_location {
-                    div { class: "sf-placeholder-location", aria_label: "Location {asset.name.value}: missing artwork" }
+                if let Some(asset) = missing_backdrop {
+                    div { class: "sf-placeholder-location", aria_label: if asset.kind == AssetKind::Location { format!("Location {}: missing artwork", asset.name.value) } else { format!("Illustration {}: missing artwork", asset.name.value) } }
                 }
                 if let Some(backdrop) = backdrop {
                     div { class: "sf-backdrop-frame",
-                        img { class: if location.is_some() && !settings.contain_artwork { "sf-backdrop" } else { "sf-backdrop sf-backdrop-contained" },
+                        img { class: if backdrop.binding.kind == AssetKind::Location && !settings.contain_artwork { "sf-backdrop" } else { "sf-backdrop sf-backdrop-contained" },
                             src: "{backdrop.image_url}", alt: "{backdrop.binding.name}" }
                     }
-                } else if missing_location.is_none() && settings.show_diagnostics {
+                } else if missing_backdrop.is_none() && settings.show_diagnostics {
                     div { class: "sf-missing-backdrop", aria_label: "Artwork unavailable", "Artwork unavailable" }
                 }
                 if let Some(session) = session {
@@ -357,7 +367,7 @@ pub fn PlaybackPanel(
                                 for visual in visuals {
                                     figure { class: "sf-artwork",
                                         img { src: "{visual.image_url}", alt: "{visual.binding.name}" }
-                                        figcaption { "{visual.binding.name}" span { match visual.binding.kind { AssetKind::Character => "Character", AssetKind::Location => "Location", AssetKind::Prop => "Prop" } } }
+                                        figcaption { "{visual.binding.name}" span { match visual.binding.kind { AssetKind::Character => "Character", AssetKind::Location => "Location", AssetKind::Prop => "Prop", AssetKind::Illustration => "Illustration" } } }
                                     }
                                 }
                             },

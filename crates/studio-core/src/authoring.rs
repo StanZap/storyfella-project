@@ -44,6 +44,7 @@ pub fn artifact_kind(kind: AssetKind) -> ArtifactKind {
         AssetKind::Character => ArtifactKind::Character,
         AssetKind::Location => ArtifactKind::Environment,
         AssetKind::Prop => ArtifactKind::Object,
+        AssetKind::Illustration => ArtifactKind::Illustration,
     }
 }
 
@@ -105,6 +106,7 @@ impl AssetCatalog {
                 ArtifactKind::Character => AssetKind::Character,
                 ArtifactKind::Environment => AssetKind::Location,
                 ArtifactKind::Object => AssetKind::Prop,
+                ArtifactKind::Illustration => AssetKind::Illustration,
                 _ => continue,
             };
             assets.push(Asset {

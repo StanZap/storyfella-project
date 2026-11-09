@@ -410,12 +410,16 @@ pub fn complete(analysis: &Analysis, offset: usize, assets: &[Asset]) -> Vec<Com
             }
         }
     } else {
-        let asset_kind = before.split_once(':').and_then(|(slot, _)| match slot {
-            "cast" | "character" => Some(AssetKind::Character),
-            "location" => Some(AssetKind::Location),
-            "prop" => Some(AssetKind::Prop),
-            _ => None,
-        });
+        let asset_kind = if words == ["show", "illustration"] {
+            Some(AssetKind::Illustration)
+        } else {
+            before.split_once(':').and_then(|(slot, _)| match slot {
+                "cast" | "character" => Some(AssetKind::Character),
+                "location" => Some(AssetKind::Location),
+                "prop" => Some(AssetKind::Prop),
+                _ => None,
+            })
+        };
         if let Some(kind) = asset_kind {
             for asset in assets {
                 if asset.kind == kind
@@ -469,6 +473,7 @@ pub fn complete(analysis: &Analysis, offset: usize, assets: &[Asset]) -> Vec<Com
                 "character",
                 "location",
                 "prop",
+                "show illustration",
                 "stage",
                 "swap",
                 "hide",

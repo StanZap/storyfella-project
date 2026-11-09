@@ -459,6 +459,23 @@ MCP chapter creation and linking, paginated story and catalog discovery,
 and validation at larger source sizes remain open. The current compiler
 limit is 256 source files and the MCP workspace limit is 1 MiB.
 
+The [Atelier MCP illustration slice](agentic-vn-production.md#create-one-illustration-through-atelier-mcp)
+adds a shared-drawing lease and desktop recovery reservation, candidate
+generation, source-image revision, native PNG preview and checked publication
+after an explicit local review. `show illustration NAME` binds the published
+revision as a backdrop in Studio Preview and Player. The fixture covers a
+revised candidate, an invalidated approval, an artwork-stage save failure and
+retry, and exact revision and pixel loading through Preview's playback host.
+On 2026-11-09 the rebuilt macOS Studio passed a native Preview check against
+the exact fixture revision UUID. Evidence is in
+`.svs-e2e/logs/atelier-mcp-desktop-fixture.log` and
+`.svs-e2e/logs/atelier-mcp-studio-preview.log`. A separate raw stdio check
+received the native PNG block from the built Atelier executable
+(`.svs-e2e/logs/atelier-mcp-stdio-smoke.log`). The workspace suite passed
+495 tests with 28 opt-in tests skipped. Provider job restart and reattachment,
+app-owned MCP routing, larger artwork scopes, and live provider and chat-client
+acceptance remain open.
+
 ### Studio for writing, Atelier for visual creation · 2026-10-28
 
 The proposed direction is Studio for writing and previewing stories with the

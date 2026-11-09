@@ -53,8 +53,70 @@ the step limit.
 If a save is interrupted, restart the MCP server to recover it under the
 project lease. Inspection and edit preview leave a pending source save intact.
 Projects with broken include paths need repair in Studio before MCP edits.
-Art generation, visual frame capture and editing while Studio is open
-remain later parts of the workflow.
+Visual frame capture and editing through MCP while Studio is open remain
+later parts of the workflow.
+
+## Create one illustration through Atelier MCP
+
+Build the server with `cargo build -p storyfella-atelier --bin atelier`.
+Create a disposable shared project in Studio with a pending illustration in
+Assets and add `show illustration NAME` to the story. Close Studio. Use the
+illustration's `id` from
+`svs story catalog /absolute/path/to/disposable-project/story.db`.
+If you opened the shared drawing in Atelier, use **Save and close project** in the updated app
+to save your draft and hand back ownership. Then configure an MCP-capable
+client to launch the absolute path to `target/debug/atelier` with these
+arguments.
+
+```json
+["mcp", "--folder", "/absolute/path/to/disposable-project", "--illustration", "ILLUSTRATION_UUID", "--allow-generate", "--allow-publish"]
+```
+
+Atelier reads its provider and edit model from the existing Settings.
+Use a provider that supports both generation and source-image editing.
+Pass `--data-dir DIRECTORY` to use an alternate Atelier workspace's settings
+and generated-result storage. The two launch flags grant provider submission
+and publication separately.
+
+1. Call `atelier_illustration_inspect` for the session and saved drawing version.
+2. Start `atelier_candidate_generate` with a prompt and that version. Call
+   `atelier_job_poll` until the candidate attaches to its captured artboard.
+3. Call `atelier_candidate_preview` with the completed job's version. It
+   returns a native PNG image block of up to 512 pixels on the long edge.
+   Generate again with `revise: true`, the candidate version and an editing
+   prompt to use that image as input. Poll and preview the new result.
+4. Show the reviewer the image and review ID. The reviewer runs the following
+   command in a separate local terminal after deciding to publish that image.
+   Give the chat access through MCP and keep the approval terminal under the
+   reviewer's control.
+
+   ```sh
+   /absolute/path/to/atelier approve --folder /absolute/path/to/disposable-project --review REVIEW_UUID
+   ```
+
+5. Call `atelier_illustration_publish` with that review ID and session. Only
+   the exact reviewed drawing is eligible. Publication returns the immutable
+   revision UUID. Disconnect MCP, reopen the shared folder in Studio, and
+   start Preview to play the published illustration.
+
+Candidates are saved as editable drawing layers before approval. A successful
+revision replaces the previous pending layer and invalidates its review ID.
+Publication uses Atelier's CPU canvas renderer and normal checked shared save.
+If a save fails after writing the editable drawing, retry the same review
+within the session. If the server exited, reopen the drawing through MCP
+and preview and approve again. The catalog reuses an identical committed
+revision when retrying a save that failed to record the revision link.
+
+This slice owns one pending illustration on the current artboard and holds
+both the Atelier and Studio project leases. Atelier's per-project recovery
+reservation keeps a desktop drawing protected after exit until it is saved
+and closed in its original Atelier workspace. An existing drawing from an
+older version needs that handoff once before MCP can open it. Recovery that
+cannot reclaim the shared drawing opens the draft as a separate copy.
+Save As from a shared drawing creates a copy and keeps the original tab open.
+Provider jobs are session-bound. The provider workflow saves successful
+originals even if the drawing changed before attachment. Automatic restart,
+reattachment, cancellation and routed commands to open apps remain future work.
 
 ## Project ownership and checked edits
 
@@ -69,7 +131,8 @@ GUI-free. Reuse the handoff's local instance discovery and lifecycle patterns.
 The existing Atelier inbox serves an open-and-focus request and its lease
 covers a data directory. Studio now holds a project writer lease while editing
 a shared folder, including through background refresh and recovery. Atelier
-document ownership and an authenticated command channel are separate work.
+now holds a separate per-project drawing lease across desktop data directories
+and MCP. Authenticated routing to open apps remains separate work.
 
 Grant a local client access to an explicitly selected project folder and to
 specific scopes for inspection, editing, publishing and provider submission.
@@ -161,9 +224,10 @@ Version the MCP schemas independently of project, document and runtime formats.
 Use bounded structured results for metadata and native MCP image blocks for
 thumbnails, crops and captures. The current Agentkit adapter converts
 `metadata.structured_content` to structured results. Its synchronous registry
-and string content omit native image blocks from outgoing responses. A generic
-Agentkit transport enhancement should preserve structured metadata alongside
-image blocks and dispatch bounded async commands. Keep Storyfella operations
+and string content omit native image blocks from outgoing responses. Atelier
+uses Agentkit’s underlying MCP transport directly to return structured metadata
+and native images. Agentkit’s generic registry adapter still needs
+image forwarding and bounded asynchronous dispatch. Keep Storyfella operations
 in Storyfella. Test with two independent clients before claiming
 interoperability. Use durable polling for jobs and avoid making client task
 extensions a prerequisite.

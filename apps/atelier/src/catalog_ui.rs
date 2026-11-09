@@ -9,7 +9,6 @@ use gpui_kit::{
 use storyfella_studio_core::{
     catalog::{self, CatalogEdit},
     persistence::{ProjectDb, StoredProject},
-    project::ProjectFolder,
 };
 use uuid::Uuid;
 
@@ -29,14 +28,7 @@ pub struct CatalogState {
 
 impl DrawingApp {
     pub(crate) fn shared_catalog_path(&self) -> Option<PathBuf> {
-        let path = self.path.as_ref()?;
-        let parent = path.parent()?;
-        let root = parent.parent()?;
-        (parent.file_name().is_some_and(|name| name == "atelier")
-            && root
-                .join(storyfella_studio_core::project::MANIFEST)
-                .is_file())
-        .then(|| root.join("story.db"))
+        self.project_owner.as_ref().map(|owner| owner.database())
     }
 
     pub(crate) fn open_catalog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -47,11 +39,7 @@ impl DrawingApp {
             let path = self
                 .shared_catalog_path()
                 .ok_or_else(|| anyhow::anyhow!("Open a shared Storyfella project first"))?;
-            let folder = ProjectFolder::open(
-                path.parent()
-                    .ok_or_else(|| anyhow::anyhow!("Project folder is missing"))?,
-            )?;
-            let snapshot = ProjectDb::open(folder.database())?.load()?;
+            let snapshot = ProjectDb::inspect_existing(&path)?;
             Ok(CatalogState {
                 path,
                 edit_snapshot: snapshot.clone(),
@@ -138,12 +126,15 @@ impl DrawingApp {
             cx.notify();
             return;
         }
+        let Some(owner) = self.project_owner.clone() else {
+            return;
+        };
         self.catalog_busy = self
             .workers
             .storage
             .send(Storage::CatalogEdit {
                 epoch: self.epoch,
-                path: catalog.path.clone(),
+                owner,
                 snapshot: catalog.edit_snapshot.clone(),
                 edit,
                 resolution,

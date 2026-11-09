@@ -2,7 +2,7 @@ use crate::{
     app::{DrawingApp, Panel},
     worker::Storage,
 };
-use anyhow::{anyhow, ensure, Result};
+use anyhow::{anyhow, ensure, Context as _, Result};
 use gpui_kit::*;
 use std::{
     path::PathBuf,
@@ -51,10 +51,14 @@ impl StoryTarget {
 
 pub(crate) fn prepare_target(request: &OpenRequest) -> Result<StoryTarget> {
     let folder = request.validate()?;
-    let path = crate::document::project_document(&folder.manifest())?;
-    let doc = crate::document::load(&path)?;
+    let (path, _) = crate::ownership::target(&folder.manifest())?;
+    let doc = if path.exists() {
+        crate::document::load(&path)?
+    } else {
+        Default::default()
+    };
     let stored =
-        storyfella_studio_core::persistence::ProjectDb::open_existing(folder.database())?.load()?;
+        storyfella_studio_core::persistence::ProjectDb::inspect_existing(&folder.database())?;
     let artwork = if doc
         .asset_links
         .iter()
@@ -146,6 +150,15 @@ impl DrawingApp {
                     ensure!(
                         self.mask_save_error.is_none(),
                         "Save the current mask before opening another item"
+                    );
+                    let owner = self
+                        .project_owner
+                        .as_ref()
+                        .context("The shared drawing is no longer open")?;
+                    owner.verify()?;
+                    ensure!(
+                        owner.project_id() == request.project_id,
+                        "The handoff belongs to another project"
                     );
                     self.capture_prompt(cx);
                     self.finish_stroke();

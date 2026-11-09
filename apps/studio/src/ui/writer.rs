@@ -463,6 +463,9 @@ fn mentions_in(
                     ReferenceKind::Asset(AssetKind::Character) => Some(ArtifactKind::Character),
                     ReferenceKind::Asset(AssetKind::Location) => Some(ArtifactKind::Environment),
                     ReferenceKind::Asset(AssetKind::Prop) => Some(ArtifactKind::Object),
+                    ReferenceKind::Asset(AssetKind::Illustration) => {
+                        Some(ArtifactKind::Illustration)
+                    }
                     ReferenceKind::Scene | ReferenceKind::Flag => None,
                 });
                 Mention {
@@ -1701,6 +1704,7 @@ fn MentionGroup(title: String, mentions: Vec<Mention>, app_state: Signal<AppStat
                                     let kind = match mention.kind {
                                         Some(ArtifactKind::Environment) => AssetKind::Location,
                                         Some(ArtifactKind::Object) => AssetKind::Prop,
+                                        Some(ArtifactKind::Illustration) => AssetKind::Illustration,
                                         _ => AssetKind::Character,
                                     };
                                     move |_| { app_state.write().create_pending_asset(&name, kind); }

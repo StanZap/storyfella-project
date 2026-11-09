@@ -24,71 +24,33 @@ impl DrawingApp {
             return;
         }
         self.checkpoint();
-        match action {
-            crate::workflow::Review::Accept => {
-                self.doc.layers[self.doc.active_layer].candidate = false
-            }
-            crate::workflow::Review::Reference => {
-                if let Some(reference) = reference {
-                    if !self
-                        .doc
-                        .references
-                        .iter()
-                        .any(|r| r.image == reference.image)
-                    {
-                        if let Ok(decoded) = document::decode_reference(&reference) {
-                            let preview =
-                                worker::render_image(document::thumbnail(decoded, 800).to_rgba8());
-                            self.references.push(preview.clone());
-                            self.reference_cache.push((reference.clone(), preview));
-                            self.doc.references.push(reference.clone());
-                        }
+        if matches!(action, crate::workflow::Review::Reference) {
+            if let Some(reference) = reference {
+                if !self
+                    .doc
+                    .references
+                    .iter()
+                    .any(|r| r.image == reference.image)
+                {
+                    if let Ok(decoded) = document::decode_reference(&reference) {
+                        let preview =
+                            worker::render_image(document::thumbnail(decoded, 800).to_rgba8());
+                        self.references.push(preview.clone());
+                        self.reference_cache.push((reference.clone(), preview));
+                        self.doc.references.push(reference.clone());
                     }
-                    let _ = self.workers.storage.send(Storage::LibraryAdd(
-                        self.data_dir.join("library"),
-                        vec![reference],
-                    ));
                 }
-                self.remove_reviewed_candidate();
-            }
-            crate::workflow::Review::Discard => {
-                self.remove_reviewed_candidate();
+                let _ = self.workers.storage.send(Storage::LibraryAdd(
+                    self.data_dir.join("library"),
+                    vec![reference],
+                ));
             }
         }
+        self.doc.review_candidate_layer(action);
         self.selected_layers = vec![self.doc.active_layer];
-        self.doc.prune_layer_groups();
         self.changed();
         self.sync_inputs(window, cx);
         cx.notify();
-    }
-
-    fn remove_reviewed_candidate(&mut self) {
-        if self.doc.layers.len() == 1 {
-            self.doc.layers[0] = Layer {
-                name: "Paint".into(),
-                visible: true,
-                locked: false,
-                opacity: 1.,
-                group: None,
-                candidate: false,
-                strokes: vec![],
-                image: None,
-            };
-            self.doc.paint_layer = Some(0);
-        } else {
-            let removed = self.doc.active_layer;
-            self.doc.layers.remove(removed);
-            self.doc.paint_layer = self.doc.paint_layer.and_then(|index| {
-                if index == removed {
-                    None
-                } else if index > removed {
-                    Some(index - 1)
-                } else {
-                    Some(index)
-                }
-            });
-            self.doc.active_layer = self.doc.active_layer.min(self.doc.layers.len() - 1);
-        }
     }
 
     pub fn layer_variation(&mut self, window: &mut Window, cx: &mut Context<Self>) {

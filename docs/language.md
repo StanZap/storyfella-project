@@ -118,7 +118,8 @@ raw text to the end of the line or one quoted string, as required by the rule.
                    = "cast", ":", NAME, { ",", NAME }
                    | "character", ":", NAME
                    | "location", ":", NAME
-                   | "prop", ":", NAME ;
+                   | "prop", ":", NAME
+                   | "show", "illustration", NAME ;
 
     direction-statement
                    = "style", ":", TEXT
@@ -169,6 +170,7 @@ within their scene. Scene names are unique and define branch targets.
     character: mara
     location: harbor_dock
     prop: brass_lantern
+    show illustration harbor_arrival
 
 | Declaration | Required catalog kind | Meaning |
 | --- | --- | --- |
@@ -176,6 +178,11 @@ within their scene. Scene names are unique and define branch targets.
 | `character` | Character | Declares one character |
 | `location` | Location | Declares the scene environment |
 | `prop` | Prop | Declares an object |
+| `show illustration NAME` | Illustration | Shows the full illustration as the stage backdrop |
+
+An illustration takes precedence over the location backdrop. It stays active until
+another illustration is shown or playback enters another scene. Studio Preview
+and Player fit the full image into the stage.
 
 Declarations identify visual resources by name. Language analysis and compilation
 do not create assets or invoke image generation. Studio reconciles valid explicit

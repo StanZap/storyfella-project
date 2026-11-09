@@ -36,7 +36,11 @@ impl OpenRequest {
             database.canonicalize()? == folder.database(),
             "Open this story as a shared project folder first"
         );
-        let stored = ProjectDb::open_existing(folder.database())?.load()?;
+        let stored = ProjectDb::inspect_existing(&folder.database())?;
+        ensure!(
+            stored.id == folder.id(),
+            "Manifest and database project identities differ"
+        );
         ensure!(
             stored.story.source() == source,
             "Save the current story before opening Atelier"
@@ -67,7 +71,8 @@ impl OpenRequest {
                 && self.description.len() <= 65_536,
             "Unsupported or oversized Atelier handoff"
         );
-        let folder = ProjectFolder::open(&self.project)?;
+        let folder = ProjectFolder::locate_for_authoring(&self.project)?
+            .context("The shared project no longer exists")?;
         ensure!(
             folder.id() == self.project_id,
             "The handoff belongs to another project"

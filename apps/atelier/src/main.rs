@@ -14,7 +14,9 @@ mod gpu_canvas;
 mod gpu_surface;
 mod image_execution;
 mod library;
+mod mcp;
 mod native_images;
+mod ownership;
 mod project_tabs;
 mod providers;
 mod queue;
@@ -29,6 +31,7 @@ mod viewport;
 mod worker;
 mod workflow;
 use app::DrawingApp;
+use clap::Parser as _;
 use gpui_kit::*;
 use std::path::PathBuf;
 gpui_kit::actions!(
@@ -48,10 +51,27 @@ gpui_kit::actions!(
 );
 fn main() {
     let mut args = std::env::args().skip(1);
-    let data_dir = match args.next().as_deref() {
+    let first = args.next();
+    let command = match first.as_deref() {
+        Some("mcp") => Some(mcp::run(mcp::Args::parse_from(
+            std::iter::once("atelier mcp".into()).chain(&mut args),
+        ))),
+        Some("approve") => Some(mcp::approve(mcp::Approve::parse_from(
+            std::iter::once("atelier approve".into()).chain(&mut args),
+        ))),
+        _ => None,
+    };
+    if let Some(result) = command {
+        if let Err(error) = result {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let data_dir = match first.as_deref() {
         Some("--data-dir") => PathBuf::from(args.next().expect("--data-dir requires a directory")),
         Some("--help") => {
-            println!("Atelier · cargo run -p storyfella-atelier -- [--data-dir DIRECTORY]");
+            println!("Atelier [--data-dir DIRECTORY]\nAtelier mcp --help\nAtelier approve --help");
             return;
         }
         Some(arg) => panic!("Unknown argument: {arg}"),

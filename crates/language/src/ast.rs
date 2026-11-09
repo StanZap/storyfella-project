@@ -30,6 +30,7 @@ pub enum AssetKind {
     Character,
     Location,
     Prop,
+    Illustration,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

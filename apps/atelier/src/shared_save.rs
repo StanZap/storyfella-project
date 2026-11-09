@@ -61,6 +61,13 @@ pub(crate) fn save(path: &Path, doc: &Document) -> Result<Vec<CanvasPublication>
     save_with_renderer(path, doc, render)
 }
 
+/// Closed-project MCP uses the same canvas rasterizer for review and publication.
+pub(crate) fn save_raster(path: &Path, doc: &Document) -> Result<Vec<CanvasPublication>> {
+    save_with_renderer(path, doc, |doc| {
+        document::raster(doc, doc.width.max(doc.height), true)
+    })
+}
+
 fn save_with_renderer(
     path: &Path,
     doc: &Document,
@@ -98,7 +105,7 @@ fn publish(
     {
         return Ok(Vec::new());
     }
-    let folder = ProjectFolder::open(root)?;
+    let folder = ProjectFolder::locate_for_authoring(root)?.context("Shared project is missing")?;
     // Save As copies retain editable work, but do not publish into the source
     // project's catalog just because their links were copied with them.
     if path.canonicalize()? != folder.atelier_document()? {

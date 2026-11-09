@@ -355,6 +355,7 @@ pub struct DrawingApp {
     pub jpeg: bool,
     pub jpeg_quality: u8,
     pub path: Option<PathBuf>,
+    pub(crate) project_owner: Option<crate::ownership::Owner>,
     pub data_dir: PathBuf,
     pub dirty: bool,
     pub switching: bool,
@@ -472,9 +473,20 @@ impl DrawingApp {
             .max()
             .unwrap_or_default()
             .saturating_add(1);
-        let (project_tabs, project_tab_order, doc, initial_epoch, initial_path, initial_dirty) =
-            match crate::project_tabs::recover(&data_dir) {
-                Ok(session) => match session.active {
+        let (
+            project_tabs,
+            project_tab_order,
+            doc,
+            initial_epoch,
+            initial_path,
+            initial_dirty,
+            project_owner,
+        ) = match crate::project_tabs::recover(&data_dir) {
+            Ok(session) => {
+                if session.detached {
+                    status = "Recovered an Atelier draft as a separate copy because its shared drawing changed owners".into();
+                }
+                match session.active {
                     Some(active) => (
                         session.tabs,
                         session.order,
@@ -482,6 +494,7 @@ impl DrawingApp {
                         active.epoch,
                         active.path,
                         active.dirty,
+                        active.owner,
                     ),
                     None => (
                         vec![],
@@ -490,25 +503,27 @@ impl DrawingApp {
                         unused_epoch,
                         None,
                         false,
+                        None,
                     ),
-                },
-                Err(recovery_error) => {
-                    let snapshots = data_dir.join("open-projects");
-                    if snapshots.join("session.json").exists() {
-                        status = format!(
-                            "Open-project recovery failed: {recovery_error}. Snapshots remain in {}",
-                            snapshots.display()
-                        );
-                        error = true;
-                    }
-                    let order = if data_dir.join("recovery.atelier").exists() {
-                        vec![unused_epoch]
-                    } else {
-                        vec![]
-                    };
-                    (vec![], order, doc, unused_epoch, None, false)
                 }
-            };
+            }
+            Err(recovery_error) => {
+                let snapshots = data_dir.join("open-projects");
+                if snapshots.join("session.json").exists() {
+                    status = format!(
+                        "Open-project recovery failed: {recovery_error}. Snapshots remain in {}",
+                        snapshots.display()
+                    );
+                    error = true;
+                }
+                let order = if data_dir.join("recovery.atelier").exists() {
+                    vec![unused_epoch]
+                } else {
+                    vec![]
+                };
+                (vec![], order, doc, unused_epoch, None, false, None)
+            }
+        };
         let next_project_epoch = project_tabs
             .iter()
             .map(|tab| tab.epoch)
@@ -823,6 +838,7 @@ impl DrawingApp {
             jpeg: false,
             jpeg_quality: 90,
             path: initial_path,
+            project_owner,
             data_dir,
             dirty: initial_dirty,
             switching: false,
@@ -1116,6 +1132,7 @@ impl DrawingApp {
                 revision: this.revision,
                 epoch: this.epoch,
                 automatic: true,
+                owner: None,
             });
             let _ = this.workers.storage.send(Storage::Barrier(ack));
             cx.background_executor().spawn(async move {
@@ -1623,6 +1640,8 @@ impl DrawingApp {
                 archive: self.data_dir.join("sessions").join(filename),
                 previous_path: self.path.clone(),
                 next: None,
+                previous_owner: self.project_owner.clone(),
+                data_dir: self.data_dir.clone(),
             })
             .is_ok();
         self.message(
@@ -1641,8 +1660,8 @@ impl DrawingApp {
         }
     }
     pub fn open_project(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        let path = match document::project_document(&path) {
-            Ok(path) => path,
+        let path = match crate::ownership::target(&path) {
+            Ok((path, _)) => path,
             Err(error) => {
                 self.message(format!("Could not open project: {error:#}"), true);
                 return;
@@ -1692,6 +1711,8 @@ impl DrawingApp {
                 archive,
                 previous_path: self.path.clone(),
                 next: Some(path),
+                previous_owner: self.project_owner.clone(),
+                data_dir: self.data_dir.clone(),
             })
             .is_ok();
         if !self.switching {
@@ -5149,19 +5170,8 @@ impl DrawingApp {
         let cancel = Arc::new(AtomicBool::new(false));
         self.job_id = id;
         self.job_epoch = epoch;
-        let size = request.size();
         worker::generate(
-            providers::Request {
-                native: self.workers.native.clone(),
-                settings: request.settings,
-                prompt: request.prompt,
-                size,
-                source: request.source,
-                references: request.references,
-                mask: request.mask,
-                progress: None,
-                cancel: cancel.clone(),
-            },
+            request.into_provider_request(self.workers.native.clone(), cancel.clone()),
             id,
             self.workers.sender.clone(),
             self.data_dir.clone(),
@@ -5570,6 +5580,7 @@ impl DrawingApp {
                 revision: self.revision,
                 epoch: self.epoch,
                 automatic,
+                owner: self.project_owner.clone(),
             })
             .is_err()
         {
@@ -6046,9 +6057,11 @@ impl DrawingApp {
                                 if let Some(tab) =
                                     self.project_tabs.iter_mut().find(|tab| tab.epoch == epoch)
                                 {
-                                    tab.path = Some(path.clone());
-                                    if tab.revision == revision {
-                                        tab.dirty = false;
+                                    if tab.owner.is_none() || tab.path.as_ref() == Some(&path) {
+                                        tab.path = Some(path.clone());
+                                        if tab.revision == revision {
+                                            tab.dirty = false;
+                                        }
                                     }
                                 }
                             }
@@ -6064,9 +6077,13 @@ impl DrawingApp {
                                         return;
                                     }
                                 } else if !automatic {
-                                    self.path = Some(path);
-                                    if revision == self.revision {
-                                        self.dirty = false;
+                                    if self.project_owner.is_none()
+                                        || self.path.as_ref() == Some(&path)
+                                    {
+                                        self.path = Some(path);
+                                        if revision == self.revision {
+                                            self.dirty = false;
+                                        }
                                     }
                                     self.refresh_projects();
                                     self.message("Project saved", false);
@@ -6121,7 +6138,12 @@ impl DrawingApp {
                         continue;
                     }
                     match result {
-                        Ok((doc, images, path)) => {
+                        Ok(worker::OpenedDocument {
+                            doc,
+                            images,
+                            path,
+                            owner,
+                        }) => {
                             self.activity.resolve(
                                 &crate::activity::Scope::App,
                                 &crate::activity::Task::Open,
@@ -6154,6 +6176,7 @@ impl DrawingApp {
                             self.visual_revision += 1;
                             self.dirty = path.is_none();
                             self.path = path;
+                            self.project_owner = owner;
                             self.history = History::new();
                             self.view = Viewport::default();
                             self.references =
