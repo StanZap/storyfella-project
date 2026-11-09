@@ -124,6 +124,7 @@ pub enum ErrorCode {
     RuntimeModelWrite,
     RuntimeModelSize,
     RuntimeModelChecksum,
+    RuntimeModelCancelled,
 
     // ---- APP · app-level conditions without a typed error ----
     AppLlmUnavailable,
@@ -671,6 +672,11 @@ impl ErrorCode {
                 "The model file failed SHA-256 verification. It is corrupted; \
                  redownload it.",
             ),
+            Self::RuntimeModelCancelled => (
+                "SVS-RTE-137",
+                "Model download cancelled",
+                "The download was cancelled. Partial files are retained and can be resumed later.",
+            ),
             Self::AppLlmUnavailable => (
                 "SVS-APP-101",
                 "LLM endpoint unavailable",
@@ -869,6 +875,7 @@ impl CodedError for agentkit_ai::native::ModelStoreError {
             Self::Write { .. } => ErrorCode::RuntimeModelWrite,
             Self::Size { .. } => ErrorCode::RuntimeModelSize,
             Self::Checksum { .. } => ErrorCode::RuntimeModelChecksum,
+            Self::Cancelled => ErrorCode::RuntimeModelCancelled,
         }
     }
 }
@@ -954,7 +961,7 @@ mod tests {
     fn registry_size_is_pinned() {
         assert_eq!(
             codes().len(),
-            93,
+            94,
             "update the registry count when adding error codes"
         );
     }
@@ -1120,6 +1127,7 @@ mod tests {
             ErrorCode::RuntimeModelWrite,
             ErrorCode::RuntimeModelSize,
             ErrorCode::RuntimeModelChecksum,
+            ErrorCode::RuntimeModelCancelled,
             ErrorCode::AppLlmUnavailable,
             ErrorCode::AppProposalFailed,
             ErrorCode::AppCommandInvalid,
