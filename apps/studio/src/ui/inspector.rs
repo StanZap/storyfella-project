@@ -6,7 +6,12 @@ use super::editable::{EditableMultiline, EditableText};
 use crate::state::AppState;
 
 #[component]
-pub fn Inspector(artifact: Artifact, disabled: bool) -> Element {
+pub fn Inspector(
+    artifact: Artifact,
+    disabled: bool,
+    #[props(default)] rename_requested: bool,
+    #[props(default)] on_rename_started: Option<EventHandler<()>>,
+) -> Element {
     let mut app_state = use_context::<Signal<AppState>>();
     let target = artifact.id;
     let draft = app_state
@@ -18,6 +23,7 @@ pub fn Inspector(artifact: Artifact, disabled: bool) -> Element {
             if storyfella_studio_core::catalog::KINDS.contains(&artifact.kind) {
                 EditableText {
                     key: "name-{target}", label: "Reference name", value: artifact.name, disabled,
+                    edit_requested: rename_requested, on_edit_started: on_rename_started,
                     onconfirm: move |name: String| {
                         let description = app_state.read().registry.artifact(target)
                             .map(|item| item.description.clone())

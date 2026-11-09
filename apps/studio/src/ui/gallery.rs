@@ -191,12 +191,14 @@ pub fn Gallery(
                         div { class: "flex flex-wrap items-center gap-2",
                             button {
                                 class: "font-mono text-[11px] text-violet-300 hover:text-white",
+                                title: "Open scene {scene.name}",
                                 onclick: { let id = scene.artifact_id; move |_| app_state.write().select_artifact(id) },
                                 "{scene.name}"
                             }
                             for beat in &scene.beats {
                                 button {
                                     class: "rounded bg-white/[0.05] px-2 py-1 font-mono text-[11px] text-zinc-300 hover:text-white",
+                                    title: "Open beat {beat.name}",
                                     onclick: { let id = beat.artifact_id; move |_| app_state.write().select_artifact(id) },
                                     "{beat.name}"
                                 }
@@ -213,6 +215,7 @@ pub fn Gallery(
                     p { class: "mt-4 text-[13px] font-semibold text-zinc-200", "Start with an artifact" }
                     button {
                         class: "mt-4 rounded-lg bg-violet-400/15 px-3 py-1.5 text-[11px] font-semibold text-violet-200 transition hover:bg-violet-400/25 disabled:opacity-40",
+                        title: "New artifact",
                         disabled,
                         onclick: move |_| actions.send(ArtAction::Create(ArtifactKind::Character)),
                         "New artifact"
@@ -221,7 +224,7 @@ pub fn Gallery(
             } else if focused.is_none() {
                 div { role: "status", class: "px-6 py-16 text-center",
                     p { "No artifacts match this filter." }
-                    button { class: "mt-3 rounded bg-violet-400/15 px-3 py-2", onclick: move |_| filter.set(String::new()), "Clear filter" }
+                    button { class: "mt-3 rounded bg-violet-400/15 px-3 py-2", title: "Clear filter", onclick: move |_| filter.set(String::new()), "Clear filter" }
                 }
             } else {
                 div { class: "space-y-8 px-6 pb-6 pt-6", {groups} }
@@ -235,6 +238,7 @@ fn TileCard(tile: Tile, focused: bool, onopen: EventHandler<Uuid>) -> Element {
     rsx! {
         button {
             class: "group text-left",
+            title: "Open {tile.name}",
             // Keeps the keyboard cursor on screen as it moves.
             id: if focused { "svs-focused-tile" } else { "" },
             onclick: move |_| onopen.call(tile.id),

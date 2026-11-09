@@ -2,7 +2,7 @@
 use super::{
     actions::{ActionRequest, ArtAction},
     art_actions::ArtActionDialog,
-    components::{EmptyVisual, IconButton},
+    components::{ActionMenu, EmptyVisual, IconButton, MenuOption},
     gallery::Gallery,
     icons::IconName,
     inspector::Inspector,
@@ -92,8 +92,15 @@ pub(super) fn AssetDetail(
     disabled: bool,
     on_back: EventHandler<()>,
     on_new_variant: EventHandler<uuid::Uuid>,
+    #[props(default)] rename_requested: bool,
+    #[props(default)] on_rename_started: Option<EventHandler<()>>,
 ) -> Element {
     let mut metadata = use_signal(|| true);
+    use_effect(use_reactive((&rename_requested,), move |(requested,)| {
+        if requested {
+            metadata.set(true);
+        }
+    }));
     let mut screen = use_context::<Signal<super::AppScreen>>();
     let caret = use_context::<super::WriterCaret>();
     let registry = app_state.read().registry.clone();
@@ -125,16 +132,24 @@ pub(super) fn AssetDetail(
             div { class: "flex min-h-0 min-w-0 flex-1 flex-col",
                 header { class: "flex flex-wrap items-center gap-2 border-b border-white/10 p-3",
                     h2 { class: "min-w-0 flex-1 truncate text-sm font-semibold", "{artifact.name}" }
-                    if image.is_some() { super::artwork::PreviewBackgroundPicker {} }
-                    super::atelier::OpenInAtelier { target: Some(artifact.id) }
-                    IconButton { label: if metadata() { "Hide asset details" } else { "Show asset details" }, icon: IconName::Sliders, expanded: metadata(), onclick: move |_| { let show = !metadata(); metadata.set(show); } }
-                }
-                if !links.is_empty() {
-                    div { class: "flex flex-wrap gap-2 px-4 py-2",
-                        for (label, position) in links {
-                            button { class: "studio-button", title: "Open this story reference", onclick: move |_| { on_back.call(()); app_state.write().active_source = None; caret.navigate(position); screen.set(super::AppScreen::Writer); }, "{label}" }
+                    if !links.is_empty() {
+                        ActionMenu {
+                            label: "Story uses", icon: IconName::References,
+                            options: links.iter().map(|(label, _)| MenuOption { label: label.clone(), icon: IconName::References, disabled: false }).collect(),
+                            onselect: move |index| {
+                                if let Some((_, position)) = links.get(index) {
+                                    on_back.call(()); app_state.write().active_source = None;
+                                    caret.navigate(*position); screen.set(super::AppScreen::Writer);
+                                }
+                            },
                         }
                     }
+                    if image.is_some() { super::artwork::PreviewBackgroundPicker {} }
+                    super::atelier::OpenInAtelier { target: Some(artifact.id) }
+                    if artifact.kind.supports_variants() {
+                        IconButton { label: "Variation", icon: IconName::Add, show_label: true, disabled, onclick: move |_| on_new_variant.call(base) }
+                    }
+                    IconButton { label: if metadata() { "Hide asset details" } else { "Show asset details" }, icon: IconName::Sliders, expanded: metadata(), onclick: move |_| { let show = !metadata(); metadata.set(show); } }
                 }
                 div { class: "relative min-h-0 flex-1 overflow-hidden bg-black/20 p-3",
                     if let Some(url) = image {
@@ -144,15 +159,9 @@ pub(super) fn AssetDetail(
                     }
                     else { div { class: "grid h-full place-content-center", EmptyVisual { icon: IconName::Image, title: "No saved artwork yet", description: "Open in Atelier to create its artwork." } } }
                 }
-                if family.len() > 1 || artifact.kind.supports_variants() {
+                if family.len() > 1 {
                     div { class: "flex shrink-0 flex-wrap gap-2 border-t border-white/10 p-3",
-                        for (id, name) in family { button { class: "studio-button", aria_pressed: id == artifact.id, onclick: move |_| app_state.write().select_artifact(id), "{name}" } }
-                        if artifact.kind.supports_variants() {
-                            IconButton {
-                                label: "New variation definition", icon: IconName::Add, disabled,
-                                onclick: move |_| on_new_variant.call(base),
-                            }
-                        }
+                        for (id, name) in family { button { class: "studio-button", title: "{name}", aria_pressed: id == artifact.id, onclick: move |_| app_state.write().select_artifact(id), "{name}" } }
                     }
                 }
                 if !artifact.revisions.is_empty() {
@@ -173,7 +182,7 @@ pub(super) fn AssetDetail(
                     }
                 }
             }
-            if metadata() { Inspector { artifact, disabled } }
+            if metadata() { Inspector { artifact, disabled, rename_requested, on_rename_started } }
         }
     }
 }

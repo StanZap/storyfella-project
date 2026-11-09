@@ -13,7 +13,8 @@ use storyfella_studio_core::runtime::{
 
 use super::{
     components::{
-        ErrorDetails, SearchSelect, SectionHeading, SelectOption, SettingRow, StatusDot, Toggle,
+        ErrorDetails, IconButton, SearchSelect, SectionHeading, SelectOption, SettingRow,
+        StatusDot, Toggle,
     },
     icons::{Icon, IconName},
     AutosaveMode,
@@ -220,7 +221,7 @@ fn SettingsNav(label: String, active: bool, onclick: EventHandler<MouseEvent>) -
     } else {
         "flex h-9 w-full items-center rounded-lg px-3 text-left text-[12px] text-zinc-600 transition hover:bg-white/[0.03] hover:text-zinc-300"
     };
-    rsx! { button { class, onclick, "{label}" } }
+    rsx! { button { class, title: "{label}", onclick, "{label}" } }
 }
 
 #[component]
@@ -437,7 +438,7 @@ fn CheckBar(
         div { class: "mb-7 flex justify-end",
             button {
                 class: "flex h-8 items-center gap-2 rounded-lg bg-white/[0.055] px-3 text-[10px] font-medium text-zinc-400 transition hover:bg-white/[0.08] hover:text-white disabled:cursor-not-allowed disabled:opacity-40",
-                title: if let Some(at) = checked_at() { format!("Reload providers and refresh model availability · Last checked {at}") } else { "Reload providers and refresh model availability".to_owned() },
+                title: if let Some(at) = checked_at() { format!("Refresh providers · Last checked {at}") } else { "Refresh providers".to_owned() },
                 disabled: is_checking,
                 onclick: move |event| on_check.call(event),
                 if is_checking {
@@ -549,13 +550,10 @@ fn ModelSelect(
                     span { class: "text-[10px] text-zinc-600", "No provider serves this capability." }
                 },
             }
-            button {
-                class: "grid size-8 shrink-0 place-items-center rounded-lg bg-white/[0.05] text-zinc-500 transition hover:text-white",
-                aria_label: "Refetch models",
+            IconButton {
+                label: "Refetch models", icon: IconName::Refresh,
                 disabled: matches!(*models.read(), ModelListState::Loading(_)),
-                title: "Refetch models",
                 onclick: move |_| on_fetch.call(()),
-                Icon { name: IconName::Refresh, class: "size-3" }
             }
         }
     }

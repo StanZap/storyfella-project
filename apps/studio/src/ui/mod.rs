@@ -608,7 +608,7 @@ fn ProjectGate(open: bool, children: Element) -> Element {
             div { class: "grid h-full place-content-center justify-items-center gap-4",
                 Icon { name: IconName::Folder, class: "size-8 text-zinc-400" }
                 h2 { class: "text-lg font-semibold", "Open a project to begin" }
-                button { class: "studio-button studio-button-primary", onclick: move |_| screen.set(AppScreen::Projects), "Choose project" }
+                button { class: "studio-button studio-button-primary", title: "Choose project", onclick: move |_| screen.set(AppScreen::Projects), "Choose project" }
             }
         }
         div { hidden: !open, class: "h-full", {children} }

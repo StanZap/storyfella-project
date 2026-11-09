@@ -64,3 +64,13 @@ test('composition, disabled controls and repeated keys do not confirm or discard
     e.press('Escape');
     assert.deepEqual(e.messages, []);
 });
+
+test('read-only fields leave Enter and Escape to their normal handlers', () => {
+    const e = editor('TEXTAREA');
+    e.field.readOnly = true;
+    for (const key of [e.press('Enter'), e.press('Escape')]) {
+        assert.equal(key.prevented, false);
+        assert.equal(key.stopped, false);
+    }
+    assert.deepEqual(e.messages, []);
+});

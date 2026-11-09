@@ -3,7 +3,7 @@
 const root = document.getElementById(rootId);
 root.addEventListener('keydown', event => {
     const field = root.querySelector('input, textarea');
-    if (!field || field.disabled || event.isComposing || event.keyCode === 229) return;
+    if (!field || field.disabled || field.readOnly || event.isComposing || event.keyCode === 229) return;
     if (event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();

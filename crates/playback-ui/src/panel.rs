@@ -48,6 +48,21 @@ fn actor_position(group: StageGroup, slot: usize) -> f32 {
 }
 
 #[component]
+fn PlaybackNav(
+    label: String,
+    title: String,
+    symbol: Symbol,
+    #[props(default)] disabled: bool,
+    onclick: EventHandler<MouseEvent>,
+) -> Element {
+    rsx! {
+        span { class: "sf-action-tooltip", title: title.clone(),
+            button { class: "sf-nav", aria_label: label, title, disabled, onclick, Icon { symbol } }
+        }
+    }
+}
+
+#[component]
 pub fn PlaybackPanel(
     mut model: Signal<PlaybackModel>,
     #[props(default)] on_open: Option<EventHandler<()>>,
@@ -202,7 +217,7 @@ pub fn PlaybackPanel(
                         button { class: "sf-text-button", title: "Start at the beginning with current source and artwork. Replaces the preview and its bookmark only if compilation succeeds.", onclick: move |_| { panel.set(None); on_apply.call(()); }, if model.read().session.is_some() { "Restart with draft" } else { "Start preview" } }
                     }
                     if let (Some(on_source), Some(span)) = (on_source, span) {
-                        button { class: "sf-text-button", onclick: move |_| on_source.call(span), "Edit source" }
+                        button { class: "sf-text-button", title: "Edit source", onclick: move |_| on_source.call(span), "Edit source" }
                     }
                     button { class: "sf-icon-button sf-options-trigger", aria_label: "Playback options", title: "Playback options", aria_expanded: visible.is_some(),
                         onclick: move |_| {
@@ -300,13 +315,13 @@ pub fn PlaybackPanel(
                             },
                         }
                         div { class: "sf-story-actions", onkeydown: control_keys,
-                            button { class: "sf-nav", aria_label: "Previous passage", title: "Previous passage", disabled: !snapshot.can_back(), onclick: move |_| { autoplay.set(false); model.write().back(); }, Icon { symbol: Symbol::Previous } }
-                            button { class: "sf-nav", aria_label: if autoplay() { "Pause automatic playback" } else { "Play automatically" }, title: if autoplay() { "Pause automatic playback".to_owned() } else { format!("Play automatically (every {} seconds)", settings.autoplay_seconds) }, disabled: phase != Some(Phase::Text) || paused, onclick: move |_| autoplay.toggle(), Icon { symbol: if autoplay() { Symbol::Pause } else { Symbol::Play } } }
+                            PlaybackNav { label: "Previous passage", title: "Previous passage", symbol: Symbol::Previous, disabled: !snapshot.can_back(), onclick: move |_| { autoplay.set(false); model.write().back(); } }
+                            PlaybackNav { label: if autoplay() { "Pause automatic playback" } else { "Play automatically" }, title: if autoplay() { "Pause automatic playback".to_owned() } else { format!("Play automatically (every {} seconds)", settings.autoplay_seconds) }, symbol: if autoplay() { Symbol::Pause } else { Symbol::Play }, disabled: phase != Some(Phase::Text) || paused, onclick: move |_| autoplay.toggle() }
                             if matches!(phase, Some(Phase::Text | Phase::Budget)) {
-                                button { class: "sf-nav", aria_label: "Next passage", title: "Next passage (Right arrow)", disabled: paused, onclick: move |_| model.write().dispatch(Command::Advance), Icon { symbol: Symbol::Next } }
+                                PlaybackNav { label: "Next passage", title: "Next passage (Right arrow)", symbol: Symbol::Next, disabled: paused, onclick: move |_| model.write().dispatch(Command::Advance) }
                             }
                             if phase == Some(Phase::Complete) { button { class: "sf-continue", title: "Read again", onclick: move |_| { model.write().dispatch(Command::Restart); focus_stage(); }, "Read again" Icon { symbol: Symbol::Arrow } } }
-                            if paused { button { class: "sf-nav", aria_label: "Resume playback", title: "Resume playback (Space)", onclick: move |_| model.write().dispatch(Command::Resume), Icon { symbol: Symbol::Play } } }
+                            if paused { PlaybackNav { label: "Resume playback", title: "Resume playback (Space)", symbol: Symbol::Play, onclick: move |_| model.write().dispatch(Command::Resume) } }
                         }
                     } else {
                         h2 { if on_apply.is_some() { "See your story" } else { "A story awaits" } }
@@ -325,7 +340,7 @@ pub fn PlaybackPanel(
                     aria_label: match visible { ExtraPanel::Options => "Playback options", ExtraPanel::Artwork => "Artwork", ExtraPanel::Source => "Source snapshot", ExtraPanel::Error => "Playback error details" },
                     onkeydown: move |event| { event.stop_propagation(); if event.key() == Key::Escape { event.prevent_default(); close_panel(panel); } },
                     header { class: "sf-panel-header",
-                        if visible != ExtraPanel::Options { button { class: "sf-text-button", onclick: move |_| panel.set(Some(ExtraPanel::Options)), "Back" } }
+                        if visible != ExtraPanel::Options { button { class: "sf-text-button", title: "Back to playback options", onclick: move |_| panel.set(Some(ExtraPanel::Options)), "Back" } }
                         strong { match visible { ExtraPanel::Options => "Options", ExtraPanel::Artwork => "Artwork", ExtraPanel::Source => "Source snapshot", ExtraPanel::Error => "Playback error details" } }
                         button { class: "sf-icon-button sf-panel-close", aria_label: "Close panel", title: "Close panel (Escape)", onclick: move |_| close_panel(panel), Icon { symbol: Symbol::Close } }
                     }

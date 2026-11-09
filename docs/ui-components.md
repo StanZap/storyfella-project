@@ -58,9 +58,10 @@ Common options:
 `TextInput` and `TextInputWithAction` also support `read_only`, `kind`
 (`InputKind::Text` or `Search`) and an optional `onkeydown` handler. Read-only
 text stays selectable; its action may still run, for example to copy a value.
-`TextInputWithAction` adds `action_disabled` and `action_tooltip`; the action's
-accessible name is always required and supplies its tooltip by default. Its
-button is `type="button"`, so it cannot accidentally submit an enclosing form.
+`TextInputWithAction` adds `action_disabled`, `action_tooltip`, and an optional
+`action_id` for returning focus. Its accessible name is always required and
+supplies its tooltip by default. Its button is `type="button"`, so it cannot
+accidentally submit an enclosing form.
 `TextInput`'s children are a trailing composition slot; prefer the named action
 component for the standard one-icon pattern.
 
@@ -130,8 +131,9 @@ numeric steppers or specialized token/completion editors.
 
 ## Inline editable values
 
-Import `EditableText` and `EditableMultiline` from `super::editable`. Both show
-a label, plain value and a pencil action on the right. The pencil focuses an
+Import `EditableText` and `EditableMultiline` from `super::editable`. The former
+uses a read-only shared input with a trailing pencil; the latter displays plain
+multiline text and an edit action. The pencil focuses an
 editor; Enter confirms and Escape discards. Check/close icon actions offer the
 same behavior with tooltips. Multiline uses Shift+Enter for a newline. Blur and
 Tab keep the draft open. Empty values show a placeholder (`Not set` by default).

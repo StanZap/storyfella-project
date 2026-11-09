@@ -304,7 +304,7 @@ pub fn WritingReviewEditor(app_state: Signal<AppState>) -> Element {
             if let Some(error) = stale {
                 div { class: "studio-review-status", role: "status",
                     p { "{error}" }
-                    button { class: "studio-writing-link", onclick: move |_| controller.review.set(None), "Return to draft" }
+                    button { class: "studio-writing-link", title: "Return to draft", onclick: move |_| controller.review.set(None), "Return to draft" }
                 }
             }
             if (controller.mode)() == ReviewMode::SideBySide {

@@ -31,7 +31,7 @@ pub fn IconButton(
         Some(detail) => detail,
         None => label.clone(),
     };
-    rsx! {
+    let button = rsx! {
         button {
             id,
             r#type: "button",
@@ -39,12 +39,17 @@ pub fn IconButton(
             aria_label: label.clone(),
             aria_expanded: expanded,
             aria_controls: controls,
-            title,
+            title: title.clone(),
             disabled,
             onclick,
             Icon { name: icon, class: "size-[18px]" }
             if show_label { span { "{label}" } }
         }
+    };
+    if disabled {
+        rsx! { span { class: "studio-disabled-action", title, {button} } }
+    } else {
+        button
     }
 }
 
@@ -197,6 +202,11 @@ pub fn Toggle(
         "bg-zinc-800"
     };
     let thumb = if enabled { "left-[22px]" } else { "left-0.5" };
+    let title = if title.is_empty() {
+        label.clone()
+    } else {
+        title
+    };
     rsx! {
         button {
             class: "relative h-6 min-h-6 w-10 shrink-0 rounded-full {track} transition disabled:cursor-not-allowed disabled:opacity-40",
@@ -286,15 +296,13 @@ pub fn ErrorToast(error_report: Signal<Option<ReportedError>>) -> Element {
                     }
                     button {
                         class: "shrink-0 rounded-lg bg-white/[0.06] px-2.5 py-1.5 text-[9px] font-medium text-zinc-400 transition hover:bg-white/[0.1] hover:text-white",
+                        title: "Show error details",
                         onclick: move |_| details.set(Some(report.clone())),
                         "Details"
                     }
-                    button {
-                        class: "shrink-0 rounded-lg p-1.5 text-zinc-600 transition hover:bg-white/[0.06] hover:text-zinc-300",
-                        aria_label: "Dismiss error",
-                        title: "Dismiss error",
+                    IconButton {
+                        label: "Dismiss error", icon: IconName::Close,
                         onclick: move |_| error_report.set(None),
-                        Icon { name: IconName::Close, class: "size-3" }
                     }
                 }
             }
@@ -360,6 +368,7 @@ fn ErrorDetailsModal(error: ReportedError, on_close: EventHandler<()>) -> Elemen
                     }
                     button {
                         class: "studio-button",
+                        title: "Close",
                         onclick: move |_| on_close.call(()),
                         "Close"
                     }
@@ -608,6 +617,7 @@ pub fn SearchSelect(
                         for (slot , option) in matched.iter().enumerate() {
                             button {
                                 id: "{id}-option-{slot}",
+                                title: "{option.label}",
                                 role: "option",
                                 aria_selected: slot == index,
                                 tabindex: "-1",
@@ -631,7 +641,7 @@ pub fn SearchSelect(
                         span { if count == total { "{total} shown" } else { "{count} of {total}" } }
                         span { "↑↓ move · ↵ pick · esc close" }
                     }
-                    button { class: "w-full px-3 py-2 text-xs", onclick: move |_| dismiss(), "Cancel" }
+                    button { class: "w-full px-3 py-2 text-xs", title: "Cancel", onclick: move |_| dismiss(), "Cancel" }
                 }
                 }
             }
@@ -665,6 +675,18 @@ pub fn open_path(path: &std::path::Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[component]
+    fn DisabledActionProbe() -> Element {
+        rsx! { IconButton { label: "Unavailable action", icon: IconName::Edit, disabled: true, onclick: move |_| {} } }
+    }
+
+    #[test]
+    fn disabled_icon_action_retains_a_hover_target() {
+        let mut dom = VirtualDom::new(DisabledActionProbe);
+        let rendered = format!("{:?}", dom.rebuild_to_vec());
+        assert!(rendered.matches("Unavailable action").count() >= 3);
+    }
 
     fn plain(value: &str) -> SelectOption {
         SelectOption {

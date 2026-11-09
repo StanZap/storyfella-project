@@ -24,6 +24,7 @@ fn ModeToggle(mode: GuideMode, mut on_mode: EventHandler<GuideMode>) -> Element 
         rsx! {
             button {
                 class: "rounded-md px-2.5 py-1 text-[10px] font-medium transition {active_class}",
+                title: "{label}",
                 onclick: move |_| on_mode.call(value),
                 "{label}"
             }

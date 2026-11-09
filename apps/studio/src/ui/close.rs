@@ -70,9 +70,9 @@ pub fn CloseGuard(config: AppConfig, app_state: Signal<AppState>) -> Element {
                     if working { p { role: "status", class: "text-sm text-amber-300", "Wait for the current operation to finish before saving." } }
                     if let Some(message) = error() { p { role: "alert", class: "studio-inline-error", "{message}" } }
                     footer { class: "flex flex-wrap justify-end gap-2",
-                        button { class: "studio-button", autofocus: true, onclick: move |_| confirm.set(false), "Cancel" }
-                        button { class: "studio-button studio-button-danger", onclick: move |_| { desktop.set_close_behavior(WindowCloseBehaviour::WindowCloses); desktop.close(); }, "Discard and quit" }
-                        button { class: "studio-button studio-button-primary", disabled: working, onclick: move |_| {
+                        button { class: "studio-button", title: "Cancel", autofocus: true, onclick: move |_| confirm.set(false), "Cancel" }
+                        button { class: "studio-button studio-button-danger", title: "Discard and quit", onclick: move |_| { desktop.set_close_behavior(WindowCloseBehaviour::WindowCloses); desktop.close(); }, "Discard and quit" }
+                        button { class: "studio-button studio-button-primary", title: "Save and quit", disabled: working, onclick: move |_| {
                             let applied = app_state.write().apply_description_drafts().map_err(|message| ReportedError::plain(ErrorCode::AppCommandInvalid, message));
                             let result = applied.and_then(|_| {
                                     if app_state.read().project_path.is_none() {

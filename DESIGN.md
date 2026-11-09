@@ -1,5 +1,30 @@
 # Storyfella Studio design standard and UX audit
 
+### Focus treatment and explorer rename
+
+Avoid bulky, offset focus outlines and bright purple focus rings. Replace them
+with a compact, neutral inset focus indicator that remains visible for keyboard
+navigation in both themes. Icon actions use no padded background; hover and active
+states use the icon color. Every icon action has a descriptive hover tooltip,
+including disabled actions. On macOS, Enter starts renaming a focused project
+file, folder or catalog asset; on other platforms, F2 does so. The entry story
+file remains protected. Space and pointer activation continue to open items.
+Native visual and keyboard acceptance remains open.
+
+### Compact asset metadata
+
+The asset inspector presents the reference name in a shared read-only input and
+the description as plain text, each with a compact edit action. Editing retains explicit confirmation,
+draft recovery and multiline support. Native visual and keyboard acceptance remains open.
+
+### Asset uses and variations
+
+The asset toolbar puts story uses in an icon menu and places the Variation
+action beside Open in Atelier. A single asset no longer has a redundant
+variation row; the row appears when there are multiple family members. The
+variation dialog identifies its action as creating a variation. Native visual
+and keyboard acceptance remains open.
+
 ### Contextual playback actions
 
 The Story toolbar exposes Play story and Play scene as named icon actions. The
@@ -29,8 +54,8 @@ the project root, with no extra Files or Assets group. New shared projects store
 those files in `assets/`; a minimal project shows only `story.sf`. Internal
 database, manifest and working-artwork files are hidden. Standalone projects
 show files beside their entry source, including the entry itself when its name
-starts with a dot. Enter opens the focused file. F2 opens Rename for non-entry
-files. Studio protects story files with unsaved edits or saved or unsaved include
+starts with a dot. Enter on macOS and F2 on other platforms rename eligible
+items; Space opens them. Studio protects the entry file and story files with unsaved edits or saved or unsaved include
 references. Renaming or deleting an unreferenced chapter clears source undo
 history. Empty and nested folders are visible. Users select a folder and create
 files or folders there, or drop external files into it. File imports copy without

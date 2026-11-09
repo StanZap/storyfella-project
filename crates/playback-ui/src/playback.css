@@ -11,7 +11,7 @@
 .sf-play button { border: 0; background: transparent; cursor: pointer; }
 .sf-play button:disabled, .sf-play select:disabled { opacity: .4; cursor: default; }
 .sf-play button:focus-visible, .sf-play select:focus-visible {
-    outline: 1px solid var(--sf-accent); outline-offset: 3px; border-radius: 2px;
+    outline: none; box-shadow: inset 0 0 0 1px var(--sf-muted); border-radius: 2px;
 }
 .sf-play:focus, .sf-stage:focus { outline: none; }
 .sf-header {
@@ -131,4 +131,6 @@
 .sf-style-monochrome .sf-actor { filter: grayscale(1); }
 
 .sf-story-actions .sf-nav { display: inline-flex; align-items: center; justify-content: center; padding: 0; color: #aeb7b8; background: transparent; }
+.sf-action-tooltip { display: inline-flex; }
+.sf-action-tooltip > button:disabled { pointer-events: none; }
 .sf-story-actions .sf-nav:hover:not(:disabled), .sf-story-actions .sf-nav:focus-visible { color: var(--sf-accent); }

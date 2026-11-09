@@ -157,6 +157,7 @@ fn ReferenceButtons(
     rsx! {
         for (file, position) in positions {
             button { class: "mr-2 font-mono text-[11px] text-violet-300",
+                title: format!("Open reference · {}:{}", position.line + 1, position.character + 1),
                 onclick: { let file = file.clone(); move |_| on_navigate.call((file.clone(), position)) },
                 if !file.is_empty() { "{file} · " }
                 "{position.line + 1}:{position.character + 1}"
@@ -590,8 +591,8 @@ fn RenameSymbolDialog(
                 }
                 if let Some(message) = error() { p { role: "alert", class: "studio-inline-error", "{message}" } }
                 footer { class: "flex justify-end gap-2",
-                    button { r#type: "button", class: "studio-button", onclick: move |_| onclose.call(()), "Cancel" }
-                    button { r#type: "submit", class: "studio-button studio-button-primary", disabled: replacement().trim().is_empty(), "Rename" }
+                    button { r#type: "button", class: "studio-button", title: "Cancel", onclick: move |_| onclose.call(()), "Cancel" }
+                    button { r#type: "submit", class: "studio-button studio-button-primary", title: "Rename", disabled: replacement().trim().is_empty(), "Rename" }
                 }
             }
         }
@@ -659,6 +660,22 @@ fn CreateProjectEntry(
     }
 }
 
+fn explorer_rename_key(key: &Key, macos: bool) -> bool {
+    if macos {
+        *key == Key::Enter
+    } else {
+        *key == Key::F2
+    }
+}
+
+fn explorer_rename_hint() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Enter"
+    } else {
+        "F2"
+    }
+}
+
 #[component]
 pub fn Writer(
     mut app_state: Signal<AppState>,
@@ -671,6 +688,7 @@ pub fn Writer(
     let mut item_menu = use_signal(|| None::<String>);
     let mut rename_item = use_signal(|| None::<String>);
     let mut rename_name = use_signal(String::new);
+    let mut rename_asset = use_signal(|| None::<uuid::Uuid>);
     let mut create_entry = use_signal(|| None::<(ProjectEntryKind, String)>);
     let mut file_preview = use_context::<super::ProjectFilePreview>().0;
     let mut open_asset = use_signal(|| false);
@@ -693,6 +711,7 @@ pub fn Writer(
         create_entry.set(None);
         item_menu.set(None);
         rename_item.set(None);
+        rename_asset.set(None);
         drop_error.set(None);
     }));
     let revision = refresh();
@@ -801,7 +820,7 @@ pub fn Writer(
             },
                 if let Some(notice) = app_state.read().source_notice.clone() {
                     div { class: "mb-3 text-xs text-amber-300", role: "status", "{notice}"
-                        button { class: "ml-1 underline", onclick: move |_| app_state.write().source_notice = None, "Dismiss" }
+                        button { class: "ml-1 underline", title: "Dismiss notice", onclick: move |_| app_state.write().source_notice = None, "Dismiss" }
                     }
                 }
                 div { class: "studio-explorer-header flex items-center gap-2",
@@ -857,9 +876,11 @@ pub fn Writer(
                         { if row.folder {
                             let folder_path = row.path.clone();
                             let drop_folder = folder_path.clone();
+                            let rename_folder = folder_path.clone();
+                            let rename_folder_name = item_name.clone();
                             let is_open = !collapsed.read().contains(&folder_path);
                             let visible = ancestors_visible(&folder_path, &collapsed.read());
-                            rsx! { if visible { button { key: "folder-{folder_path}", title: if is_open { format!("Collapse {}", row.name) } else { format!("Expand {}", row.name) }, style: "padding-left: {8 + row.depth * 12}px", class: if folder() == folder_path { "flex items-center gap-1 rounded bg-white/10 py-1 text-left text-xs text-zinc-100" } else { "flex items-center gap-1 rounded py-1 text-left text-xs text-zinc-400 hover:bg-white/5" }, aria_expanded: is_open, onclick: move |_| { let mut set = collapsed.write(); if !set.remove(&folder_path) { set.insert(folder_path.clone()); } folder.set(folder_path.clone()); }, ondragover: move |event| event.prevent_default(), ondrop: move |event| {
+                            rsx! { if visible { button { key: "folder-{folder_path}", title: format!("{} {} · Rename ({})", if is_open { "Collapse" } else { "Expand" }, row.name, explorer_rename_hint()), style: "padding-left: {8 + row.depth * 12}px", class: if folder() == folder_path { "flex items-center gap-1 rounded bg-white/10 py-1 text-left text-xs text-zinc-100" } else { "flex items-center gap-1 rounded py-1 text-left text-xs text-zinc-400 hover:bg-white/5" }, aria_expanded: is_open, onkeydown: move |event| { if event.modifiers().is_empty() && explorer_rename_key(&event.key(), cfg!(target_os = "macos")) { event.prevent_default(); event.stop_propagation(); rename_name.set(rename_folder_name.clone()); rename_item.set(Some(rename_folder.clone())); } }, onclick: move |_| { let mut set = collapsed.write(); if !set.remove(&folder_path) { set.insert(folder_path.clone()); } folder.set(folder_path.clone()); }, ondragover: move |event| event.prevent_default(), ondrop: move |event| {
                                 event.prevent_default(); event.stop_propagation();
                                 let root = app_state.read().story.path().and_then(|path| path.parent()).map(std::path::Path::to_path_buf);
                                 if let Some(root) = root { for file in event.files() { if let Err(error) = super::project_files::import_file(&root, &drop_folder, &file.path()) { drop_error.set(Some(format!("Could not add {}: {error}", file.name()))); } else { collapsed.write().remove(&drop_folder); refresh += 1; } } }
@@ -880,8 +901,8 @@ pub fn Writer(
                         let rename_target = file.clone();
                         let rename_label = item_name.clone();
                         rsx! { if visible { button { key: "{file}", style: "padding-left: {8 + row.depth * 12}px", class: if selected { "w-full rounded bg-white/10 py-1 text-left text-xs text-zinc-100" } else { "w-full rounded py-1 text-left text-xs text-zinc-400 hover:bg-white/5" },
-                            title: "{file}", onkeydown: move |event| {
-                                if event.key() == Key::F2 && !is_entry {
+                            title: if is_entry { format!("Open {file}") } else { format!("Open {file} · Rename ({})", explorer_rename_hint()) }, onkeydown: move |event| {
+                                if !is_entry && event.modifiers().is_empty() && explorer_rename_key(&event.key(), cfg!(target_os = "macos")) {
                                     event.prevent_default();
                                     event.stop_propagation();
                                     rename_name.set(rename_label.clone());
@@ -911,11 +932,11 @@ pub fn Writer(
                         if item_menu.read().as_deref() == Some(item_path.as_str()) {
                             div { class: "studio-explorer-menu-dismiss", aria_hidden: "true", onclick: move |_| item_menu.set(None), oncontextmenu: move |event| { event.prevent_default(); item_menu.set(None); } }
                             div { class: "studio-action-menu-list", style: "position:absolute;left:20px;top:20px", role: "menu",
-                                button { class: "studio-action-menu-item", disabled: entry_item, onclick: { let p = item_path.clone(); let n = item_name.clone(); move |_| { rename_name.set(n.clone()); rename_item.set(Some(p.clone())); item_menu.set(None); } }, "Rename" }
-                                button { class: "studio-action-menu-item", onclick: { let p = item_path.clone(); move |_| { let root = app_state.read().story.path().and_then(|p| p.parent()).map(std::path::Path::to_path_buf); if let Some(root) = root { if let Err(e) = super::project_files::duplicate(&root, &p) { drop_error.set(Some(e.to_string())); } else { refresh += 1; } } item_menu.set(None); } }, "Duplicate" }
-                                button { class: "studio-action-menu-item", onclick: { let p = item_path.clone(); move |_| { let root = app_state.read().story.path().and_then(|p| p.parent()).map(std::path::Path::to_path_buf); if let Some(root) = root { match super::project_files::existing(&root, &p) { Ok(path) => { let value = serde_json::to_string(&path.to_string_lossy().to_string()).unwrap(); document::eval(&format!("navigator.clipboard.writeText({value})")); }, Err(e) => drop_error.set(Some(e.to_string())) } } item_menu.set(None); } }, "Copy absolute path" }
-                                button { class: "studio-action-menu-item", onclick: { let p = item_path.clone(); move |_| { let root = app_state.read().story.path().and_then(|p| p.parent()).map(std::path::Path::to_path_buf); if let Some(root) = root { match super::project_files::existing(&root, &p) { Ok(path) => { if let Err(e) = super::project_files::copy_item(&path) { drop_error.set(Some(e.to_string())); } }, Err(e) => drop_error.set(Some(e.to_string())) } } item_menu.set(None); } }, "Copy" }
-                                button { class: "studio-action-menu-item", disabled: entry_item, onclick: { let p = item_path.clone(); move |_| {
+                                button { class: "studio-action-menu-item", title: format!("Rename ({})", explorer_rename_hint()), disabled: entry_item, onclick: { let p = item_path.clone(); let n = item_name.clone(); move |_| { rename_name.set(n.clone()); rename_item.set(Some(p.clone())); item_menu.set(None); } }, "Rename" }
+                                button { class: "studio-action-menu-item", title: "Duplicate", onclick: { let p = item_path.clone(); move |_| { let root = app_state.read().story.path().and_then(|p| p.parent()).map(std::path::Path::to_path_buf); if let Some(root) = root { if let Err(e) = super::project_files::duplicate(&root, &p) { drop_error.set(Some(e.to_string())); } else { refresh += 1; } } item_menu.set(None); } }, "Duplicate" }
+                                button { class: "studio-action-menu-item", title: "Copy absolute path", onclick: { let p = item_path.clone(); move |_| { let root = app_state.read().story.path().and_then(|p| p.parent()).map(std::path::Path::to_path_buf); if let Some(root) = root { match super::project_files::existing(&root, &p) { Ok(path) => { let value = serde_json::to_string(&path.to_string_lossy().to_string()).unwrap(); document::eval(&format!("navigator.clipboard.writeText({value})")); }, Err(e) => drop_error.set(Some(e.to_string())) } } item_menu.set(None); } }, "Copy absolute path" }
+                                button { class: "studio-action-menu-item", title: "Copy", onclick: { let p = item_path.clone(); move |_| { let root = app_state.read().story.path().and_then(|p| p.parent()).map(std::path::Path::to_path_buf); if let Some(root) = root { match super::project_files::existing(&root, &p) { Ok(path) => { if let Err(e) = super::project_files::copy_item(&path) { drop_error.set(Some(e.to_string())); } }, Err(e) => drop_error.set(Some(e.to_string())) } } item_menu.set(None); } }, "Copy" }
+                                button { class: "studio-action-menu-item", title: "Delete", disabled: entry_item, onclick: { let p = item_path.clone(); move |_| {
                                     let confirmed = rfd::MessageDialog::new().set_title("Delete item?").set_description(format!("Delete {p}? This cannot be undone.")).set_buttons(rfd::MessageButtons::OkCancel).show() == rfd::MessageDialogResult::Ok;
                                     if confirmed {
                                         let root = app_state.read().story.path().and_then(|p| p.parent()).map(std::path::Path::to_path_buf);
@@ -934,7 +955,7 @@ pub fn Writer(
                     }
                 }
                 for (id, name) in assets {
-                    button { key: "{id}", class: if open_asset() && app_state.read().selected_artifact_id == Some(id) { "rounded bg-white/10 px-2 py-1 text-left text-xs text-zinc-100" } else { "rounded px-2 py-1 text-left text-xs text-zinc-400 hover:bg-white/5" }, onclick: move |_| { file_preview.set(None); app_state.write().select_artifact(id); open_asset.set(true); }, "{name}" }
+                    button { key: "{id}", title: format!("Open {name} · Rename ({})", explorer_rename_hint()), class: if open_asset() && app_state.read().selected_artifact_id == Some(id) { "rounded bg-white/10 px-2 py-1 text-left text-xs text-zinc-100" } else { "rounded px-2 py-1 text-left text-xs text-zinc-400 hover:bg-white/5" }, onkeydown: move |event| { if event.modifiers().is_empty() && explorer_rename_key(&event.key(), cfg!(target_os = "macos")) && !app_state.read().operation_in_progress() { event.prevent_default(); event.stop_propagation(); file_preview.set(None); app_state.write().select_artifact(id); open_asset.set(true); rename_asset.set(Some(id)); } }, onclick: move |_| { file_preview.set(None); app_state.write().select_artifact(id); open_asset.set(true); }, "{name}" }
                 }
             }
             div { class: "flex min-w-0 flex-1 flex-col",
@@ -946,7 +967,7 @@ pub fn Writer(
                     } else { p { class: "p-4 text-sm text-zinc-400", "File in project · open with its associated application to edit." } }
                 } }
                 if open_asset() { if let Some(artifact) = app_state.read().selected_artifact().cloned() {
-                    super::assets::AssetDetail { key: "{artifact.id}", app_state, artifact, disabled: app_state.read().operation_in_progress(), on_back: move |_| open_asset.set(false), on_new_variant: move |id| new_asset.set(Some(super::actions::ArtAction::Variant(id))) }
+                    super::assets::AssetDetail { key: "{artifact.id}", rename_requested: rename_asset() == Some(artifact.id), on_rename_started: move |_| rename_asset.set(None), app_state, artifact, disabled: app_state.read().operation_in_progress(), on_back: move |_| open_asset.set(false), on_new_variant: move |id| new_asset.set(Some(super::actions::ArtAction::Variant(id))) }
                 } }
             }
         }
@@ -1121,13 +1142,13 @@ fn AdditionalWriter(path: String, mut app_state: Signal<AppState>) -> Element {
             }
             if !completions.is_empty() { div { class: "studio-completions", role: "listbox", onmounted: move |_| { document::eval(&COMPLETION_POSITION.replace("EDITOR_ID", "'svs-extra-writer'")); },
                 for (index, completion) in completions.iter().enumerate() {
-                    button { class: if index == selected_completion { "studio-completion is-selected" } else { "studio-completion" }, onclick: { let completion = completion.clone(); let file = path.clone(); move |_| { accept_additional_completion(app_state, &file, &completion, navigation); show_completions.set(false); } }, "{completion.label}" }
+                    button { class: if index == selected_completion { "studio-completion is-selected" } else { "studio-completion" }, title: "{completion.label}", onclick: { let completion = completion.clone(); let file = path.clone(); move |_| { accept_additional_completion(app_state, &file, &completion, navigation); show_completions.set(false); } }, "{completion.label}" }
                 }
             } }
             details { class: "max-h-40 overflow-auto border-t border-white/10 px-4 py-2 text-xs text-zinc-400",
                     summary { "Problems ({problems.iter().filter(|(file, _, _)| file == &path).count()})" }
                     for (_, diagnostic, position) in problems.into_iter().filter(|(file, _, _)| file == &path) {
-                        button { class: "block py-1 text-left", onclick: move |_| navigation.set(Some(position)), "{position.line + 1}:{position.character + 1} · {diagnostic.message}" }
+                        button { class: "block py-1 text-left", title: "Open problem: {diagnostic.message}", onclick: move |_| navigation.set(Some(position)), "{position.line + 1}:{position.character + 1} · {diagnostic.message}" }
                     }
             }
             if let Some((offset, name)) = rename_target() {
@@ -1417,6 +1438,7 @@ fn MainWriter(
                         }
                         button {
                             class: "mt-4 rounded-lg bg-violet-400/15 px-3 py-1.5 text-[11px] font-semibold text-violet-200 transition hover:bg-violet-400/25",
+                            title: "Start a story",
                             onclick: move |_| {
                                 let mut state = app_state.write();
                                 state.set_story_source(STARTER.to_owned());
@@ -1486,6 +1508,7 @@ fn MainWriter(
                             for (index, completion) in completions.iter().enumerate() {
                                 button {
                                     class: if index == selected_completion { "studio-completion is-selected" } else { "studio-completion" },
+                                    title: "{completion.label}",
                                     onclick: { let completion = completion.clone(); move |_| { accept_completion(app_state, caret, &completion); show_completions.set(false); } },
                                     "{completion.label}"
                                 }
@@ -1537,6 +1560,7 @@ fn MainWriter(
                                     let position = *position;
                                     let other_file = !file.is_empty() && file != entry;
                                     rsx! { button { class: "flex items-start gap-2 px-4 py-2 text-left text-xs text-zinc-300 hover:bg-white/[0.04]",
+                                        title: "Open problem: {diagnostic.message}",
                                         onclick: { let file = file.clone(); move |_| {
                                             on_navigate.call((file.clone(), position));
                                         } },
@@ -1711,6 +1735,15 @@ fn MentionGroup(title: String, mentions: Vec<Mention>, app_state: Signal<AppStat
 mod tests {
     use super::*;
     use storyfella_studio_core::registry::CreateArtifact;
+
+    #[test]
+    fn explorer_uses_native_rename_keys() {
+        assert!(explorer_rename_key(&Key::Enter, true));
+        assert!(!explorer_rename_key(&Key::F2, true));
+        assert!(explorer_rename_key(&Key::F2, false));
+        assert!(!explorer_rename_key(&Key::Enter, false));
+        assert!(!explorer_rename_key(&Key::Character(" ".into()), true));
+    }
 
     #[test]
     fn explorer_groups_nested_sources_and_hides_collapsed_descendants() {

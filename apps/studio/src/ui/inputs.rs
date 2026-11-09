@@ -78,6 +78,7 @@ pub fn TextInputWithAction(
     action_label: String,
     onaction: EventHandler<MouseEvent>,
     #[props(default)] id: Option<String>,
+    #[props(default)] action_id: Option<String>,
     #[props(default)] placeholder: String,
     #[props(default)] size: InputSize,
     #[props(default)] disabled: bool,
@@ -95,6 +96,7 @@ pub fn TextInputWithAction(
             value, label, oninput, id, placeholder, size, disabled, read_only,
             autofocus, controls, title, kind, onkeydown,
             IconButton {
+                id: action_id,
                 icon: action_icon, label: action_label, tooltip: action_tooltip,
                 disabled: disabled || action_disabled, onclick: onaction,
             }

@@ -94,10 +94,10 @@ pub fn CatalogSync(mut app_state: Signal<AppState>) -> Element {
                     else { "Could not refresh assets. Your work is retained." }
                 }
                 if conflict.is_some() {
-                    button { class: "studio-button", onclick: move |_| reviewing.set(true), "Review changes" }
+                    button { class: "studio-button", title: "Review changes", onclick: move |_| reviewing.set(true), "Review changes" }
                 }
                 if source_recovery() {
-                    button { class: "studio-button", onclick: move |_| review_source.set(true), "Recover interrupted save" }
+                    button { class: "studio-button", title: "Recover interrupted save", onclick: move |_| review_source.set(true), "Recover interrupted save" }
                 }
                 IconButton { icon: IconName::Refresh, label: "Retry catalog refresh", onclick: move |_| { let next = *retry.peek() + 1; retry.set(next); } }
             }
@@ -106,7 +106,7 @@ pub fn CatalogSync(mut app_state: Signal<AppState>) -> Element {
             Dialog { title: "Recover interrupted save", on_close: move |_| review_source.set(false),
                 h2 { class: "text-lg font-semibold", "Recover interrupted save" }
                 p { class: "text-sm text-zinc-400", "The catalog was saved, but its story file changed before the matching text could be written. Keep a separate copy of the current file, then finish the interrupted save. Your unsaved editor text stays intact." }
-                button { class: "studio-button studio-button-primary", disabled: recovering(), onclick: move |_| {
+                button { class: "studio-button studio-button-primary", title: "Keep file copy and finish save", disabled: recovering(), onclick: move |_| {
                     let Some(path) = app_state.peek().project_path.clone() else { return };
                     recovering.set(true);
                     spawn(async move {
@@ -121,7 +121,7 @@ pub fn CatalogSync(mut app_state: Signal<AppState>) -> Element {
                         }
                     });
                 }, "Keep file copy and finish save" }
-                button { class: "studio-button", disabled: recovering(), onclick: move |_| review_source.set(false), "Cancel" }
+                button { class: "studio-button", title: "Cancel", disabled: recovering(), onclick: move |_| review_source.set(false), "Cancel" }
             }
         }
         if reviewing() {
@@ -142,7 +142,7 @@ pub fn CatalogSync(mut app_state: Signal<AppState>) -> Element {
                     }
                     if conflict.requires_reload {
                         p { class: "text-sm text-amber-200", "Reloading the saved catalog discards unsaved catalog changes and project undo history. Story text and description drafts for retained items stay in Studio." }
-                        button { class: "studio-button", disabled: app_state.read().operation_in_progress(), onclick: move |_| {
+                        button { class: "studio-button", title: "Reload saved catalog", disabled: app_state.read().operation_in_progress(), onclick: move |_| {
                             match app_state.write().use_saved_catalog() {
                                 Ok(()) => reviewing.set(false), Err(message) => error.set(Some(message)),
                             }
@@ -151,7 +151,7 @@ pub fn CatalogSync(mut app_state: Signal<AppState>) -> Element {
                         p { class: "text-sm text-zinc-400", "Choose which overlapping fields to keep. Independent changes and artwork history from both editors are retained." }
                         div { class: "flex flex-wrap gap-2",
                             for (label, resolution) in [("Keep my conflicting edits", Resolution::Local), ("Use saved conflicting edits", Resolution::Saved)] {
-                                button { class: "studio-button", disabled: app_state.read().operation_in_progress(), onclick: move |_| {
+                                button { class: "studio-button", title: "{label}", disabled: app_state.read().operation_in_progress(), onclick: move |_| {
                                     match app_state.write().resolve_catalog_conflict(resolution) {
                                         Ok(()) => reviewing.set(false), Err(message) => error.set(Some(message)),
                                     }
@@ -159,7 +159,7 @@ pub fn CatalogSync(mut app_state: Signal<AppState>) -> Element {
                             }
                         }
                     }
-                    button { class: "studio-button", onclick: move |_| reviewing.set(false), "Decide later" }
+                    button { class: "studio-button", title: "Decide later", onclick: move |_| reviewing.set(false), "Decide later" }
                 }
             }
         }

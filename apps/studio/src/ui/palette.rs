@@ -148,6 +148,7 @@ pub fn Palette(
                     for (index, entry) in found.into_iter().enumerate() {
                         button {
                             id: "{results_id}-{index}",
+                            title: if entry.hint.is_empty() { entry.label.clone() } else { format!("{} · {}", entry.label, entry.hint) },
                             r#type: "button",
                             class: if index == selected() { "studio-button w-full bg-violet-400/15 text-left" } else { "studio-button w-full text-left" },
                             disabled: !entry.enabled,

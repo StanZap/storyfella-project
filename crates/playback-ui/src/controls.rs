@@ -81,11 +81,11 @@ pub(crate) fn PlaybackOptions(
     rsx! {
         nav { class: "sf-option-list", aria_label: "Playback actions",
             if let Some(on_open) = on_open {
-                button { onclick: move |_| { close_panel(panel); on_open.call(()); }, "Open story…" }
+                button { title: "Open story", onclick: move |_| { close_panel(panel); on_open.call(()); }, "Open story…" }
             }
             if let Some(session) = snapshot.session.as_ref() {
-                button { onclick: move |_| { model.write().dispatch(Command::Restart); close_panel(panel); }, "Restart story" }
-                button { onclick: move |_| { model.write().dispatch(Command::End); close_panel(panel); }, "End story" }
+                button { title: "Restart story", onclick: move |_| { model.write().dispatch(Command::Restart); close_panel(panel); }, "Restart story" }
+                button { title: "End story", onclick: move |_| { model.write().dispatch(Command::End); close_panel(panel); }, "End story" }
                 label { class: "sf-jump",
                     span { "Jump to scene" }
                     select { aria_label: "Jump to scene", value: "", disabled: session.runtime.state().paused,
@@ -102,13 +102,13 @@ pub(crate) fn PlaybackOptions(
                     }
                 }
                 div { class: "sf-option-divider" }
-                button { onclick: move |_| { model.write().bookmark(); close_panel(panel); }, "Bookmark" }
-                button { disabled: snapshot.bookmark.is_none(), onclick: move |_| { model.write().restore_bookmark(); close_panel(panel); }, "Restore bookmark" }
-                button { onclick: move |_| { close_panel(panel); on_save.call(()); }, "Save state…" }
-                button { onclick: move |_| { close_panel(panel); on_load.call(()); }, "Load state…" }
+                button { title: "Bookmark", onclick: move |_| { model.write().bookmark(); close_panel(panel); }, "Bookmark" }
+                button { title: "Restore bookmark", disabled: snapshot.bookmark.is_none(), onclick: move |_| { model.write().restore_bookmark(); close_panel(panel); }, "Restore bookmark" }
+                button { title: "Save state", onclick: move |_| { close_panel(panel); on_save.call(()); }, "Save state…" }
+                button { title: "Load state", onclick: move |_| { close_panel(panel); on_load.call(()); }, "Load state…" }
                 div { class: "sf-option-divider" }
-                button { onclick: move |_| panel.set(Some(ExtraPanel::Artwork)), "Artwork" }
-                button { onclick: move |_| panel.set(Some(ExtraPanel::Source)), "Source snapshot" }
+                button { title: "Artwork", onclick: move |_| panel.set(Some(ExtraPanel::Artwork)), "Artwork" }
+                button { title: "Source snapshot", onclick: move |_| panel.set(Some(ExtraPanel::Source)), "Source snapshot" }
             }
             p { class: "sf-key-help", "Right arrow to continue · Space to pause" }
         }

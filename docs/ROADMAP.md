@@ -537,8 +537,9 @@ The following checklist describes the shared-project workstream.
   forms open inline at the selected destination and retain that destination
   during editing. The asset form opens in a dialog. The explorer reads from the
   entry file's directory for both shared folders and standalone pairs, displays
-  hidden entry sources such as `.svs-project.sf`, and keeps Enter for opening
-  files. F2 opens Rename for ordinary files. Filesystem regression coverage
+  hidden entry sources such as `.svs-project.sf`. Enter on macOS and F2 on
+  other platforms rename eligible files, folders and catalog assets; Space opens
+  items. The entry file remains protected. Filesystem regression coverage
   checks both layouts, link rejection and import collisions. Native pointer,
   keyboard and assistive-technology acceptance remains open.
   Automated evidence for this pass and the SF-PLAN-31 fixes: workspace tests

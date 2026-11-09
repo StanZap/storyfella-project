@@ -30,9 +30,15 @@ pub fn ArtActionDialog(
         super::text_input::use_text_value(description(), None);
     let project = use_hook(|| app_state.peek().project_path.clone());
     let stale = project.is_none() || project != app_state.read().project_path;
+    let is_variation = matches!(action, ArtAction::Variant(_));
+    let title = if is_variation {
+        "New variation"
+    } else {
+        "New asset"
+    };
     rsx! {
         Dialog {
-            title: "New asset",
+            title,
             on_close: move |_| onclose.call(()),
             form {
                 class: "studio-task-form",
@@ -59,7 +65,7 @@ pub fn ArtActionDialog(
                     }
                 },
                 header { class: "flex items-center gap-3",
-                    h2 { class: "flex-1 text-lg font-semibold", "New asset" }
+                    h2 { class: "flex-1 text-lg font-semibold", "{title}" }
                     super::components::IconButton { label: "Close", icon: super::icons::IconName::Close, onclick: move |_| onclose.call(()) }
                 }
                 if matches!(action, ArtAction::Create(_)) {
@@ -86,7 +92,7 @@ pub fn ArtActionDialog(
                 label { r#for: name_id.clone(), "Reference name" }
                 TextInput {
                     id: Some(name_id.clone()), label: "Reference name", value: name(),
-                    placeholder: "e.g. mara", autofocus: true,
+                    placeholder: if is_variation { "" } else { "e.g. mara" }, autofocus: true,
                     oninput: move |value| name.set(value),
                 }
                 }
@@ -102,16 +108,36 @@ pub fn ArtActionDialog(
                 div {
                     class: "flex justify-end gap-2",
                     button {
-                        r#type: "button", class: "studio-button",
+                        r#type: "button", class: "studio-button", title: "Cancel",
                         onclick: move |_| onclose.call(()), "Cancel"
                     }
                     button {
                         r#type: "submit", class: "studio-button studio-button-primary",
+                        title: if is_variation { "Create variation" } else { "Create asset" },
                         disabled: stale || name().trim().is_empty() || app_state.read().operation_in_progress(),
-                        "Create asset"
+                        if is_variation { "Create variation" } else { "Create asset" }
                     }
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[component]
+    fn VariationDialogProbe() -> Element {
+        let app_state = use_signal(AppState::default);
+        rsx! { ArtActionDialog { action: ArtAction::Variant(uuid::Uuid::nil()), app_state, onclose: move |_| {} } }
+    }
+
+    #[test]
+    fn variation_dialog_is_named_for_the_action() {
+        let mut dom = VirtualDom::new(VariationDialogProbe);
+        let rendered = format!("{:?}", dom.rebuild_to_vec());
+        assert!(rendered.contains("New variation"));
+        assert!(!rendered.contains("New asset"));
     }
 }

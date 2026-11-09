@@ -10,7 +10,10 @@ use dioxus::prelude::*;
 
 use crate::driver::{GuideSession, GuideState, StepStatus};
 
-use super::icons::{Icon, IconName};
+use super::{
+    components::IconButton,
+    icons::{Icon, IconName},
+};
 
 /// The narration-speed buttons: `(rate, active class)` pairs.
 fn speed_options(current: u32) -> [(u32, &'static str); 3] {
@@ -82,12 +85,10 @@ pub fn GuideCard(mut session: Signal<Option<GuideSession>>) -> Element {
                                 p { class: "text-[9px] uppercase tracking-[0.16em] text-zinc-600", "{mode_label} · step {current + 1} of {step_count}" }
                             }
                         }
-                        button {
-                            class: "grid size-7 place-items-center rounded-lg text-zinc-600 transition hover:bg-white/[0.06] hover:text-zinc-300",
-                            aria_label: "Stop after the current operation",
-                            title: "Stop the plan. The current generation finishes in the background.",
+                        IconButton {
+                            label: "Stop after the current operation", icon: IconName::Close,
+                            tooltip: "The current generation finishes in the background.",
                             onclick: move |_| session.set(None),
-                            Icon { name: IconName::Close, class: "size-3.5" }
                         }
                     }
                     div { class: "px-4 py-4",
@@ -104,21 +105,19 @@ pub fn GuideCard(mut session: Signal<Option<GuideSession>>) -> Element {
                     }
                     div { class: "flex items-center justify-between border-t border-white/[0.06] px-4 py-2.5",
                     div { class: "flex items-center gap-1",
-                        button {
-                            class: "grid size-7 place-items-center rounded-lg text-zinc-500 transition hover:bg-white/[0.06] hover:text-zinc-200",
-                            title: if paused { "Resume" } else { "Pause" },
+                        IconButton {
+                            label: if paused { "Resume" } else { "Pause" }, icon: if paused { IconName::Play } else { IconName::Pause },
                             onclick: move |_| {
                                 paused = !paused;
                                 session.with_mut(|slot| {
                                     if let Some(s) = slot { s.paused = paused; }
                                 });
                             },
-                            Icon { name: if paused { IconName::Play } else { IconName::Pause }, class: "size-3.5" }
                         }
                         for (rate, active_class) in speed_options(speed) {
                             button {
                                 class: "rounded-md px-1.5 py-1 font-mono text-[9px] transition {active_class}",
-                                title: "Narration speed",
+                                title: "Narration speed: {rate}x",
                                 onclick: move |_| {
                                     session.with_mut(|slot| {
                                         if let Some(s) = slot { s.speed = rate; }
@@ -188,11 +187,9 @@ pub fn GuideCard(mut session: Signal<Option<GuideSession>>) -> Element {
                             p { class: "truncate text-[11px] font-semibold text-zinc-100", "{active.plan.name}" }
                             p { class: "text-[9px] uppercase tracking-[0.16em] text-zinc-600", "{mode_label} · finished in {report.duration_ms / 1000}s" }
                         }
-                        button {
-                            class: "grid size-7 place-items-center rounded-lg text-zinc-600 transition hover:bg-white/[0.06] hover:text-zinc-300",
-                            title: "Dismiss",
+                        IconButton {
+                            label: "Dismiss", icon: IconName::Close,
                             onclick: move |_| session.set(None),
-                            Icon { name: IconName::Close, class: "size-3.5" }
                         }
                     }
                     div { class: "max-h-64 overflow-y-auto px-4 py-1", {rows} }
