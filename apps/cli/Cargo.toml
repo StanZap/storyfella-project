@@ -19,6 +19,8 @@ path = "src/bin/vlm_probe.rs"
 
 [dependencies]
 agentkit-ai.workspace = true
+agentkit-core.workspace = true
+agentkit-mcp.workspace = true
 storyfella-compiler.workspace = true
 storyfella-language.workspace = true
 storyfella-runtime.workspace = true
@@ -29,7 +31,11 @@ clap.workspace = true
 image.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

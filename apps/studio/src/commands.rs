@@ -318,6 +318,7 @@ fn install_shared_project(
         Some(lease) => lease,
         None => folder.claim_authoring().map_err(shared_open_error)?,
     };
+    lease.verify().map_err(shared_open_error)?;
     let stored = folder.load().map_err(shared_open_error)?;
     app_state
         .write()
@@ -415,6 +416,11 @@ pub fn save_project(mut app_state: Signal<AppState>) -> Result<(), ReportedError
             ErrorCode::StoreSave,
             "Wait for the current operation before saving.",
         ));
+    }
+    if let Some(lease) = &app_state.read().authoring_lease {
+        lease
+            .verify()
+            .map_err(|error| ReportedError::plain(ErrorCode::StoreSave, format!("{error:#}")))?;
     }
     let db = ProjectDb::open_existing(&path).map_err(|error| error.report())?;
     let stored = db.load().map_err(|error| error.report())?;

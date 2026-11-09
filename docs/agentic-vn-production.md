@@ -6,9 +6,52 @@ The [research](agentic-vn-production-research.md) describes the larger product.
 The [roadmap](ROADMAP.md#agentic-visual-novel-production) owns priorities and
 completion status.
 
+## Start a text-first VN from a chat
+
+Build `svs` with `cargo build -p svs-cli --bin svs`. In an MCP-capable chat
+client, add a local stdio server. Set the executable to the absolute path to
+`target/debug/svs` and use these arguments, replacing the project folder.
+Choose an existing parent directory.
+
+```json
+["mcp", "--folder", "/absolute/path/to/the-last-signal", "--create-if-missing", "The Last Signal"]
+```
+
+`--create-if-missing` initializes a new shared folder and reuses it on later
+connections. Omit that option to require an existing folder. Close the
+project in Studio before connecting. The server is a headless authoring
+owner and holds Studio's writer lease for that one folder until it exits.
+Disconnect the server before opening the project in Studio. The command
+uses standard input and output for MCP and needs no image or text provider
+configuration.
+
+Ask the chat to write a short branching chapter, preview and save its edit,
+and playtest both routes. The chat uses these tools.
+
+| Tool | What it does |
+| --- | --- |
+| `storyfella_project_inspect` | Returns the project identity, session, source filenames and current version. |
+| `storyfella_story_read` | Reads the saved entry or one of its included files in UTF-8 byte pages. |
+| `storyfella_story_edit` | Validates one byte-range replacement in the entry against the full include workspace and current catalog. Repeat the exact request with the returned proposal to save. Syntax errors return diagnostics. |
+| `storyfella_story_playtest` | Plays the saved version through the shared story runtime, taking zero-based choice indexes and returning dialogue, source positions, flags and pending artwork counts. |
+
+For a whole-entry edit within the 64 KiB replacement limit, use `start: 0`
+and the entry's reported `bytes` as `end`. An edit needs the session and
+the current version from inspection or reading. A saved source, include or
+catalog change requires a fresh preview. Playtests are text-only and stop at
+an unanswered choice, completion or the step limit. Included files are
+readable. The entry is the only editable file in this first interface.
+If a save is interrupted, restart the MCP server to recover it under the
+project lease. Inspection and edit preview leave a pending source save intact.
+Projects with broken include paths need repair in Studio before MCP edits.
+Art generation, visual frame capture and editing while Studio is open
+remain later parts of the workflow.
+
 ## Project ownership and checked edits
 
-Use a local stdio MCP bridge with app-owned commands. Studio owns open Writer
+The first local stdio server owns a closed project and uses the same compiler,
+catalog rules and checked authoring store as Studio. Live desktop access will
+use a local stdio MCP bridge with app-owned commands. Studio owns open Writer
 buffers, source and authoring associations. Atelier owns open visual documents,
 candidate review and publication. Each app serializes agent requests with its
 normal editor commands on the app's state thread, then runs storage and
@@ -147,6 +190,10 @@ Related code and tests establish the underlying guarantees.
   paths, verifies a second owner is refused while a draft is dirty, then
   opens it after the first owner switches projects. The persistence test
   verifies passive discovery leaves a pending source intent untouched.
+- The `svs` stdio tests create and playtest a branching chapter using a raw
+  JSON-RPC client, then reopen the same project with Agentkit's MCP client.
+  They check competing owners, invalid edits, changed includes, stale
+  proposals and a replaced lease file.
 - Atelier's `tests.rs`, `queue.rs` and `shared_save.rs` cover captured
   destinations, protected pixels, abort and per-artboard publication
   baselines. The current in-memory queue cannot restore an interrupted job.

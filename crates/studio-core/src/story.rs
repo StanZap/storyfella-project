@@ -3,7 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -46,6 +46,23 @@ pub fn source_path(project: &Path) -> PathBuf {
 pub fn load_source_workspace(
     entry: &Path,
     drafts: &std::collections::BTreeMap<String, String>,
+) -> Result<storyfella_compiler::SourceWorkspace, storyfella_compiler::WorkspaceError> {
+    load_workspace(entry, drafts, None)
+}
+
+/// Apply a total byte budget before parsing each reachable source file.
+pub fn load_bounded_source_workspace(
+    entry: &Path,
+    drafts: &BTreeMap<String, String>,
+    max_bytes: usize,
+) -> Result<storyfella_compiler::SourceWorkspace, storyfella_compiler::WorkspaceError> {
+    load_workspace(entry, drafts, Some(max_bytes))
+}
+
+fn load_workspace(
+    entry: &Path,
+    drafts: &BTreeMap<String, String>,
+    mut remaining: Option<usize>,
 ) -> Result<storyfella_compiler::SourceWorkspace, storyfella_compiler::WorkspaceError> {
     use storyfella_compiler::WorkspaceError;
     let fail = |message| {
@@ -105,10 +122,31 @@ pub fn load_source_workspace(
                 "Source included more than once through different paths: {relative}"
             ));
         }
-        if let Some(draft) = draft {
-            return Ok(draft.clone());
+        let text = match (draft, remaining) {
+            (Some(draft), Some(bytes)) if draft.len() > bytes => {
+                return Err("Source workspace exceeds its byte budget".into());
+            }
+            (Some(draft), _) => draft.clone(),
+            (None, Some(bytes)) => {
+                let mut source = String::new();
+                fs::File::open(&canonical)
+                    .and_then(|file| {
+                        file.take((bytes as u64).saturating_add(1))
+                            .read_to_string(&mut source)
+                    })
+                    .map_err(|error| format!("Cannot read {relative}: {error}"))?;
+                if source.len() > bytes {
+                    return Err("Source workspace exceeds its byte budget".into());
+                }
+                source
+            }
+            (None, None) => fs::read_to_string(canonical)
+                .map_err(|error| format!("Cannot read {relative}: {error}"))?,
+        };
+        if let Some(remaining) = &mut remaining {
+            *remaining -= text.len();
         }
-        fs::read_to_string(canonical).map_err(|error| format!("Cannot read {relative}: {error}"))
+        Ok(text)
     })
 }
 

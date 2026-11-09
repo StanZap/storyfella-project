@@ -55,6 +55,19 @@ impl AuthoringLease {
     pub fn belongs_to(&self, folder: &ProjectFolder) -> bool {
         self.root == folder.root && self.project_id == folder.id
     }
+
+    /// Fail if the project was moved, replaced, or the lock file was removed
+    /// after the lease was acquired. A copied project can retain its UUID.
+    pub fn verify(&self) -> Result<()> {
+        let current = ProjectFolder::locate(&self.root)?;
+        ensure!(
+            self.belongs_to(&current)
+                && same_file::Handle::from_file(self.lock.try_clone()?)?
+                    == same_file::Handle::from_path(self.root.join(AUTHORING_LOCK))?,
+            "The shared project moved or was replaced. Reopen the project to continue."
+        );
+        Ok(())
+    }
 }
 
 impl ProjectFolder {
@@ -264,7 +277,7 @@ impl ProjectFolder {
                 lock: Arc::new(file),
             }),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                bail!("This project is open for editing in another Studio window. Close it there, then try again.");
+                bail!("This project is open for editing in another Studio window or MCP session. Close it there, then try again.");
             }
             Err(error) => Err(error).context("Could not claim the Studio project lock"),
         }

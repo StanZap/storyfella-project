@@ -20,6 +20,7 @@ futures-util.workspace = true
 image.workspace = true
 parking_lot.workspace = true
 rusqlite.workspace = true
+same-file.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

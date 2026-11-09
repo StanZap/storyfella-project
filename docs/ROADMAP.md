@@ -406,6 +406,16 @@ after switching away. Atelier document ownership, app command routing,
 restart-safe generation jobs, live frame capture and MCP client acceptance
 remain open.
 
+Text-first chat authoring is available through
+[`svs mcp`](agentic-vn-production.md#start-a-text-first-vn-from-a-chat).
+The stdio process owns a closed shared folder using Studio's lease. It can
+initialize a project, inspect and read source, validate and save entry edits,
+and playtest branches with the shared runtime. A raw JSON-RPC test client
+and Agentkit's stdio client verify the initial text workflow. Workspace
+validation passed with 491 tests and 27 opt-in tests skipped. SF-PLAN-33
+still tracks live app command routing and SF-PLAN-37 tracks the full visual
+production workflow.
+
 ### Studio for writing, Atelier for visual creation · 2026-10-28
 
 The proposed direction is Studio for writing and previewing stories with the

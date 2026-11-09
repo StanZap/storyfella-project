@@ -67,10 +67,18 @@ pub struct ProjectDb {
     path: PathBuf,
 }
 
+enum SnapshotMode {
+    Discovery,
+    ReadAuthoring,
+    Recover,
+}
+
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("the asset catalog changed during saving; your work is retained, refresh and retry")]
     Conflict,
+    #[error("the project has an interrupted source save that requires recovery")]
+    PendingSource,
     #[error("could not access shared project resources: {0:#}")]
     Resources(#[from] anyhow::Error),
     #[error(transparent)]
@@ -121,7 +129,7 @@ pub enum StoreError {
 impl CodedError for StoreError {
     fn code(&self) -> ErrorCode {
         match self {
-            Self::Resources(_) | Self::Conflict => ErrorCode::StoreSave,
+            Self::Resources(_) | Self::Conflict | Self::PendingSource => ErrorCode::StoreSave,
             Self::Story(error) => error.code(),
             Self::Open { .. } | Self::Path { .. } => ErrorCode::StoreOpen,
             Self::Configure { .. } => ErrorCode::StoreConfigure,
@@ -183,7 +191,17 @@ impl ProjectDb {
             path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?
-        .load_snapshot(false)
+        .load_snapshot(SnapshotMode::Discovery)
+    }
+
+    /// Serialize the source and catalog read with cooperating publishers.
+    /// An interrupted save is reported without applying recovery or migrations.
+    pub fn read_authoring_snapshot(path: &Path) -> Result<StoredProject, StoreError> {
+        Self::connect(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?
+        .load_snapshot(SnapshotMode::ReadAuthoring)
     }
 
     /// Replaces the stored snapshot with `registry` in one transaction,
@@ -590,15 +608,16 @@ impl ProjectDb {
 
     /// Loads the project row and the full registry snapshot.
     pub fn load(&self) -> Result<StoredProject, StoreError> {
-        self.load_snapshot(true)
+        self.load_snapshot(SnapshotMode::Recover)
     }
 
-    fn load_snapshot(&self, recover: bool) -> Result<StoredProject, StoreError> {
+    fn load_snapshot(&self, mode: SnapshotMode) -> Result<StoredProject, StoreError> {
         let mut connection = self.conn.lock();
-        let behavior = if recover {
-            rusqlite::TransactionBehavior::Immediate
-        } else {
-            rusqlite::TransactionBehavior::Deferred
+        let behavior = match mode {
+            SnapshotMode::Discovery => rusqlite::TransactionBehavior::Deferred,
+            SnapshotMode::ReadAuthoring | SnapshotMode::Recover => {
+                rusqlite::TransactionBehavior::Immediate
+            }
         };
         let conn = connection
             // Source lives beside SQLite. Serialize its short snapshot read
@@ -608,8 +627,12 @@ impl ProjectDb {
                 path: self.path.clone(),
                 source,
             })?;
-        if recover {
-            self.recover_source_in(&conn)?;
+        match mode {
+            SnapshotMode::Recover => self.recover_source_in(&conn)?,
+            SnapshotMode::ReadAuthoring if self.pending_source(&conn)?.is_some() => {
+                return Err(StoreError::PendingSource);
+            }
+            SnapshotMode::ReadAuthoring | SnapshotMode::Discovery => {}
         }
         let (row_id, row_name, registry_version) = conn
             .query_row(
@@ -1804,6 +1827,14 @@ mod tests {
             "captain_mara"
         );
         assert!(db.pending_source(&db.conn.lock()).unwrap().is_some());
+        assert!(matches!(
+            ProjectDb::read_authoring_snapshot(&path),
+            Err(StoreError::PendingSource)
+        ));
+        assert_eq!(
+            std::fs::read_to_string(source_path(&path)).unwrap(),
+            baseline.story.source()
+        );
         std::fs::write(source_path(&path), "unrelated external draft").unwrap();
         assert!(matches!(
             db.load(),

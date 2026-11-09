@@ -348,6 +348,9 @@ open error with instructions to close it in that window and retry. Its saved
 story remains searchable in Projects. Automated command tests cover blocked
 opens while the first window has a dirty draft and successful open after
 that owner switches away.
+Studio uses the same conflict notice when a chat's MCP session owns the
+project. The stdio process test verifies that closing the session releases
+the lease and another owner can open the saved project.
 
 Deterministic storage/adapter tests verify relocation with original paths removed,
 exact source and image retention, saved Atelier documents, invalid versions/IDs,

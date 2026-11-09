@@ -38,6 +38,7 @@ clap = { version = "4.6.5", features = ["derive"] }
 # model store, the served profile, the resident process, and the `sdcpp` HTTP
 # client. Owned by the shared Agentkit workspace.
 agentkit-core = { path = "../../zerune_labs/agentkit/crates/agentkit-core" }
+agentkit-mcp = { path = "../../zerune_labs/agentkit/crates/agentkit-mcp" }
 agentkit-workflow = { path = "../../zerune_labs/agentkit/crates/agentkit-workflow" }
 agentkit-ai = { path = "../../zerune_labs/agentkit/crates/agentkit-ai", features = ["native-inference"] }
 directories = "6.0.0"
@@ -60,6 +61,7 @@ parking_lot = "0.12.5"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "stream"] }
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
 rusqlite = { version = "0.40.1", features = ["bundled", "backup"] }
+same-file = "1.0.6"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 url = "2"

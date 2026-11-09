@@ -38,7 +38,9 @@ pub fn CatalogSync(mut app_state: Signal<AppState>) -> Element {
                 if let Some(path) = path {
                     let captured_path = path.clone();
                     let result = tokio::task::spawn_blocking(move || {
-                        let _lease = lease;
+                        if let Some(lease) = &lease {
+                            lease.verify()?;
+                        }
                         ProjectDb::open_existing(&path).and_then(|db| db.load())
                     })
                     .await;
@@ -124,7 +126,9 @@ pub fn CatalogSync(mut app_state: Signal<AppState>) -> Element {
                     spawn(async move {
                         let expected_path = path.clone();
                         let result = tokio::task::spawn_blocking(move || {
-                            let _lease = lease;
+                            if let Some(lease) = &lease {
+                                lease.verify()?;
+                            }
                             ProjectDb::open_existing(path).and_then(|db| db.preserve_source_and_recover())
                         }).await;
                         recovering.set(false);

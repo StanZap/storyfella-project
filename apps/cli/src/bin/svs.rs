@@ -39,6 +39,8 @@ use storyfella_studio_core::registry::{
 };
 use storyfella_studio_core::vision;
 
+#[path = "../mcp.rs"]
+mod mcp;
 #[path = "../story.rs"]
 mod story;
 
@@ -58,6 +60,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Run a project-scoped Storyfella MCP server over standard input and output.
+    Mcp(mcp::McpArgs),
     /// Check or compile a Storyfella source file without opening a project or models.
     Story {
         #[command(subcommand)]
@@ -424,19 +428,24 @@ fn random_seed() -> u64 {
 }
 
 fn main() -> Result<()> {
+    let cli = Cli::parse();
     // Errors surface through `CodedError::report`, which logs with the
     // error code; without a subscriber those lines would be dropped.
-    tracing_subscriber::fmt()
+    let logging = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
-        .compact()
-        .init();
-    let cli = Cli::parse();
+        .compact();
+    if matches!(cli.command, Command::Mcp(_)) {
+        logging.with_writer(io::stderr).init();
+    } else {
+        logging.init();
+    }
     let runtime = tokio::runtime::Runtime::new().context("failed to start the async runtime")?;
     runtime.block_on(run(cli))
 }
 
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Command::Mcp(args) => mcp::run(args).await,
         Command::Story { story } => story::run(story),
         Command::Project { path } => {
             let registry = load_project(&path)?;
