@@ -193,7 +193,7 @@ fn start_plan(
     session: Signal<Option<GuideSession>>,
     plan: Plan,
     mode: GuideMode,
-    exit_on_done: bool,
+    completion: driver::PlanCompletion,
 ) {
     if app_state.read().operation_in_progress()
         || session
@@ -213,7 +213,7 @@ fn start_plan(
         grid_cursor,
         palette_open,
     };
-    driver::run_plan(ctx, driver_ui, plan, mode, session, exit_on_done);
+    driver::run_plan(ctx, driver_ui, plan, mode, session, completion);
 }
 
 #[component]
@@ -265,7 +265,16 @@ pub fn Workspace(
     });
 
     // Autosave: the mode lives here and is shared with Settings via context.
-    let autosave = use_signal(AutosaveMode::default);
+    let autosave = use_signal(|| {
+        if plan_launch
+            .as_ref()
+            .is_some_and(|launch| launch.manual_save)
+        {
+            AutosaveMode::Off
+        } else {
+            AutosaveMode::default()
+        }
+    });
     use_context_provider(|| autosave);
 
     // Shared operation defaults for authoring guides; no image production UI.
@@ -316,7 +325,12 @@ pub fn Workspace(
         let Some(launch) = plan_launch.clone() else {
             return;
         };
-        let PlanLaunch { path, mode } = launch;
+        let PlanLaunch {
+            path,
+            mode,
+            keep_window,
+            ..
+        } = launch;
         let Some(path) = path else {
             return;
         };
@@ -330,7 +344,11 @@ pub fn Workspace(
                 std::process::exit(1);
             }
         };
-        let exit_on_done = mode == GuideMode::Check;
+        let completion = match (mode, keep_window) {
+            (_, true) => driver::PlanCompletion::PrintAndKeepWindow,
+            (GuideMode::Check, false) => driver::PlanCompletion::PrintAndExit,
+            (GuideMode::Guide, _) => driver::PlanCompletion::ShowReport,
+        };
         spawn(async move {
             // Let the first frame settle before the run takes over.
             tokio::time::sleep(Duration::from_millis(400)).await;
@@ -347,7 +365,7 @@ pub fn Workspace(
                 session,
                 plan,
                 mode,
-                exit_on_done,
+                completion,
             );
         });
     });
@@ -480,7 +498,7 @@ pub fn Workspace(
                 session,
                 plan,
                 mode,
-                false,
+                driver::PlanCompletion::ShowReport,
             )
         }
     };

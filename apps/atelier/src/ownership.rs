@@ -218,6 +218,13 @@ impl Owner {
         self.folder.id()
     }
 
+    #[cfg(unix)]
+    pub(crate) fn desktop_epoch_for(&self, folder: &ProjectFolder) -> Option<Uuid> {
+        (self.folder.id() == folder.id() && self.folder.root() == folder.root())
+            .then_some(self.desktop_epoch)
+            .flatten()
+    }
+
     pub(crate) fn database(&self) -> PathBuf {
         self.folder.database()
     }

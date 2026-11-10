@@ -356,6 +356,8 @@ pub struct DrawingApp {
     pub jpeg_quality: u8,
     pub path: Option<PathBuf>,
     pub(crate) project_owner: Option<crate::ownership::Owner>,
+    #[cfg(unix)]
+    live_mcp: Option<crate::live_mcp::Bridge>,
     pub data_dir: PathBuf,
     pub dirty: bool,
     pub switching: bool,
@@ -839,6 +841,11 @@ impl DrawingApp {
             jpeg_quality: 90,
             path: initial_path,
             project_owner,
+            #[cfg(unix)]
+            live_mcp: crate::live_mcp::Bridge::start().unwrap_or_else(|error| {
+                eprintln!("Atelier MCP channel unavailable: {error:#}");
+                None
+            }),
             data_dir,
             dirty: initial_dirty,
             switching: false,
@@ -5031,24 +5038,16 @@ impl DrawingApp {
     ) {
         self.capture_prompt(cx);
         if canvas_id != self.doc.canvas_id {
-            let Some(index) = self
+            if !self
                 .doc
                 .canvases
                 .iter()
-                .position(|canvas| canvas.id == canvas_id)
-            else {
+                .any(|canvas| canvas.id == canvas_id)
+            {
                 return;
-            };
+            }
             self.checkpoint();
-            let current = self.doc.current_canvas();
-            let selected = std::mem::replace(&mut self.doc.canvases[index], current);
-            self.doc.set_current_canvas(selected);
-            self.doc.reference = self.doc.artboard_references.first().and_then(|id| {
-                self.doc
-                    .references
-                    .iter()
-                    .position(|r| crate::library::id(r) == *id)
-            });
+            self.doc.select_canvas(canvas_id).expect("Artboard exists");
             self.changed();
             self.view = Viewport::default();
             self.panel = Panel::None;
@@ -5781,6 +5780,11 @@ impl DrawingApp {
         }
     }
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(unix)]
+        if let Some(mut bridge) = self.live_mcp.take() {
+            bridge.dispatch(self);
+            self.live_mcp = Some(bridge);
+        }
         if !self.closing && self.restart_checked.elapsed() >= Duration::from_millis(250) {
             self.restart_checked = Instant::now();
             match storyfella_studio_core::atelier::Mailbox::new(&self.data_dir).take_restart() {

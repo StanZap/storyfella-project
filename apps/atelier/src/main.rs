@@ -14,6 +14,8 @@ mod gpu_canvas;
 mod gpu_surface;
 mod image_execution;
 mod library;
+#[cfg(unix)]
+mod live_mcp;
 mod mcp;
 mod native_images;
 mod ownership;

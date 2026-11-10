@@ -459,22 +459,69 @@ MCP chapter creation and linking, paginated story and catalog discovery,
 and validation at larger source sizes remain open. The current compiler
 limit is 256 source files and the MCP workspace limit is 1 MiB.
 
-The [Atelier MCP illustration slice](agentic-vn-production.md#create-one-illustration-through-atelier-mcp)
+The [Atelier MCP illustration slice](agentic-vn-production.md#produce-linked-artwork-through-atelier-mcp)
 adds a shared-drawing lease and desktop recovery reservation, candidate
 generation, source-image revision, native PNG preview and checked publication
-after an explicit local review. `show illustration NAME` binds the published
-revision as a backdrop in Studio Preview and Player. The fixture covers a
-revised candidate, an invalidated approval, an artwork-stage save failure and
-retry, and exact revision and pixel loading through Preview's playback host.
+after human approval or explicit delegation in chat. `show illustration NAME`
+binds the published revision as a backdrop in Studio Preview and Player. The
+fixture covers a revised candidate, an invalidated approval, an artwork-stage
+save failure and retry, and exact revision and pixel loading through Preview's
+playback host.
 On 2026-11-09 the rebuilt macOS Studio passed a native Preview check against
 the exact fixture revision UUID. Evidence is in
 `.svs-e2e/logs/atelier-mcp-desktop-fixture.log` and
 `.svs-e2e/logs/atelier-mcp-studio-preview.log`. A separate raw stdio check
 received the native PNG block from the built Atelier executable
 (`.svs-e2e/logs/atelier-mcp-stdio-smoke.log`). The workspace suite passed
-495 tests with 28 opt-in tests skipped. Provider job restart and reattachment,
-app-owned MCP routing, larger artwork scopes, and live provider and chat-client
-acceptance remain open.
+495 tests with 28 opt-in tests skipped.
+
+The chapter-sized Atelier MCP workflow now targets multiple visual assets in
+one closed-project session. It pins a variant's reference to the published
+base revision, returns compact job status and serves PNGs on demand. The
+project journal retains completed results across reconnects. The deterministic
+variant test checks the reference pixels, rejects stale recovery, reattaches
+without another provider call and verifies that separate approvals publish
+only their own artboards. Workspace validation passed with 496 tests and
+28 opt-in tests skipped. Resuming remote predictions without a locally saved
+result remains open.
+
+SF-PLAN-33 first live slice (2026-11-10): Studio routes entry inspection and
+checked edits through its Writer state and undo history. Atelier routes
+read-only drawing inspection through its open tabs. The macOS coordination
+run used independent stdio clients with both apps open. The Writer buffer and
+a newly linked artboard were dirty at the same time. A stale write returned
+the current version, a checked edit preserved the local text and artboard,
+and switching Studio projects expired the old sessions. A fresh client
+reopened against the new owner. Live Atelier mutation and live included-file
+editing remain open. The workspace suite passed 499 tests, with 28 opt-in
+tests skipped. Evidence is in `.svs-e2e/coord/acceptance.md`.
+
+The offline Atelier fixture also exercises an ambiguous submission across
+restart and cancellation followed by a late result. The cancelled job
+retains its output, suppresses automatic attachment and can be recovered
+explicitly without another provider call.
+
+The paid *Hour of the Beacon* run is in progress. A live Codex client saved
+and playtested both story routes. It reconnected to the rebuilt Atelier server
+and visually inspected fresh native PNG previews of the two saved base portraits
+and two backgrounds without resubmitting them. The journal records four
+Replicate submissions against the cap of eight, with four outputs totaling
+$0.12 at list price. After explicit delegation in chat, the client approved
+and published each base separately against its exact review ID. Project
+inspection confirmed the four revisions. The user's terminal run generated
+and published Noa's resolved expression from her exact base revision. Atelier
+rejected Ivo's stale drawing version before provider submission. Five outputs
+total $0.15 at list price. Native Studio Preview reached both endings and
+verified both backdrop revisions. The compiled plan binds the two base
+portraits and Noa's expression, with Ivo's expression pending. A subsequent
+native run on an isolated copy verified both endings and the exact staged
+portrait revisions at 1180 × 660 and 760 × 720 content sizes. It captured the
+opening and both branch compositions. The wait route renders the missing
+`ivo_worried` placeholder, and the staged portraits retain the opaque
+backgrounds of the published images. Evidence is in
+`.svs-e2e/coord/acceptance.md`. The complete artwork pass remains open.
+Provider prediction IDs, cost and live-client observations are in
+`.svs-e2e/live-branching-chapter/live-run.md`.
 
 ### Studio for writing, Atelier for visual creation · 2026-10-28
 

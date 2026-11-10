@@ -6,7 +6,7 @@ use image::{Rgba, RgbaImage};
 use storyfella_runtime::AssetPolicy;
 use storyfella_studio_core::{
     playback::PlaybackSession,
-    registry::{ArtifactRegistry, CreateArtifact},
+    registry::{ArtifactKind, ArtifactRegistry, CreateArtifact},
 };
 
 const SOURCE: &str =
@@ -36,13 +36,14 @@ fn setup(root: &Path) -> (ProjectFolder, Uuid) {
     (folder, illustration)
 }
 
-fn args(folder: &ProjectFolder, illustration: Uuid, data_dir: PathBuf) -> Args {
+fn args(folder: &ProjectFolder, data_dir: PathBuf) -> Args {
     Args {
         folder: folder.root().into(),
-        illustration,
+        max_submissions: None,
         data_dir: Some(data_dir),
         allow_generate: true,
         allow_publish: true,
+        atelier_channel: None,
     }
 }
 
@@ -56,6 +57,12 @@ fn fixture_provider(request: Request) -> Result<Reference> {
             let original =
                 document::decode_reference(request.source.as_deref().unwrap())?.to_rgba8();
             assert_eq!(original.get_pixel(40, 30).0, FIRST);
+            REVISED
+        }
+        "Light the variant from the published artwork" => {
+            let original =
+                document::decode_reference(request.source.as_deref().unwrap())?.to_rgba8();
+            assert_eq!(original.get_pixel(512, 512).0, FIRST);
             REVISED
         }
         other => panic!("Unexpected fixture prompt {other}"),
@@ -76,13 +83,125 @@ fn fixture_provider(request: Request) -> Result<Reference> {
     )
 }
 
+fn late_result_after_cancel(request: Request) -> Result<Reference> {
+    request.progress.as_ref().unwrap()("Fixture provider started".into());
+    let start = std::time::Instant::now();
+    while !request.cancel.load(Ordering::Relaxed) {
+        ensure!(
+            start.elapsed() < Duration::from_secs(5),
+            "Fixture did not receive cancellation"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    fixture_provider(request)
+}
+
+#[test]
+fn cancellation_suppresses_late_attachment_and_unknown_submission_stays_unknown() {
+    let scratch = fixture();
+    let (folder, asset) = setup(&scratch.path().join("story"));
+    let data = scratch.path().join("data");
+    let open = || Tools::open(args(&folder, data.clone())).unwrap();
+    let mut tools = open();
+    tools.settings.provider = providers::Provider::GptImage;
+    tools.settings.model = "gpt-image-1".into();
+    let submit = |tools: &mut Tools| {
+        let result = tools
+            .generate(Generate {
+                session: tools.session,
+                asset,
+                expected_version: tools.snapshot(asset).unwrap().version,
+                prompt: "Draw the vault in cool light".into(),
+                revise: false,
+                reference_revision: None,
+                size: None,
+            })
+            .unwrap();
+        serde_json::from_value::<Uuid>(result["job"].clone()).unwrap()
+    };
+    tools.provider =
+        |_| anyhow::bail!("Fixture lost connection before receiving a provider receipt");
+    let unknown = submit(&mut tools);
+    let wait = |tools: &mut Tools| {
+        let start = std::time::Instant::now();
+        while tools.queue.outstanding() != 0 {
+            assert!(start.elapsed() < Duration::from_secs(15));
+            tools.refresh_queue();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    wait(&mut tools);
+    drop(tools);
+
+    let mut tools = open();
+    let status = tools
+        .poll(Poll {
+            session: tools.session,
+            job: unknown,
+        })
+        .unwrap();
+    assert_eq!(status["status"], "unknown");
+    assert_eq!(tools.submissions().unwrap().len(), 1);
+    tools.settings.provider = providers::Provider::GptImage;
+    tools.settings.model = "gpt-image-1".into();
+    tools.provider = late_result_after_cancel;
+    let job = submit(&mut tools);
+    let start = std::time::Instant::now();
+    loop {
+        let status = tools
+            .poll(Poll {
+                session: tools.session,
+                job,
+            })
+            .unwrap();
+        if status["progress"] == "Fixture provider started" {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let status = tools
+        .cancel(Poll {
+            session: tools.session,
+            job,
+        })
+        .unwrap();
+    assert_eq!(status["status"], "cancelling");
+    assert_eq!(status["remote_cancellation"], "unconfirmed");
+    wait(&mut tools);
+    drop(tools);
+
+    let mut tools = open();
+    tools.provider = |_| panic!("Polling or recovery must never resubmit to a provider");
+    let session = tools.session;
+    let status = tools.poll(Poll { session, job }).unwrap();
+    assert_eq!(status["status"], "retained");
+    assert_eq!(status["attachment_suppressed"], true);
+    assert!(candidate(&tools.snapshot(asset).unwrap().doc)
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        pixels(&tools.thumbnail(Poll { session, job }).unwrap())
+            .get_pixel(40, 30)
+            .0,
+        FIRST
+    );
+    let recovered = tools
+        .recover(Recover {
+            session,
+            job,
+            expected_version: status["version"].as_str().unwrap().into(),
+        })
+        .unwrap();
+    assert_eq!(recovered["status"], "done");
+    assert_eq!(tools.submissions().unwrap().len(), 2);
+}
+
 async fn exercise(root: &Path) {
     let (folder, illustration) = setup(&root.join("story"));
     let data_dir = root.join("atelier-data");
-    let mut state = Tools::open(args(&folder, illustration, data_dir.clone())).unwrap();
-    state.dispatch = |request, id, sender, dir| {
-        worker::generate_using(request, id, sender, dir, fixture_provider);
-    };
+    let mut state = Tools::open(args(&folder, data_dir.clone())).unwrap();
+    state.provider = fixture_provider;
     // The fixture replaces only inference. The normal capability checks and
     // worker, durable run, result store and checked publication still run.
     state.settings.provider = providers::Provider::GptImage;
@@ -97,7 +216,9 @@ async fn exercise(root: &Path) {
     );
     let server = server.unwrap();
     let client = client.unwrap();
-    assert_eq!(client.peer().list_all_tools().await.unwrap().len(), 5);
+    let tools = client.peer().list_all_tools().await.unwrap();
+    assert_eq!(tools.len(), 9);
+    assert!(tools.iter().any(|tool| tool.name == CANCEL));
     let call = |name: &'static str, arguments: Value| {
         let client = &client;
         async move {
@@ -106,11 +227,12 @@ async fn exercise(root: &Path) {
             client.peer().call_tool(params).await.unwrap()
         }
     };
-    let inspected = fields(&call(INSPECT, json!({})).await);
-    let session = &inspected["session"];
+    let project = fields(&call(PROJECT, json!({})).await);
+    let inspected = fields(&call(INSPECT, json!({"asset": illustration})).await);
+    let session = &project["session"];
     let generate = async |version: &Value, prompt: &str, revise| {
         let response = fields(&call(GENERATE, json!({
-            "session": session, "expected_version": version, "prompt": prompt, "revise": revise,
+            "session": session, "asset": illustration, "expected_version": version, "prompt": prompt, "revise": revise,
         })).await);
         let job = &response["job"];
         tokio::time::timeout(Duration::from_secs(20), async {
@@ -128,12 +250,12 @@ async fn exercise(root: &Path) {
     };
     assert!(folder.claim_authoring().is_err());
     assert!(Owner::desktop(folder.clone(), root, None).is_err());
-    assert!(Tools::open(args(&folder, illustration, data_dir.clone())).is_err());
+    assert!(Tools::open(args(&folder, data_dir.clone())).is_err());
 
     let first = generate(&inspected["version"], "Draw the vault in cool light", false).await;
     let first_response = call(
         PREVIEW,
-        json!({"session": session, "expected_version": first}),
+        json!({"session": session, "asset": illustration, "expected_version": first}),
     )
     .await;
     let first_review = fields(&first_response)["review"].clone();
@@ -155,7 +277,7 @@ async fn exercise(root: &Path) {
     let second = generate(&first, "Make the vault glow amber", true).await;
     assert!(call(
         PREVIEW,
-        json!({"session": session, "expected_version": first})
+        json!({"session": session, "asset": illustration, "expected_version": first})
     )
     .await
     .is_error
@@ -168,7 +290,7 @@ async fn exercise(root: &Path) {
     );
     let final_response = call(
         PREVIEW,
-        json!({"session": session, "expected_version": second}),
+        json!({"session": session, "asset": illustration, "expected_version": second}),
     )
     .await;
     let final_pixels = pixels(&final_response);
@@ -277,6 +399,220 @@ fn pixels(result: &CallToolResult) -> RgbaImage {
         .to_rgba8()
 }
 
+#[test]
+fn retained_variant_recovers_after_restart_and_approval_publishes_only_its_artboard() {
+    use storyfella_studio_core::catalog::{self, CatalogEdit};
+
+    let scratch = fixture();
+    let root = scratch.path().join("story");
+    let mut registry = ArtifactRegistry::default();
+    let mut create = |name: &str, variant_of| {
+        catalog::apply(
+            &mut registry,
+            CatalogEdit::Create {
+                name: name.into(),
+                kind: ArtifactKind::Character,
+                description: String::new(),
+                variant_of,
+            },
+        )
+        .unwrap()
+    };
+    let base = create("keeper", None);
+    let variant = create("keeper_wary", Some(base));
+    let other = create("courier", None);
+    let folder =
+        ProjectFolder::create(&root, "Signal fixture", &registry, "scene signal\n  end\n").unwrap();
+    let data = scratch.path().join("data");
+    let settings = Settings {
+        provider: providers::Provider::GptImage,
+        model: "gpt-image-1".into(),
+        edit_model: "gpt-image-1".into(),
+        ..Settings::default()
+    };
+    worker::apply_settings(&settings, &data.join("settings.json")).unwrap();
+    let open = || {
+        let mut args = args(&folder, data.clone());
+        args.max_submissions = Some(2);
+        Tools::open(args).unwrap()
+    };
+    let mut tools = open();
+    tools.provider = fixture_provider;
+    let submit = |tools: &mut Tools, asset, prompt: &str, reference_revision| {
+        tools
+            .generate(Generate {
+                session: tools.session,
+                asset,
+                expected_version: tools.snapshot(asset).unwrap().version,
+                prompt: prompt.into(),
+                revise: false,
+                reference_revision,
+                size: None,
+            })
+            .map(|value| serde_json::from_value::<Uuid>(value["job"].clone()).unwrap())
+    };
+    let wait = |tools: &Tools, id| {
+        let start = std::time::Instant::now();
+        while tools.result(id).unwrap().is_none() {
+            assert!(start.elapsed() < Duration::from_secs(15));
+            std::thread::sleep(Duration::from_millis(15));
+        }
+    };
+    let approve = |tools: &mut Tools, asset| {
+        let preview = tools
+            .preview(Checked {
+                session: tools.session,
+                asset,
+                expected_version: tools.snapshot(asset).unwrap().version,
+            })
+            .unwrap();
+        let review = serde_json::from_value::<Uuid>(fields(&preview)["review"].clone()).unwrap();
+        record_approval(Approve {
+            folder: root.clone(),
+            review,
+        })
+        .unwrap();
+        review
+    };
+
+    let base_job = submit(&mut tools, base, "Draw the vault in cool light", None).unwrap();
+    wait(&tools, base_job);
+    let start = std::time::Instant::now();
+    loop {
+        let status = tools
+            .poll(Poll {
+                session: tools.session,
+                job: base_job,
+            })
+            .unwrap();
+        if status["status"] == "done" {
+            break;
+        }
+        assert_eq!(status["status"], "running");
+        assert!(start.elapsed() < Duration::from_secs(15));
+        std::thread::sleep(Duration::from_millis(15));
+    }
+    let review = approve(&mut tools, base);
+    let published = tools
+        .publish(Publish {
+            session: tools.session,
+            review,
+            agent_approval: false,
+        })
+        .unwrap();
+    let base_revision =
+        serde_json::from_value::<Uuid>(fields(&published)["revision"].clone()).unwrap();
+    assert!(submit(
+        &mut tools,
+        variant,
+        "Invalid reference",
+        Some(Uuid::new_v4())
+    )
+    .is_err());
+    let job = submit(
+        &mut tools,
+        variant,
+        "Light the variant from the published artwork",
+        Some(base_revision),
+    )
+    .unwrap();
+    wait(&tools, job);
+    let old_session = tools.session;
+    let path = tools.path.clone();
+    drop(tools);
+
+    // Another owner changed the drawing while the completed result awaited
+    // attachment. The unrelated artboard already contains accepted paint.
+    let mut doc = document::load(&path).unwrap();
+    doc.ensure_story_artboard(other, String::new(), String::new())
+        .unwrap();
+    doc.attach_result(
+        Arc::new(
+            fixture_provider(Request {
+                settings: settings.clone(),
+                native: Arc::default(),
+                prompt: "Draw the vault in cool light".into(),
+                source: None,
+                references: vec![],
+                mask: None,
+                progress: None,
+                size: (doc.width, doc.height),
+                cancel: Arc::default(),
+            })
+            .unwrap(),
+        ),
+        Destination::Candidate {
+            artboard: doc.canvas_id,
+            rect: (0, 0, doc.width, doc.height),
+        },
+    )
+    .unwrap();
+    doc.review_candidate_layer(Review::Accept);
+    document::save(&path, &doc).unwrap();
+
+    let mut tools = open();
+    tools.provider = |_| panic!("Recovery must not submit to a provider");
+    assert!(tools
+        .poll(Poll {
+            session: old_session,
+            job
+        })
+        .is_err());
+    let session = tools.session;
+    let status = tools.poll(Poll { session, job }).unwrap();
+    assert_eq!(status["status"], "retained");
+    let limit = submit(&mut tools, variant, "Another variant", Some(base_revision)).unwrap_err();
+    assert!(limit.to_string().contains("submission limit"));
+    let thumbnail = tools.thumbnail(Poll { session, job }).unwrap();
+    assert_eq!(pixels(&thumbnail).get_pixel(40, 30).0, REVISED);
+    assert_eq!(
+        fields(&thumbnail)["reference_revision"],
+        base_revision.to_string()
+    );
+    assert!(tools
+        .recover(Recover {
+            session,
+            job,
+            expected_version: "stale".into()
+        })
+        .is_err());
+    let recovery = tools
+        .recover(Recover {
+            session,
+            job,
+            expected_version: status["version"].as_str().unwrap().into(),
+        })
+        .unwrap();
+    assert_eq!(recovery["status"], "done");
+    assert_eq!(
+        tools.poll(Poll { session, job }).unwrap()["version"],
+        recovery["version"]
+    );
+
+    let variant_review = approve(&mut tools, variant);
+    let other_review = approve(&mut tools, other);
+    let publication = tools
+        .publish(Publish {
+            session,
+            review: variant_review,
+            agent_approval: false,
+        })
+        .unwrap();
+    assert_eq!(fields(&publication)["asset"], variant.to_string());
+    let stored = folder.load().unwrap();
+    assert_eq!(stored.registry.artifact(base).unwrap().revisions.len(), 1);
+    assert!(stored.registry.active_revision(other).is_none());
+    fs::remove_file(approval_path(&folder, other_review)).unwrap();
+    let decision = || Publish {
+        session,
+        review: other_review,
+        agent_approval: true,
+    };
+    let publication = tools.publish(decision()).unwrap();
+    assert_eq!(fields(&publication)["asset"], other.to_string());
+    assert_eq!(tools.submissions().unwrap().len(), 2);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn revised_candidate_needs_fresh_review_and_reopens_at_the_exact_revision() {
     exercise(fixture().path()).await;
@@ -318,10 +654,10 @@ fn desktop_recovery_reserves_the_drawing_across_data_directories() {
     )
     .unwrap();
     assert!(Owner::desktop(folder.clone(), &alternate, None).is_err());
-    assert!(Tools::open(args(&folder, illustration, root.join("mcp"))).is_err());
+    assert!(Tools::open(args(&folder, root.join("mcp"))).is_err());
     drop(owner);
     assert!(Owner::desktop(folder.clone(), &alternate, None).is_err());
-    assert!(Tools::open(args(&folder, illustration, root.join("mcp"))).is_err());
+    assert!(Tools::open(args(&folder, root.join("mcp"))).is_err());
     let restored = crate::project_tabs::recover(&desktop)
         .unwrap()
         .active
@@ -334,8 +670,8 @@ fn desktop_recovery_reserves_the_drawing_across_data_directories() {
     shared_save::save(&path, &restored.doc).unwrap();
     owner.release_desktop().unwrap();
     drop(owner);
-    let mcp = Tools::open(args(&folder, illustration, root.join("mcp"))).unwrap();
-    assert_eq!(mcp.snapshot().unwrap().doc.title, "Dirty draft");
+    let mcp = Tools::open(args(&folder, root.join("mcp"))).unwrap();
+    assert_eq!(mcp.snapshot(illustration).unwrap().doc.title, "Dirty draft");
     let detached = crate::project_tabs::recover(&desktop)
         .unwrap()
         .active

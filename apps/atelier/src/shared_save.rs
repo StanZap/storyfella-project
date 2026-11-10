@@ -62,8 +62,12 @@ pub(crate) fn save(path: &Path, doc: &Document) -> Result<Vec<CanvasPublication>
 }
 
 /// Closed-project MCP uses the same canvas rasterizer for review and publication.
-pub(crate) fn save_raster(path: &Path, doc: &Document) -> Result<Vec<CanvasPublication>> {
-    save_with_renderer(path, doc, |doc| {
+pub(crate) fn save_raster(
+    path: &Path,
+    doc: &Document,
+    canvas_id: u32,
+) -> Result<Vec<CanvasPublication>> {
+    save_selected(path, doc, Some(canvas_id), |doc| {
         document::raster(doc, doc.width.max(doc.height), true)
     })
 }
@@ -73,8 +77,17 @@ fn save_with_renderer(
     doc: &Document,
     render: impl FnMut(&Document) -> Result<image::RgbaImage>,
 ) -> Result<Vec<CanvasPublication>> {
+    save_selected(path, doc, None, render)
+}
+
+fn save_selected(
+    path: &Path,
+    doc: &Document,
+    canvas_id: Option<u32>,
+    render: impl FnMut(&Document) -> Result<image::RgbaImage>,
+) -> Result<Vec<CanvasPublication>> {
     document::save(path, doc).context(SaveStage::Document)?;
-    let publications = publish(path, doc, render).context(SaveStage::Artwork)?;
+    let publications = publish(path, doc, canvas_id, render).context(SaveStage::Artwork)?;
     if !publications.is_empty() {
         let mut saved = doc.clone();
         apply_publications(&mut saved, &publications);
@@ -88,6 +101,7 @@ fn save_with_renderer(
 fn publish(
     path: &Path,
     doc: &Document,
+    canvas_id: Option<u32>,
     mut render: impl FnMut(&Document) -> Result<image::RgbaImage>,
 ) -> Result<Vec<CanvasPublication>> {
     let Some(parent) = path
@@ -112,17 +126,13 @@ fn publish(
         return Ok(Vec::new());
     }
     let mut canvases = Vec::new();
-    for link in &doc.asset_links {
+    for link in doc
+        .asset_links
+        .iter()
+        .filter(|link| canvas_id.is_none_or(|id| id == link.canvas_id))
+    {
         let mut canvas = doc.clone();
-        if link.canvas_id != doc.canvas_id {
-            let index = doc
-                .canvases
-                .iter()
-                .position(|canvas| canvas.id == link.canvas_id)
-                .context("Linked artboard no longer exists")?;
-            let stored = canvas.canvases.remove(index);
-            canvas.set_current_canvas(stored);
-        }
+        canvas.select_canvas(link.canvas_id)?;
         let accepted = canvas.artwork();
         if !accepted.layers.iter().any(|layer| {
             accepted.layer_is_visible(layer)

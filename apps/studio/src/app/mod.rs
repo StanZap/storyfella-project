@@ -22,6 +22,8 @@ pub fn App() -> Element {
         })
     });
     let app_state = use_signal(AppState::default);
+    #[cfg(unix)]
+    crate::live_mcp::use_bridge(app_state);
     let mut theme = use_signal(|| {
         config_result
             .peek()

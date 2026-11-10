@@ -1,7 +1,7 @@
 //! Atelier owns the captured image request and result attachment. Agentkit
 //! executes its asset-iteration step and records the durable run lifecycle.
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -29,6 +29,7 @@ pub fn generate(
     request: Request,
     directory: &Path,
     provider: fn(Request) -> Result<Reference>,
+    retained_result: Option<PathBuf>,
 ) -> Result<(Reference, RgbaImage)> {
     std::fs::create_dir_all(directory)?;
     let store = RunStore::open(&directory.join("workflows.sqlite3"))?;
@@ -46,6 +47,14 @@ pub fn generate(
     let source = request.source.clone();
     let prompt = request.prompt.clone();
     let cancel = request.cancel.clone();
+    let retains_result = retained_result.is_some();
+    // The provider still receives cancellation. The retained workflow must
+    // finish storing a result if the provider completes despite the request.
+    let workflow_cancel = if retains_result {
+        Arc::new(std::sync::atomic::AtomicBool::new(false))
+    } else {
+        cancel.clone()
+    };
     let request = Arc::new(Mutex::new(Some(request)));
     let result = Arc::new(Mutex::new(None));
     let output = result.clone();
@@ -83,10 +92,13 @@ pub fn generate(
                         "An image request cannot be submitted twice",
                     )
                 })?;
-                let reference = tokio::task::spawn_blocking(move || provider(request))
-                    .await
-                    .map_err(|error| RunError::new(RunErrorCode::BadInput, error.to_string()))?
-                    .map_err(|error| RunError::new(RunErrorCode::ModelCall, error.to_string()))?;
+                let reference = tokio::task::spawn_blocking(move || {
+                    crate::providers::cancelled(&request.cancel)?;
+                    provider(request)
+                })
+                .await
+                .map_err(|error| RunError::new(RunErrorCode::BadInput, error.to_string()))?
+                .map_err(|error| RunError::new(RunErrorCode::ModelCall, error.to_string()))?;
                 let identity = crate::library::id(&reference);
                 *output.lock().unwrap() = Some(reference);
                 Ok(StepOutputs::from([(
@@ -106,6 +118,7 @@ pub fn generate(
             let mask = mask.clone();
             let prompt = prompt.clone();
             let directory = directory.clone();
+            let retained_result = retained_result.clone();
             Box::pin(async move {
                 let stored = tokio::task::spawn_blocking(move || -> Result<_> {
                     let mut reference = reference.context("Image step returned no artwork")?;
@@ -119,14 +132,12 @@ pub fn generate(
                     }
                     let decoded = document::decode_reference(&reference)?;
                     let image = document::thumbnail(decoded.clone(), 800).to_rgba8();
-                    let stem = format!("reference-{}", context.run_id);
+                    let path = retained_result.unwrap_or_else(|| {
+                        directory.join(format!("reference-{}.json", context.run_id))
+                    });
                     let mut png = std::io::Cursor::new(Vec::new());
                     decoded.write_to(&mut png, image::ImageFormat::Png)?;
-                    document::atomic_write(
-                        &directory.join(format!("{stem}.png")),
-                        &png.into_inner(),
-                    )?;
-                    let path = directory.join(format!("{stem}.json"));
+                    document::atomic_write(&path.with_extension("png"), &png.into_inner())?;
                     document::atomic_write(&path, &serde_json::to_vec(&reference)?)?;
                     Ok((reference, image, path))
                 })
@@ -150,12 +161,12 @@ pub fn generate(
         runner,
         state,
         &store,
-        cancel.clone(),
+        workflow_cancel,
         |_| {},
     ))?;
     anyhow::ensure!(
         state.status == WorkflowRunStatus::Completed
-            && !cancel.load(std::sync::atomic::Ordering::Relaxed),
+            && (retains_result || !cancel.load(std::sync::atomic::Ordering::Relaxed)),
         "Generation cancelled"
     );
     let reference = stored.lock().unwrap().take();

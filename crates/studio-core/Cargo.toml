@@ -30,5 +30,8 @@ toml.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+tokio = { workspace = true, features = ["net"] }
+
 [dev-dependencies]
 tempfile.workspace = true

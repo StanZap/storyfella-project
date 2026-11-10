@@ -9,5 +9,7 @@
 pub mod app;
 pub mod commands;
 pub mod driver;
+#[cfg(unix)]
+mod live_mcp;
 pub mod state;
 pub mod ui;

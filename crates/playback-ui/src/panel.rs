@@ -254,7 +254,7 @@ pub fn PlaybackPanel(
                             { let x = actor.position.map(|(x, _)| f32::from(x)).unwrap_or_else(|| actor_position(actor.group, actor.slot));
                               let y = actor.position.map(|(_, y)| y).unwrap_or(0);
                               let style = format!("left:{x}%;bottom:{y}%;height:{}%;z-index:{};", f32::from(actor.scale) * 0.72, actor.depth);
-                              let visual = actor.asset.binding.as_ref().and_then(|binding| session.visuals.iter().find(|visual| &visual.binding == binding));
+                              let visual = session.staged_visual(actor);
                               rsx! {
                                   if let Some(visual) = visual {
                                       img { key: "{actor.instance}", class: "sf-actor", style: "{style}", src: "{visual.image_url}", alt: "{actor.asset.name.value}" }

@@ -128,6 +128,14 @@ pub struct PlaybackExpectation {
     pub phase: storyfella_runtime::Phase,
     pub text: Option<String>,
     pub artwork_revision: Option<uuid::Uuid>,
+    pub staged: Option<std::collections::BTreeMap<String, StagedExpectation>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StagedExpectation {
+    pub asset: String,
+    pub revision: Option<uuid::Uuid>,
 }
 
 impl StepVerb {
@@ -505,12 +513,18 @@ impl GuideMode {
 pub struct PlanLaunch {
     pub path: Option<PathBuf>,
     pub mode: GuideMode,
+    pub window_size: Option<(u32, u32)>,
+    pub keep_window: bool,
+    pub manual_save: bool,
 }
 
 impl PlanLaunch {
     pub fn from_args(args: &[String]) -> Self {
         let mut path = None;
         let mut mode = GuideMode::Guide;
+        let mut window_size = None;
+        let mut keep_window = false;
+        let mut manual_save = false;
         let mut i = 0;
         while i < args.len() {
             match args[i].as_str() {
@@ -526,11 +540,31 @@ impl PlanLaunch {
                         mode = GuideMode::from_value(value);
                     }
                 }
+                "--window-size" => {
+                    i += 1;
+                    window_size = args
+                        .get(i)
+                        .and_then(|value| value.split_once('x'))
+                        .and_then(|(width, height)| {
+                            Some((width.parse().ok()?, height.parse().ok()?))
+                        })
+                        .filter(|(width, height)| {
+                            (320..=4096).contains(width) && (320..=4096).contains(height)
+                        });
+                }
+                "--keep-window" => keep_window = true,
+                "--manual-save" => manual_save = true,
                 _ => {}
             }
             i += 1;
         }
-        Self { path, mode }
+        Self {
+            window_size: path.as_ref().and(window_size),
+            keep_window: path.is_some() && keep_window,
+            manual_save: path.is_some() && manual_save,
+            path,
+            mode,
+        }
     }
 
     /// Points a `--plan` run at scratch config files and a scratch native-server
@@ -687,16 +721,22 @@ const STEP_TIMEOUT_MS: u64 = 30_000;
 const OP_TIMEOUT_MS: u64 = 300_000;
 const IMAGE_TIMEOUT_MS: u64 = 300_000;
 
-/// Starts a plan run: installs the session (the assistant card appears),
-/// then executes the steps on a spawned task. `exit_on_done` prints the
-/// report and exits the process (the CLI check mode).
+#[derive(Clone, Copy)]
+pub enum PlanCompletion {
+    ShowReport,
+    PrintAndExit,
+    PrintAndKeepWindow,
+}
+
+/// Installs the guide session and executes the steps on a spawned task.
+/// CLI launches can print the verdict and either exit or leave the window open.
 pub fn run_plan(
     ctx: DriveContext,
     ui: ExecutionUi,
     plan: Plan,
     mode: GuideMode,
     mut session: Signal<Option<GuideSession>>,
-    exit_on_done: bool,
+    completion: PlanCompletion,
 ) {
     session.set(Some(GuideSession {
         plan: plan.clone(),
@@ -711,7 +751,7 @@ pub fn run_plan(
     spawn(async move {
         let report = run_steps(ctx.clone(), ui, &plan, mode, session).await;
         let exit_code = if report.failed() > 0 { 1 } else { 0 };
-        if exit_on_done {
+        if matches!(completion, PlanCompletion::PrintAndExit) {
             // Check mode exits the process right after the report; the
             // autosave effect may not get a render tick in between, so the
             // final state is persisted here, before the report.
@@ -723,6 +763,11 @@ pub fn run_plan(
             }
             report.print();
             std::process::exit(exit_code);
+        }
+        if matches!(completion, PlanCompletion::PrintAndKeepWindow) {
+            report.print();
+            session.set(None);
+            return;
         }
         session.with_mut(|slot| {
             if let Some(session) = slot {
@@ -838,9 +883,30 @@ async fn execute_step(
                 _ => None,
             };
             let visuals = session.active_visuals();
+            let staged: std::collections::BTreeMap<_, _> = runtime
+                .staged()
+                .iter()
+                .map(|actor| {
+                    let revision = session
+                        .staged_visual(actor)
+                        .filter(|visual| visual.image_url.starts_with("data:image/png;base64,"))
+                        .and_then(|visual| visual.binding.revision.parse().ok());
+                    (
+                        actor.instance.clone(),
+                        StagedExpectation {
+                            asset: actor.asset.name.value.clone(),
+                            revision,
+                        },
+                    )
+                })
+                .collect();
             let valid = runtime.state().phase == expected.phase
                 && runtime.plan().scenes[runtime.state().scene].id.0 == expected.scene
                 && expected.text.as_deref().is_none_or(|t| Some(t) == text)
+                && expected
+                    .staged
+                    .as_ref()
+                    .is_none_or(|expected| *expected == staged)
                 && expected.artwork_revision.is_none_or(|revision| {
                     visuals
                         .iter()
@@ -854,7 +920,7 @@ async fn execute_step(
             status(
                 valid,
                 format!(
-                    "expected {expected:?}; got {:?}, text {text:?}",
+                    "expected {expected:?}; got {:?}, text {text:?}, staged {staged:?}",
                     runtime.state()
                 ),
             )

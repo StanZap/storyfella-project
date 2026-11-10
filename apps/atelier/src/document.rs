@@ -331,6 +331,25 @@ impl Document {
         self.canvas_created = true;
     }
 
+    pub(crate) fn select_canvas(&mut self, id: u32) -> Result<()> {
+        if id != self.canvas_id {
+            let index = self
+                .canvases
+                .iter()
+                .position(|canvas| canvas.id == id)
+                .context("Linked artboard no longer exists")?;
+            let current = self.current_canvas();
+            let selected = std::mem::replace(&mut self.canvases[index], current);
+            self.set_current_canvas(selected);
+            self.reference = self.artboard_references.first().and_then(|id| {
+                self.references
+                    .iter()
+                    .position(|reference| crate::library::id(reference) == *id)
+            });
+        }
+        Ok(())
+    }
+
     pub fn create_canvas(&mut self) -> Result<()> {
         let keep_current = self.canvas_created
             || self
@@ -786,8 +805,8 @@ pub(crate) fn load_versioned(path: &Path) -> Result<(Document, String)> {
     ))
 }
 
-pub(crate) fn version(doc: &Document) -> Result<String> {
-    Ok(STANDARD.encode(Sha256::digest(serde_json::to_vec(doc)?)))
+pub(crate) fn version(value: &impl Serialize) -> Result<String> {
+    Ok(STANDARD.encode(Sha256::digest(serde_json::to_vec(value)?)))
 }
 
 fn read(path: &Path) -> Result<Vec<u8>> {

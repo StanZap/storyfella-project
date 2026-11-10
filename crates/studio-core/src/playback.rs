@@ -280,6 +280,13 @@ impl PlaybackSession {
             .collect()
     }
 
+    pub fn staged_visual(&self, actor: &storyfella_runtime::StagedCharacter) -> Option<&Visual> {
+        let binding = actor.asset.binding.as_ref()?;
+        self.visuals
+            .iter()
+            .find(|visual| &visual.binding == binding)
+    }
+
     /// Active authored uses whose pinned image could not be resolved.
     pub fn missing_uses(&self) -> Vec<&storyfella_compiler::AssetUse> {
         self.runtime

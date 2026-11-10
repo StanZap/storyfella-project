@@ -53,86 +53,129 @@ the step limit.
 If a save is interrupted, restart the MCP server to recover it under the
 project lease. Inspection and edit preview leave a pending source save intact.
 Projects with broken include paths need repair in Studio before MCP edits.
-Visual frame capture and editing through MCP while Studio is open remain
-later parts of the workflow.
+For live Writer edits, see [Connect to the running apps](#connect-to-the-running-apps).
 
-## Create one illustration through Atelier MCP
+## Produce linked artwork through Atelier MCP
 
 Build the server with `cargo build -p storyfella-atelier --bin atelier`.
-Create a disposable shared project in Studio with a pending illustration in
-Assets and add `show illustration NAME` to the story. Close Studio. Use the
-illustration's `id` from
-`svs story catalog /absolute/path/to/disposable-project/story.db`.
-If you opened the shared drawing in Atelier, use **Save and close project** in the updated app
-to save your draft and hand back ownership. Then configure an MCP-capable
-client to launch the absolute path to `target/debug/atelier` with these
-arguments.
+Prepare a shared folder with pending visual assets in Studio. Close the
+project in Studio and use **Save and close project** if the shared drawing
+is open in Atelier. Configure a vision-capable chat client to launch the
+absolute path to `target/debug/atelier` with these arguments.
 
 ```json
-["mcp", "--folder", "/absolute/path/to/disposable-project", "--illustration", "ILLUSTRATION_UUID", "--allow-generate", "--allow-publish"]
+["mcp", "--folder", "/absolute/path/to/chapter", "--allow-generate", "--max-submissions", "6", "--allow-publish"]
 ```
 
-Atelier reads its provider and edit model from the existing Settings.
-Use a provider that supports both generation and source-image editing.
-Pass `--data-dir DIRECTORY` to use an alternate Atelier workspace's settings
-and generated-result storage. The two launch flags grant provider submission
-and publication separately.
+Atelier reads the provider, generation model and edit model from its existing
+Settings. Pass `--data-dir DIRECTORY` to select a separate Atelier workspace.
+Provider submission and publication are separate launch grants. Set
+`--max-submissions` to the agreed number of attempts for a paid run and keep
+that flag on reconnect. It counts the project's recorded submissions across
+sessions, including attempts without a completed result.
 
-1. Call `atelier_illustration_inspect` for the session and saved drawing version.
-2. Start `atelier_candidate_generate` with a prompt and that version. Call
-   `atelier_job_poll` until the candidate attaches to its captured artboard.
-3. Call `atelier_candidate_preview` with the completed job's version. It
-   returns a native PNG image block of up to 512 pixels on the long edge.
-   Generate again with `revise: true`, the candidate version and an editing
-   prompt to use that image as input. Poll and preview the new result.
-4. Show the reviewer the image and review ID. The reviewer runs the following
-   command in a separate local terminal after deciding to publish that image.
-   Give the chat access through MCP and keep the approval terminal under the
-   reviewer's control.
+| Tool | What it does |
+| --- | --- |
+| `atelier_project_inspect` | Returns the session, provider settings, visual asset IDs, variant relationships, published revisions, submission count and recent job IDs. |
+| `atelier_asset_inspect` | Returns a target asset's artboard and the saved drawing version. |
+| `atelier_candidate_generate` | Queues a prompt for one pending asset. Use its base asset's current `reference_revision` to generate a variant, or `revise: true` to edit a pending candidate in place. A new artboard can specify `size: [width, height]`. |
+| `atelier_job_poll` | Returns compact status by project job ID and attaches the finished result if the captured destination and drawing version still match. |
+| `atelier_job_cancel` | Requests cancellation of a running job and persists a block on automatic attachment. A late result can still be inspected and explicitly recovered. |
+| `atelier_job_thumbnail` | Returns a native PNG of a retained result, up to 512 pixels on the long edge. Leaves the drawing and reviews untouched. |
+| `atelier_job_recover` | Reattaches a completed result to its original pending artboard at the captured size, using a freshly inspected drawing version. This explicitly replaces any pending candidate there. |
+| `atelier_candidate_preview` | Returns a native artboard PNG and a review ID for the exact rendered candidate. |
+| `atelier_asset_publish` | Saves and publishes only the asset named by the approved review. Returns its immutable revision UUID. |
 
-   ```sh
-   /absolute/path/to/atelier approve --folder /absolute/path/to/disposable-project --review REVIEW_UUID
-   ```
+The user chooses the review workflow in chat. If they explicitly delegate
+artwork approval, inspect each PNG and pass `agent_approval: true` with the
+exact review ID to `atelier_asset_publish` for each image you accept. Skip
+images you reject. Otherwise, use human review.
 
-5. Call `atelier_illustration_publish` with that review ID and session. Only
-   the exact reviewed drawing is eligible. Publication returns the immutable
-   revision UUID. Disconnect MCP, reopen the shared folder in Studio, and
-   start Preview to play the published illustration.
+Keep the MCP connection open through each review. For human review, the chat
+shows the preview and its review ID. The human runs this command from their
+own local terminal for each candidate they accept.
 
-Candidates are saved as editable drawing layers before approval. A successful
-revision replaces the previous pending layer and invalidates its review ID.
-Publication uses Atelier's CPU canvas renderer and normal checked shared save.
-If a save fails after writing the editable drawing, retry the same review
-within the session. If the server exited, reopen the drawing through MCP
-and preview and approve again. The catalog reuses an identical committed
-revision when retrying a save that failed to record the revision link.
+```sh
+/absolute/path/to/atelier approve --folder /absolute/path/to/chapter --review REVIEW_UUID
+```
 
-This slice owns one pending illustration on the current artboard and holds
-both the Atelier and Studio project leases. Atelier's per-project recovery
-reservation keeps a desktop drawing protected after exit until it is saved
-and closed in its original Atelier workspace. An existing drawing from an
-older version needs that handoff once before MCP can open it. Recovery that
-cannot reclaim the shared drawing opens the draft as a separate copy.
-Save As from a shared drawing creates a copy and keeps the original tab open.
-Provider jobs are session-bound. The provider workflow saves successful
-originals even if the drawing changed before attachment. Automatic restart,
-reattachment, cancellation and routed commands to open apps remain future work.
+Review IDs bind to one artboard and its artwork baseline. A change to a
+different artboard leaves that review valid. Revising or recovering a
+candidate on the reviewed artboard invalidates its review. Use the current
+saved drawing version for generation, recovery and preview calls. If
+publication fails partway, retry the same approved review within the session.
+After reconnecting, preview and approve the saved drawing again. The checked
+save reuses an identical committed revision if only its link failed to save.
+Disconnect Atelier MCP before opening the folder in Studio Preview.
+
+This workflow holds both project leases. Atelier's desktop recovery
+reservation still protects a draft after exit. Open it in the original
+Atelier workspace and save and close the project to return ownership. A
+desktop recovery that cannot reclaim the original opens a separate copy.
+Save As creates a copy and keeps the original open.
+
+MCP jobs use the existing Atelier queue and image workflow. Each submission
+has a project-local receipt, and the workflow retains completed originals
+under `atelier/mcp-jobs/` before attachment. Reconnect and use the same job ID
+with the new session. A `retained` result is available for thumbnail and
+checked recovery. An `unknown` result has no saved output. Reconcile it with
+the provider before starting a new attempt. The server does not resume
+remote predictions or automatically resubmit them. Cancellation distinguishes
+a pending request (`cancelling`), a locally stopped job with no result
+(`cancelled`), and a late `retained` result. Remote cancellation and billing
+remain unconfirmed.
 
 ## Project ownership and checked edits
 
-The first local stdio server owns a closed project and uses the same compiler,
-catalog rules and checked authoring store as Studio. Live desktop access will
-use a local stdio MCP bridge with app-owned commands. Studio owns open Writer
-buffers, source and authoring associations. Atelier owns open visual documents,
-candidate review and publication. Each app serializes agent requests with its
-normal editor commands on the app's state thread, then runs storage and
-inference off that thread through its existing workers. Keep Studio core
-GUI-free. Reuse the handoff's local instance discovery and lifecycle patterns.
+The closed-project stdio server uses the same compiler, catalog rules and
+checked authoring store as Studio. The live stdio bridges dispatch to the
+desktop owners. Studio owns open Writer buffers, source and authoring
+associations. Atelier owns open visual documents, candidate review and
+publication. Each app serializes agent requests with its normal editor
+commands on the app's state thread. Compile and run storage or inference on
+the app's workers. Keep Studio core GUI-free.
 The existing Atelier inbox serves an open-and-focus request and its lease
 covers a data directory. Studio now holds a project writer lease while editing
 a shared folder, including through background refresh and recovery. Atelier
 now holds a separate per-project drawing lease across desktop data directories
-and MCP. Authenticated routing to open apps remains separate work.
+and MCP.
+
+### Connect to the running apps
+
+On macOS or Linux, launch each app with the selected absolute project folder
+and its own new absolute channel directory under a parent you control. Keep
+the channel path short enough for a Unix socket. Studio grants inspection by
+default. Set `STORYFELLA_MCP_EDIT=1` on the Studio process to allow checked
+draft edits.
+Atelier grants drawing inspection.
+
+```sh
+STORYFELLA_MCP_FOLDER="$project" STORYFELLA_MCP_CHANNEL="$writer_channel" \
+  STORYFELLA_MCP_EDIT=1 /absolute/path/to/storyfella-studio
+ATELIER_MCP_FOLDER="$project" ATELIER_MCP_CHANNEL="$drawing_channel" \
+  /absolute/path/to/atelier
+```
+
+Open the project in Studio and its drawing in Atelier. Configure the two MCP
+clients with the respective arguments below.
+
+```sh
+svs mcp --folder "$project" --studio-channel "$writer_channel"
+atelier mcp --folder "$project" --atelier-channel "$drawing_channel"
+```
+
+`storyfella_draft_inspect` returns the connection's session, the draft version
+and separate entry and saved digests. Use `storyfella_draft_read` to read the
+open entry, including unsaved edits. `storyfella_draft_edit` checks a UTF-8
+byte range against the expected version and compiles the replacement with the
+current includes and catalog. Set `apply: true` to apply a valid replacement as
+one Writer undo step. Studio's existing save settings control persistence.
+Reread on `stale_version`. A connection that outlives its owner must reconnect
+and inspect again. After an app crash, use a new channel directory.
+
+`atelier_drawing_inspect` reports the drawing's in-memory revision, dirty
+state and bounded artboard metadata, including candidate presence. Live
+included-file edits and live Atelier mutations remain under SF-PLAN-33.
 
 Grant a local client access to an explicitly selected project folder and to
 specific scopes for inspection, editing, publishing and provider submission.
@@ -270,18 +313,32 @@ Related code and tests establish the underlying guarantees.
   proposals and a replaced lease file.
 - Atelier's `tests.rs`, `queue.rs` and `shared_save.rs` cover captured
   destinations, protected pixels, abort and per-artboard publication
-  baselines. The current in-memory queue cannot restore an interrupted job.
+  baselines. Atelier's MCP tests cover reconnecting to recover a completed
+  result, using the exact published reference and publishing only the
+  approved artboard. The desktop queue remains in memory.
 - The runtime's `execution.rs` tests cover flags, conditional routing and
   verified checkpoint replay. Studio core's `playback.rs` tests cover pinned
   resources and multi-file source maps. Shared playback UI tests cover markup
   and navigation.
 
-Complete the slice with both apps open, including a deliberately dirty source
-and artboard, and drive it through independent MCP clients. Use a deterministic
-provider fixture for queue restart, ambiguous submission, cancellation and
-attachment recovery. Capture both rendered routes at two aspect ratios.
-Separately run configured-provider and native-renderer acceptance with
-reference-led expression and outfit variants. Record model settings, cost and
-human review of visual consistency. Structured bibles, larger batches, richer
-narrative state, segmentation, layered sprites, and release features follow
-under the roadmap.
+The macOS coordination run opened both apps against one disposable project.
+Independent stdio clients observed a dirty Writer draft and a newly linked
+unsaved artboard. The Writer bridge rejected an old version, applied a fresh
+edit while preserving the local text, and required reconnecting after Studio
+released and reacquired the project.
+
+The offline provider fixture verifies restart, ambiguous submission, local
+cancellation, and recovery of a late retained result. Native Preview ran both
+branches on a copy of *The Hour of the Beacon*. The driver asserted exact
+staged and background revisions. Native frames record the opening and both
+branches at two aspect ratios, including the missing `ivo_worried` placeholder.
+Studio plan launches accept `--window-size WIDTHxHEIGHT` and `--keep-window`
+for frame capture, and `--manual-save` to turn off editor autosave for the run.
+These checks and their evidence are in `.svs-e2e/coord/acceptance.md`. The paid
+run and its review remain recorded separately in
+`.svs-e2e/live-branching-chapter/live-run.md`.
+
+The complete visual pass still calls for the pending expression, outfit
+variants and review of their visual consistency. Structured bibles, larger
+batches, richer narrative state, segmentation, layered sprites and release
+features follow under the roadmap.

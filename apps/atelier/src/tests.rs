@@ -1838,6 +1838,7 @@ fn comfy_workflow_roundtrip_stores_output_and_reopens_in_atelier() {
         },
         &directory,
         providers::generate,
+        None,
     )
     .unwrap();
     assert_eq!(document::decode_reference(&reference).unwrap().width(), 32);
@@ -2057,6 +2058,7 @@ fn generation_cancellation_prevents_network_submission() {
         },
         &directory,
         providers::generate,
+        None,
     );
     assert!(result.unwrap_err().to_string().contains("cancelled"));
     assert!(!directory.join("generated").exists());

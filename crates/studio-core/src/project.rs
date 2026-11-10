@@ -42,6 +42,7 @@ pub struct ProjectFolder {
 pub struct AuthoringLease {
     root: PathBuf,
     project_id: Uuid,
+    epoch: Uuid,
     lock: Arc<File>,
 }
 
@@ -52,6 +53,10 @@ impl PartialEq for AuthoringLease {
 }
 
 impl AuthoringLease {
+    pub fn epoch(&self) -> Uuid {
+        self.epoch
+    }
+
     pub fn belongs_to(&self, folder: &ProjectFolder) -> bool {
         self.root == folder.root && self.project_id == folder.id
     }
@@ -274,6 +279,7 @@ impl ProjectFolder {
             Ok(()) => Ok(AuthoringLease {
                 root: self.root.clone(),
                 project_id: self.id,
+                epoch: Uuid::new_v4(),
                 lock: Arc::new(file),
             }),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {

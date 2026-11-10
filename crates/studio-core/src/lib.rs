@@ -17,6 +17,8 @@ pub mod atelier;
 pub mod authoring;
 pub mod catalog;
 pub mod config;
+#[cfg(unix)]
+pub mod desktop_bridge;
 pub mod errors;
 mod identity;
 pub mod llm;

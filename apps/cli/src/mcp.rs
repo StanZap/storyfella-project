@@ -25,6 +25,9 @@ use storyfella_studio_core::{
 };
 use uuid::Uuid;
 
+#[cfg(unix)]
+#[path = "mcp/live.rs"]
+mod live;
 #[path = "mcp/playtest.rs"]
 mod playtest;
 
@@ -36,12 +39,15 @@ const BRANCHING_EXAMPLE: &str = include_str!("mcp/branching.sf");
 
 #[derive(Args)]
 pub struct McpArgs {
-    /// Absolute path to the single shared project folder this client may edit.
+    /// Absolute path to the shared project authorized for this client.
     #[arg(long)]
     folder: PathBuf,
     /// Initialize the folder with this title if it does not exist.
     #[arg(long, value_name = "TITLE")]
     create_if_missing: Option<String>,
+    /// Connect to Studio's private channel for this folder's open Writer draft.
+    #[arg(long, value_name = "DIRECTORY", conflicts_with = "create_if_missing")]
+    studio_channel: Option<PathBuf>,
 }
 
 pub async fn run(args: McpArgs) -> Result<()> {
@@ -49,6 +55,15 @@ pub async fn run(args: McpArgs) -> Result<()> {
         args.folder.is_absolute(),
         "Choose an absolute project folder path"
     );
+    if let Some(channel) = args.studio_channel {
+        #[cfg(unix)]
+        return live::run(&args.folder, &channel).await;
+        #[cfg(not(unix))]
+        anyhow::bail!(
+            "Studio's private MCP channel requires macOS or Linux: {}",
+            channel.display()
+        );
+    }
     let folder = if args.folder.try_exists()? {
         ensure!(args.folder.is_dir(), "Choose a shared project folder");
         ProjectFolder::locate_for_authoring(&args.folder)?
@@ -493,17 +508,25 @@ impl McpToolRegistry for StoryTools {
             }
             _ => return Err(McpError::ToolNotFound { name: call.name }),
         };
-        let (status, content) = match result {
-            Ok(value) => (ToolResultStatus::Success, value),
-            Err(error) => (ToolResultStatus::Error, json!(error)),
-        };
-        Ok(McpToolResult {
-            call_id: call.call_id,
-            tool_name: call.name,
-            status,
-            content: content.to_string(),
-            metadata: Some(json!({ "structured_content": content })),
-        })
+        Ok(tool_result(call.call_id, call.name, result))
+    }
+}
+
+fn tool_result<E: Serialize>(
+    call_id: String,
+    tool_name: String,
+    result: Result<Value, E>,
+) -> McpToolResult {
+    let (status, content) = match result {
+        Ok(value) => (ToolResultStatus::Success, value),
+        Err(error) => (ToolResultStatus::Error, json!(error)),
+    };
+    McpToolResult {
+        call_id,
+        tool_name,
+        status,
+        content: content.to_string(),
+        metadata: Some(json!({ "structured_content": content })),
     }
 }
 

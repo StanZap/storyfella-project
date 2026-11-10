@@ -665,7 +665,7 @@ pub(crate) fn apply_settings(settings: &providers::Settings, path: &std::path::P
     document::atomic_write(path, &bytes).context("Settings file was not saved")
 }
 pub fn generate(request: Request, id: u64, sender: Sender<Event>, directory: PathBuf) {
-    generate_using(request, id, sender, directory, providers::generate);
+    generate_using(request, id, sender, directory, providers::generate, None);
 }
 
 pub(crate) fn generate_using(
@@ -674,13 +674,15 @@ pub(crate) fn generate_using(
     sender: Sender<Event>,
     directory: PathBuf,
     provider: fn(Request) -> Result<Reference>,
+    retained_result: Option<PathBuf>,
 ) {
     std::thread::spawn(move || {
         let progress_sender = sender.clone();
         request.progress = Some(Box::new(move |message| {
             let _ = progress_sender.send(Event::GenerationProgress(id, message));
         }));
-        let result = crate::creative_workflow::generate(request, &directory, provider);
+        let result =
+            crate::creative_workflow::generate(request, &directory, provider, retained_result);
         let _ = sender.send(Event::Generated(id, result));
     });
 }
