@@ -56,7 +56,11 @@ pub enum Event {
         publications: Vec<CanvasPublication>,
         result: Result<PathBuf>,
     },
-    WorkspaceSaved(Result<()>),
+    WorkspaceSaved {
+        epoch: u64,
+        revision: u64,
+        result: Result<()>,
+    },
     ClipforgeOpened(Result<()>),
     Library(Result<Vec<(Reference, RgbaImage)>>),
     OpenedImage(String, Result<(RgbaImage, crate::edit::MaskDraft)>),
@@ -71,11 +75,10 @@ pub enum Event {
         revision: u64,
         epoch: u64,
         path: PathBuf,
-        automatic: bool,
         result: Result<()>,
     },
     Exported(crate::activity::Scope, Result<PathBuf>),
-    Switched(u64, Result<OpenedDocument>),
+    Switched(u64, Result<Box<OpenedDocument>>),
     Imported(u64, bool, Result<Vec<(Reference, RgbaImage)>>),
     ArtworkImported {
         epoch: u64,
@@ -120,7 +123,12 @@ pub enum Storage {
         epoch: u64,
         revision: u64,
     },
-    WorkspaceRecovery(PathBuf, Vec<(crate::project_tabs::RecoveryTab, Document)>),
+    WorkspaceRecovery {
+        directory: PathBuf,
+        projects: Vec<(crate::project_tabs::RecoveryTab, Document)>,
+        epoch: u64,
+        revision: u64,
+    },
     Artwork(Arc<Reference>, PathBuf, crate::activity::Scope),
     CanvasArtwork(Document, PathBuf, bool, crate::activity::Scope),
     /// Loads the shared reference library (read-only).
@@ -138,7 +146,6 @@ pub enum Storage {
         owner: Option<Owner>,
         revision: u64,
         epoch: u64,
-        automatic: bool,
     },
     Export(Document, PathBuf, bool, u8, crate::activity::Scope),
     Switch {
@@ -255,9 +262,16 @@ pub fn start() -> Workers {
                         result: result.map(|()| path),
                     }
                 }
-                Storage::WorkspaceRecovery(directory, projects) => {
-                    Event::WorkspaceSaved(crate::project_tabs::save_session(&directory, projects))
-                }
+                Storage::WorkspaceRecovery {
+                    directory,
+                    projects,
+                    epoch,
+                    revision,
+                } => Event::WorkspaceSaved {
+                    epoch,
+                    revision,
+                    result: crate::project_tabs::save_session(&directory, projects),
+                },
                 Storage::Artwork(reference, path, scope) => Event::Exported(
                     scope,
                     (|| {
@@ -392,16 +406,10 @@ pub fn start() -> Workers {
                     path,
                     revision,
                     epoch,
-                    automatic,
                     owner,
                 } => {
-                    let saved = ownership::verify_write(&path, owner.as_ref()).and_then(|()| {
-                        if automatic {
-                            document::save(&path, &doc).map(|_| Vec::new())
-                        } else {
-                            crate::shared_save::save(&path, &doc)
-                        }
-                    });
+                    let saved = ownership::verify_write(&path, owner.as_ref())
+                        .and_then(|()| crate::shared_save::save(&path, &doc));
                     let (result, publications) = save_result(saved);
                     Event::Saved {
                         result,
@@ -409,7 +417,6 @@ pub fn start() -> Workers {
                         path,
                         revision,
                         epoch,
-                        automatic,
                     }
                 }
                 Storage::Export(doc, path, transparent, quality, scope) => {
@@ -473,12 +480,12 @@ pub fn start() -> Workers {
                                     .map(|i| document::thumbnail(i, 800).to_rgba8())
                             })
                             .collect::<Result<Vec<_>>>()?;
-                        Ok(OpenedDocument {
+                        Ok(Box::new(OpenedDocument {
                             doc,
                             images,
                             path,
                             owner,
-                        })
+                        }))
                     })(),
                 ),
                 Storage::ImportArtwork {
@@ -726,12 +733,7 @@ pub fn projects(directory: PathBuf, sender: Sender<Event>) {
             let mut paths = std::fs::read_dir(directory)?
                 .filter_map(|entry| entry.ok())
                 .map(|entry| entry.path())
-                .filter(|path| {
-                    path.extension().is_some_and(|ext| ext == "atelier")
-                        && path
-                            .file_name()
-                            .is_none_or(|name| name != "recovery.atelier")
-                })
+                .filter(|path| path.extension().is_some_and(|ext| ext == "atelier"))
                 .collect::<Vec<_>>();
             paths.sort_by_key(|path| std::fs::metadata(path).and_then(|m| m.modified()).ok());
             paths.reverse();

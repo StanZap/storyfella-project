@@ -124,8 +124,9 @@ icon or Cmd/Ctrl+W saves before closing; a failed save keeps the tab open. Tab
 actions also live in File. Closing the final tab returns to Projects, and Library
 remains accessible without project controls. Tab order and active identity
 survive restart. Project/recovery saves retain artboards, candidates, reference
-associations, provenance, source/mode-bound drafts and last selection contexts.
-Schema version 1 upgrades on load without discarding originals.
+associations, provenance, source/mode-bound drafts and drawing targets.
+Atelier writes one set of recovery snapshots in `workspace-recovery/`. Files
+from earlier development builds remain in their original locations.
 
 The composer's ellipsis opens a menu with **Image options** and **Provider
 settings**. Provider setup and credentials belong in **Clipforge**, reached from
@@ -440,14 +441,13 @@ it is a local collection, without cloud synchronization or pagination.
 
 ## Document storage and image roles
 
-`.atelier` schema versions 2 and 3 keep one canonical active-artboard representation
-(`width`, `height`, `layers`, `canvas_id`) and stores other artboards in
-`canvases`. An artboard's reference associations and reference visibility travel
-with it. The project embeds referenced originals, accepted artwork, pending
-candidates, image parent identities, prompts and drafts.
-Version 3 adds reversible image crops and independent group properties. Applying
-one of those features upgrades the document to version 3, which older Atelier
-versions cannot open. Version 2 documents remain supported.
+`.atelier` schema version 4 stores the active artboard in the document and
+other artboards in `canvases`. Each artboard requires a `drawing_target` that
+selects the full canvas, a new layer, or a rectangular region in blend or
+separate mode. Reference associations and visibility travel with each artboard.
+The document embeds referenced originals, accepted artwork, pending candidates,
+image parent identities, prompts and drafts. Image crops and group properties use
+this same schema.
 
 New compositions create artboards containing image layers. Full-artboard edits
 and selection blends create layers marked `candidate`. Candidates can be
@@ -464,14 +464,13 @@ visible image layers and omit pending/hidden layer metadata as well as pixels.
 its owning reference association or layer defines its role. Parent links resolve
 across project references, artboard image layers and the shared library.
 
-Loading version 1 upgrades generated references with saved generation prompts
+The version 1 artwork migration upgrades generated references with saved generation prompts
 into image artboards, removing the redundant reference-role records while keeping
 their bytes and metadata in layers. Existing image layers and imported references
 keep their roles. Up to the existing 25-artboard limit are promoted; remaining
-originals remain available as references. Resaving writes version 2 unless the
-document uses version 3 features. Old files are not rewritten merely by reading
-them. Fingerprints are restored in inactive
-artboards as well as in active layers.
+originals remain available as references. The loader restores image fingerprints
+in both active and inactive artboards. Converting v2 and v3 drawings is a
+separate data task.
 
 
 ## Canvas request contexts

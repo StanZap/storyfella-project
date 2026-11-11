@@ -2,8 +2,8 @@
 
 Start here for planned work. Keep new TODOs, priorities and completion status in
 this document; link other documents for specifications and acceptance evidence.
-When work lands, check its item and record the evidence here. Unchecked items
-describe planned work, not existing functionality.
+Record implementation progress and its evidence here. Check each item when it
+meets its acceptance criteria.
 
 ## 0. Current direction and actionable backlog
 
@@ -385,11 +385,10 @@ slice. Human creators should benefit from the same underlying capabilities.
   end as needed. Record human review and real-provider limitations rather than
   treating automated checks as proof of creative quality.
 
-**Delivery order:** establish coordination and contracts in SF-PLAN-33, then
-build a thin end-to-end SF-PLAN-37 slice using the essential parts of
-SF-PLAN-34–36. Expand capabilities and production scale from its findings;
-avoid completing broad inventories or every advanced feature before proving the
-shared workflow.
+The initial app-owner coordination and chapter slice are in place. Next, route
+generation, candidate review and publication through the running Atelier owner
+(SF-PLAN-33–34), then verify that workflow in the chapter slice (SF-PLAN-37).
+Larger-project discovery and route coverage remain under SF-PLAN-35–36.
 
 First delivery evidence (2026-11-09): [app-owned coordination and the chapter
 contract](agentic-vn-production.md) defines the write boundary, recovery states,
@@ -402,9 +401,7 @@ with 489 tests and 27 opt-in tests skipped. Studio now claims a shared-folder
 writer lease before loading it for editing, and browsing the project list
 leaves pending source writes for the editor to recover. The project command
 probe checks competing opens, aliases, dirty draft retention and takeover
-after switching away. Atelier document ownership, app command routing,
-restart-safe generation jobs, live frame capture and full visual MCP acceptance
-remain open.
+after switching away.
 
 Text-first chat authoring is available through
 [`svs mcp`](agentic-vn-production.md#start-a-text-first-vn-from-a-chat).
@@ -412,9 +409,7 @@ The stdio process owns a closed shared folder using Studio's lease. It can
 initialize a project, inspect and read source, validate and save entry edits,
 and playtest branches with the shared runtime. A raw JSON-RPC test client
 and Agentkit's stdio client verify the initial text workflow. Workspace
-validation passed with 491 tests and 27 opt-in tests skipped. SF-PLAN-33
-still tracks live app command routing and SF-PLAN-37 tracks the full visual
-production workflow.
+validation passed with 491 tests and 27 opt-in tests skipped.
 
 In the first live Codex chat test, the server connected, but the chat's
 original draft failed with “Unexpected or missing tokens” and the diagnostic
@@ -492,16 +487,37 @@ run used independent stdio clients with both apps open. The Writer buffer and
 a newly linked artboard were dirty at the same time. A stale write returned
 the current version, a checked edit preserved the local text and artboard,
 and switching Studio projects expired the old sessions. A fresh client
-reopened against the new owner. Live Atelier mutation and live included-file
-editing remain open. The workspace suite passed 499 tests, with 28 opt-in
-tests skipped. Evidence is in `.svs-e2e/coord/acceptance.md`.
+reopened against the new owner. Evidence is in
+`.svs-e2e/coord/acceptance.md`.
+
+The next live slice adds checked edits to existing included Writer files and
+a checked rectangular blend mask for the active Atelier artboard. Atelier
+persists the mask with the editable drawing, uses its normal undo path and
+can return a PNG crop of the accepted pixels. The Studio bridge starts,
+steps and checkpoints a separate Preview session. On macOS it can render
+that session to a native PNG at a requested viewport. Live Atelier
+generation, candidate review and publication remain open. A macOS run
+verified stale-edit rejection in both apps, then played both routes of a
+disposable chapter through MCP. The native frames show the pinned portraits
+and the missing Ivo expression at two aspect ratios. Workspace validation
+passed 502 tests, with 28 opt-in tests skipped. Evidence is in
+`.svs-e2e/coord/live-edits-preview.md`.
+
+Format cleanup (2026-11-11) requires an explicit file for saved and live Writer
+reads and edits. Live Writer edits also require an explicit apply decision.
+Atelier drawing format v4 stores one drawing target per artboard and the app
+writes one workspace recovery snapshot per tab. The macOS checks verified
+ownership changes, stale requests, recovery persistence and both isolated
+Preview routes at 800 × 401 and 800 × 720. Workspace compilation, formatting
+and strict Clippy passed. The workspace suite passed 504 tests, with 28 opt-in
+tests skipped. Evidence is in `.svs-e2e/coord/format-cleanup.md`.
 
 The offline Atelier fixture also exercises an ambiguous submission across
 restart and cancellation followed by a late result. The cancelled job
 retains its output, suppresses automatic attachment and can be recovered
 explicitly without another provider call.
 
-The paid *Hour of the Beacon* run is in progress. A live Codex client saved
+The paid *Hour of the Beacon* run is paused. A live Codex client saved
 and playtested both story routes. It reconnected to the rebuilt Atelier server
 and visually inspected fresh native PNG previews of the two saved base portraits
 and two backgrounds without resubmitting them. The journal records four
@@ -510,17 +526,20 @@ $0.12 at list price. After explicit delegation in chat, the client approved
 and published each base separately against its exact review ID. Project
 inspection confirmed the four revisions. The user's terminal run generated
 and published Noa's resolved expression from her exact base revision. Atelier
-rejected Ivo's stale drawing version before provider submission. Five outputs
-total $0.15 at list price. Native Studio Preview reached both endings and
-verified both backdrop revisions. The compiled plan binds the two base
-portraits and Noa's expression, with Ivo's expression pending. A subsequent
+rejected Ivo's stale drawing version before provider submission. The run stands
+at five of eight submissions and $0.15 at list price against the $0.24 cap.
+Native Studio Preview reached both endings and verified both backdrop
+revisions. The compiled plan binds the two base portraits and Noa's
+expression, with Ivo's expression pending. A subsequent
 native run on an isolated copy verified both endings and the exact staged
 portrait revisions at 1180 × 660 and 760 × 720 content sizes. It captured the
 opening and both branch compositions. The wait route renders the missing
 `ivo_worried` placeholder, and the staged portraits retain the opaque
 backgrounds of the published images. Evidence is in
-`.svs-e2e/coord/acceptance.md`. The complete artwork pass remains open.
-Provider prediction IDs, cost and live-client observations are in
+`.svs-e2e/coord/acceptance.md`. Ivo's expression remains pending. The original
+drawing still uses v2 and requires a separate conversion before the paid art
+run can resume with the current Atelier build. Provider prediction IDs, cost
+and live-client observations are in
 `.svs-e2e/live-branching-chapter/live-run.md`.
 
 ### Studio for writing, Atelier for visual creation · 2026-10-28
@@ -736,8 +755,8 @@ The following checklist describes the shared-project workstream.
   Unified project tree (2026-11-08): new shared projects use `assets/story.sf`
   with their visible files under `assets/`; internal metadata and revision
   storage remain outside the tree. Catalog entries and files appear at the same
-  root without extra grouping. Version-1 projects keep their root entry file
-  and chapter paths. The explorer hides internal artwork and Atelier storage.
+  root without extra grouping. Shared manifests require layout version 2.
+  The explorer hides internal artwork and Atelier storage.
   The asset-creation dialog uses the shared padded task-form layout.
   Add to project uses the shared anchored action menu. Story-file and folder
   forms open inline at the selected destination and retain that destination

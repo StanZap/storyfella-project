@@ -104,7 +104,7 @@ struct NoArgs {}
 #[serde(deny_unknown_fields)]
 struct Read {
     session: Uuid,
-    file: Option<String>,
+    file: String,
     #[serde(default)]
     offset: usize,
 }
@@ -114,7 +114,7 @@ struct Read {
 struct Edit {
     session: Uuid,
     expected_version: String,
-    file: Option<String>,
+    file: String,
     start: usize,
     end: usize,
     text: String,
@@ -207,7 +207,7 @@ impl StoryTools {
     fn inspect(&self) -> Reply {
         let (stored, workspace) = self.snapshot()?;
         Ok(json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "session": self.session,
             "project_id": stored.id,
             "name": stored.name,
@@ -221,7 +221,7 @@ impl StoryTools {
     fn read(&self, args: Read) -> Reply {
         self.check_session(args.session)?;
         let (stored, workspace) = self.snapshot()?;
-        let file = args.file.as_deref().unwrap_or(&workspace.entry);
+        let file = args.file.as_str();
         let source = workspace.files.get(file).ok_or_else(unknown_file)?;
         if !source.is_char_boundary(args.offset) {
             return Err(fail(
@@ -256,7 +256,7 @@ impl StoryTools {
                 "Use replacements of at most 65536 UTF-8 bytes.",
             ));
         }
-        let file = args.file.as_deref().unwrap_or(&current.entry);
+        let file = args.file.as_str();
         let before = current.files.get(file).ok_or_else(unknown_file)?;
         let included_path = if file == current.entry {
             None
@@ -479,13 +479,13 @@ impl McpToolRegistry for StoryTools {
         vec![
             tool("storyfella_project_inspect", "Inspect the one project authorized for this MCP process and get its session and current version.", McpPermission::ReadOnly, json!({}), &[]),
             tool("storyfella_story_example", "Get a complete, playable Storyfella source example with narration, a choice, a persistent flag, and conditional endings. Use this syntax as a reference before drafting an original branching chapter.", McpPermission::ReadOnly, json!({}), &[]),
-            tool("storyfella_story_read", "Read saved Storyfella source. Omit file for the entry. Offsets and lengths are UTF-8 bytes.", McpPermission::ReadOnly, json!({
+            tool("storyfella_story_read", "Read a saved source file named in project inspection. Offsets and lengths are UTF-8 bytes.", McpPermission::ReadOnly, json!({
                 "session": session, "file": {"type":"string"}, "offset": offset
-            }), &["session"]),
-            tool("storyfella_story_edit", "Replace a UTF-8 byte range in one source file. Omit file for the entry, or name an included file from project inspection. Omit proposal to validate without saving. Repeat the exact edit with the returned proposal to save. Check saved and valid in the response. Diagnostic positions are zero-based lines and UTF-16 columns in the named file.", McpPermission::Mutating, json!({
+            }), &["session", "file"]),
+            tool("storyfella_story_edit", "Replace a UTF-8 byte range in a source file named in project inspection. Omit proposal to validate without saving. Repeat the exact edit with the returned proposal to save. Check saved and valid in the response. Diagnostic positions are zero-based lines and UTF-16 columns in the named file.", McpPermission::Mutating, json!({
                 "session": session, "expected_version": version, "start": offset, "end": offset,
                 "file": {"type":"string"}, "text": {"type":"string","maxLength":EDIT_BYTES}, "proposal": version
-            }), &["session", "expected_version", "start", "end", "text"]),
+            }), &["session", "file", "expected_version", "start", "end", "text"]),
             tool("storyfella_story_playtest", "Run a bounded, text-only playtest of saved source with zero-based choice indexes. Omit choices to stop at the first choice.", McpPermission::ReadOnly, json!({
                 "session": session, "expected_version": version,
                 "choices": {"type":"array", "maxItems":playtest::MAX_STEPS, "items":offset}
@@ -508,25 +508,17 @@ impl McpToolRegistry for StoryTools {
             }
             _ => return Err(McpError::ToolNotFound { name: call.name }),
         };
-        Ok(tool_result(call.call_id, call.name, result))
-    }
-}
-
-fn tool_result<E: Serialize>(
-    call_id: String,
-    tool_name: String,
-    result: Result<Value, E>,
-) -> McpToolResult {
-    let (status, content) = match result {
-        Ok(value) => (ToolResultStatus::Success, value),
-        Err(error) => (ToolResultStatus::Error, json!(error)),
-    };
-    McpToolResult {
-        call_id,
-        tool_name,
-        status,
-        content: content.to_string(),
-        metadata: Some(json!({ "structured_content": content })),
+        let (status, content) = match result {
+            Ok(value) => (ToolResultStatus::Success, value),
+            Err(error) => (ToolResultStatus::Error, json!(error)),
+        };
+        Ok(McpToolResult {
+            call_id: call.call_id,
+            tool_name: call.name,
+            status,
+            content: content.to_string(),
+            metadata: Some(json!({ "structured_content": content })),
+        })
     }
 }
 

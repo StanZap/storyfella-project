@@ -17,11 +17,8 @@ harbor/
     main.atelier       editable visual document with embedded references/layers
 ```
 
-New manifests store layout version 2 and the stable project UUID. Their
-user-managed files live in `assets/`, which the explorer uses as its root.
-Version-1 folders retain `story.sf` and included chapters in their original
-locations beside `story.db`. Earlier development builds of the `assets/`
-layout wrote an unversioned manifest, which opens as layout version 2.
+Manifests require layout version 2 and the stable project UUID. User-managed
+files live in `assets/`, which the explorer uses as its root.
 `story.db` remains internal project storage. The entry source
 can include additional project-relative `.sf` files; SF-PLAN-08 tracks remaining
 editor and source-map work. Database schema migrations remain the existing
@@ -33,7 +30,7 @@ Studio writes source and its authoring associations. Atelier writes editable
 path contract. Saved image revisions and editable documents have independent
 identities and lifetimes. Both editors open `storyfella.toml`; core callers may
 also open the folder. Atelier's ordinary Save writes `atelier/main.atelier`.
-Standalone `.atelier` documents retain their established format and workflow.
+Standalone and shared drawings use the same `.atelier` format.
 
 The database stores saved revision image paths relative to the project root.
 Loads resolve them to absolute host paths for existing compiler/playback/UI

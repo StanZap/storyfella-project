@@ -11,12 +11,15 @@ use storyfella_studio_core::{
     authoring::AssetCatalog,
     catalog,
     desktop_bridge::{
-        self, Call, Command, Failure, ProjectIdentity, Reply, Request, EDIT_BYTES, MAX_CONNECTIONS,
+        self, Call, Command, Failure, Reply, Request, WriterCommand, EDIT_BYTES, MAX_CONNECTIONS,
         SCHEMA,
     },
     project::{AuthoringLease, ProjectFolder},
     registry::ArtifactRegistry,
-    story::{load_bounded_source_workspace, source_path, AdditionalSources, StoryDocument},
+    story::{
+        included_edit_path, load_bounded_source_workspace, source_path, AdditionalSources,
+        StoryDocument,
+    },
 };
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
@@ -54,22 +57,31 @@ impl Grant {
 }
 
 pub(crate) fn use_bridge(state: Signal<AppState>) {
-    use_future(move || async move {
-        let result = match Grant::from_environment() {
-            Ok(Some(grant)) => run(state, grant).await,
-            Ok(None) => Ok(()),
-            Err(error) => Err(error),
-        };
-        if let Err(error) = result {
-            tracing::warn!(%error, "Studio MCP channel unavailable");
+    let window = dioxus::desktop::use_window();
+    use_future(move || {
+        let window = window.clone();
+        async move {
+            let result = match Grant::from_environment() {
+                Ok(Some(grant)) => run(state, grant, window).await,
+                Ok(None) => Ok(()),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = result {
+                tracing::warn!(%error, "Studio MCP channel unavailable");
+            }
         }
     });
 }
 
-async fn run(state: Signal<AppState>, grant: Grant) -> Result<()> {
+async fn run(
+    state: Signal<AppState>,
+    grant: Grant,
+    window: dioxus::desktop::DesktopContext,
+) -> Result<()> {
     let (sender, mut receiver) = mpsc::channel::<Call<Command>>(MAX_CONNECTIONS);
     let serve = desktop_bridge::serve(&grant.directory, sender);
     let dispatch = async {
+        let mut previews = preview::Previews::default();
         while let Some(call) = receiver.recv().await {
             let Call {
                 request,
@@ -78,8 +90,45 @@ async fn run(state: Signal<AppState>, grant: Grant) -> Result<()> {
                 response,
             } = call;
             if !response.is_closed() {
-                let (epoch, reply) =
-                    dispatch_call(state, &grant, request, session, epoch, &response).await;
+                let Request {
+                    schema,
+                    project,
+                    command,
+                } = request;
+                let (epoch, reply) = match command {
+                    Command::Preview(command) => (
+                        epoch,
+                        previews
+                            .dispatch(
+                                state,
+                                &grant,
+                                Request {
+                                    schema,
+                                    project,
+                                    command,
+                                },
+                                session,
+                                epoch,
+                                &window,
+                            )
+                            .await,
+                    ),
+                    Command::Writer(command) => {
+                        dispatch_call(
+                            state,
+                            &grant,
+                            Request {
+                                schema,
+                                project,
+                                command,
+                            },
+                            session,
+                            epoch,
+                            &response,
+                        )
+                        .await
+                    }
+                };
                 let _ = response.send((epoch, reply));
             }
         }
@@ -87,6 +136,9 @@ async fn run(state: Signal<AppState>, grant: Grant) -> Result<()> {
     };
     tokio::select! { result = serve => result, result = dispatch => result }
 }
+
+#[path = "live_mcp/preview.rs"]
+mod preview;
 
 #[cfg(test)]
 #[path = "live_mcp/tests.rs"]
@@ -110,7 +162,7 @@ fn owner(state: &AppState, grant: &Grant, epoch: Option<Uuid>) -> Result<Uuid, F
 #[derive(PartialEq)]
 struct Draft {
     entry: StoryDocument,
-    includes: BTreeMap<String, String>,
+    includes: Option<AdditionalSources>,
     registry: ArtifactRegistry,
     catalog_version: i64,
     name: String,
@@ -120,10 +172,7 @@ impl From<&AppState> for Draft {
     fn from(state: &AppState) -> Self {
         Self {
             entry: state.story.clone(),
-            includes: state
-                .additional_sources
-                .as_ref()
-                .map_or_else(BTreeMap::new, AdditionalSources::overrides),
+            includes: state.additional_sources.clone(),
             registry: state.registry.clone(),
             catalog_version: state.registry_version,
             name: state.project_name.clone(),
@@ -131,26 +180,35 @@ impl From<&AppState> for Draft {
     }
 }
 
+impl Draft {
+    fn overrides(&self, entry_name: &str) -> BTreeMap<String, String> {
+        let mut overrides = self
+            .includes
+            .as_ref()
+            .map_or_else(BTreeMap::new, AdditionalSources::overrides);
+        overrides.insert(entry_name.to_owned(), self.entry.source().to_owned());
+        overrides
+    }
+}
+
 async fn dispatch_call(
     mut state: Signal<AppState>,
     grant: &Grant,
-    request: Request,
+    request: Request<WriterCommand>,
     session: Uuid,
     epoch: Option<Uuid>,
     response: &oneshot::Sender<(Option<Uuid>, Reply)>,
 ) -> (Option<Uuid>, Reply) {
     let result = async {
-        if request.schema != SCHEMA || request.project != ProjectIdentity::from(&grant.folder) {
-            return Err(Failure::new("project_mismatch", "Connect to the channel for the selected shared project using a compatible Storyfella CLI."));
-        }
+        request.check_project(&grant.folder)?;
         let supplied = match &request.command {
-            Command::Inspect {} => None,
-            Command::Read { session, .. } | Command::Edit { session, .. } => Some(*session),
+            WriterCommand::Inspect {} => None,
+            WriterCommand::Read { session, .. } | WriterCommand::Edit { session, .. } => Some(*session),
         };
         if supplied.is_some() && (supplied != Some(session) || epoch.is_none()) {
             return Err(Failure::new("session_changed", "Inspect the project on this MCP connection to obtain its session."));
         }
-        if !grant.edit && matches!(request.command, Command::Edit { apply: true, .. }) {
+        if !grant.edit && matches!(request.command, WriterCommand::Edit { apply: true, .. }) {
             return Err(Failure::new("scope_denied", "Studio granted inspection only. Enable draft edits when opening a new channel."));
         }
         let (current, lease, draft) = {
@@ -173,7 +231,7 @@ async fn dispatch_call(
         }).await.map_err(|_| Failure::new("owner_busy", "Studio could not prepare the request. Inspect the draft before retrying."))?;
         owner(&state.peek(), grant, Some(current))?;
         let (reply, change) = prepared?;
-        if let Some(source) = change {
+        if let Some(change) = change {
             if response.is_closed() {
                 return Err(Failure::new("client_disconnected", "Reconnect and inspect the draft."));
             }
@@ -185,8 +243,20 @@ async fn dispatch_call(
                 return Err(Failure::new("stale_version", "The draft changed during validation. Read the current draft and retry."));
             }
             app.authoring_lease.as_ref().expect("owner checked the lease").verify().map_err(|_| moved())?;
+            if let Change::Include { file, sources, .. } = &change {
+                let entry = app.story.path().ok_or_else(moved)?;
+                let path = included_edit_path(entry, file).map_err(|_| source_changed())?;
+                if sources.get(file).and_then(StoryDocument::path) != Some(path.as_path()) {
+                    return Err(source_changed());
+                }
+            }
             drop(app);
-            state.write().set_story_source(source);
+            match change {
+                Change::Entry(source) => state.write().set_story_source(source),
+                Change::Include { file, sources, source } => state.write()
+                    .apply_checked_include(&file, sources, source)
+                    .map_err(|_| source_changed())?,
+            }
         }
         Ok((current, reply))
     }.await;
@@ -210,6 +280,22 @@ fn workspace_unavailable() -> Failure {
     )
 }
 
+fn source_changed() -> Failure {
+    Failure::new(
+        "source_changed",
+        "The included source changed or moved. Reopen it in Studio, then reread the draft.",
+    )
+}
+
+enum Change {
+    Entry(String),
+    Include {
+        file: String,
+        sources: AdditionalSources,
+        source: String,
+    },
+}
+
 fn digest(bytes: impl AsRef<[u8]>) -> String {
     let mut hex = String::with_capacity(64);
     for byte in Sha256::digest(bytes) {
@@ -220,18 +306,17 @@ fn digest(bytes: impl AsRef<[u8]>) -> String {
 
 fn prepare(
     draft: &Draft,
-    command: Command,
+    command: WriterCommand,
     session: Uuid,
     project_id: Uuid,
     can_edit: bool,
-) -> Result<(serde_json::Value, Option<String>), Failure> {
+) -> Result<(serde_json::Value, Option<Change>), Failure> {
     let entry = draft.entry.path().ok_or_else(moved)?;
     let name = entry
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(moved)?;
-    let mut overrides = draft.includes.clone();
-    overrides.insert(name.to_owned(), draft.entry.source().to_owned());
+    let mut overrides = draft.overrides(name);
     let workspace = load_bounded_source_workspace(entry, &overrides, MAX_STORY_BYTES);
     let assets = AssetCatalog::from_registry(&draft.registry);
     let asset_identities: Vec<_> = assets
@@ -249,28 +334,60 @@ fn prepare(
     ))
     .map_err(|_| workspace_unavailable())?;
     let version = digest(version_bytes);
-    let source = draft.entry.source();
+    let file = match &command {
+        WriterCommand::Read { file, .. } | WriterCommand::Edit { file, .. } => file.as_str(),
+        WriterCommand::Inspect {} => name,
+    }
+    .to_owned();
+    let file = file.as_str();
+    let included = file != name;
+    let (source, saved_source) = if included {
+        let source = workspace
+            .as_ref()
+            .map_err(|_| workspace_unavailable())?
+            .files
+            .get(file)
+            .ok_or_else(|| {
+                Failure::new(
+                    "unknown_file",
+                    "Use a project-relative file from draft inspection.",
+                )
+            })?;
+        let baseline = draft
+            .includes
+            .as_ref()
+            .and_then(|sources| sources.get(file))
+            .filter(|document| document.is_dirty())
+            .map_or(source.as_str(), StoryDocument::saved_source);
+        (source.as_str(), baseline)
+    } else {
+        (draft.entry.source(), draft.entry.saved_source())
+    };
     let mut reply = json!({
         "version": version,
-        "file": name,
+        "file": file,
         "draft_digest": digest(source),
-        "saved_digest": digest(draft.entry.saved_source()),
-        "dirty": draft.entry.is_dirty(),
+        "saved_digest": digest(saved_source),
+        "dirty": source != saved_source,
     });
     let mut change = None;
     match command {
-        Command::Inspect {} => {
+        WriterCommand::Inspect {} => {
             reply["schema_version"] = json!(SCHEMA);
             reply["session"] = json!(session);
             reply["project_id"] = json!(project_id);
             reply["name"] = json!(draft.name);
             reply["can_edit"] = json!(can_edit);
+            reply["files"] = json!(workspace
+                .as_ref()
+                .ok()
+                .map(|workspace| workspace.files.keys().collect::<Vec<_>>()));
         }
-        Command::Read { offset, .. } => {
+        WriterCommand::Read { offset, .. } => {
             if !source.is_char_boundary(offset) {
                 return Err(Failure::new(
                     "invalid_offset",
-                    "Use a UTF-8 byte boundary within the entry file.",
+                    "Use a UTF-8 byte boundary within the source file.",
                 ));
             }
             let mut end = (offset + READ_BYTES).min(source.len());
@@ -282,7 +399,7 @@ fn prepare(
             reply["next_offset"] = json!((end < source.len()).then_some(end));
             reply["source"] = json!(&source[offset..end]);
         }
-        Command::Edit {
+        WriterCommand::Edit {
             expected_version,
             start,
             end,
@@ -312,10 +429,10 @@ fn prepare(
             .map_err(|_| {
                 Failure::new(
                     "invalid_range",
-                    "Use an ordered range on UTF-8 byte boundaries within the entry file.",
+                    "Use an ordered range on UTF-8 byte boundaries within the source file.",
                 )
             })?;
-            overrides.insert(name.to_owned(), updated.clone());
+            overrides.insert(file.to_owned(), updated.clone());
             let proposed = load_bounded_source_workspace(entry, &overrides, MAX_STORY_BYTES)
                 .map_err(|_| workspace_unavailable())?;
             let expanded = proposed.expand().map_err(|_| workspace_unavailable())?;
@@ -345,7 +462,41 @@ fn prepare(
                 .collect();
             let changed = updated != source;
             if valid && changed && apply {
-                change = Some(updated);
+                // An editor outside Studio can change a saved include while
+                // compilation runs. Keep the approved graph pinned to its bytes.
+                let latest =
+                    load_bounded_source_workspace(entry, &draft.overrides(name), MAX_STORY_BYTES);
+                let latest_proposal =
+                    load_bounded_source_workspace(entry, &overrides, MAX_STORY_BYTES)
+                        .map_err(|_| source_changed())?;
+                if latest.as_ref().ok() != workspace.as_ref().ok() || latest_proposal != proposed {
+                    return Err(source_changed());
+                }
+                change = Some(if included {
+                    let path = included_edit_path(entry, file).map_err(|_| source_changed())?;
+                    let mut sources = draft
+                        .includes
+                        .clone()
+                        .map_or_else(|| AdditionalSources::new(entry), Ok)
+                        .map_err(|_| source_changed())?;
+                    if sources
+                        .get(file)
+                        .is_some_and(|document| document.source() != source)
+                    {
+                        return Err(source_changed());
+                    }
+                    let current = sources.open(file).map_err(|_| source_changed())?;
+                    if current.path() != Some(path.as_path()) || current.source() != source {
+                        return Err(source_changed());
+                    }
+                    Change::Include {
+                        file: file.to_owned(),
+                        sources,
+                        source: updated,
+                    }
+                } else {
+                    Change::Entry(updated)
+                });
             }
             reply = json!({
                 "base_version": version,

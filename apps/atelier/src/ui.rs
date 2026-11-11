@@ -1317,7 +1317,7 @@ impl DrawingApp {
         let artboard_tool =
             self.panel == Panel::Canvas && self.view.turns == 0 && !self.view.mirror;
         let region = if self.image_crop.is_none() {
-            self.generation_region
+            self.drawing_outline()
         } else {
             None
         };
@@ -3481,9 +3481,11 @@ impl DrawingApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let drawing = mode == PromptComposerMode::Drawing;
-        let new_layer = drawing && self.drawing_create_layer;
-        let selection = drawing && !new_layer && self.region_bounds().is_some();
-        let separate = selection && self.selection_mode == crate::workflow::SelectionMode::Separate;
+        use crate::workflow::{DrawingTarget, SelectionMode};
+        let new_layer = drawing && self.doc.drawing_target == DrawingTarget::Layer;
+        let region = self.doc.drawing_target.region().filter(|_| drawing);
+        let selection = region.is_some();
+        let separate = region.is_some_and(|(mode, _)| mode == SelectionMode::Separate);
         let has_image_options = !drawing
             || separate
             || new_layer
@@ -3513,7 +3515,8 @@ impl DrawingApp {
             })
             .when(drawing && !separate && !new_layer, |r| {
                 let (x, y, w, h) =
-                    self.region_bounds()
+                    region
+                        .map(|(_, rect)| rect)
                         .unwrap_or((0, 0, self.doc.width, self.doc.height));
                 r.child(label(if selection {
                     format!("{w} × {h} at {x}, {y}")
@@ -3537,7 +3540,7 @@ impl DrawingApp {
                                 cx,
                             )
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.use_full_canvas(cx);
+                                this.set_drawing_target(DrawingTarget::Full, cx);
                                 this.restore_prompt(window, cx);
                             })),
                     )
@@ -3567,8 +3570,7 @@ impl DrawingApp {
                             .label("Create image layer")
                             .atelier_selected(new_layer, cx)
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.use_full_canvas(cx);
-                                this.drawing_create_layer = true;
+                                this.set_drawing_target(DrawingTarget::Layer, cx);
                                 this.restore_prompt(window, cx);
                                 cx.notify();
                             })),
@@ -3582,12 +3584,12 @@ impl DrawingApp {
                         (
                             "blend-selection",
                             "Blend into artboard",
-                            crate::workflow::SelectionMode::Blend,
+                            SelectionMode::Blend,
                         ),
                         (
                             "separate-selection",
                             "Create separate image",
-                            crate::workflow::SelectionMode::Separate,
+                            SelectionMode::Separate,
                         ),
                     ]
                     .into_iter()
@@ -3596,9 +3598,14 @@ impl DrawingApp {
                             .ghost()
                             .small()
                             .label(name)
-                            .atelier_selected(self.selection_mode == choice, cx)
+                            .atelier_selected(region.is_some_and(|(mode, _)| mode == choice), cx)
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.selection_mode = choice;
+                                if let Some((_, rect)) = this.doc.drawing_target.region() {
+                                    this.set_drawing_target(
+                                        DrawingTarget::Region { mode: choice, rect },
+                                        cx,
+                                    );
+                                }
                                 this.restore_prompt(window, cx);
                                 cx.notify();
                             }))
@@ -4167,6 +4174,7 @@ impl DrawingApp {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.checkpoint();
                                 this.doc.rotate();
+                                this.restore_drawing_context();
                                 this.changed();
                                 this.view = Viewport::default();
                                 this.sync_inputs(window, cx);

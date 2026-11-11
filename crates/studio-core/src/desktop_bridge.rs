@@ -26,11 +26,12 @@ use uuid::Uuid;
 
 use crate::project::ProjectFolder;
 
-const SOCKET: &str = "writer.sock";
-const MAX_FRAME: usize = 512 * 1024;
+const SOCKET: &str = "owner.sock";
+const MAX_REQUEST: usize = 512 * 1024;
+const MAX_REPLY: usize = 4 * 1024 * 1024;
 pub const MAX_CONNECTIONS: usize = 8;
 const FRAME_TIMEOUT: Duration = Duration::from_secs(10);
-pub const SCHEMA: u32 = 1;
+pub const SCHEMA: u32 = 2;
 pub const EDIT_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,33 +51,87 @@ impl From<&ProjectFolder> for ProjectIdentity {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Request<C = Command> {
+pub struct Request<C> {
     pub schema: u32,
     pub project: ProjectIdentity,
     pub command: C,
 }
 
+impl<C> Request<C> {
+    pub fn check_project(&self, folder: &ProjectFolder) -> Result<(), Failure> {
+        if self.schema != SCHEMA {
+            return Err(Failure::new(
+                "schema_mismatch",
+                "Build the desktop app and MCP client from the same Storyfella revision.",
+            ));
+        }
+        if self.project != ProjectIdentity::from(folder) {
+            return Err(Failure::new(
+                "project_mismatch",
+                "Connect to the channel for the selected shared project.",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    Writer(WriterCommand),
+    Preview(PreviewCommand),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum WriterCommand {
     Inspect {},
     Read {
         session: Uuid,
+        file: String,
         #[serde(default)]
         offset: usize,
     },
     Edit {
         session: Uuid,
+        file: String,
         expected_version: String,
         start: usize,
         end: usize,
         text: String,
-        #[serde(default)]
         apply: bool,
     },
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum PreviewCommand {
+    Start {
+        session: Uuid,
+    },
+    Step {
+        session: Uuid,
+        preview: Uuid,
+        action: PreviewAction,
+    },
+    Capture {
+        session: Uuid,
+        preview: Uuid,
+        width: u32,
+        height: u32,
+    },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PreviewAction {
+    Inspect,
+    Advance,
+    Choose { index: usize },
+    Checkpoint,
+    Restore,
+}
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Failure {
     pub code: String,
     pub message: String,
@@ -134,7 +189,7 @@ async fn connection<C: DeserializeOwned>(
     while stream.read(&mut header[..1]).await? != 0 {
         let request = timeout(FRAME_TIMEOUT, async {
             stream.read_exact(&mut header[1..]).await?;
-            let mut bytes = vec![0; frame_size(u32::from_be_bytes(header))?];
+            let mut bytes = vec![0; frame_size(u32::from_be_bytes(header), MAX_REQUEST)?];
             stream.read_exact(&mut bytes).await?;
             Ok::<Request<C>, anyhow::Error>(serde_json::from_slice(&bytes)?)
         })
@@ -155,7 +210,11 @@ async fn connection<C: DeserializeOwned>(
             } => result?,
         };
         epoch = next_epoch;
-        timeout(FRAME_TIMEOUT, stream.write_all(&encode(&result)?)).await??;
+        timeout(
+            FRAME_TIMEOUT,
+            stream.write_all(&encode(&result, MAX_REPLY)?),
+        )
+        .await??;
     }
     Ok(())
 }
@@ -253,7 +312,7 @@ impl Client {
         )
         };
         // A rejected oversized request leaves the connection usable.
-        let frame = encode(&request)
+        let frame = encode(&request, MAX_REQUEST)
             .map_err(|_| Failure::new("invalid_arguments", "The desktop request is too large."))?;
         let mut stream = self.stream.lock().map_err(|_| disconnected())?;
         match exchange(stream.as_mut().ok_or_else(disconnected)?, &frame) {
@@ -266,18 +325,18 @@ impl Client {
     }
 }
 
-fn encode(message: &impl Serialize) -> Result<Vec<u8>> {
+fn encode(message: &impl Serialize, limit: usize) -> Result<Vec<u8>> {
     let body = serde_json::to_vec(message)?;
-    let length = frame_size(u32::try_from(body.len())?)?;
+    let length = frame_size(u32::try_from(body.len())?, limit)?;
     let mut frame = Vec::with_capacity(length + 4);
     frame.extend((length as u32).to_be_bytes());
     frame.extend(body);
     Ok(frame)
 }
 
-fn frame_size(length: u32) -> Result<usize> {
+fn frame_size(length: u32, limit: usize) -> Result<usize> {
     ensure!(
-        length > 0 && length as usize <= MAX_FRAME,
+        length > 0 && length as usize <= limit,
         "Invalid desktop MCP frame size"
     );
     Ok(length as usize)
@@ -287,7 +346,31 @@ fn exchange<T: DeserializeOwned>(stream: &mut (impl Read + Write), frame: &[u8])
     stream.write_all(frame)?;
     let mut size = [0; 4];
     stream.read_exact(&mut size)?;
-    let mut bytes = vec![0; frame_size(u32::from_be_bytes(size))?];
+    let mut bytes = vec![0; frame_size(u32::from_be_bytes(size), MAX_REPLY)?];
     stream.read_exact(&mut bytes)?;
     Ok(serde_json::from_slice(&bytes)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writer_requests_require_the_file_and_edit_intent() {
+        let session = Uuid::new_v4();
+        assert!(serde_json::from_value::<WriterCommand>(serde_json::json!({
+            "read": {"session": session}
+        }))
+        .is_err());
+        let mut edit = serde_json::json!({"edit": {
+            "session": session, "file": "story.sf", "expected_version": "current",
+            "start": 0, "end": 0, "text": "line"
+        }});
+        assert!(serde_json::from_value::<WriterCommand>(edit.clone()).is_err());
+        edit["edit"]["apply"] = serde_json::json!(false);
+        assert!(matches!(
+            serde_json::from_value(edit).unwrap(),
+            WriterCommand::Edit { apply: false, .. }
+        ));
+    }
 }

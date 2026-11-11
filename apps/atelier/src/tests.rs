@@ -393,24 +393,37 @@ fn selection_blend_crops_full_context_and_never_exports_a_pending_result() {
 
 #[test]
 fn legacy_generated_images_upgrade_once_without_turning_imported_references_into_artwork() {
-    let mut project = doc();
-    project.version = 1;
-    project.layers[0].strokes.push(stroke(Tool::Pencil, 48.));
     let mut generated = colored_reference("Generated", [255, 0, 0, 255], 128, 96);
     generated.prompt = "A character".into();
     generated.parent = Some("parent-identity".into());
-    project.references = vec![
-        Arc::new(generated),
-        Arc::new(colored_reference("Imported", [0, 255, 0, 255], 128, 96)),
-    ];
+    let original = serde_json::json!({
+        "version": 1,
+        "title": "Original drawing",
+        "width": 128,
+        "height": 96,
+        "layers": [{
+            "name": "Sketch", "visible": true, "opacity": 1.0,
+            "strokes": [stroke(Tool::Pencil, 48.)],
+        }],
+        "active_layer": 0,
+        "references": [
+            generated,
+            colored_reference("Imported", [0, 255, 0, 255], 128, 96),
+        ],
+        "reference": 1,
+        "note": "",
+    });
     let directory = temporary("artboard-migration");
     let path = directory.join("legacy.atelier");
-    document::atomic_write(&path, &serde_json::to_vec(&project).unwrap()).unwrap();
+    let bytes = serde_json::to_vec(&original).unwrap();
+    document::atomic_write(&path, &bytes).unwrap();
     let upgraded = document::load(&path).unwrap();
-    assert_eq!(upgraded.version, 2);
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert_eq!(upgraded.version, document::DOCUMENT_VERSION);
     assert_eq!(upgraded.canvases.len(), 1);
     assert_eq!(upgraded.layers[0].strokes.len(), 1);
     assert_eq!(upgraded.references.len(), 1);
+    assert_eq!(upgraded.reference, Some(0));
     let image = upgraded.canvases[0].layers[0].image.as_ref().unwrap();
     assert_eq!(image.reference.parent.as_deref(), Some("parent-identity"));
     assert!(!image.reference.fingerprint.is_empty());
@@ -434,7 +447,7 @@ fn open_project_recovery_keeps_each_document_path_dirty_state_and_drafts() {
         .prompt_drafts
         .insert("new".into(), "second draft".into());
     project_tabs::save_session(
-        &directory.join("open-projects"),
+        &directory.join(crate::project_tabs::RECOVERY_DIRECTORY),
         vec![
             (
                 RecoveryTab {
@@ -507,7 +520,7 @@ fn reordered_project_recovery_keeps_active_identity_and_closed_tabs_out() {
             })
             .collect()
     };
-    let session_dir = directory.join("open-projects");
+    let session_dir = directory.join(crate::project_tabs::RECOVERY_DIRECTORY);
     project_tabs::save_session(&session_dir, snapshot(&order)).unwrap();
     let recovered = project_tabs::recover(&directory).unwrap();
     assert_eq!(recovered.order, [7, 3, 11]);
@@ -528,21 +541,66 @@ fn reordered_project_recovery_keeps_active_identity_and_closed_tabs_out() {
 }
 
 #[test]
-fn legacy_project_session_keeps_its_active_tab_and_upgrades_order() {
-    let directory = temporary("legacy-tabs");
-    let session = directory.join("open-projects");
+fn drawing_targets_are_required_for_active_and_parked_artboards() {
+    use crate::workflow::{DrawingTarget, SelectionMode};
+
+    let mut project = doc();
+    project.create_canvas().unwrap();
+    let separate = DrawingTarget::Region {
+        mode: SelectionMode::Separate,
+        rect: (8, 8, 32, 32),
+    };
+    project.drawing_target = separate;
+    let board = project.canvas_id;
+    project.create_canvas().unwrap();
+    assert_eq!(project.drawing_target, DrawingTarget::Full);
+    let saved = serde_json::to_value(&project).unwrap();
+    assert_eq!(saved["drawing_target"], serde_json::json!({"kind": "full"}));
+    let mut reopened: document::Document = serde_json::from_value(saved.clone()).unwrap();
+    reopened.select_canvas(board).unwrap();
+    assert_eq!(reopened.drawing_target, separate);
+    assert_eq!(reopened.drawing_target.blend_mask(), None);
+
+    let mut missing_active = saved.clone();
+    missing_active
+        .as_object_mut()
+        .unwrap()
+        .remove("drawing_target");
+    let mut missing_parked = saved.clone();
+    missing_parked["canvases"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("drawing_target");
+    let mut old_prompt_targets = saved.clone();
+    old_prompt_targets["artboard_prompt_targets"] = serde_json::json!({});
+    let mut old_mask = saved;
+    old_mask["blend_mask"] = serde_json::Value::Null;
+    for invalid in [missing_active, missing_parked, old_prompt_targets, old_mask] {
+        assert!(serde_json::from_value::<document::Document>(invalid).is_err());
+    }
+}
+
+#[test]
+fn recovery_requires_explicit_tab_state_and_one_active_project() {
+    let directory = temporary("invalid-recovery-tabs");
+    let session = directory.join(crate::project_tabs::RECOVERY_DIRECTORY);
     document::save(&session.join("3.atelier"), &doc()).unwrap();
     document::save(&session.join("7.atelier"), &doc()).unwrap();
-    document::atomic_write(
-        &session.join("session.json"),
-        br#"[{"epoch":7,"path":null,"dirty":true},{"epoch":3,"path":null,"dirty":false}]"#,
-    )
-    .unwrap();
-    let recovered = crate::project_tabs::recover(&directory).unwrap();
-    assert_eq!(recovered.order, [3, 7]);
-    assert_eq!(recovered.active.unwrap().epoch, 3);
-    document::atomic_write(&session.join("session.json"), br#"[{"epoch":7,"path":null,"dirty":true,"active":true},{"epoch":3,"path":null,"dirty":false,"active":true}]"#).unwrap();
-    assert!(crate::project_tabs::recover(&directory).is_err());
+    for entries in [
+        serde_json::json!([{"epoch": 3, "path": null, "shared": null, "dirty": true}]),
+        serde_json::json!([{"epoch": 3, "path": null, "shared": null, "dirty": true, "active": false}]),
+        serde_json::json!([
+            {"epoch": 3, "path": null, "shared": null, "dirty": true, "active": true},
+            {"epoch": 7, "path": null, "shared": null, "dirty": false, "active": true},
+        ]),
+    ] {
+        document::atomic_write(
+            &session.join("session.json"),
+            &serde_json::to_vec(&entries).unwrap(),
+        )
+        .unwrap();
+        assert!(crate::project_tabs::recover(&directory).is_err());
+    }
     std::fs::remove_dir_all(directory).unwrap();
 }
 
@@ -646,7 +704,11 @@ fn prepare_project_tabs_fixture() {
             project,
         ));
     }
-    project_tabs::save_session(&directory.join("open-projects"), projects).unwrap();
+    project_tabs::save_session(
+        &directory.join(crate::project_tabs::RECOVERY_DIRECTORY),
+        projects,
+    )
+    .unwrap();
     println!("Project-tab fixture: {}", directory.display());
 }
 
@@ -800,14 +862,12 @@ fn source_bound_prompt_drafts_survive_project_and_recovery_writes() {
     project
         .prompt_drafts
         .insert(id.clone(), "Unsent edit draft".into());
-    for name in ["project.atelier", "recovery.atelier"] {
-        let path = directory.join(name);
-        document::save(&path, &project).unwrap();
-        let restored = document::load(&path).unwrap();
-        assert_eq!(restored.prompt_drafts["new"], "New image draft");
-        assert_eq!(restored.prompt_drafts[&id], "Unsent edit draft");
-        assert_eq!(restored.active_prompt_target.as_deref(), Some(id.as_str()));
-    }
+    let path = directory.join("project.atelier");
+    document::save(&path, &project).unwrap();
+    let restored = document::load(&path).unwrap();
+    assert_eq!(restored.prompt_drafts["new"], "New image draft");
+    assert_eq!(restored.prompt_drafts[&id], "Unsent edit draft");
+    assert_eq!(restored.active_prompt_target.as_deref(), Some(id.as_str()));
     let invalid_path = directory.join("cannot-save.atelier");
     std::fs::create_dir(&invalid_path).unwrap();
     assert!(document::save(&invalid_path, &project).is_err());
@@ -1249,7 +1309,6 @@ fn imported_artwork_preserves_paint_target_and_rejects_missing_artboard_atomical
 #[test]
 fn group_opacity_applies_to_composited_artwork_once() {
     let mut project = doc();
-    project.version = 3;
     project.layers[0].group = Some("Group".into());
     project.layers[0].image = Some(document::ImageLayer {
         reference: Arc::new(colored_reference("Red", [255, 0, 0, 255], 16, 16)),
@@ -1503,7 +1562,20 @@ fn prepare_workflow_fixture() {
     };
     project.references.push(Arc::new(original));
     project.reference = Some(0);
-    document::save(&directory.join("recovery.atelier"), &project).unwrap();
+    crate::project_tabs::save_session(
+        &directory.join(crate::project_tabs::RECOVERY_DIRECTORY),
+        vec![(
+            crate::project_tabs::RecoveryTab {
+                epoch: 1,
+                path: None,
+                shared: None,
+                dirty: true,
+                active: true,
+            },
+            project,
+        )],
+    )
+    .unwrap();
     println!("Live UX data: {}", directory.display());
 }
 
@@ -1673,30 +1745,45 @@ fn validation_rejects_corrupt_and_unsafe_projects() {
 #[test]
 fn queued_saves_keep_latest_recovery() {
     let directory = temporary("ordering");
-    let path = directory.join("recovery.atelier");
+    let path = directory.join(crate::project_tabs::RECOVERY_DIRECTORY);
     let workers = worker::start();
     for revision in 1..=5 {
         let mut doc = doc();
         doc.title = format!("Revision {revision}");
         workers
             .storage
-            .send(Storage::Save {
-                owner: None,
-                doc,
-                path: path.clone(),
+            .send(Storage::WorkspaceRecovery {
+                directory: path.clone(),
+                projects: vec![(
+                    crate::project_tabs::RecoveryTab {
+                        epoch: 1,
+                        path: None,
+                        shared: None,
+                        dirty: true,
+                        active: true,
+                    },
+                    doc,
+                )],
                 revision,
                 epoch: 1,
-                automatic: true,
             })
             .unwrap();
     }
     for _ in 0..5 {
         match workers.events.recv_timeout(Duration::from_secs(5)).unwrap() {
-            Event::Saved { result, .. } => result.unwrap(),
+            Event::WorkspaceSaved { result, .. } => result.unwrap(),
             _ => panic!("unexpected event"),
         }
     }
-    assert_eq!(document::load(&path).unwrap().title, "Revision 5");
+    assert_eq!(
+        crate::project_tabs::recover(&directory)
+            .unwrap()
+            .active
+            .unwrap()
+            .doc
+            .title,
+        "Revision 5"
+    );
     std::fs::remove_dir_all(directory).unwrap();
 }
 #[test]
@@ -1946,7 +2033,11 @@ fn serve_activity_ui_fixture() {
             project,
         ));
     }
-    project_tabs::save_session(&directory.join("open-projects"), projects).unwrap();
+    project_tabs::save_session(
+        &directory.join(crate::project_tabs::RECOVERY_DIRECTORY),
+        projects,
+    )
+    .unwrap();
     println!(
         "Activity fixture ready: {} at {endpoint}",
         directory.display()

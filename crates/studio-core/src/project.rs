@@ -25,8 +25,7 @@ const AUTHORING_LOCK: &str = ".storyfella-studio.lock";
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {
-    // Development builds of the assets layout omitted this field.
-    version: Option<u32>,
+    version: u32,
     project_id: Uuid,
 }
 
@@ -34,7 +33,6 @@ struct Manifest {
 pub struct ProjectFolder {
     root: PathBuf,
     id: Uuid,
-    entry: &'static str,
 }
 
 /// Retained by Studio while the project owns editable Writer buffers.
@@ -152,11 +150,7 @@ impl ProjectFolder {
         fs::create_dir(root.join("assets"))?;
         fs::create_dir(root.join("artwork"))?;
         fs::create_dir(root.join("atelier"))?;
-        let folder = Self {
-            root,
-            id,
-            entry: ASSETS_SOURCE,
-        };
+        let folder = Self { root, id };
         let mut registry = registry.clone();
         crate::catalog::reconcile_declarations(&mut registry, source, false);
         let catalog = crate::authoring::AssetCatalog::from_registry(&registry);
@@ -172,7 +166,7 @@ impl ProjectFolder {
             folder.root.join(ASSETS_SOURCE),
         )?;
         let manifest = toml::to_string_pretty(&Manifest {
-            version: Some(CURRENT_VERSION),
+            version: CURRENT_VERSION,
             project_id: id,
         })?;
         let mut file = fs::OpenOptions::new()
@@ -236,11 +230,11 @@ impl ProjectFolder {
     fn check_layout(&self) -> Result<()> {
         ensure!(self.database().is_file(), "Project database is missing");
         self.resolve(DATABASE)?;
-        self.resolve(self.entry)?;
+        self.resolve(ASSETS_SOURCE)?;
         self.resolve("artwork")?;
         self.resolve("atelier")?;
         ensure!(
-            self.root.join(self.entry).is_file(),
+            self.root.join(ASSETS_SOURCE).is_file(),
             "Story source is missing"
         );
         Ok(())
@@ -291,15 +285,14 @@ impl ProjectFolder {
 
     fn read_manifest(root: PathBuf) -> Result<Self> {
         let manifest: Manifest = toml::from_str(&fs::read_to_string(root.join(MANIFEST))?)?;
-        let entry = match manifest.version {
-            Some(1) => "story.sf",
-            Some(CURRENT_VERSION) | None => ASSETS_SOURCE,
-            Some(version) => bail!("Unsupported Storyfella project version {version}"),
-        };
+        ensure!(
+            manifest.version == CURRENT_VERSION,
+            "Unsupported Storyfella project version {}",
+            manifest.version
+        );
         Ok(Self {
             root,
             id: manifest.project_id,
-            entry,
         })
     }
 
@@ -410,17 +403,13 @@ pub fn database_for_source(source: &Path) -> Result<Option<PathBuf>> {
     else {
         return Ok(None);
     };
-    let root = if parent.join(MANIFEST).exists() {
-        Some(parent)
-    } else {
-        parent
-            .parent()
-            .filter(|root| parent.ends_with("assets") && root.join(MANIFEST).exists())
-    };
+    let root = parent
+        .parent()
+        .filter(|root| parent.ends_with("assets") && root.join(MANIFEST).exists());
     let Some(root) = root else { return Ok(None) };
     let folder = ProjectFolder::read_manifest(root.to_owned())?;
     ensure!(
-        folder.resolve(folder.entry)? == source,
+        folder.resolve(ASSETS_SOURCE)? == source,
         "Open the project's entry story or manifest instead"
     );
     let database = folder.database();
@@ -430,7 +419,7 @@ pub fn database_for_source(source: &Path) -> Result<Option<PathBuf>> {
 
 pub(crate) fn shared_source_path(database: &Path) -> Option<PathBuf> {
     let folder = for_database(database).ok()??;
-    Some(folder.root.join(folder.entry))
+    Some(folder.root.join(ASSETS_SOURCE))
 }
 
 pub(crate) fn prepare_registry(

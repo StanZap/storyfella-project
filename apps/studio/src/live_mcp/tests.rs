@@ -3,14 +3,16 @@ use std::{cell::Cell, fs, path::Path, rc::Rc, time::Duration};
 use tokio::time::timeout;
 
 use serde_json::Value;
+use storyfella_studio_core::desktop_bridge::ProjectIdentity;
 
 const ENTRY: &str = "include \"opening.sf\"\n";
 const OPENING: &str = "scene start\n  narrate: First draft.\n  end\n";
 const LOCAL: &str = "scene start\n  narrate: Local edit.\n  end\n";
 
-fn edit(session: Uuid, version: &Value, text: &str, start: usize, end: usize) -> Command {
-    Command::Edit {
+fn edit(session: Uuid, version: &Value, text: &str, start: usize, end: usize) -> WriterCommand {
+    WriterCommand::Edit {
         session,
+        file: "story.sf".into(),
         expected_version: version.as_str().unwrap().into(),
         start,
         end,
@@ -29,7 +31,7 @@ async fn send(
     project: &ProjectFolder,
     client: Uuid,
     epoch: &mut Option<Uuid>,
-    command: Command,
+    command: WriterCommand,
 ) -> std::result::Result<Value, String> {
     let request = Request {
         schema: SCHEMA,
@@ -73,18 +75,39 @@ fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
             let b = Uuid::new_v4();
             let mut owner_a = None;
             let mut owner_b = None;
-            let initial = send(state, &grant, &folder, a, &mut owner_a, Command::Inspect {})
-                .await
-                .unwrap();
+            let initial = send(
+                state,
+                &grant,
+                &folder,
+                a,
+                &mut owner_a,
+                WriterCommand::Inspect {},
+            )
+            .await
+            .unwrap();
             assert!(!initial["dirty"].as_bool().unwrap());
             assert_eq!(session(&initial), a);
-            let wrong_project = send(state, &grant, &second, b, &mut owner_b, Command::Inspect {})
-                .await
-                .unwrap_err();
+            let wrong_project = send(
+                state,
+                &grant,
+                &second,
+                b,
+                &mut owner_b,
+                WriterCommand::Inspect {},
+            )
+            .await
+            .unwrap_err();
             assert_eq!(wrong_project, "project_mismatch");
-            let other = send(state, &grant, &folder, b, &mut owner_b, Command::Inspect {})
-                .await
-                .unwrap();
+            let other = send(
+                state,
+                &grant,
+                &folder,
+                b,
+                &mut owner_b,
+                WriterCommand::Inspect {},
+            )
+            .await
+            .unwrap();
             assert_ne!(session(&other), a);
             let cross_client = send(
                 state,
@@ -92,8 +115,9 @@ fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
                 &folder,
                 b,
                 &mut owner_b,
-                Command::Read {
+                WriterCommand::Read {
                     session: a,
+                    file: "story.sf".into(),
                     offset: 0,
                 },
             )
@@ -124,8 +148,9 @@ fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
                 &folder,
                 b,
                 &mut owner_b,
-                Command::Read {
+                WriterCommand::Read {
                     session: b,
+                    file: "story.sf".into(),
                     offset: 0,
                 },
             )
@@ -180,15 +205,72 @@ fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
             assert!(state.write().undo());
             assert_eq!(state.read().story.source(), format!("{ENTRY}\n"));
 
+            let chapter_read = send(
+                state,
+                &grant,
+                &folder,
+                b,
+                &mut owner_b,
+                WriterCommand::Read {
+                    session: b,
+                    file: "opening.sf".into(),
+                    offset: 0,
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(chapter_read["source"], LOCAL);
+            let start = LOCAL.find("Local edit.").unwrap();
+            let chapter_edit = WriterCommand::Edit {
+                session: b,
+                file: "opening.sf".into(),
+                expected_version: chapter_read["version"].as_str().unwrap().into(),
+                start,
+                end: start + "Local edit.".len(),
+                text: "MCP chapter.".into(),
+                apply: true,
+            };
+            assert_eq!(
+                send(state, &grant, &folder, b, &mut owner_b, chapter_edit)
+                    .await
+                    .unwrap()["applied"],
+                true
+            );
+            assert!(state
+                .read()
+                .additional_sources
+                .as_ref()
+                .unwrap()
+                .get("opening.sf")
+                .unwrap()
+                .source()
+                .contains("MCP chapter."));
+            assert_eq!(fs::read_to_string(&chapter).unwrap(), OPENING);
+            assert!(state.write().undo());
+
             crate::commands::open_project(&second.database(), state).unwrap();
-            let closed = send(state, &grant, &folder, b, &mut owner_b, Command::Inspect {})
-                .await
-                .unwrap_err();
+            let closed = send(
+                state,
+                &grant,
+                &folder,
+                b,
+                &mut owner_b,
+                WriterCommand::Inspect {},
+            )
+            .await
+            .unwrap_err();
             assert_eq!(closed, "owner_changed");
             crate::commands::open_project(&first, state).unwrap();
-            let old = send(state, &grant, &folder, a, &mut owner_a, Command::Inspect {})
-                .await
-                .unwrap_err();
+            let old = send(
+                state,
+                &grant,
+                &folder,
+                a,
+                &mut owner_a,
+                WriterCommand::Inspect {},
+            )
+            .await
+            .unwrap_err();
             assert_eq!(old, "owner_changed");
             let reconnected = send(
                 state,
@@ -196,7 +278,7 @@ fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
                 &folder,
                 Uuid::new_v4(),
                 &mut None,
-                Command::Inspect {},
+                WriterCommand::Inspect {},
             )
             .await
             .unwrap();

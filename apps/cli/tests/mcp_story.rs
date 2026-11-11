@@ -159,12 +159,14 @@ async fn mcp_creates_and_playtests_a_branching_chapter_then_reopens_in_a_second_
         )
         .await;
     assert_eq!(error["code"], "unknown_file");
+    let missing_file = client.call(READ, json!({"session":session}), true).await;
+    assert_eq!(missing_file["code"], "invalid_arguments");
     let invalid_line = "    option \"🌊\"";
     let invalid_source = format!("scene start\n  choice \"Continue?\"\n{invalid_line}\n");
     let invalid = client
         .call(
             EDIT,
-            json!({"session":session,"expected_version":first_version,"start":0,"end":0,
+            json!({"session":session,"file":project["entry"],"expected_version":first_version,"start":0,"end":0,
                 "text":invalid_source}),
             false,
         )
@@ -184,7 +186,7 @@ async fn mcp_creates_and_playtests_a_branching_chapter_then_reopens_in_a_second_
     assert!(invalid["proposal"].is_null());
     assert_eq!(fs::read_to_string(&path).unwrap(), "");
 
-    let mut edit = json!({"session":session,"expected_version":first_version,"start":0,"end":0,"text":chapter});
+    let mut edit = json!({"session":session,"file":project["entry"],"expected_version":first_version,"start":0,"end":0,"text":chapter});
     let proposed = client.call(EDIT, edit.clone(), false).await;
     assert_eq!(proposed["valid"], true);
     assert_eq!(proposed["saved"], false);
@@ -202,12 +204,22 @@ async fn mcp_creates_and_playtests_a_branching_chapter_then_reopens_in_a_second_
     assert_eq!(saved["saved"], true);
     assert_eq!(fs::read_to_string(&path).unwrap(), chapter);
     assert_eq!(client.call(EDIT, edit, true).await["code"], "stale_version");
-    let read = client.call(READ, json!({"session":session}), false).await;
+    let read = client
+        .call(
+            READ,
+            json!({"session":session,"file":project["entry"]}),
+            false,
+        )
+        .await;
     assert_eq!(read["source"], chapter);
     assert_eq!(read["version"], saved["version"]);
     let split_utf8 = chapter.find('🌊').unwrap() + 1;
     let error = client
-        .call(READ, json!({"session":session,"offset":split_utf8}), true)
+        .call(
+            READ,
+            json!({"session":session,"file":project["entry"],"offset":split_utf8}),
+            true,
+        )
         .await;
     assert_eq!(error["code"], "invalid_offset");
 
@@ -297,7 +309,7 @@ async fn mcp_creates_and_playtests_a_branching_chapter_then_reopens_in_a_second_
         .execute_tool_call(ToolCall {
             id: "read".into(),
             name: READ.into(),
-            arguments: json!({"session":session}),
+            arguments: json!({"session":session,"file":inspected["entry"]}),
         })
         .await
         .unwrap();
@@ -328,7 +340,7 @@ async fn mcp_rejects_changed_includes_and_a_replaced_writer_lock() {
         .call(READ, json!({"session":session,"file":"chapter.sf"}), false)
         .await;
     assert!(included["source"].as_str().unwrap().contains("First."));
-    let mut edit = json!({"session":session,"expected_version":project["version"],
+    let mut edit = json!({"session":session,"file":project["entry"],"expected_version":project["version"],
         "start":0,"end":0,"text":"# Reviewed\n"});
     let preview = client.call(EDIT, edit.clone(), false).await;
     assert_eq!(preview["valid"], true, "{preview}");
@@ -350,7 +362,7 @@ async fn mcp_rejects_changed_includes_and_a_replaced_writer_lock() {
     let preview = client
         .call(
             EDIT,
-            json!({"session":session,"expected_version":current["version"],"start":0,"end":0,
+            json!({"session":session,"file":current["entry"],"expected_version":current["version"],"start":0,"end":0,
                 "text":"# Reviewed\n"}),
             false,
         )

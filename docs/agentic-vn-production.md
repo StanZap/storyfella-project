@@ -41,8 +41,7 @@ Edit diagnostics report the file, the half-open UTF-8 byte range
 `end_position`. Each position has a zero-based `line` and a zero-based
 `character` column in UTF-16 code units.
 
-Omit `file` to edit the entry or pass an included filename from project
-inspection. For a whole-file edit within the 64 KiB replacement limit, use
+Pass the entry or an included filename from project inspection as `file`. For a whole-file edit within the 64 KiB replacement limit, use
 `start: 0` and that file's reported `bytes` as `end`. An edit needs the session
 and the current version from inspection or reading. A saved source, include
 or catalog change requires a fresh preview. Each request edits one existing
@@ -147,13 +146,14 @@ and its own new absolute channel directory under a parent you control. Keep
 the channel path short enough for a Unix socket. Studio grants inspection by
 default. Set `STORYFELLA_MCP_EDIT=1` on the Studio process to allow checked
 draft edits.
-Atelier grants drawing inspection.
+Atelier grants drawing inspection by default. Set `ATELIER_MCP_EDIT=1` on
+the Atelier process to allow checked blend-mask edits.
 
 ```sh
 STORYFELLA_MCP_FOLDER="$project" STORYFELLA_MCP_CHANNEL="$writer_channel" \
   STORYFELLA_MCP_EDIT=1 /absolute/path/to/storyfella-studio
 ATELIER_MCP_FOLDER="$project" ATELIER_MCP_CHANNEL="$drawing_channel" \
-  /absolute/path/to/atelier
+  ATELIER_MCP_EDIT=1 /absolute/path/to/atelier
 ```
 
 Open the project in Studio and its drawing in Atelier. Configure the two MCP
@@ -164,18 +164,37 @@ svs mcp --folder "$project" --studio-channel "$writer_channel"
 atelier mcp --folder "$project" --atelier-channel "$drawing_channel"
 ```
 
-`storyfella_draft_inspect` returns the connection's session, the draft version
-and separate entry and saved digests. Use `storyfella_draft_read` to read the
-open entry, including unsaved edits. `storyfella_draft_edit` checks a UTF-8
-byte range against the expected version and compiles the replacement with the
-current includes and catalog. Set `apply: true` to apply a valid replacement as
-one Writer undo step. Studio's existing save settings control persistence.
+`storyfella_draft_inspect` returns the connection's session, reachable story
+files, draft version, and separate draft and saved digests for the entry. Name
+the entry or a reachable, project-relative include in the required `file`
+argument to `storyfella_draft_read` and `storyfella_draft_edit`. Edits use UTF-8
+byte ranges and compile against the whole draft and catalog. Set `apply` to
+`false` to validate or `true` to apply a valid replacement as one Writer undo
+step. Studio's existing save settings control persistence.
 Reread on `stale_version`. A connection that outlives its owner must reconnect
 and inspect again. After an app crash, use a new channel directory.
 
 `atelier_drawing_inspect` reports the drawing's in-memory revision, dirty
-state and bounded artboard metadata, including candidate presence. Live
-included-file edits and live Atelier mutations remain under SF-PLAN-33.
+state and artboard metadata, including any saved blend rectangle. With the
+edit grant, `atelier_artboard_mask_set` applies a rectangle to the active Draw
+artboard. Use `[x, y, width, height]` in unrotated canvas pixels with both
+sides at least 16 pixels, or pass `null` to clear it. This mask limits the
+existing Blend into artboard operation and participates in normal undo and
+editable recovery. Resizing or rotating the artboard clears the mask. Use
+`atelier_artboard_region_preview` to inspect accepted artwork in a checked
+rectangle. It returns a native PNG up to 256 pixels on the long edge and
+reports the mask coordinates alongside it. Live Atelier generation,
+candidate review and publication remain under SF-PLAN-33 and SF-PLAN-34.
+
+`storyfella_preview_start` compiles the current draft into a separate
+playtest with pinned artwork. `storyfella_preview_step` inspects, advances,
+chooses a zero-based option, checkpoints, or restores that session.
+`storyfella_preview_capture` renders its stage in a separate macOS WebKit
+view and returns a native PNG up to 800 pixels on the long edge. The capture
+uses standard Preview settings and a client-selected viewport of 360 to
+960 points per side. Each connection keeps one playtest and checkpoint.
+Studio bounds the total pinned artwork in isolated playtests and evicts older
+sessions when the cache fills.
 
 Grant a local client access to an explicitly selected project folder and to
 specific scopes for inspection, editing, publishing and provider submission.
@@ -267,9 +286,9 @@ Version the MCP schemas independently of project, document and runtime formats.
 Use bounded structured results for metadata and native MCP image blocks for
 thumbnails, crops and captures. The current Agentkit adapter converts
 `metadata.structured_content` to structured results. Its synchronous registry
-and string content omit native image blocks from outgoing responses. Atelier
-uses Agentkit’s underlying MCP transport directly to return structured metadata
-and native images. Agentkit’s generic registry adapter still needs
+and string content omit native image blocks from outgoing responses. Live
+Studio and Atelier use Agentkit’s underlying MCP transport directly to return
+structured metadata and native images. Agentkit’s generic registry adapter still needs
 image forwarding and bounded asynchronous dispatch. Keep Storyfella operations
 in Storyfella. Test with two independent clients before claiming
 interoperability. Use durable polling for jobs and avoid making client task

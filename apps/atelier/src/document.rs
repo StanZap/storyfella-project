@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{fs, io::Write, path::Path};
 
+mod v1;
+
+pub(crate) const DOCUMENT_VERSION: u32 = 4;
+
 pub const MAX_EDGE: u32 = 8192;
 pub const MAX_PIXELS: u64 = 32_000_000;
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -64,32 +68,24 @@ pub struct Stroke {
 pub struct Layer {
     pub name: String,
     pub visible: bool,
-    #[serde(default)]
     pub locked: bool,
     pub opacity: f32,
-    #[serde(default)]
+    #[serde(deserialize_with = "Deserialize::deserialize")]
     pub group: Option<String>,
     /// Pending AI results can be previewed but never enter artwork exports.
-    #[serde(default)]
     pub candidate: bool,
     pub strokes: Vec<Stroke>,
-    #[serde(default)]
+    #[serde(deserialize_with = "Deserialize::deserialize")]
     pub image: Option<ImageLayer>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct LayerGroup {
-    #[serde(default = "show_references")]
     pub visible: bool,
-    #[serde(default)]
     pub locked: bool,
-    #[serde(default = "full_opacity")]
     pub opacity: f32,
 }
 
-fn full_opacity() -> f32 {
-    1.
-}
 impl Default for LayerGroup {
     fn default() -> Self {
         Self {
@@ -105,7 +101,7 @@ pub struct ImageLayer {
     /// Original pixel coordinates to canvas coordinates: a,b,c,d,tx,ty.
     pub transform: [f32; 6],
     /// Source-pixel rectangle; the embedded original is retained for reset.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "Deserialize::deserialize")]
     pub crop: Option<[u32; 4]>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -123,20 +119,19 @@ pub struct Reference {
     pub prompt: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CanvasArtboard {
     pub id: u32,
     pub width: u32,
     pub height: u32,
     pub layers: Vec<Layer>,
     pub active_layer: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "Deserialize::deserialize")]
     pub paint_layer: Option<usize>,
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub layer_groups: std::collections::BTreeMap<String, LayerGroup>,
-    #[serde(default)]
     pub references: Vec<String>,
-    #[serde(default = "show_references")]
     pub references_visible: bool,
+    pub drawing_target: crate::workflow::DrawingTarget,
 }
 
 impl CanvasArtboard {
@@ -160,16 +155,15 @@ impl CanvasArtboard {
             layer_groups: Default::default(),
             references: vec![],
             references_visible: true,
+            drawing_target: Default::default(),
         }
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Document {
-    #[serde(default)]
     pub artwork_bases: std::collections::BTreeMap<u32, Option<uuid::Uuid>>,
-    #[serde(default)]
     pub story_context: std::collections::BTreeMap<u32, String>,
-    #[serde(default)]
     pub asset_links: Vec<storyfella_studio_core::catalog::AssetLink>,
     pub version: u32,
     pub title: String,
@@ -177,34 +171,23 @@ pub struct Document {
     pub height: u32,
     pub layers: Vec<Layer>,
     pub active_layer: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "Deserialize::deserialize")]
     pub paint_layer: Option<usize>,
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub layer_groups: std::collections::BTreeMap<String, LayerGroup>,
-    #[serde(default)]
     pub canvas_id: u32,
-    #[serde(default)]
     pub(crate) last_canvas_id: u32,
-    #[serde(default)]
     pub canvas_created: bool,
-    #[serde(default)]
+    pub drawing_target: crate::workflow::DrawingTarget,
     pub canvases: Vec<CanvasArtboard>,
     pub references: Vec<std::sync::Arc<Reference>>,
+    #[serde(deserialize_with = "Deserialize::deserialize")]
     pub reference: Option<usize>,
     pub note: String,
-    #[serde(default)]
     pub prompt_drafts: std::collections::BTreeMap<String, String>,
-    #[serde(default)]
+    #[serde(deserialize_with = "Deserialize::deserialize")]
     pub active_prompt_target: Option<String>,
-    #[serde(default)]
     pub artboard_references: Vec<String>,
-    #[serde(default = "show_references")]
     pub references_visible: bool,
-    #[serde(default)]
-    pub artboard_prompt_targets: std::collections::BTreeMap<u32, String>,
-}
-fn show_references() -> bool {
-    true
 }
 impl Default for Document {
     fn default() -> Self {
@@ -212,7 +195,7 @@ impl Default for Document {
             artwork_bases: Default::default(),
             story_context: Default::default(),
             asset_links: Vec::new(),
-            version: 2,
+            version: DOCUMENT_VERSION,
             title: "Untitled project".into(),
             width: 2400,
             height: 1800,
@@ -232,6 +215,7 @@ impl Default for Document {
             canvas_id: 0,
             last_canvas_id: 0,
             canvas_created: false,
+            drawing_target: Default::default(),
             canvases: vec![],
             references: vec![],
             reference: None,
@@ -240,30 +224,10 @@ impl Default for Document {
             active_prompt_target: None,
             artboard_references: vec![],
             references_visible: true,
-            artboard_prompt_targets: Default::default(),
         }
     }
 }
 impl Document {
-    pub fn uses_extended_layer_features(&self) -> bool {
-        !self.layer_groups.is_empty()
-            || self.layers.iter().any(|layer| {
-                layer
-                    .image
-                    .as_ref()
-                    .is_some_and(|image| image.crop.is_some())
-            })
-            || self.canvases.iter().any(|canvas| {
-                !canvas.layer_groups.is_empty()
-                    || canvas.layers.iter().any(|layer| {
-                        layer
-                            .image
-                            .as_ref()
-                            .is_some_and(|image| image.crop.is_some())
-                    })
-            })
-    }
-
     pub fn layer_is_visible(&self, layer: &Layer) -> bool {
         layer.visible
             && layer.opacity > 0.
@@ -315,6 +279,7 @@ impl Document {
             layer_groups: self.layer_groups.clone(),
             references: self.artboard_references.clone(),
             references_visible: self.references_visible,
+            drawing_target: self.drawing_target,
         }
     }
 
@@ -328,6 +293,7 @@ impl Document {
         self.layer_groups = canvas.layer_groups;
         self.artboard_references = canvas.references;
         self.references_visible = canvas.references_visible;
+        self.drawing_target = canvas.drawing_target;
         self.canvas_created = true;
     }
 
@@ -402,7 +368,7 @@ impl Document {
                     canvas_id: self.canvas_id,
                 });
             self.prompt_drafts
-                .entry(format!("canvas:{}:full", self.canvas_id))
+                .entry(crate::workflow::DrawingTarget::Full.prompt_key(self.canvas_id))
                 .or_insert(description);
             self.canvas_id
         };
@@ -430,12 +396,22 @@ impl Document {
                 .sum::<usize>()
     }
     pub fn validate(&self) -> Result<()> {
-        ensure!(matches!(self.version, 2 | 3), "Unsupported project version");
         ensure!(
-            self.version == 3 || !self.uses_extended_layer_features(),
-            "Image crops and group properties require project version 3"
+            self.version == DOCUMENT_VERSION,
+            "Unsupported project version {}",
+            self.version
         );
         validate_size(self.width, self.height)?;
+        ensure!(
+            self.drawing_target
+                .region()
+                .is_none_or(|(_, rect)| crate::workflow::rect_in_canvas(
+                    rect,
+                    self.width,
+                    self.height
+                )),
+            "Drawing region is outside the artboard"
+        );
         ensure!(
             !self.layers.is_empty()
                 && self.layers.len() <= 24
@@ -449,6 +425,12 @@ impl Document {
         let mut canvas_ids = std::collections::HashSet::from([self.canvas_id]);
         for canvas in &self.canvases {
             validate_size(canvas.width, canvas.height)?;
+            ensure!(
+                canvas.drawing_target.region().is_none_or(|(_, rect)| {
+                    crate::workflow::rect_in_canvas(rect, canvas.width, canvas.height)
+                }),
+                "Drawing region is outside the artboard"
+            );
             ensure!(
                 !canvas.layers.is_empty()
                     && canvas.layers.len() <= 24
@@ -598,6 +580,9 @@ impl Document {
     ) -> Result<()> {
         validate_size(width, height)?;
         ensure!(anchor.0 <= 2 && anchor.1 <= 2, "Invalid resize anchor");
+        if (width, height) != (self.width, self.height) {
+            self.clear_drawing_region();
+        }
         if scale_art {
             let sx = width as f32 / self.width as f32;
             let sy = height as f32 / self.height as f32;
@@ -661,7 +646,13 @@ impl Document {
             }
         }
     }
+    fn clear_drawing_region(&mut self) {
+        if self.drawing_target.region().is_some() {
+            self.drawing_target = crate::workflow::DrawingTarget::Full;
+        }
+    }
     pub fn rotate(&mut self) {
+        self.clear_drawing_region();
         let h = self.height as f32;
         for layer in &mut self.layers {
             if let Some(image) = &mut layer.image {
@@ -760,10 +751,6 @@ impl History {
             &mut current.active_prompt_target,
             &mut replacement.active_prompt_target,
         );
-        std::mem::swap(
-            &mut current.artboard_prompt_targets,
-            &mut replacement.artboard_prompt_targets,
-        );
     }
 }
 /// Initialize the designated shared document while its owner holds the lease.
@@ -818,8 +805,17 @@ fn read(path: &Path) -> Result<Vec<u8>> {
 }
 
 fn decode_document(bytes: &[u8]) -> Result<Document> {
-    let mut doc: Document = serde_json::from_slice(bytes).context("Not an Atelier project")?;
-    doc.migrate()?;
+    #[derive(Deserialize)]
+    struct Header {
+        version: u32,
+    }
+
+    let header: Header = serde_json::from_slice(bytes).context("Not an Atelier project")?;
+    let mut doc: Document = match header.version {
+        DOCUMENT_VERSION => serde_json::from_slice(bytes).context("Invalid Atelier drawing")?,
+        1 => v1::upgrade(bytes)?,
+        version => anyhow::bail!("Unsupported project version {version}"),
+    };
     doc.validate()?;
     for reference in &mut doc.references {
         let reference = std::sync::Arc::make_mut(reference);

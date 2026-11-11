@@ -7,16 +7,19 @@ use crate::{
 };
 use gpui_kit::*;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+pub(crate) const RECOVERY_DIRECTORY: &str = "workspace-recovery";
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecoveryTab {
     pub epoch: u64,
+    #[serde(deserialize_with = "Deserialize::deserialize")]
     pub path: Option<PathBuf>,
-    #[serde(default)]
+    #[serde(deserialize_with = "Deserialize::deserialize")]
     pub(crate) shared: Option<crate::ownership::RecoveryIdentity>,
     pub dirty: bool,
-    #[serde(default)]
     pub active: bool,
 }
 
@@ -27,25 +30,20 @@ pub struct RecoveredProjects {
     pub detached: bool,
 }
 
-pub fn recover(directory: &std::path::Path) -> anyhow::Result<RecoveredProjects> {
-    let entries: Vec<RecoveryTab> = serde_json::from_slice(&std::fs::read(
-        directory.join("open-projects/session.json"),
-    )?)?;
+pub fn recover(data_dir: &Path) -> anyhow::Result<RecoveredProjects> {
+    let directory = data_dir.join(RECOVERY_DIRECTORY);
+    let entries: Vec<RecoveryTab> =
+        serde_json::from_slice(&std::fs::read(directory.join("session.json"))?)?;
     anyhow::ensure!(entries.len() <= 32, "Invalid open-project session");
     anyhow::ensure!(
-        entries.iter().filter(|entry| entry.active).count() <= 1,
-        "Multiple active projects in recovery"
+        entries.iter().filter(|entry| entry.active).count() == usize::from(!entries.is_empty()),
+        "A nonempty recovery session must have one active project"
     );
     let active_epoch = entries
         .iter()
         .find(|entry| entry.active)
-        .or(entries.last())
         .map(|entry| entry.epoch);
-    let mut order: Vec<_> = entries.iter().map(|entry| entry.epoch).collect();
-    // Older sessions stored the active project last and displayed creation order.
-    if !entries.iter().any(|entry| entry.active) {
-        order.sort_unstable();
-    }
+    let order = entries.iter().map(|entry| entry.epoch).collect();
     let mut ids = std::collections::HashSet::new();
     let mut tabs = Vec::new();
     let mut detached = false;
@@ -60,7 +58,7 @@ pub fn recover(directory: &std::path::Path) -> anyhow::Result<RecoveredProjects>
                     (None, None) => None,
                     (Some(folder), Some(identity)) => Some(crate::ownership::Owner::desktop(
                         folder,
-                        directory,
+                        data_dir,
                         Some(identity),
                     )?),
                     _ => anyhow::bail!("Cannot verify the recovered shared drawing's owner"),
@@ -76,11 +74,7 @@ pub fn recover(directory: &std::path::Path) -> anyhow::Result<RecoveredProjects>
             None => (None, None),
         };
         tabs.push(ProjectTab {
-            doc: crate::document::load(
-                &directory
-                    .join("open-projects")
-                    .join(format!("{}.atelier", entry.epoch)),
-            )?,
+            doc: crate::document::load(&directory.join(format!("{}.atelier", entry.epoch)))?,
             epoch: entry.epoch,
             dirty: entry.dirty || path.is_none(),
             path,
@@ -137,7 +131,7 @@ impl Render for DraggedProject {
 }
 
 pub fn save_session(
-    directory: &std::path::Path,
+    directory: &Path,
     projects: Vec<(RecoveryTab, Document)>,
 ) -> anyhow::Result<()> {
     let mut entries = Vec::new();
@@ -236,8 +230,6 @@ impl DrawingApp {
         self.view = selected.view;
         self.page = selected.page;
         self.panel = Panel::None;
-        self.generation_region = None;
-        self.selecting_generation_region = false;
         self.restore_drawing_context();
         self.refresh_project_view(window, cx);
         self.restore_prompt(window, cx);
@@ -504,7 +496,7 @@ impl DrawingApp {
 
     /// Save every tab on shutdown. Separate recovery files preserve unsaved
     /// changes without claiming their explicit project files have been saved.
-    pub fn persist_open_projects(&self) {
+    pub fn persist_open_projects(&mut self) {
         let projects = self
             .project_tab_order
             .iter()
@@ -545,9 +537,6 @@ impl DrawingApp {
                 }
             })
             .collect();
-        let _ = self.workers.storage.send(Storage::WorkspaceRecovery(
-            self.data_dir.join("open-projects"),
-            projects,
-        ));
+        self.queue_workspace_recovery(projects);
     }
 }

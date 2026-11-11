@@ -334,6 +334,22 @@ impl AppState {
         Ok(())
     }
 
+    /// Attach a checked included-file snapshot before capturing the undo step.
+    /// The current editor selection is independent of the MCP edit target.
+    #[cfg(unix)]
+    pub(crate) fn apply_checked_include(
+        &mut self,
+        relative: &str,
+        sources: AdditionalSources,
+        source: String,
+    ) -> Result<(), StoryFileError> {
+        if sources.get(relative).is_none() {
+            return Err(StoryFileError::Unbound);
+        }
+        self.additional_sources = Some(sources);
+        self.set_additional_source(relative, source)
+    }
+
     pub fn set_story_source(&mut self, source: String) {
         if self.story.source() != source {
             self.snapshot_for_undo();

@@ -593,9 +593,6 @@ impl DrawingApp {
             crop: ([source_x, source_y, visible_width, visible_height] != [0, 0, width, height])
                 .then_some([source_x, source_y, visible_width, visible_height]),
         });
-        if next.uses_extended_layer_features() {
-            next.version = 3;
-        }
         if let Err(error) = next.validate() {
             self.message(format!("Could not replace image: {error:#}"), true);
             return;

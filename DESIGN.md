@@ -55,6 +55,16 @@ backdrop. The deterministic Atelier MCP fixture checks the published pixels,
 and a native Studio Preview run verified the exact published revision UUID.
 Evidence is recorded in `.svs-e2e/logs/atelier-mcp-studio-preview.log`.
 
+### Isolated Preview capture and Atelier blend masks
+
+Studio can render an MCP playtest through the same playback panel in a
+separate macOS WebKit view. The acceptance run captured both branches at
+wide and near-square sizes, checked staged portrait pixels, and showed
+the placeholder for Ivo's pending expression. Atelier saves a single drawing
+target per artboard, including the rectangle for Blend into artboard, and
+includes it in normal undo.
+Evidence is recorded in `.svs-e2e/coord/live-edits-preview.md`.
+
 ### Story project explorer · 2026-11-08
 
 The Story workspace presents user-facing files and catalog assets together at

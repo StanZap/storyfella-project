@@ -84,9 +84,8 @@ New Studio projects use the [shared project folder](shared-project.md):
 shared databases store image paths relative to their root and resolve them on
 load. Existing standalone source/database pairs remain readable and can be
 explicitly copied into a project folder with identities and artwork preserved.
-The standalone pair behavior described below still applies to CLI and older
-projects. Version-1 folders keep the entry and its included files in place
-beside the database.
+The standalone pair behavior described below still applies to CLI and standalone
+projects. Shared manifests require layout version 2.
 
 `ProjectDb` (`crates/studio-core/src/persistence/mod.rs`) is SQLite storage for the project: one
 `projects` row, then `artifacts`, `revisions`, `layers`,

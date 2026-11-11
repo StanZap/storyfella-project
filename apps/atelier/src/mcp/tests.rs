@@ -640,7 +640,7 @@ fn desktop_recovery_reserves_the_drawing_across_data_directories() {
     let mut dirty = document::load(&path).unwrap();
     dirty.title = "Dirty draft".into();
     crate::project_tabs::save_session(
-        &desktop.join("open-projects"),
+        &desktop.join(crate::project_tabs::RECOVERY_DIRECTORY),
         vec![(
             crate::project_tabs::RecoveryTab {
                 shared: owner.recovery_identity(),

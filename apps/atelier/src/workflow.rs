@@ -1,17 +1,68 @@
 //! Project artwork, generation destinations and upgrades share one document model.
-use crate::document::{self, CanvasArtboard, Document, ImageLayer, Layer, Reference};
+use crate::document::{self, Document, ImageLayer, Layer, Reference};
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SelectionMode {
-    #[default]
     Blend,
     Separate,
 }
 pub type PixelRect = (u32, u32, u32, u32);
 pub type BlendCrop = ((u32, u32), PixelRect);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DrawingTarget {
+    #[default]
+    Full,
+    Layer,
+    Region {
+        mode: SelectionMode,
+        rect: PixelRect,
+    },
+}
+
+impl DrawingTarget {
+    pub fn region(self) -> Option<(SelectionMode, PixelRect)> {
+        match self {
+            Self::Region { mode, rect } => Some((mode, rect)),
+            _ => None,
+        }
+    }
+
+    pub fn blend_mask(self) -> Option<PixelRect> {
+        self.region()
+            .filter(|(mode, _)| *mode == SelectionMode::Blend)
+            .map(|(_, rect)| rect)
+    }
+
+    pub fn prompt_key(self, artboard: u32) -> String {
+        match self {
+            Self::Full => format!("canvas:{artboard}:full"),
+            Self::Layer => format!("canvas:{artboard}:layer"),
+            Self::Region {
+                mode,
+                rect: (x, y, w, h),
+            } => {
+                let mode = match mode {
+                    SelectionMode::Blend => "Blend",
+                    SelectionMode::Separate => "Separate",
+                };
+                format!("canvas:{artboard}:{mode}:{x}:{y}:{w}:{h}")
+            }
+        }
+    }
+}
+
+pub(crate) fn rect_in_canvas((x, y, w, h): PixelRect, width: u32, height: u32) -> bool {
+    w > 0
+        && h > 0
+        && x.checked_add(w).is_some_and(|right| right <= width)
+        && y.checked_add(h).is_some_and(|bottom| bottom <= height)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Destination {
@@ -104,10 +155,7 @@ impl Document {
         let mut raster = document::raster(&self.artwork(), document::MAX_EDGE, true)?;
         if let Some((x, y, w, h)) = crop {
             ensure!(
-                w > 0
-                    && h > 0
-                    && x.saturating_add(w) <= self.width
-                    && y.saturating_add(h) <= self.height,
+                rect_in_canvas((x, y, w, h), self.width, self.height),
                 "Selection is outside the artboard"
             );
             raster = image::imageops::crop_imm(&raster, x, y, w, h).to_image();
@@ -636,73 +684,6 @@ impl Document {
             }
         }
         result
-    }
-
-    /// Version 1 displayed generated references as artboards without giving them
-    /// layers. Promote those images once; retain their original payload and lineage.
-    pub fn migrate(&mut self) -> Result<()> {
-        if self.version == 1 {
-            let selected = self
-                .reference
-                .and_then(|i| self.references.get(i))
-                .map(|r| crate::library::id(r));
-            let generated: Vec<_> = self
-                .references
-                .iter()
-                .filter(|r| !r.prompt.is_empty())
-                .filter(|r| {
-                    !self
-                        .layers
-                        .iter()
-                        .chain(self.canvases.iter().flat_map(|c| &c.layers))
-                        .any(|l| {
-                            l.image
-                                .as_ref()
-                                .is_some_and(|i| i.reference.image == r.image)
-                        })
-                })
-                .cloned()
-                .collect();
-            // Projects above the artboard limit keep every original as a reference.
-            for reference in generated
-                .into_iter()
-                .take(24usize.saturating_sub(self.canvases.len()))
-            {
-                let promoted_id = crate::library::id(&reference);
-                let decoded = document::decode_reference(&reference)?;
-                let id = self.allocate_canvas_id()?;
-                self.canvases.push(CanvasArtboard {
-                    id,
-                    width: decoded.width().max(64),
-                    height: decoded.height().max(64),
-                    layers: vec![image_layer(
-                        reference,
-                        decoded.width(),
-                        decoded.height(),
-                        (0, 0, decoded.width(), decoded.height()),
-                        false,
-                    )?],
-                    active_layer: 0,
-                    paint_layer: None,
-                    layer_groups: Default::default(),
-                    references: vec![],
-                    references_visible: true,
-                });
-                self.references
-                    .retain(|r| crate::library::id(r) != promoted_id);
-            }
-            self.reference = selected.and_then(|id| {
-                self.references
-                    .iter()
-                    .position(|r| crate::library::id(r) == id)
-            });
-            self.version = 2;
-        }
-        // Some early development builds wrote these optional fields as version 2.
-        if self.version == 2 && self.uses_extended_layer_features() {
-            self.version = 3;
-        }
-        Ok(())
     }
 
     /// Apply a review decision to the active candidate layer.

@@ -5,6 +5,7 @@ use crate::{
     queue::{JobState, Queue, QueuedRequest},
     viewport::Viewport,
     worker::{self, Event, Storage, Workers},
+    workflow::{DrawingTarget, SelectionMode},
 };
 use gpui_kit::{
     component::{
@@ -368,7 +369,7 @@ pub struct DrawingApp {
     rendered_revision: u64,
     render_pending: bool,
     autosaved_revision: u64,
-    save_pending: bool,
+    pending_recoveries: usize,
     pub(crate) manual_pending: bool,
     last_edit: Instant,
     autosave_retry_after: Instant,
@@ -395,15 +396,9 @@ pub struct DrawingApp {
     pub prompt_validation: Option<crate::activity::PromptValidation>,
     /// The queued and recently completed image requests, oldest first.
     pub queue: Queue,
-    /// The canvas region (document coordinates) selected for "Generate from
-    /// drawing"; `None` means the full canvas.
-    pub generation_region: Option<(DocPoint, DocPoint)>,
     pub selecting_generation_region: bool,
-    /// The drag anchor while a region is being selected on the canvas.
-    pub(crate) region_drag: Option<DocPoint>,
-    /// The prompt used by the floating drawing composer.
-    pub selection_mode: crate::workflow::SelectionMode,
-    pub drawing_create_layer: bool,
+    /// Uncommitted rectangle corners in canvas coordinates.
+    pub(crate) region_drag: Option<(DocPoint, DocPoint)>,
     pub job_id: u64,
     pub job_epoch: u64,
     pub timer_seconds: u32,
@@ -450,17 +445,9 @@ pub struct DrawingApp {
 }
 impl DrawingApp {
     pub fn new(data_dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let recovered = document::load(&data_dir.join("recovery.atelier"));
-        let (doc, mut status, mut error) = match recovered {
-            Ok(doc) => (doc, "Recovered your last session".into(), false),
-            Err(e) if data_dir.join("recovery.atelier").exists() => (
-                Document::default(),
-                format!("Recovery could not be opened: {e}"),
-                true,
-            ),
-            Err(_) => (Document::default(), String::new(), false),
-        };
-        let snapshots = data_dir.join("open-projects");
+        let mut status = String::new();
+        let mut error = false;
+        let snapshots = data_dir.join(crate::project_tabs::RECOVERY_DIRECTORY);
         let unused_epoch = std::fs::read_dir(&snapshots)
             .into_iter()
             .flatten()
@@ -510,7 +497,6 @@ impl DrawingApp {
                 }
             }
             Err(recovery_error) => {
-                let snapshots = data_dir.join("open-projects");
                 if snapshots.join("session.json").exists() {
                     status = format!(
                         "Open-project recovery failed: {recovery_error}. Snapshots remain in {}",
@@ -518,12 +504,15 @@ impl DrawingApp {
                     );
                     error = true;
                 }
-                let order = if data_dir.join("recovery.atelier").exists() {
-                    vec![unused_epoch]
-                } else {
-                    vec![]
-                };
-                (vec![], order, doc, unused_epoch, None, false, None)
+                (
+                    vec![],
+                    vec![],
+                    Document::default(),
+                    unused_epoch,
+                    None,
+                    false,
+                    None,
+                )
             }
         };
         let next_project_epoch = project_tabs
@@ -601,7 +590,7 @@ impl DrawingApp {
             .active_prompt_target
             .clone()
             .unwrap_or_else(|| "new".into());
-        let restoring_edit = prompt_target != "new";
+        let restoring_edit = prompt_target != "new" && !prompt_target.starts_with("canvas:");
         let prompt = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder("Describe your image or changes…")
@@ -856,7 +845,7 @@ impl DrawingApp {
             rendered_revision: 0,
             render_pending: false,
             autosaved_revision: 1,
-            save_pending: false,
+            pending_recoveries: 0,
             manual_pending: false,
             last_edit: Instant::now(),
             autosave_retry_after: Instant::now(),
@@ -879,11 +868,8 @@ impl DrawingApp {
             generation: None,
             prompt_validation: None,
             queue: Queue::default(),
-            generation_region: None,
             selecting_generation_region: false,
             region_drag: None,
-            selection_mode: crate::workflow::SelectionMode::Blend,
-            drawing_create_layer: false,
             job_id: 0,
             job_epoch: 0,
             timer_seconds: 300,
@@ -1111,17 +1097,7 @@ impl DrawingApp {
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |_, cx| {
             weak.update(cx, |this, cx| {
-                this.capture_prompt(cx);
-                if !this.closing {
-                    this.closing = true;
-                    this.finish_stroke();
-                    this.finish_mask();
-                    if this.mask_dirty {
-                        this.save_mask();
-                    }
-                    this.queue_save(this.data_dir.join("recovery.atelier"), true);
-                    cx.notify();
-                }
+                this.request_close(cx);
                 false
             })
             .unwrap_or(true)
@@ -1131,16 +1107,7 @@ impl DrawingApp {
             this.finish_stroke();
             this.finish_mask();
             this.persist_open_projects();
-            let path = this.data_dir.join("recovery.atelier");
             let (ack, rx) = mpsc::channel();
-            let _ = this.workers.storage.send(Storage::Save {
-                doc: this.doc.clone(),
-                path,
-                revision: this.revision,
-                epoch: this.epoch,
-                automatic: true,
-                owner: None,
-            });
             let _ = this.workers.storage.send(Storage::Barrier(ack));
             cx.background_executor().spawn(async move {
                 let _ = rx.recv_timeout(Duration::from_secs(3));
@@ -1166,11 +1133,10 @@ impl DrawingApp {
             self.closing = true;
             self.finish_stroke();
             self.finish_mask();
-            self.persist_open_projects();
             if self.mask_dirty {
                 self.save_mask();
             }
-            self.queue_save(self.data_dir.join("recovery.atelier"), true);
+            self.persist_open_projects();
             cx.notify();
         }
     }
@@ -1209,16 +1175,6 @@ impl DrawingApp {
                 .prompt_drafts
                 .insert(self.prompt_target.clone(), value);
             self.doc.active_prompt_target = Some(self.prompt_target.clone());
-            if let Some(id) = self
-                .prompt_target
-                .strip_prefix("canvas:")
-                .and_then(|s| s.split(':').next())
-                .and_then(|id| id.parse().ok())
-            {
-                self.doc
-                    .artboard_prompt_targets
-                    .insert(id, self.prompt_target.clone());
-            }
             self.revision += 1;
             self.dirty = true;
             self.last_edit = Instant::now();
@@ -1227,17 +1183,7 @@ impl DrawingApp {
     }
     pub fn restore_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let target = if self.page == Page::Draw {
-            if self.drawing_create_layer {
-                format!("canvas:{}:layer", self.doc.canvas_id)
-            } else {
-                match self.region_bounds() {
-                    Some((x, y, w, h)) => format!(
-                        "canvas:{}:{:?}:{x}:{y}:{w}:{h}",
-                        self.doc.canvas_id, self.selection_mode
-                    ),
-                    None => format!("canvas:{}:full", self.doc.canvas_id),
-                }
-            }
+            self.doc.drawing_target.prompt_key(self.doc.canvas_id)
         } else if self.editing_image {
             self.edit_source()
                 .map(|r| crate::library::id(&r))
@@ -1327,15 +1273,19 @@ impl DrawingApp {
         }
     }
     pub fn undo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.capture_prompt(cx);
         self.finish_stroke();
         if self.history.undo(&mut self.doc) {
+            self.restore_drawing_context();
             self.changed();
             self.sync_inputs(window, cx);
         }
     }
     pub fn redo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.capture_prompt(cx);
         self.finish_stroke();
         if self.history.redo(&mut self.doc) {
+            self.restore_drawing_context();
             self.changed();
             self.sync_inputs(window, cx);
         }
@@ -1348,11 +1298,14 @@ impl DrawingApp {
         self.selected_layers = vec![self.doc.active_layer];
         self.layer_selection_anchor = Some(self.doc.active_layer);
         self.sync_layer_controls(window, cx);
-        self.prompt_target = self
-            .doc
-            .active_prompt_target
-            .clone()
-            .unwrap_or_else(|| "new".into());
+        self.prompt_target = if self.page == Page::Draw {
+            self.doc.drawing_target.prompt_key(self.doc.canvas_id)
+        } else {
+            self.doc
+                .active_prompt_target
+                .clone()
+                .unwrap_or_else(|| "new".into())
+        };
         self.editing_image =
             self.prompt_target != "new" && !self.prompt_target.starts_with("canvas:");
         let draft = self
@@ -1555,6 +1508,7 @@ impl DrawingApp {
         }
     }
     pub fn apply_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.doc.drawing_target;
         let result = (|| -> anyhow::Result<()> {
             let width = self.width.read(cx).value().parse::<u32>()?;
             let height = if self.aspect_locked {
@@ -1571,6 +1525,9 @@ impl DrawingApp {
         })();
         match result {
             Ok(()) => {
+                if target != self.doc.drawing_target {
+                    self.restore_drawing_context();
+                }
                 self.changed();
                 self.view = Viewport::default();
                 self.sync_inputs(window, cx);
@@ -1579,6 +1536,7 @@ impl DrawingApp {
         }
     }
     pub fn fit_artboard_to_artwork(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.doc.drawing_target;
         let mut bounds: Option<(f32, f32, f32, f32)> = None;
         let mut probe = self.doc.clone();
         for index in 0..probe.layers.len() {
@@ -1612,6 +1570,9 @@ impl DrawingApp {
         })();
         match result {
             Ok(()) => {
+                if target != self.doc.drawing_target {
+                    self.restore_drawing_context();
+                }
                 self.changed();
                 self.view = Viewport::default();
                 self.sync_inputs(window, cx);
@@ -2043,9 +2004,6 @@ impl DrawingApp {
         if crop.image.crop != new_crop {
             self.checkpoint();
             self.doc.layers[crop.layer].image.as_mut().unwrap().crop = new_crop;
-            if new_crop.is_some() {
-                self.doc.version = 3;
-            }
             self.changed();
         }
         self.sync_layer_controls(window, cx);
@@ -2625,7 +2583,6 @@ impl DrawingApp {
             return;
         }
         self.checkpoint();
-        self.doc.version = 3;
         let group = self.doc.layer_groups.entry(name.to_owned()).or_default();
         group.visible = !group.visible;
         self.changed();
@@ -2642,7 +2599,6 @@ impl DrawingApp {
             return;
         }
         self.checkpoint();
-        self.doc.version = 3;
         let group = self.doc.layer_groups.entry(name.to_owned()).or_default();
         group.locked = !group.locked;
         self.changed();
@@ -2682,7 +2638,6 @@ impl DrawingApp {
         if (previous - value / 100.).abs() > 0.0001 {
             self.checkpoint();
             self.doc.layer_groups.entry(name).or_default().opacity = value / 100.;
-            self.doc.version = 3;
             self.changed();
         }
         self.sync_layer_controls(window, cx);
@@ -3980,8 +3935,7 @@ impl DrawingApp {
         }
         if self.selecting_generation_region && event.button == MouseButton::Left {
             if let Some(point) = self.doc_point(event.position) {
-                self.region_drag = Some(point);
-                self.generation_region = Some((point, point));
+                self.region_drag = Some((point, point));
                 cx.notify();
             }
             return;
@@ -4389,18 +4343,20 @@ impl DrawingApp {
                     },
                 );
                 self.doc = drag.original.clone();
+                let target = self.doc.drawing_target;
                 if self.doc.resize(width, height, false, anchor).is_ok() {
+                    if target != self.doc.drawing_target {
+                        self.restore_drawing_context();
+                    }
                     self.changed();
                     cx.notify();
                 }
             }
             return;
         }
-        if self.region_drag.is_some() {
-            if let Some(anchor) = self.region_drag {
-                self.generation_region = Some((anchor, self.clamped_doc_point(event.position)));
-                cx.notify();
-            }
+        if let Some((anchor, _)) = self.region_drag {
+            self.region_drag = Some((anchor, self.clamped_doc_point(event.position)));
+            cx.notify();
             return;
         }
         // Consume standalone tablet points before this later mouse event to preserve order.
@@ -4968,8 +4924,6 @@ impl DrawingApp {
         self.capture_prompt(cx);
         self.page = Page::Draw;
         self.show_drawing_composer = false;
-        self.generation_region = None;
-        self.selecting_generation_region = false;
         self.restore_drawing_context();
         self.restore_prompt(window, cx);
         window.focus(&self.focus, cx);
@@ -4977,39 +4931,9 @@ impl DrawingApp {
     }
 
     pub fn restore_drawing_context(&mut self) {
-        self.drawing_create_layer = false;
-        let Some(target) = self.doc.artboard_prompt_targets.get(&self.doc.canvas_id) else {
-            return;
-        };
-        let parts: Vec<_> = target.split(':').collect();
-        if parts.len() == 3 && parts[2] == "layer" {
-            self.drawing_create_layer = true;
-            return;
-        }
-        if parts.len() == 7 {
-            let coords: Option<Vec<u32>> = parts[3..].iter().map(|s| s.parse().ok()).collect();
-            if let Some(rect) = coords.filter(|r| {
-                r[0].saturating_add(r[2]) <= self.doc.width
-                    && r[1].saturating_add(r[3]) <= self.doc.height
-            }) {
-                self.selection_mode = if parts[2] == "Separate" {
-                    crate::workflow::SelectionMode::Separate
-                } else {
-                    crate::workflow::SelectionMode::Blend
-                };
-                self.generation_region = Some((
-                    DocPoint {
-                        x: rect[0] as f32,
-                        y: rect[1] as f32,
-                    },
-                    DocPoint {
-                        x: (rect[0] + rect[2]) as f32,
-                        y: (rect[1] + rect[3]) as f32,
-                    },
-                ));
-                self.selecting_generation_region = true;
-            }
-        }
+        self.region_drag = None;
+        self.selecting_generation_region =
+            self.page == Page::Draw && self.doc.drawing_target.region().is_some();
     }
 
     pub fn create_canvas_artboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -5329,21 +5253,20 @@ impl DrawingApp {
         }
         cx.notify();
     }
-    /// The selected canvas region as a clamped pixel rectangle (x, y, width,
-    /// height), or `None` when the whole canvas is used or the selection is too
-    /// small to be meaningful.
-    pub fn region_bounds(&self) -> Option<(u32, u32, u32, u32)> {
-        let (a, b) = self.generation_region?;
-        region_rect(a, b, self.doc.width, self.doc.height)
-    }
-
-    /// Uses the whole canvas as the reference area and clears any selection.
-    pub fn use_full_canvas(&mut self, cx: &mut Context<Self>) {
-        self.region_drag = None;
-        self.generation_region = None;
-        self.selecting_generation_region = false;
-        self.drawing_create_layer = false;
-        cx.notify();
+    pub(crate) fn drawing_outline(&self) -> Option<(DocPoint, DocPoint)> {
+        self.region_drag.or_else(|| {
+            let (_, (x, y, w, h)) = self.doc.drawing_target.region()?;
+            Some((
+                DocPoint {
+                    x: x as f32,
+                    y: y as f32,
+                },
+                DocPoint {
+                    x: (x + w) as f32,
+                    y: (y + h) as f32,
+                },
+            ))
+        })
     }
 
     /// Opens the floating drawing prompt beside the canvas.
@@ -5387,13 +5310,14 @@ impl DrawingApp {
 
     /// Toggles area selection. A drag on the canvas defines the region.
     pub fn toggle_box_select(&mut self, cx: &mut Context<Self>) {
-        self.drawing_create_layer = false;
         if self.selecting_generation_region {
-            self.use_full_canvas(cx);
+            self.set_drawing_target(DrawingTarget::Full, cx);
             return;
         }
+        if self.doc.drawing_target == DrawingTarget::Layer {
+            self.set_drawing_target(DrawingTarget::Full, cx);
+        }
         self.selecting_generation_region = true;
-        self.generation_region = None;
         self.show_drawing_composer = true;
         cx.notify();
     }
@@ -5401,10 +5325,28 @@ impl DrawingApp {
     /// Called on canvas mouse-up, ending a region drag. A drag too small to be a
     /// real selection is discarded and the area mode follows the result.
     pub fn finish_drawing_region(&mut self, cx: &mut Context<Self>) {
-        self.region_drag = None;
-        if self.generation_region.is_some() && self.region_bounds().is_none() {
-            self.generation_region = None;
+        let Some((a, b)) = self.region_drag.take() else {
+            return;
+        };
+        let mode = self
+            .doc
+            .drawing_target
+            .region()
+            .map_or(SelectionMode::Blend, |(mode, _)| mode);
+        let target = region_rect(a, b, self.doc.width, self.doc.height).map_or(
+            DrawingTarget::Full,
+            |rect| DrawingTarget::Region { mode, rect },
+        );
+        self.set_drawing_target(target, cx);
+    }
+
+    pub(crate) fn set_drawing_target(&mut self, target: DrawingTarget, cx: &mut Context<Self>) {
+        if self.doc.drawing_target != target {
+            self.checkpoint();
+            self.doc.drawing_target = target;
+            self.changed();
         }
+        self.restore_drawing_context();
         cx.notify();
     }
 
@@ -5418,7 +5360,7 @@ impl DrawingApp {
         let prompt = self.prompt.read(cx).value().trim().to_owned();
         let result = (|| -> anyhow::Result<QueuedRequest> {
             anyhow::ensure!(!prompt.is_empty(), "Describe the image or change you want");
-            if self.drawing_create_layer {
+            if self.doc.drawing_target == DrawingTarget::Layer {
                 anyhow::ensure!(
                     self.doc.layers.len() < 24,
                     "Maximum 24 layers; remove a layer before generating"
@@ -5443,13 +5385,13 @@ impl DrawingApp {
                     blend: None,
                 });
             }
-            let region = self.region_bounds();
+            let target = self.doc.drawing_target.region();
             anyhow::ensure!(
-                !self.selecting_generation_region || region.is_some(),
+                !self.selecting_generation_region || target.is_some(),
                 "Drag on the artboard to select an area"
             );
-            let separate =
-                region.is_some() && self.selection_mode == crate::workflow::SelectionMode::Separate;
+            let separate = target.is_some_and(|(mode, _)| mode == SelectionMode::Separate);
+            let region = target.map(|(_, rect)| rect);
             let source =
                 Arc::new(
                     self.doc
@@ -5550,26 +5492,15 @@ impl DrawingApp {
         }
         if !save_as {
             if let Some(path) = self.path.clone() {
-                self.queue_save(path, false);
+                self.queue_save(path);
                 return;
             }
         }
         self.pick(Picker::Save, window, cx);
     }
-    pub(crate) fn queue_save(&mut self, path: PathBuf, automatic: bool) {
-        let failure_task = if automatic {
-            crate::activity::Task::Recovery
-        } else {
-            crate::activity::Task::Save(path.clone())
-        };
-        if automatic && path == self.data_dir.join("recovery.atelier") {
-            self.persist_open_projects();
-        }
-        if automatic {
-            self.save_pending = true;
-        } else {
-            self.manual_pending = true;
-        }
+    pub(crate) fn queue_save(&mut self, path: PathBuf) {
+        let failure_task = crate::activity::Task::Save(path.clone());
+        self.manual_pending = true;
         if self
             .workers
             .storage
@@ -5578,7 +5509,6 @@ impl DrawingApp {
                 path,
                 revision: self.revision,
                 epoch: self.epoch,
-                automatic,
                 owner: self.project_owner.clone(),
             })
             .is_err()
@@ -5588,9 +5518,37 @@ impl DrawingApp {
                 failure_task,
                 "Storage worker stopped".into(),
             );
-            self.save_pending = false;
             self.manual_pending = false;
         }
+    }
+    pub(crate) fn queue_workspace_recovery(
+        &mut self,
+        projects: Vec<(crate::project_tabs::RecoveryTab, Document)>,
+    ) {
+        if self
+            .workers
+            .storage
+            .send(Storage::WorkspaceRecovery {
+                directory: self.data_dir.join(crate::project_tabs::RECOVERY_DIRECTORY),
+                projects,
+                epoch: self.epoch,
+                revision: self.revision,
+            })
+            .is_ok()
+        {
+            self.pending_recoveries += 1;
+        } else {
+            self.recovery_failed("Storage worker stopped".into());
+        }
+    }
+    fn recovery_failed(&mut self, message: String) {
+        self.closing = false;
+        self.autosave_retry_after = Instant::now() + Duration::from_secs(5);
+        self.report_error(
+            crate::activity::Scope::App,
+            crate::activity::Task::Recovery,
+            message,
+        );
     }
     pub fn pick(&mut self, picker: Picker, window: &mut Window, cx: &mut Context<Self>) {
         self.finish_stroke();
@@ -5639,7 +5597,7 @@ impl DrawingApp {
                                         if path.extension().is_none() {
                                             path.set_extension("atelier");
                                         }
-                                        this.queue_save(path, false);
+                                        this.queue_save(path);
                                     } else if matches!(picker, Picker::Artwork) {
                                         if path.extension().is_none() {
                                             path.set_extension("sfart");
@@ -5782,7 +5740,7 @@ impl DrawingApp {
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(unix)]
         if let Some(mut bridge) = self.live_mcp.take() {
-            bridge.dispatch(self);
+            bridge.dispatch(self, window, cx);
             self.live_mcp = Some(bridge);
         }
         if !self.closing && self.restart_checked.elapsed() >= Duration::from_millis(250) {
@@ -5887,19 +5845,33 @@ impl DrawingApp {
                         }
                     }
                 }
-                Event::WorkspaceSaved(result) => {
+                Event::WorkspaceSaved {
+                    epoch,
+                    revision,
+                    result,
+                } => {
+                    self.pending_recoveries -= 1;
                     if let Err(error) = result {
-                        self.closing = false;
-                        self.report_error(
-                            crate::activity::Scope::App,
-                            crate::activity::Task::Recovery,
-                            format!("Open-project recovery save failed: {error:#}"),
-                        );
+                        self.recovery_failed(format!(
+                            "Open-project recovery save failed: {error:#}"
+                        ));
                     } else {
                         self.activity.resolve(
                             &crate::activity::Scope::App,
                             &crate::activity::Task::Recovery,
                         );
+                        if epoch == self.epoch {
+                            self.autosaved_revision = revision;
+                            if self.closing
+                                && revision == self.revision
+                                && self.pending_recoveries == 0
+                                && !self.mask_dirty
+                                && self.mask_save_error.is_none()
+                            {
+                                window.remove_window();
+                                return;
+                            }
+                        }
                     }
                 }
                 Event::ProjectClosed {
@@ -6038,73 +6010,43 @@ impl DrawingApp {
                     revision,
                     epoch,
                     path,
-                    automatic,
                     result,
                 } => {
-                    if automatic && path == self.data_dir.join("recovery.atelier") {
-                        self.save_pending = false;
-                    }
-                    if !automatic {
-                        self.manual_pending = false;
-                    }
+                    self.manual_pending = false;
                     self.apply_save_publications(epoch, &publications);
+                    let scope = crate::activity::Scope::Project(epoch);
                     match result {
                         Ok(()) => {
-                            let scope = crate::activity::Scope::Project(epoch);
-                            let task = if automatic {
-                                crate::activity::Task::Recovery
-                            } else {
-                                crate::activity::Task::Save(path.clone())
-                            };
-                            self.activity.resolve(&scope, &task);
-                            if !automatic {
-                                if let Some(tab) =
-                                    self.project_tabs.iter_mut().find(|tab| tab.epoch == epoch)
-                                {
-                                    if tab.owner.is_none() || tab.path.as_ref() == Some(&path) {
-                                        tab.path = Some(path.clone());
-                                        if tab.revision == revision {
-                                            tab.dirty = false;
-                                        }
+                            self.activity
+                                .resolve(&scope, &crate::activity::Task::Save(path.clone()));
+                            if let Some(tab) =
+                                self.project_tabs.iter_mut().find(|tab| tab.epoch == epoch)
+                            {
+                                if tab.owner.is_none() || tab.path.as_ref() == Some(&path) {
+                                    tab.path = Some(path.clone());
+                                    if tab.revision == revision {
+                                        tab.dirty = false;
                                     }
                                 }
                             }
                             if epoch == self.epoch {
-                                if automatic && path == self.data_dir.join("recovery.atelier") {
-                                    self.autosaved_revision = revision;
-                                    if self.closing
-                                        && revision == self.revision
-                                        && !self.mask_dirty
-                                        && self.mask_save_error.is_none()
-                                    {
-                                        window.remove_window();
-                                        return;
+                                if self.project_owner.is_none() || self.path.as_ref() == Some(&path)
+                                {
+                                    self.path = Some(path);
+                                    if revision == self.revision {
+                                        self.dirty = false;
                                     }
-                                } else if !automatic {
-                                    if self.project_owner.is_none()
-                                        || self.path.as_ref() == Some(&path)
-                                    {
-                                        self.path = Some(path);
-                                        if revision == self.revision {
-                                            self.dirty = false;
-                                        }
-                                    }
-                                    self.refresh_projects();
-                                    self.message("Project saved", false);
                                 }
+                                self.refresh_projects();
+                                self.message("Project saved", false);
                             }
+                            self.persist_open_projects();
                         }
                         Err(e) => {
                             self.closing = false;
-                            self.autosave_retry_after = Instant::now() + Duration::from_secs(5);
-                            let task = if automatic {
-                                crate::activity::Task::Recovery
-                            } else {
-                                crate::activity::Task::Save(path)
-                            };
                             self.report_error(
-                                crate::activity::Scope::Project(epoch),
-                                task,
+                                scope,
+                                crate::activity::Task::Save(path),
                                 format!("Save failed: {e:#}"),
                             );
                         }
@@ -6142,12 +6084,13 @@ impl DrawingApp {
                         continue;
                     }
                     match result {
-                        Ok(worker::OpenedDocument {
-                            doc,
-                            images,
-                            path,
-                            owner,
-                        }) => {
+                        Ok(opened) => {
+                            let worker::OpenedDocument {
+                                doc,
+                                images,
+                                path,
+                                owner,
+                            } = *opened;
                             self.activity.resolve(
                                 &crate::activity::Scope::App,
                                 &crate::activity::Task::Open,
@@ -6212,7 +6155,7 @@ impl DrawingApp {
                                 );
                                 let path = self.data_dir.join(filename);
                                 self.path = Some(path.clone());
-                                self.queue_save(path, false);
+                                self.queue_save(path);
                             }
                         }
                         Err(e) => {
@@ -6730,12 +6673,12 @@ impl DrawingApp {
             }
         }
         if !self.active_stroke
-            && !self.save_pending
+            && self.pending_recoveries == 0
             && self.autosaved_revision != self.revision
             && self.last_edit.elapsed() > Duration::from_millis(800)
             && Instant::now() >= self.autosave_retry_after
         {
-            self.queue_save(self.data_dir.join("recovery.atelier"), true);
+            self.persist_open_projects();
         }
         if self.timer_running {
             let elapsed = self.timer_tick.elapsed();
@@ -7014,8 +6957,11 @@ impl DrawingApp {
                     }
                     self.panel = Panel::None;
                     self.show_drawing_composer = false;
-                    self.generation_region = None;
-                    self.selecting_generation_region = false;
+                    if self.doc.drawing_target.region().is_some() {
+                        self.set_drawing_target(DrawingTarget::Full, cx);
+                    } else {
+                        self.restore_drawing_context();
+                    }
                 }
                 _ => return,
             }

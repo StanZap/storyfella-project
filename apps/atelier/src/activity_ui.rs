@@ -161,12 +161,11 @@ impl DrawingApp {
             }
             Task::Save(path) => {
                 self.capture_prompt(cx);
-                self.queue_save(path, false);
+                self.queue_save(path);
             }
-            Task::Recovery if scope == Scope::App => self.persist_open_projects(),
             Task::Recovery => {
                 self.capture_prompt(cx);
-                self.queue_save(self.data_dir.join("recovery.atelier"), true);
+                self.persist_open_projects();
             }
             Task::Import => {
                 if scope == Scope::Library {
