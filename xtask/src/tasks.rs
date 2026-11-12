@@ -5,6 +5,7 @@
 //! only logic worth reading here is path resolution and exit-code propagation —
 //! everything else is a command assembled and handed to [`crate::proc`].
 
+use std::fs::{self, OpenOptions};
 use std::path::Path;
 use std::process::{Command as Process, ExitCode, ExitStatus};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -12,8 +13,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context, Result};
 
 use crate::cli::{
-    AtelierArgs, BuildArgs, BundleArgs, Cli, ClippyArgs, Command, CssArgs, FmtArgs, PlanArgs,
-    RunArgs, ServeArgs,
+    AtelierArgs, AtelierBundleArgs, AtelierCommand, AtelierPackageType, BuildArgs, BundleArgs, Cli,
+    ClippyArgs, Command, CssArgs, FmtArgs, PlanArgs, RunArgs, ServeArgs,
 };
 use crate::proc;
 use crate::workspace::{Profile, Workspace};
@@ -51,6 +52,9 @@ fn run(ws: &Workspace, args: RunArgs) -> Result<ExitCode> {
 }
 
 fn atelier(ws: &Workspace, args: AtelierArgs) -> Result<ExitCode> {
+    if let Some(AtelierCommand::Bundle(bundle_args)) = args.command {
+        return bundle_atelier(ws, bundle_args);
+    }
     let restart = args.restart;
     let args = args.run;
     if args.app_args.first().is_some_and(|arg| arg == "--help") && restart {
@@ -88,6 +92,136 @@ fn atelier(ws: &Workspace, args: AtelierArgs) -> Result<ExitCode> {
     }
     cmd.arg("--").args(args.app_args);
     launch_with_log(ws, &mut cmd, args.log, "atelier")
+}
+
+fn bundle_atelier(ws: &Workspace, args: AtelierBundleArgs) -> Result<ExitCode> {
+    use AtelierPackageType::{Appimage, Macos};
+
+    let linux = match std::env::consts::OS {
+        "macos" => {
+            if args.package_types.iter().any(|format| *format != Macos) {
+                bail!("Atelier can only produce the macos package type on macOS");
+            }
+            false
+        }
+        "linux" => {
+            if args.package_types.contains(&Macos) {
+                bail!("Atelier can only produce appimage and deb package types on Linux");
+            }
+            true
+        }
+        _ => bail!("Atelier bundling requires a macOS or Linux host"),
+    };
+
+    let out_dir = ws.dist().join("atelier");
+    fs::create_dir_all(&out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
+    // Packaging writes to shared paths, including the cache of AppImage tools.
+    let lock_path = out_dir.join(".bundle.lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("opening {}", lock_path.display()))?;
+    lock.lock()
+        .with_context(|| format!("locking {}", lock_path.display()))?;
+    let profile = args.profile.resolve(linux);
+    if linux {
+        let formats = if args.package_types.is_empty() {
+            vec![Appimage]
+        } else {
+            args.package_types
+        };
+        let formats = formats
+            .into_iter()
+            .map(AtelierPackageType::as_arg)
+            .collect::<Vec<_>>()
+            .join(",");
+        bundle_atelier_linux(ws, &out_dir, profile, &formats)?;
+    } else {
+        let mut cmd = Process::new("sh");
+        cmd.current_dir(ws.root())
+            .arg("apps/atelier/package-macos.sh")
+            .env("CARGO_TARGET_DIR", ws.target_dir()?);
+        if profile.is_release() {
+            cmd.arg("--release");
+        }
+        proc::require(&mut cmd)?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn bundle_atelier_linux(
+    ws: &Workspace,
+    out_dir: &Path,
+    profile: Profile,
+    formats: &str,
+) -> Result<()> {
+    if proc::version("cargo-packager", "--version").is_none() {
+        bail!("install the Linux packager with `cargo install cargo-packager --version 0.11.8 --locked`");
+    }
+
+    let target_dir = ws.target_dir()?;
+    let mut build = Process::new("cargo");
+    build
+        .current_dir(ws.root())
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .args([
+            "build",
+            "--package",
+            "storyfella-atelier",
+            "--bin",
+            "atelier",
+        ]);
+    if profile.is_release() {
+        build.arg("--release");
+    }
+    proc::require(&mut build)?;
+
+    // Publish completed packages after the packager succeeds. Keep staging on
+    // the same filesystem so replacement of an existing package is atomic.
+    let staging = tempfile::Builder::new()
+        .prefix(".bundle-")
+        .tempdir_in(out_dir)
+        .with_context(|| format!("creating a staging directory in {}", out_dir.display()))?;
+    let mut package = Process::new("cargo");
+    package
+        .current_dir(ws.root().join("apps/atelier"))
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .env("XDG_CACHE_HOME", target_dir.join("atelier-packaging-cache"))
+        .env("APPIMAGE_EXTRACT_AND_RUN", "1")
+        .args([
+            "packager",
+            "--packages",
+            "storyfella-atelier",
+            "--formats",
+            formats,
+            "--out-dir",
+        ])
+        .arg(staging.path());
+    if profile.is_release() {
+        package.arg("--release");
+    }
+    proc::require(&mut package)?;
+
+    let mut artifacts = Vec::new();
+    for entry in fs::read_dir(staging.path())? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            artifacts.push(entry.file_name());
+        }
+    }
+    if artifacts.is_empty() {
+        bail!("cargo packager did not produce any Atelier packages");
+    }
+    artifacts.sort();
+    for artifact in artifacts {
+        let dest = out_dir.join(&artifact);
+        fs::rename(staging.path().join(artifact), &dest)
+            .with_context(|| format!("publishing {}", dest.display()))?;
+        proc::done(format!("built {}", dest.display()));
+    }
+    Ok(())
 }
 
 fn restart_atelier(data_dir: &Path) -> Result<()> {

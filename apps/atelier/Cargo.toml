@@ -2,11 +2,28 @@
 name = "storyfella-atelier"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+description = "Draw, edit, and generate artwork."
 publish = false
 
 [[bin]]
 name = "atelier"
 path = "src/main.rs"
+
+[package.metadata.packager]
+product-name = "Atelier"
+identifier = "com.storyfella.atelier"
+category = "Graphics"
+icons = ["packaging/atelier.png"]
+binaries = [{ path = "atelier", main = true }]
+
+[package.metadata.packager.deb]
+package-name = "storyfella-atelier"
+section = "graphics"
+depends = [
+    "libc6", "libgcc-s1", "libfontconfig1", "libfreetype6", "libvulkan1",
+    "libegl1", "libwayland-client0", "libxcb1", "libxkbcommon0", "libxkbcommon-x11-0",
+]
 
 [dependencies]
 agentkit-ai.workspace = true

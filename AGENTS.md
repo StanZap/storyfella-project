@@ -71,8 +71,8 @@ once without overwriting a destination or removing originals.
 
 Atelier is a separate GPUI executable, not a Dioxus module. Use
 `cargo xtask atelier` (separate from Studio's `cargo xtask run` and the `svs`
-CLI) and `sh apps/atelier/package-macos.sh` (macOS
-bundle at `dist/atelier/Atelier.app`). Preserve its Atelier data directory,
+CLI) and `cargo xtask atelier bundle` (macOS and Linux packages in
+`dist/atelier/`). Preserve its Atelier data directory,
 `com.storyfella.atelier` bundle identity. The vendored
 `gpui-pre-apple` patch enables its shared BGRA Metal surfaces. The existing
 FineWineTTS review app still uses GPUI, so that repository retains its patch.

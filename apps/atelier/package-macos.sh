@@ -18,7 +18,7 @@ fi
 BUNDLE="$PROJECT_ROOT/dist/atelier/Atelier.app"
 mkdir -p "$BUNDLE/Contents/MacOS"
 # Replace the executable atomically so a running build keeps its original signed image.
-cp "$PROJECT_ROOT/target/$PROFILE/atelier" "$BUNDLE/Contents/MacOS/Atelier.new"
+cp "${CARGO_TARGET_DIR:-target}/$PROFILE/atelier" "$BUNDLE/Contents/MacOS/Atelier.new"
 mv "$BUNDLE/Contents/MacOS/Atelier.new" "$BUNDLE/Contents/MacOS/Atelier"
 cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

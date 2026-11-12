@@ -22,6 +22,7 @@ use crate::workspace::Profile;
         cargo xtask run                          build (debug) and launch Studio\n  \
         cargo xtask atelier                      build and launch GPUI Atelier\n  \
         cargo xtask atelier --restart            safely restart the same Atelier instance\n  \
+        cargo xtask atelier bundle               package Atelier for the current platform\n  \
         cargo xtask run -r                       build and launch a release binary\n  \
         cargo xtask run -l                       …logging the app to .svs-e2e/logs/\n  \
         cargo xtask plan config/plans/smoke.yaml\n  \
@@ -40,7 +41,7 @@ pub enum Command {
     Build(BuildArgs),
     /// Build Dioxus Studio, then launch it.
     Run(RunArgs),
-    /// Build and launch the separate GPUI Atelier app with Cargo.
+    /// Build and launch Atelier, or package it with `atelier bundle`.
     Atelier(AtelierArgs),
     /// Build, then play a YAML plan through the app (`--plan <file> --mode …`).
     Plan(PlanArgs),
@@ -68,8 +69,7 @@ pub enum Command {
 ///
 /// `-r`/`--release` selects release and `-d`/`--debug` selects debug; the two
 /// conflict, so a typo cannot silently pick one. When neither is given, the
-/// command's own default applies: debug for `build`/`run`/`serve`, release for
-/// `bundle`.
+/// command's own default applies.
 #[derive(Args, Clone, Copy, Debug, Default)]
 pub struct ProfileArgs {
     /// Build in release mode.
@@ -114,12 +114,50 @@ pub struct RunArgs {
 }
 
 #[derive(Args)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct AtelierArgs {
     #[command(flatten)]
     pub run: RunArgs,
     /// Save recovery and close the instance using the same data directory before launch.
     #[arg(long)]
     pub restart: bool,
+    #[command(subcommand)]
+    pub command: Option<AtelierCommand>,
+}
+
+#[derive(Subcommand)]
+pub enum AtelierCommand {
+    /// Package Atelier into dist/atelier (macOS .app or Linux AppImage/.deb).
+    Bundle(AtelierBundleArgs),
+}
+
+#[derive(Args)]
+pub struct AtelierBundleArgs {
+    #[command(flatten)]
+    pub profile: ProfileArgs,
+    /// Package formats (macos on macOS, appimage or deb on Linux). Repeatable.
+    #[arg(long, value_enum, num_args = 1.., value_name = "TYPE")]
+    pub package_types: Vec<AtelierPackageType>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum AtelierPackageType {
+    /// Linux AppImage (default on Linux).
+    Appimage,
+    /// Linux Debian package.
+    Deb,
+    /// macOS .app bundle (default on macOS).
+    Macos,
+}
+
+impl AtelierPackageType {
+    pub fn as_arg(self) -> &'static str {
+        match self {
+            Self::Appimage => "appimage",
+            Self::Deb => "deb",
+            Self::Macos => "macos",
+        }
+    }
 }
 
 #[derive(Args)]
@@ -235,4 +273,55 @@ pub struct CssArgs {
     /// Install the frontend toolchain (`npm install`) before building.
     #[arg(long)]
     pub install: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn atelier_accepts_bundle_formats_and_profile() {
+        let cli = Cli::try_parse_from([
+            "xtask",
+            "atelier",
+            "bundle",
+            "--debug",
+            "--package-types",
+            "appimage",
+            "deb",
+        ])
+        .unwrap();
+        let Command::Atelier(AtelierArgs {
+            command: Some(AtelierCommand::Bundle(args)),
+            ..
+        }) = cli.command
+        else {
+            panic!("expected the Atelier bundle command");
+        };
+        assert_eq!(args.profile.resolve(true), Profile::Debug);
+        assert_eq!(
+            args.package_types,
+            [AtelierPackageType::Appimage, AtelierPackageType::Deb]
+        );
+    }
+
+    #[test]
+    fn atelier_launch_still_forwards_arguments_after_separator() {
+        let cli = Cli::try_parse_from([
+            "xtask",
+            "atelier",
+            "--restart",
+            "--",
+            "--data-dir",
+            "bundle",
+        ])
+        .unwrap();
+        let Command::Atelier(args) = cli.command else {
+            panic!("expected the Atelier command");
+        };
+        assert!(args.command.is_none());
+        assert!(args.restart);
+        assert_eq!(args.run.app_args, ["--data-dir", "bundle"]);
+        assert!(Cli::try_parse_from(["xtask", "atelier", "--restart", "bundle"]).is_err());
+    }
 }

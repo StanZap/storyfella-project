@@ -1092,6 +1092,10 @@ models can expose the same tools when their adapters support the capabilities.
 
 ### Native runtime distribution · 2026-10-29
 
+[`cargo xtask atelier bundle`](development.md#atelier-packaging) packages the
+Atelier application as a macOS `.app` or a Linux AppImage or Debian package.
+SF-PLAN-30 tracks distribution of the managed Linux CUDA runtime.
+
 - [ ] **SF-PLAN-30 — Ship and validate the Linux NVIDIA CUDA runtime.**
   Build the pinned `sd-server` for each supported Linux release target during
   packaging and include its required redistributable CUDA/runtime libraries.

@@ -9,10 +9,11 @@
 //! cargo xtask run          # build (debug) and launch the desktop app
 //! cargo xtask run -r       # …in release
 //! cargo xtask bundle       # release AppImage into dist/
+//! cargo xtask atelier bundle # package Atelier into dist/atelier/
 //! ```
 //!
-//! The debug build is the default everywhere; `-r`/`--release` opts into the
-//! release profile. Commands that launch a process propagate its exit code, so
+//! Launch tasks default to debug; `-r`/`--release` opts into the release
+//! profile. Commands that launch an app propagate its exit code, so
 //! `cargo xtask plan … --mode check` can gate a script.
 
 mod cli;

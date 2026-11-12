@@ -9,16 +9,16 @@ remain Dioxus; GUI-free artwork exchange lives in `storyfella-studio-core`.
 ```sh
 cargo xtask atelier
 cargo xtask atelier -- --data-dir .svs-e2e/atelier-dev
-sh apps/atelier/package-macos.sh
+cargo xtask atelier bundle
 ```
 
 Atelier is explicitly separate from Studio's `cargo xtask run` and the `svs`
-CLI. The macOS bundle is `dist/atelier/Atelier.app`; its identifier remains
-`com.storyfella.atelier`, and data stays
+CLI. Bundles go to `dist/atelier/` as an ad hoc-signed `.app` on macOS or an
+AppImage on Linux. On Linux, add `--package-types deb` to produce a Debian package.
+See [packaging setup](development.md#atelier-packaging). Atelier data lives
 in `~/Library/Application Support/Atelier` (macOS) or `~/.local/share/Atelier`.
 The root Cargo patch and vendored GPUI Metal renderer remain in this workspace.
 FineWineTTS retains its separate GPUI renderer patch for its review application.
-The macOS development bundle uses ad hoc signing without certificate setup.
 Provider keys resolve from environment variables first, then the matching hosted
 provider entry in the shared `clipforge.toml`. Provider connections, credentials
 and secrets are managed in Clipforge. Keys stay out of projects and exports.

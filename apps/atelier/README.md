@@ -11,23 +11,35 @@ Atelier is a separate desktop app from Dioxus Studio; see
 cargo xtask atelier
 ```
 
-On macOS, create a native development bundle with:
+On macOS, build and open the development bundle:
 
 ```sh
-sh apps/atelier/package-macos.sh
+cargo xtask atelier bundle
 open dist/atelier/Atelier.app
 ```
 
-The bundle is written to `dist/atelier/Atelier.app`. It is a local development build,
-not an Apple-signed or notarized distribution. App data defaults to
+The macOS bundle defaults to debug and uses ad hoc signing. Pass `--release`
+for an optimized build.
+
+On Linux, install [cargo-packager](https://github.com/crabnebula-dev/cargo-packager)
+and build the AppImage:
+
+```sh
+cargo install cargo-packager --version 0.11.8 --locked
+cargo xtask atelier bundle
+```
+
+Linux packages default to release. Use `--package-types appimage deb` to build
+both formats, or `--package-types deb` for Debian only. Packages are written to
+`dist/atelier/`. See the [Linux build prerequisites](../../docs/development.md#linux-system-packages).
+
+App data defaults to
 `~/Library/Application Support/Atelier` on macOS, or `~/.local/share/Atelier`
 on other desktop platforms. For isolated development sessions:
 
 ```sh
 cargo xtask atelier -- --data-dir .svs-e2e/atelier-dev
 ```
-
-The macOS development bundle uses ad hoc signing and needs no certificate setup.
 
 ## Available
 

@@ -30,8 +30,8 @@ native and hosted inference, provisioning and shared server controls
 
 Atelier is the separate GPUI drawing and image-generation app, moved from
 FineWineTTS with its existing project storage intact.
-Run `cargo xtask atelier`; on macOS,
-`sh apps/atelier/package-macos.sh` builds `dist/atelier/Atelier.app`.
+Run `cargo xtask atelier` to launch it. Use `cargo xtask atelier bundle` to
+build a macOS `.app` or Linux AppImage in `dist/atelier/`.
 Its hosted image providers use the shared Clipforge API. See [Atelier](apps/atelier/README.md)
 and [the shared AI boundary](docs/atelier.md).
 
