@@ -65,6 +65,13 @@ fn fixture_provider(request: Request) -> Result<Reference> {
             assert_eq!(original.get_pixel(512, 512).0, FIRST);
             REVISED
         }
+        "Use the saved painting" => {
+            let original =
+                document::decode_reference(request.source.as_deref().unwrap())?.to_rgba8();
+            assert_eq!(original.get_pixel(40, 30).0, FIRST);
+            assert_eq!(original.get_pixel(100, 30)[3], 0);
+            REVISED
+        }
         other => panic!("Unexpected fixture prompt {other}"),
     };
     let mut png = Cursor::new(Vec::new());
@@ -97,6 +104,88 @@ fn late_result_after_cancel(request: Request) -> Result<Reference> {
 }
 
 #[test]
+fn generation_from_saved_canvas_sends_handmade_artwork_and_keeps_it_editable() {
+    use crate::{
+        document::Point,
+        shapes::{self, ShapeKind},
+    };
+    let scratch = fixture();
+    let (folder, asset) = setup(&scratch.path().join("story"));
+    let desktop = scratch.path().join("desktop");
+    fs::create_dir(&desktop).unwrap();
+    let owner = Owner::desktop(folder.clone(), &desktop, None).unwrap();
+    let path = document::project_document(&folder.manifest()).unwrap();
+    let mut doc = document::load(&path).unwrap();
+    doc.create_canvas().unwrap();
+    let source_artboard = doc.canvas_id;
+    doc.width = 1024;
+    doc.height = 1024;
+    let mark = shapes::stroke(
+        ShapeKind::Rectangle,
+        Point { x: 20., y: 20. },
+        Point { x: 80., y: 60. },
+        FIRST,
+        [0; 4],
+        1.,
+    )
+    .unwrap();
+    let shape_id = mark.shape.as_ref().unwrap().id;
+    doc.add_mark(0, mark).unwrap();
+    shared_save::save(&path, &doc).unwrap();
+    owner.release_desktop().unwrap();
+    drop(owner);
+
+    let mut tools = Tools::open(args(&folder, scratch.path().join("data"))).unwrap();
+    tools.settings.provider = providers::Provider::GptImage;
+    tools.settings.edit_model = "gpt-image-1".into();
+    tools.provider = fixture_provider;
+    assert_eq!(
+        tools.project(Project { offset: 0 }).unwrap()["artboards"][0]["artboard"],
+        source_artboard
+    );
+    let response = tools
+        .generate(Generate {
+            session: tools.session,
+            asset,
+            expected_version: tools.snapshot(asset).unwrap().version,
+            prompt: "Use the saved painting".into(),
+            revise: false,
+            source_artboard: Some(source_artboard),
+            reference_revision: None,
+            size: Some([1024, 1024]),
+        })
+        .unwrap();
+    let id = serde_json::from_value::<Uuid>(response["job"].clone()).unwrap();
+    let start = std::time::Instant::now();
+    loop {
+        let result = tools
+            .poll(Poll {
+                session: tools.session,
+                job: id,
+            })
+            .unwrap();
+        if result["status"] == "done" {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(10), "{result}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let mut reopened = document::load(&path).unwrap();
+    assert_ne!(linked_canvas(&reopened, asset), Some(source_artboard));
+    assert!(reopened.layers.iter().any(|layer| layer.candidate));
+    reopened.select_canvas(source_artboard).unwrap();
+    assert_eq!(reopened.shape_location(shape_id), Some((0, 0)));
+    assert_eq!(
+        reopened
+            .generation_pixels(None)
+            .unwrap()
+            .get_pixel(40, 30)
+            .0,
+        FIRST
+    );
+}
+
+#[test]
 fn cancellation_suppresses_late_attachment_and_unknown_submission_stays_unknown() {
     let scratch = fixture();
     let (folder, asset) = setup(&scratch.path().join("story"));
@@ -113,6 +202,7 @@ fn cancellation_suppresses_late_attachment_and_unknown_submission_stays_unknown(
                 expected_version: tools.snapshot(asset).unwrap().version,
                 prompt: "Draw the vault in cool light".into(),
                 revise: false,
+                source_artboard: None,
                 reference_revision: None,
                 size: None,
             })
@@ -446,6 +536,7 @@ fn retained_variant_recovers_after_restart_and_approval_publishes_only_its_artbo
                 expected_version: tools.snapshot(asset).unwrap().version,
                 prompt: prompt.into(),
                 revise: false,
+                source_artboard: None,
                 reference_revision,
                 size: None,
             })

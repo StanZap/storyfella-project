@@ -23,6 +23,7 @@ pub struct Renderer {
     paper: ComputePipelineState,
     brush: ComputePipelineState,
     composite: ComputePipelineState,
+    composite_clipped: ComputePipelineState,
     trace: ComputePipelineState,
     orient: ComputePipelineState,
     surface_cache: core_video::metal_texture_cache::CVMetalTextureCache,
@@ -57,6 +58,7 @@ impl Renderer {
             paper: pipeline("paper_tile")?,
             brush: pipeline("brush_tile")?,
             composite: pipeline("composite_tile")?,
+            composite_clipped: pipeline("composite_clipped_tile")?,
             trace: pipeline("trace_tile")?,
             orient: pipeline("orient_tile")?,
             surface_cache: core_video::metal_texture_cache::CVMetalTextureCache::new(
@@ -169,6 +171,9 @@ impl Renderer {
         dirty: &mut BTreeSet<TileKey>,
     ) -> Result<()> {
         let stroke = &doc.layers[layer].strokes[index];
+        if stroke.shape.is_some() {
+            return self.append_shape(command, doc, layer, stroke, dirty);
+        }
         let mut bins: BTreeMap<TileKey, Vec<[f32; 6]>> = BTreeMap::new();
         for segment in segments(stroke, from) {
             for key in segment_tiles(segment, stroke.size / 2. + 1., doc.width, doc.height) {
@@ -263,6 +268,8 @@ impl Renderer {
                         Brush::Ink => 1.,
                         Brush::Charcoal => 2.,
                         Brush::Marker => 3.,
+                        Brush::Soft => 4.,
+                        Brush::Dry => 5.,
                     },
                     if stroke.tool == Tool::Eraser { 1. } else { 0. },
                     0.,
@@ -270,6 +277,10 @@ impl Renderer {
                     top,
                     right - left,
                     bottom - top,
+                    f32::from(stroke.color[0]) / 255.,
+                    f32::from(stroke.color[1]) / 255.,
+                    f32::from(stroke.color[2]) / 255.,
+                    f32::from(stroke.color[3]) / 255.,
                 ];
                 self.dispatch(
                     command,
@@ -280,6 +291,68 @@ impl Renderer {
                 );
             }
             dirty.insert(key);
+        }
+        Ok(())
+    }
+    fn append_shape(
+        &mut self,
+        command: &CommandBufferRef,
+        doc: &Document,
+        layer: usize,
+        stroke: &crate::document::Stroke,
+        dirty: &mut BTreeSet<TileKey>,
+    ) -> Result<()> {
+        let Some((left, top, right, bottom)) = crate::shapes::bounds(stroke) else {
+            return Ok(());
+        };
+        let left = (left - 1.).max(0.) as u32 / TILE;
+        let top = (top - 1.).max(0.) as u32 / TILE;
+        let right = ((right + 1.).ceil().max(0.) as u32)
+            .min(doc.width)
+            .div_ceil(TILE);
+        let bottom = ((bottom + 1.).ceil().max(0.) as u32)
+            .min(doc.height)
+            .div_ceil(TILE);
+        for row in top..bottom {
+            for col in left..right {
+                let key = TileKey(col, row);
+                let x = col * TILE;
+                let y = row * TILE;
+                let w = TILE.min(doc.width - x);
+                let h = TILE.min(doc.height - y);
+                let mut pixels =
+                    tiny_skia::Pixmap::new(w, h).context("Could not allocate a shape tile")?;
+                crate::shapes::paint(&mut pixels, stroke, 1., (x as f32, y as f32));
+                if pixels.data().chunks_exact(4).all(|p| p[3] == 0) {
+                    continue;
+                }
+                if !self.layers[layer].contains_key(&key) {
+                    let bytes = w as usize * h as usize * 12;
+                    ensure!(
+                        self.bytes + bytes <= CACHE_BYTES,
+                        "Artwork exceeds the 768 MiB GPU layer cache"
+                    );
+                    let tile = self.new_tile(command, key, doc);
+                    self.layers[layer].insert(key, tile);
+                    self.bytes += bytes;
+                }
+                let source = self.texture(w, h, MTLPixelFormat::RGBA8Unorm);
+                source.replace_region(
+                    MTLRegion::new_2d(0, 0, u64::from(w), u64::from(h)),
+                    0,
+                    pixels.data().as_ptr().cast(),
+                    u64::from(w) * 4,
+                );
+                let tile = &self.layers[layer][&key];
+                self.dispatch(
+                    command,
+                    &self.composite,
+                    &[&source, &tile.painted],
+                    &[1.],
+                    None,
+                );
+                dirty.insert(key);
+            }
         }
         Ok(())
     }
@@ -306,6 +379,7 @@ impl Renderer {
         // One scratch texture per tile is reused for every isolated group.
         let mut scratch: Option<Texture> = None;
         let mut group_surface: Option<(String, f32)> = None;
+        let mut clips = HashMap::new();
         for (i, layer) in doc.layers.iter().enumerate() {
             if !doc.layer_is_visible(layer) {
                 continue;
@@ -348,13 +422,49 @@ impl Renderer {
                 } else {
                     output
                 };
-                self.dispatch(
-                    command,
-                    &self.composite,
-                    &[&tile.painted, target],
-                    &[layer.opacity, 0., 0.],
-                    None,
-                );
+                if let Some(id) = layer.clip_shape {
+                    let Some(shape) = crate::shapes::clip_source(&doc.layers, id) else {
+                        continue;
+                    };
+                    let mask = match clips.entry(id) {
+                        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            let (width, height) = (target.width(), target.height());
+                            let origin = ((key.0 * TILE) as f32, (key.1 * TILE) as f32);
+                            let mask = crate::shapes::mask(
+                                shape,
+                                width as u32,
+                                height as u32,
+                                1.,
+                                origin,
+                            )?;
+                            let texture =
+                                self.texture(width as u32, height as u32, MTLPixelFormat::R8Unorm);
+                            texture.replace_region(
+                                MTLRegion::new_2d(0, 0, width, height),
+                                0,
+                                mask.data().as_ptr().cast(),
+                                width,
+                            );
+                            entry.insert(texture)
+                        }
+                    };
+                    self.dispatch(
+                        command,
+                        &self.composite_clipped,
+                        &[&tile.painted, mask, target],
+                        &[layer.opacity],
+                        None,
+                    );
+                } else {
+                    self.dispatch(
+                        command,
+                        &self.composite,
+                        &[&tile.painted, target],
+                        &[layer.opacity],
+                        None,
+                    );
+                }
             }
         }
         if let Some((_, opacity)) = group_surface {
@@ -488,7 +598,10 @@ impl Renderer {
         let metadata_changed = self.previous.as_ref().is_none_or(|old| {
             old.layer_groups != doc.layer_groups
                 || old.layers.iter().zip(&doc.layers).any(|(a, b)| {
-                    a.visible != b.visible || a.opacity != b.opacity || a.group != b.group
+                    a.visible != b.visible
+                        || a.opacity != b.opacity
+                        || a.group != b.group
+                        || a.clip_shape != b.clip_shape
                 })
         });
         let reference = doc.reference.and_then(|i| doc.references.get(i));
@@ -664,6 +777,12 @@ fn can_append(old: &Document, new: &Document) -> bool {
                 && a.strokes.len() <= b.strokes.len()
                 && a.strokes.iter().enumerate().all(|(i, s)| {
                     let n = &b.strokes[i];
+                    if s.color != n.color || s.shape != n.shape {
+                        return false;
+                    }
+                    if s.shape.is_some() {
+                        return s == n;
+                    }
                     if std::sync::Arc::ptr_eq(&s.points, &n.points)
                         && std::sync::Arc::ptr_eq(&s.pressures, &n.pressures)
                     {
@@ -750,6 +869,8 @@ mod tests {
     }
     fn line(x: f32, y: f32, brush: Brush) -> Stroke {
         Stroke {
+            color: crate::document::default_ink(),
+            shape: None,
             tool: Tool::Pencil,
             brush,
             size: 18.,
@@ -761,6 +882,53 @@ mod tests {
             .into(),
             pressures: vec![0.2, 1.].into(),
         }
+    }
+    #[test]
+    #[ignore = "Requires a physical Metal device"]
+    fn metal_colored_shapes_and_clipped_paint_match_cpu_across_tile_boundary() {
+        use crate::{
+            document::Point,
+            shapes::{self, ShapeKind},
+        };
+        objc2::rc::autoreleasepool(|_| {
+            let mut doc = document();
+            let mut renderer = Renderer::new().unwrap();
+            renderer.render(&doc, Viewport::default(), false).unwrap();
+            let fill = [230, 180, 70, 255];
+            let blue = [50, 100, 230, 255];
+            let shape = shapes::stroke(
+                ShapeKind::Rectangle,
+                Point { x: 500., y: 15. },
+                Point { x: 537., y: 65. },
+                fill,
+                [0; 4],
+                2.,
+            )
+            .unwrap();
+            let id = shape.shape.as_ref().unwrap().id;
+            doc.add_mark(0, shape).unwrap();
+            let update = renderer.render(&doc, Viewport::default(), false).unwrap();
+            assert!(!update.reset);
+            assert_eq!(update.tiles.len(), 2);
+            let layer = doc.add_clipped_layer(id).unwrap();
+            let mut ink = line(480., 42., Brush::Ink);
+            ink.color = blue;
+            ink.opacity = 1.;
+            ink.pressures = Default::default();
+            doc.add_mark(layer, ink).unwrap();
+            let gpu = renderer.export(&doc, true).unwrap();
+            let cpu = crate::document::raster(&doc, 1024, true).unwrap();
+            for (x, y, expected) in [
+                (499, 42, [0; 4]),
+                (508, 42, blue),
+                (512, 42, blue),
+                (535, 30, fill),
+                (539, 42, [0; 4]),
+            ] {
+                assert_eq!(gpu.get_pixel(x, y).0, expected);
+                assert_eq!(cpu.get_pixel(x, y).0, expected);
+            }
+        });
     }
     #[test]
     #[ignore = "Requires a physical Metal device"]
@@ -819,6 +987,7 @@ mod tests {
             }
             doc.layers.push(crate::document::Layer {
                 candidate: false,
+                clip_shape: None,
                 name: "Top".into(),
                 visible: true,
                 locked: false,
@@ -1178,6 +1347,7 @@ mod tests {
                 if layer > 0 {
                     doc.layers.push(crate::document::Layer {
                         candidate: false,
+                        clip_shape: None,
                         name: "Shading".into(),
                         visible: true,
                         locked: false,

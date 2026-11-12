@@ -18,6 +18,7 @@ pub type BlendCrop = ((u32, u32), PixelRect);
 pub enum DrawingTarget {
     #[default]
     Full,
+    Variation,
     Layer,
     Region {
         mode: SelectionMode,
@@ -39,9 +40,22 @@ impl DrawingTarget {
             .map(|(_, rect)| rect)
     }
 
+    pub fn creates_artboard(self) -> bool {
+        self == Self::Variation
+            || self
+                .region()
+                .is_some_and(|(mode, _)| mode == SelectionMode::Separate)
+    }
+
+    pub fn source_crop(self) -> Option<PixelRect> {
+        self.region()
+            .and_then(|(mode, rect)| (mode == SelectionMode::Separate).then_some(rect))
+    }
+
     pub fn prompt_key(self, artboard: u32) -> String {
         match self {
             Self::Full => format!("canvas:{artboard}:full"),
+            Self::Variation => format!("canvas:{artboard}:variation"),
             Self::Layer => format!("canvas:{artboard}:layer"),
             Self::Region {
                 mode,
@@ -151,7 +165,7 @@ impl Document {
         Ok((first..first + count).collect())
     }
 
-    pub fn generation_source(&self, crop: Option<PixelRect>) -> Result<Reference> {
+    pub(crate) fn generation_pixels(&self, crop: Option<PixelRect>) -> Result<image::RgbaImage> {
         let mut raster = document::raster(&self.artwork(), document::MAX_EDGE, true)?;
         if let Some((x, y, w, h)) = crop {
             ensure!(
@@ -160,6 +174,11 @@ impl Document {
             );
             raster = image::imageops::crop_imm(&raster, x, y, w, h).to_image();
         }
+        Ok(raster)
+    }
+
+    pub fn generation_source(&self, crop: Option<PixelRect>) -> Result<Reference> {
+        let raster = self.generation_pixels(crop)?;
         let mut bytes = std::io::Cursor::new(Vec::new());
         raster.write_to(&mut bytes, image::ImageFormat::Png)?;
         let mut source = document::reference_from_bytes(
@@ -238,6 +257,12 @@ impl Document {
                 return None;
             }
             let layer = &self.layers[index];
+            if layer.clip_shape.is_some_and(|id| {
+                crate::shapes::clip_source(&self.layers, id)
+                    .is_none_or(|clip| !crate::shapes::contains(clip, point))
+            }) {
+                return None;
+            }
             if !self.layer_is_visible(layer) || self.layer_is_locked(layer) {
                 return None;
             }
@@ -285,6 +310,13 @@ impl Document {
                 .unwrap_or(false);
             for stroke in &layer.strokes {
                 if stroke.opacity <= 0. {
+                    continue;
+                }
+                if stroke.shape.is_some() {
+                    hit |= crate::shapes::hit(stroke, point, tolerance);
+                    continue;
+                }
+                if stroke.tool != document::Tool::Eraser && stroke.color[3] == 0 {
                     continue;
                 }
                 let radius = if stroke.tool == document::Tool::Eraser {
@@ -359,9 +391,9 @@ impl Document {
             }
         }
         for stroke in &layer.strokes {
-            for p in stroke.points.iter() {
-                points.push((p.x - stroke.size / 2., p.y - stroke.size / 2.));
-                points.push((p.x + stroke.size / 2., p.y + stroke.size / 2.));
+            if let Some((left, top, right, bottom)) = crate::shapes::bounds(stroke) {
+                points.push((left, top));
+                points.push((right, bottom));
             }
         }
         if points.is_empty() {
@@ -705,6 +737,7 @@ impl Document {
                 opacity: 1.,
                 group: None,
                 candidate: false,
+                clip_shape: None,
                 strokes: vec![],
                 image: None,
             };
@@ -833,6 +866,7 @@ pub(crate) fn image_layer(
         opacity: 1.,
         group: None,
         candidate,
+        clip_shape: None,
         strokes: vec![],
         image: Some(ImageLayer {
             reference,

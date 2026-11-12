@@ -164,6 +164,7 @@ struct Generate {
     prompt: String,
     #[serde(default)]
     revise: bool,
+    source_artboard: Option<u32>,
     reference_revision: Option<Uuid>,
     size: Option<[u32; 2]>,
 }
@@ -381,6 +382,31 @@ impl Tools {
     fn project(&self, args: Project) -> Result<Value> {
         let stored = self.catalog()?;
         let jobs = self.submissions()?;
+        let mut artboards = Vec::new();
+        if self.path.exists() {
+            let doc =
+                document::load(&self.path).context("Could not read the saved Atelier artboards")?;
+            let current = doc
+                .canvas_created
+                .then_some((doc.canvas_id, doc.width, doc.height));
+            let parked = doc
+                .canvases
+                .iter()
+                .map(|canvas| (canvas.id, canvas.width, canvas.height));
+            let mut boards = current.into_iter().chain(parked).collect::<Vec<_>>();
+            boards.sort_unstable_by_key(|board| board.0);
+            artboards = boards
+                .into_iter()
+                .map(|(artboard, width, height)| {
+                    let asset = doc
+                        .asset_links
+                        .iter()
+                        .find(|link| link.canvas_id == artboard)
+                        .map(|link| link.asset_id);
+                    json!({"artboard": artboard, "asset": asset, "width": width, "height": height})
+                })
+                .collect();
+        }
         let mut assets = stored
             .registry
             .artifacts
@@ -393,7 +419,7 @@ impl Tools {
         Ok(json!({
             "schema_version": 2,
             "project": self.folder.id(), "session": self.session,
-            "assets": page, "next_offset": assets.next().map(|_| args.offset + page.len()),
+            "assets": page, "artboards": artboards, "next_offset": assets.next().map(|_| args.offset + page.len()),
             "can_generate": self.allow_generate, "can_publish": self.allow_publish,
             "provider": self.settings.provider.name(),
             "model": self.settings.model, "edit_model": self.settings.edit_model,
@@ -429,8 +455,11 @@ impl Tools {
             "Use a prompt of 1 to 8192 UTF-8 bytes"
         );
         ensure!(
-            !args.revise || args.reference_revision.is_none(),
-            "Choose either a pending-candidate revision or a published base image"
+            u8::from(args.revise)
+                + u8::from(args.source_artboard.is_some())
+                + u8::from(args.reference_revision.is_some())
+                <= 1,
+            "Choose one source: a pending candidate, the saved canvas, or a published base image"
         );
         let stored = self.catalog()?;
         let mut snap = self.asset_snapshot(args.asset, &stored)?;
@@ -447,8 +476,8 @@ impl Tools {
             pending.is_some() == args.revise,
             "Use revise=true to edit the pending candidate, or start without a candidate"
         );
-        let source = match args.reference_revision {
-            Some(revision) => {
+        let source = match (args.reference_revision, args.source_artboard) {
+            (Some(revision), _) => {
                 let base = stored
                     .registry
                     .artifact(args.asset)
@@ -472,7 +501,20 @@ impl Tools {
                     revision.to_string(),
                 )?))
             }
-            None => pending.map(|(_, reference)| reference),
+            (None, Some(source_artboard)) => {
+                let mut drawing = snap.doc.clone();
+                drawing.select_canvas(source_artboard)?;
+                ensure!(
+                    drawing.layers.iter().any(|layer| {
+                        !layer.candidate
+                            && drawing.layer_is_visible(layer)
+                            && (layer.image.is_some() || !layer.strokes.is_empty())
+                    }),
+                    "Save visible artwork on the source artboard before generating"
+                );
+                Some(Arc::new(drawing.generation_source(None)?))
+            }
+            (None, None) => pending.map(|(_, reference)| reference),
         };
         let mut settings = self.settings.clone();
         if artboard.is_some() {
@@ -1128,9 +1170,9 @@ fn tools() -> Vec<Tool> {
     let uuid = json!({"type": "string", "format": "uuid"});
     let version = json!({"type": "string"});
     vec![
-        tool(PROJECT, "List visual assets and their published revisions in this project. Use next_offset to continue.", json!({"offset": {"type": "integer", "minimum": 0}}), &[]),
+        tool(PROJECT, "List saved artboards, visual assets and their published revisions in this project. Use next_offset for more assets.", json!({"offset": {"type": "integer", "minimum": 0}}), &[]),
         tool(INSPECT, "Inspect one asset and the current saved drawing version.", json!({"asset": uuid}), &["asset"]),
-        tool(GENERATE, "Start a job for a pending asset. For a variant, pass its base asset's published reference_revision. Use revise=true to edit a pending candidate. Size is [width, height] in pixels for a new artboard.", json!({"session": uuid, "asset": uuid, "expected_version": version, "prompt": {"type": "string", "maxLength": 8192}, "revise": {"type": "boolean"}, "reference_revision": uuid, "size": {"type": "array", "items": {"type": "integer", "minimum": 1}, "minItems": 2, "maxItems": 2}}), &["session", "asset", "expected_version", "prompt"]),
+        tool(GENERATE, "Start a job for a pending asset. Pass a saved source_artboard ID, revise=true for a pending candidate, or reference_revision for a variant's published base. Size is [width, height] in pixels for a new artboard.", json!({"session": uuid, "asset": uuid, "expected_version": version, "prompt": {"type": "string", "maxLength": 8192}, "revise": {"type": "boolean"}, "source_artboard": {"type": "integer", "minimum": 0}, "reference_revision": uuid, "size": {"type": "array", "items": {"type": "integer", "minimum": 1}, "minItems": 2, "maxItems": 2}}), &["session", "asset", "expected_version", "prompt"]),
         tool(POLL, "Read compact job status and attach a completed result if its captured drawing still matches. This works after reconnecting.", json!({"session": uuid, "job": uuid}), &["session", "job"]),
         tool(CANCEL, "Request cancellation of a running job and suppress automatic attachment. A late completed result remains recoverable. Remote cancellation is unconfirmed.", json!({"session": uuid, "job": uuid}), &["session", "job"]),
         tool(RECOVER, "Reattach a retained result to its original pending artboard using the drawing version you just inspected. Replaces any pending candidate there. Does not call the provider.", json!({"session": uuid, "job": uuid, "expected_version": version}), &["session", "job", "expected_version"]),

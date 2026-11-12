@@ -949,6 +949,13 @@ asset-only playback check independently of Atelier and all inference services.
 
 ### Agreed asset-linked canvases and seamless saving · 2026-10-28
 
+- [x] **SF-PLAN-38 — Draw and finish artwork in Atelier.** Mix individually
+  editable shapes and colored pressure-sensitive brush strokes, clip paint to
+  a shape, and keep palettes with editable projects. Reuse the accepted
+  composition for optional image-to-image variations. Keep drawing MCP
+  tools in sync. See [Atelier drawing and painting](atelier.md#drawing-and-painting)
+  and the [desktop acceptance notes](../DESIGN.md#atelier-drawing-and-painting--2026-11-11).
+
 - [ ] **SF-PLAN-22 — Associate existing canvases with project assets.** Link the
   current Atelier canvas/artboard to a character, variation, illustration, place,
   prop or other shared visual item. Open the associated work from the backlog or

@@ -258,6 +258,8 @@ impl DrawingApp {
                 vec![point]
             };
             mask.strokes.push(Stroke {
+                color: crate::document::default_ink(),
+                shape: None,
                 brush: Brush::Ink,
                 pressures: vec![].into(),
                 tool: self.mask_tool,
@@ -462,6 +464,7 @@ impl DrawingApp {
             opacity: 1.,
             group: None,
             candidate: false,
+            clip_shape: None,
             strokes: vec![],
             image: Some(document::ImageLayer {
                 reference,

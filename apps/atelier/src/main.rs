@@ -22,6 +22,7 @@ mod ownership;
 mod project_tabs;
 mod providers;
 mod queue;
+mod shapes;
 mod shared_save;
 mod story_context;
 mod stroke_curve;

@@ -235,12 +235,27 @@ mod tests {
         let second = doc
             .ensure_story_artboard(tam, String::new(), String::new())
             .unwrap();
-        doc.layers = vec![
-            layer([0, 255, 0, 255], false),
-            layer([255, 0, 0, 255], true),
-        ];
+        let shape = crate::shapes::stroke(
+            crate::shapes::ShapeKind::Rectangle,
+            document::Point { x: 0., y: 0. },
+            document::Point {
+                x: doc.width as f32,
+                y: doc.height as f32,
+            },
+            [0, 255, 0, 255],
+            [0; 4],
+            1.,
+        )
+        .unwrap();
+        let shape_id = shape.shape.as_ref().unwrap().id;
+        doc.add_mark(0, shape).unwrap();
+        doc.layers.push(layer([255, 0, 0, 255], true));
         let saved = save_with_renderer(&path, &doc, cpu).unwrap();
         assert_eq!(saved.len(), 2);
+        assert_eq!(
+            document::load(&path).unwrap().shape_location(shape_id),
+            Some((0, 0))
+        );
         let db = ProjectDb::open_existing(folder.database()).unwrap();
         let original = db.load().unwrap();
         let first_image = original.registry.latest_image(mara).unwrap();

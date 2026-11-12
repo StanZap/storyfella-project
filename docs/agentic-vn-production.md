@@ -75,9 +75,9 @@ sessions, including attempts without a completed result.
 
 | Tool | What it does |
 | --- | --- |
-| `atelier_project_inspect` | Returns the session, provider settings, visual asset IDs, variant relationships, published revisions, submission count and recent job IDs. |
+| `atelier_project_inspect` | Returns the session, provider settings, saved artboard IDs, visual asset IDs, variant relationships, published revisions, submission count and recent job IDs. |
 | `atelier_asset_inspect` | Returns a target asset's artboard and the saved drawing version. |
-| `atelier_candidate_generate` | Queues a prompt for one pending asset. Use its base asset's current `reference_revision` to generate a variant, or `revise: true` to edit a pending candidate in place. A new artboard can specify `size: [width, height]`. |
+| `atelier_candidate_generate` | Queues a prompt for one pending asset. Pass a saved `source_artboard` ID, use the base asset's current `reference_revision` for a variant, or set `revise: true` to edit a pending candidate. A new artboard can specify `size: [width, height]`. |
 | `atelier_job_poll` | Returns compact status by project job ID and attaches the finished result if the captured destination and drawing version still match. |
 | `atelier_job_cancel` | Requests cancellation of a running job and persists a block on automatic attachment. A late result can still be inspected and explicitly recovered. |
 | `atelier_job_thumbnail` | Returns a native PNG of a retained result, up to 512 pixels on the long edge. Leaves the drawing and reviews untouched. |
@@ -147,7 +147,7 @@ the channel path short enough for a Unix socket. Studio grants inspection by
 default. Set `STORYFELLA_MCP_EDIT=1` on the Studio process to allow checked
 draft edits.
 Atelier grants drawing inspection by default. Set `ATELIER_MCP_EDIT=1` on
-the Atelier process to allow checked blend-mask edits.
+the Atelier process to allow checked blend-mask and artwork edits.
 
 ```sh
 STORYFELLA_MCP_FOLDER="$project" STORYFELLA_MCP_CHANNEL="$writer_channel" \
@@ -185,6 +185,15 @@ editable recovery. Resizing or rotating the artboard clears the mask. Use
 rectangle. It returns a native PNG up to 256 pixels on the long edge and
 reports the mask coordinates alongside it. Live Atelier generation,
 candidate review and publication remain under SF-PLAN-33 and SF-PLAN-34.
+
+`atelier_artboard_shapes` lists layer indexes, paint target, palette and up to
+50 shapes at the inspected revision. Start at `offset: 0` and continue with
+`next_offset`. `atelier_artboard_artwork_edit` takes the inspected session,
+artboard and revision plus an `operation` object. Operations include `shape`,
+`paint`, `restyle_shape`, `transform_shape`, `delete_shape`, `clip_paint`,
+`clear_clip`, and `palette`. Coordinates and widths use unrotated artboard
+pixels. Pass colors as four integers in red, green, blue, alpha order.
+Successful edits advance the live drawing revision and participate in Undo.
 
 `storyfella_preview_start` compiles the current draft into a separate
 playtest with pinned artwork. `storyfella_preview_step` inspects, advances,

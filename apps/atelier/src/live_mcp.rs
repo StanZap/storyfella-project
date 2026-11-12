@@ -27,13 +27,178 @@ use uuid::Uuid;
 
 use crate::{
     app::{DrawingApp, Page},
-    document::{self, Document},
+    document::{self, Brush, Color, Document, Point, Stroke},
+    shapes::{self, ShapeKind},
     workflow::{rect_in_canvas, DrawingTarget, PixelRect, SelectionMode},
 };
 
 const INSPECT: &str = "atelier_drawing_inspect";
 const SET_MASK: &str = "atelier_artboard_mask_set";
 const PREVIEW_REGION: &str = "atelier_artboard_region_preview";
+const INSPECT_SHAPES: &str = "atelier_artboard_shapes";
+const EDIT_ARTWORK: &str = "atelier_artboard_artwork_edit";
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum ArtworkEdit {
+    Shape {
+        layer: usize,
+        shape: ShapeKind,
+        start: Point,
+        end: Point,
+        fill: Color,
+        outline: Color,
+        width: f32,
+    },
+    Paint {
+        layer: usize,
+        brush: Brush,
+        color: Color,
+        width: f32,
+        opacity: f32,
+        points: Vec<Point>,
+        pressures: Vec<f32>,
+        erase: bool,
+    },
+    RestyleShape {
+        shape_id: Uuid,
+        fill: Color,
+        outline: Color,
+        width: f32,
+    },
+    TransformShape {
+        shape_id: Uuid,
+        scale: f32,
+        degrees: f32,
+        dx: f32,
+        dy: f32,
+    },
+    DeleteShape {
+        shape_id: Uuid,
+    },
+    ClipPaint {
+        shape_id: Uuid,
+    },
+    ClearClip {
+        layer: usize,
+    },
+    Palette {
+        colors: Vec<Color>,
+    },
+}
+
+impl ArtworkEdit {
+    fn apply(self, doc: &mut Document) -> Result<Option<Uuid>> {
+        match self {
+            Self::Shape {
+                layer,
+                shape,
+                start,
+                end,
+                fill,
+                outline,
+                width,
+            } => {
+                let stroke = shapes::stroke(shape, start, end, fill, outline, width).context(
+                    "Use a nonempty shape with visible fill or outline and a valid width",
+                )?;
+                let id = stroke.shape.as_ref().map(|shape| shape.id);
+                doc.add_mark(layer, stroke)?;
+                Ok(id)
+            }
+            Self::Paint {
+                layer,
+                brush,
+                color,
+                width,
+                opacity,
+                points,
+                pressures,
+                erase,
+            } => {
+                ensure!(
+                    !points.is_empty() && points.len() <= 4096,
+                    "Use 1 to 4096 stroke points"
+                );
+                doc.add_mark(
+                    layer,
+                    Stroke {
+                        brush,
+                        color,
+                        size: width,
+                        opacity,
+                        points: points.into(),
+                        pressures: pressures.into(),
+                        tool: if erase {
+                            document::Tool::Eraser
+                        } else {
+                            document::Tool::Pencil
+                        },
+                        shape: None,
+                    },
+                )?;
+                Ok(None)
+            }
+            Self::RestyleShape {
+                shape_id,
+                fill,
+                outline,
+                width,
+            } => {
+                let (layer, index) = doc.shape_location(shape_id).context("Unknown shape ID")?;
+                let mut stroke = doc.layers[layer].strokes[index].clone();
+                stroke.shape.as_mut().expect("Located shape").fill = fill;
+                stroke.color = outline;
+                stroke.size = width;
+                doc.replace_shape(shape_id, stroke)?;
+                Ok(Some(shape_id))
+            }
+            Self::TransformShape {
+                shape_id,
+                scale,
+                degrees,
+                dx,
+                dy,
+            } => {
+                ensure!(
+                    (0.01..=100.).contains(&scale)
+                        && degrees.is_finite()
+                        && dx.is_finite()
+                        && dy.is_finite(),
+                    "Use finite transform values and a scale from 0.01 to 100"
+                );
+                let (layer, index) = doc.shape_location(shape_id).context("Unknown shape ID")?;
+                let mut stroke = doc.layers[layer].strokes[index].clone();
+                shapes::transform(
+                    &mut stroke,
+                    scale,
+                    degrees.rem_euclid(360.).to_radians(),
+                    dx,
+                    dy,
+                );
+                doc.replace_shape(shape_id, stroke)?;
+                Ok(Some(shape_id))
+            }
+            Self::Palette { colors } => {
+                doc.palette = colors;
+                doc.validate()?;
+                Ok(None)
+            }
+            Self::DeleteShape { shape_id } => {
+                doc.remove_shape(shape_id)?;
+                Ok(None)
+            }
+            Self::ClipPaint { shape_id } => {
+                doc.add_clipped_layer(shape_id)?;
+                Ok(Some(shape_id))
+            }
+            Self::ClearClip { layer } => {
+                doc.clear_layer_clip(layer)?;
+                Ok(None)
+            }
+        }
+    }
+}
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -51,6 +216,18 @@ enum Command {
         expected_revision: u64,
         artboard: u32,
         rect: PixelRect,
+    },
+    InspectShapes {
+        session: Uuid,
+        expected_revision: u64,
+        artboard: u32,
+        offset: usize,
+    },
+    EditArtwork {
+        session: Uuid,
+        expected_revision: u64,
+        artboard: u32,
+        operation: ArtworkEdit,
     },
 }
 
@@ -138,6 +315,15 @@ impl Bridge {
                         Some(epoch),
                         Ok(json!({
                             "artboard": app.doc.canvas_id, "revision": app.revision, "mask": rect,
+                        })),
+                    ));
+                }
+                Ok((epoch, Action::Artwork(doc, id))) => {
+                    app.apply_mcp_artwork(*doc, window, cx);
+                    let _ = call.response.send((
+                        Some(epoch),
+                        Ok(json!({
+                            "artboard": app.doc.canvas_id, "revision": app.revision, "shape_id": id,
                         })),
                     ));
                 }
@@ -229,14 +415,7 @@ impl Bridge {
                         "Open this artboard in Draw before changing its blend mask.",
                     ));
                 }
-                if app.switching
-                    || app.closing_project.is_some()
-                    || app.active_stroke
-                    || app.transform_original.is_some()
-                    || app.artboard_resize_drag.is_some()
-                    || app.region_drag.is_some()
-                    || app.image_crop.is_some()
-                {
+                if app.switching || app.closing_project.is_some() || app.drawing_gesture_active() {
                     return Err(Failure::new(
                         "owner_busy",
                         "Finish the current Atelier action and inspect the drawing again.",
@@ -265,11 +444,7 @@ impl Bridge {
                         "Inspect the drawing for its current artboards.",
                     ));
                 }
-                if std::ptr::eq(doc, &app.doc)
-                    && (app.active_stroke
-                        || app.transform_original.is_some()
-                        || app.artboard_resize_drag.is_some())
-                {
+                if std::ptr::eq(doc, &app.doc) && app.drawing_gesture_active() {
                     return Err(Failure::new(
                         "owner_busy",
                         "Finish the current drawing gesture and inspect again.",
@@ -283,6 +458,58 @@ impl Bridge {
                 }
                 Action::Render(Box::new(doc.clone()), artboard, revision, rect)
             }
+            Command::InspectShapes {
+                session,
+                expected_revision,
+                artboard,
+                offset,
+            } => {
+                check_revision(call, session, expected_revision, revision)?;
+                let mut snapshot = doc.clone();
+                snapshot.select_canvas(artboard).map_err(|_| {
+                    Failure::new(
+                        "unknown_artboard",
+                        "Inspect the drawing for its current artboards.",
+                    )
+                })?;
+                Action::Reply(describe_shapes(&snapshot, revision, offset))
+            }
+            Command::EditArtwork {
+                session,
+                expected_revision,
+                artboard,
+                ref operation,
+            } => {
+                check_revision(call, session, expected_revision, revision)?;
+                if !self.edit {
+                    return Err(Failure::new(
+                        "scope_denied",
+                        "Enable Atelier draft edits when opening a new channel.",
+                    ));
+                }
+                if app.page != Page::Draw
+                    || !std::ptr::eq(doc, &app.doc)
+                    || !doc.canvas_created
+                    || doc.canvas_id != artboard
+                {
+                    return Err(Failure::new(
+                        "artboard_inactive",
+                        "Open this artboard in Draw before editing its artwork.",
+                    ));
+                }
+                if app.switching || app.closing_project.is_some() || app.drawing_gesture_active() {
+                    return Err(Failure::new(
+                        "owner_busy",
+                        "Finish the current Atelier action and inspect the drawing again.",
+                    ));
+                }
+                let mut updated = doc.clone();
+                let id = operation
+                    .clone()
+                    .apply(&mut updated)
+                    .map_err(|error| Failure::new("invalid_artwork_edit", &format!("{error:#}")))?;
+                Action::Artwork(Box::new(updated), id)
+            }
         };
         Ok((epoch, action))
     }
@@ -292,6 +519,77 @@ enum Action {
     Reply(Value),
     Mask(Option<PixelRect>),
     Render(Box<Document>, u32, u64, PixelRect),
+    Artwork(Box<Document>, Option<Uuid>),
+}
+
+fn describe_shapes(doc: &Document, revision: u64, offset: usize) -> Value {
+    let mut shapes = doc
+        .layers
+        .iter()
+        .enumerate()
+        .flat_map(|(layer, item)| {
+            item.strokes
+                .iter()
+                .filter_map(move |stroke| Some((layer, stroke, stroke.shape.as_ref()?)))
+        })
+        .skip(offset);
+    let items: Vec<_> = shapes
+        .by_ref()
+        .take(50)
+        .map(|(layer, stroke, shape)| {
+            json!({
+                "id": shape.id, "layer": layer, "shape": shape.kind, "fill": shape.fill,
+                "outline": stroke.color, "width": stroke.size, "bounds": shapes::bounds(stroke),
+            })
+        })
+        .collect();
+    json!({
+        "revision": revision, "artboard": doc.canvas_id, "paint_layer": doc.paint_layer,
+        "layers": doc.layers.iter().enumerate().map(|(index, layer)| json!({
+            "index": index, "name": layer.name, "locked": doc.layer_is_locked(layer),
+            "visible": doc.layer_is_visible(layer), "candidate": layer.candidate,
+            "clip_shape": layer.clip_shape,
+        })).collect::<Vec<_>>(),
+        "shapes": items, "next_offset": shapes.next().map(|_| offset + items.len()),
+        "palette": doc.palette,
+    })
+}
+
+fn artwork_edit_schema() -> Value {
+    let color = json!({"type":"array","minItems":4,"maxItems":4,
+        "items":{"type":"integer","minimum":0,"maximum":255}});
+    let number = json!({"type":"number"});
+    let uuid = json!({"type":"string","format":"uuid"});
+    let layer = json!({"type":"integer","minimum":0,"maximum":23});
+    let width = json!({"type":"number","minimum":0.1,"maximum":512});
+    let unit = json!({"type":"number","minimum":0,"maximum":1});
+    let point = json!({"type":"object","additionalProperties":false,"required":["x","y"],
+        "properties":{"x":number,"y":number}});
+    let operation = |kind, mut properties: Value| {
+        properties["kind"] = json!({"type":"string","const":kind});
+        let required = properties
+            .as_object()
+            .expect("Operation properties")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        json!({"type":"object","properties":properties,"required":required,"additionalProperties":false})
+    };
+    json!({"oneOf":[
+        operation("shape", json!({"layer":layer,"shape":{"enum":ShapeKind::ALL},
+            "start":point,"end":point,"fill":color,"outline":color,"width":width})),
+        operation("paint", json!({"layer":layer,"brush":{"enum":Brush::ALL},
+            "color":color,"width":width,"opacity":unit,
+            "points":{"type":"array","minItems":1,"maxItems":4096,"items":point},
+            "pressures":{"type":"array","maxItems":4096,"items":unit},"erase":{"type":"boolean"}})),
+        operation("restyle_shape", json!({"shape_id":uuid,"fill":color,"outline":color,"width":width})),
+        operation("transform_shape", json!({"shape_id":uuid,"scale":{"type":"number","minimum":0.01,"maximum":100},
+            "degrees":number,"dx":number,"dy":number})),
+        operation("delete_shape", json!({"shape_id":uuid})),
+        operation("clip_paint", json!({"shape_id":uuid})),
+        operation("clear_clip", json!({"layer":layer})),
+        operation("palette", json!({"colors":{"type":"array","maxItems":12,"items":color}})),
+    ]})
 }
 
 fn check_revision(
@@ -369,7 +667,7 @@ fn describe(
         doc.width,
         doc.height,
         doc.layers.as_slice(),
-        doc.drawing_target.blend_mask(),
+        doc.drawing_target,
     ));
     let parked = doc.canvases.iter().map(|board| {
         (
@@ -377,16 +675,17 @@ fn describe(
             board.width,
             board.height,
             board.layers.as_slice(),
-            board.drawing_target.blend_mask(),
+            board.drawing_target,
         )
     });
     let mut artboards: Vec<_> = current.into_iter().chain(parked).collect();
     // Selecting a canvas moves it between the current slot and this list.
     artboards.sort_unstable_by_key(|board| board.0);
-    let artboards: Vec<_> = artboards.into_iter().map(|(id, width, height, layers, mask)| {
+    let artboards: Vec<_> = artboards.into_iter().map(|(id, width, height, layers, target)| {
         let asset = doc.asset_links.iter().find(|link| link.canvas_id == id).map(|link| link.asset_id);
         json!({
-            "artboard": id, "asset": asset, "width": width, "height": height, "mask": mask,
+            "artboard": id, "asset": asset, "width": width, "height": height, "mask": target.blend_mask(),
+            "generation_target": target,
             "has_candidate": layers.iter().any(|layer| layer.candidate),
             "has_content": layers.iter().any(|layer| layer.image.is_some() || !layer.strokes.is_empty()),
             "layer_count": layers.len(),
@@ -418,6 +717,8 @@ impl Client {
             INSPECT => json!({"inspect": arguments}),
             SET_MASK => json!({"set_mask": arguments}),
             PREVIEW_REGION => json!({"preview_region": arguments}),
+            INSPECT_SHAPES => json!({"inspect_shapes": arguments}),
+            EDIT_ARTWORK => json!({"edit_artwork": arguments}),
             _ => return Err(Failure::new("unknown_tool", "Choose a live Atelier tool.")),
         };
         let command: Command = serde_json::from_value(arguments).map_err(|_| {
@@ -454,6 +755,14 @@ impl ServerHandler for Client {
         let rect = json!({"type":"array","minItems":4,"maxItems":4,"items":{"type":"integer","minimum":0}});
         let mut properties = json!({"session":{"type":"string","format":"uuid"},"artboard":{"type":"integer","minimum":0},
             "expected_revision":{"type":"integer","minimum":0},"rect":rect});
+        let mut drawing = properties.clone();
+        drawing
+            .as_object_mut()
+            .expect("Drawing arguments")
+            .remove("rect");
+        let mut inspection = drawing.clone();
+        inspection["offset"] = json!({"type":"integer","minimum":0});
+        drawing["operation"] = artwork_edit_schema();
         let required = json!(["session", "artboard", "expected_revision", "rect"]);
         let preview = tool(PREVIEW_REGION, "Render accepted art in an unrotated [x,y,width,height] rectangle at the inspected drawing revision. Returns a native PNG up to 256 pixels on its long edge.", properties.clone(), required.clone());
         properties["rect"] = json!({"anyOf":[rect,{"type":"null"}]});
@@ -461,6 +770,8 @@ impl ServerHandler for Client {
             tool(INSPECT, "Inspect the artboards of the open shared drawing, including unsaved work.", json!({}), json!([])),
             tool(SET_MASK, "Set the active Draw artboard's blend mask in unrotated [x,y,width,height] pixels. Pass null to clear it. Requires the drawing edit grant.", properties, required),
             preview,
+            tool(INSPECT_SHAPES, "List layers, palette and up to 50 editable shapes in stacking order at the inspected revision. Start at offset 0.", inspection, json!(["session","artboard","expected_revision","offset"])),
+            tool(EDIT_ARTWORK, "Add a colored stroke or shape, edit or delete a shape, manage shape clipping, or replace the project palette. Coordinates and widths are in unrotated artboard pixels. Colors are [red, green, blue, alpha]. Requires the drawing edit grant.", drawing, json!(["session","artboard","expected_revision","operation"])),
         ]))
     }
 
@@ -514,10 +825,39 @@ mod tests {
     }
 
     #[test]
+    fn artwork_command_reports_persisted_shapes_and_respects_locked_layers() {
+        let mut doc = Document::default();
+        doc.create_canvas().unwrap();
+        let edit: ArtworkEdit = serde_json::from_value(json!({
+            "kind": "shape", "layer": 0, "shape": "ellipse",
+            "start": {"x": 8, "y": 8}, "end": {"x": 28, "y": 36},
+            "fill": [200, 30, 70, 255], "outline": [0, 0, 0, 0], "width": 1,
+        }))
+        .unwrap();
+        let id = edit.apply(&mut doc).unwrap().unwrap();
+        let value = describe_shapes(&doc, 7, 0);
+        assert_eq!(value["shapes"][0]["id"], json!(id));
+        assert_eq!(value["shapes"][0]["fill"], json!([200, 30, 70, 255]));
+        let clip = ArtworkEdit::ClipPaint { shape_id: id };
+        clip.apply(&mut doc).unwrap();
+        assert_eq!(
+            describe_shapes(&doc, 8, 0)["layers"][1]["clip_shape"],
+            json!(id)
+        );
+        doc.layers[0].locked = true;
+        assert!(ArtworkEdit::DeleteShape { shape_id: id }
+            .apply(&mut doc)
+            .is_err());
+        assert_eq!(doc.shape_location(id), Some((0, 0)));
+    }
+
+    #[test]
     fn blend_mask_survives_serialization_and_undo_keeps_local_paint() {
         let mut doc = Document::default();
         doc.create_canvas().unwrap();
         doc.layers[0].strokes.push(document::Stroke {
+            color: document::default_ink(),
+            shape: None,
             points: Arc::new(vec![document::Point { x: 12.0, y: 16.0 }]),
             size: 10.0,
             opacity: 1.0,

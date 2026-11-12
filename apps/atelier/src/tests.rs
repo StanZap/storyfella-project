@@ -965,6 +965,8 @@ executable = "runtime/sd-server"
 }
 fn stroke(tool: Tool, y: f32) -> Stroke {
     Stroke {
+        color: document::default_ink(),
+        shape: None,
         brush: Brush::Ink,
         pressures: vec![].into(),
         tool,
@@ -980,6 +982,57 @@ fn temporary(name: &str) -> std::path::PathBuf {
     let _ = std::fs::remove_dir_all(&path);
     std::fs::create_dir_all(&path).unwrap();
     path
+}
+
+#[test]
+fn handmade_artboard_reopens_with_editable_shapes_and_clipped_color() {
+    use crate::{shapes, workflow::DrawingTarget};
+    let mut doc = doc();
+    let fill = [224, 119, 61, 255];
+    let blue = [30, 70, 220, 255];
+    let mut shape = shapes::stroke(
+        shapes::ShapeKind::Rectangle,
+        Point { x: 25., y: 20. },
+        Point { x: 70., y: 70. },
+        fill,
+        [0; 4],
+        3.,
+    )
+    .unwrap();
+    let id = shape.shape.as_ref().unwrap().id;
+    doc.add_mark(0, shape.clone()).unwrap();
+    let layer = doc.add_clipped_layer(id).unwrap();
+    let mut brush = stroke(Tool::Pencil, 48.);
+    brush.color = blue;
+    doc.add_mark(layer, brush).unwrap();
+    doc.palette = vec![fill, blue];
+    doc.drawing_target = DrawingTarget::Variation;
+    let path = temporary("handmade-artboard").join("handmade.atelier");
+    document::save(&path, &doc).unwrap();
+    let mut reopened = document::load(&path).unwrap();
+    assert_eq!(reopened.palette, [fill, blue]);
+    assert_eq!(reopened.drawing_target, DrawingTarget::Variation);
+    assert!(reopened.drawing_target.creates_artboard());
+    assert_eq!(reopened.shape_location(id), Some((0, 0)));
+    assert_eq!(reopened.layers[layer].clip_shape, Some(id));
+    let png = document::decode_reference(&reopened.generation_source(None).unwrap())
+        .unwrap()
+        .to_rgba8();
+    assert_eq!(png.get_pixel(40, 30).0, fill);
+    assert_eq!(png.get_pixel(40, 48).0, blue);
+    assert_eq!(png.get_pixel(18, 48)[3], 0);
+    assert_eq!(png.get_pixel(80, 48)[3], 0);
+    assert_eq!(reopened.generation_pixels(None).unwrap(), png);
+
+    let mut history = History::new();
+    history.checkpoint(&reopened);
+    shapes::transform(&mut shape, 1., 0., 20., 0.);
+    reopened.replace_shape(id, shape).unwrap();
+    let moved = reopened.generation_pixels(None).unwrap();
+    assert_eq!(moved.get_pixel(40, 48)[3], 0);
+    assert_eq!(moved.get_pixel(80, 48).0, blue);
+    assert!(history.undo(&mut reopened));
+    assert_eq!(reopened.generation_pixels(None).unwrap(), png);
 }
 
 fn colored_reference(name: &str, color: [u8; 4], width: u32, height: u32) -> document::Reference {
@@ -1384,6 +1437,8 @@ fn a_box_selection_masks_only_its_rectangle() {
         width: 128,
         height: 96,
         strokes: vec![Stroke {
+            color: document::default_ink(),
+            shape: None,
             brush: Brush::Ink,
             pressures: vec![].into(),
             tool: Tool::Rect,
@@ -1605,6 +1660,7 @@ fn eraser_removes_only_active_layer_and_reveals_lower_layer() {
     doc.layers[0].strokes.push(stroke(Tool::Pencil, 48.));
     doc.layers.push(Layer {
         candidate: false,
+        clip_shape: None,
         name: "Top".into(),
         visible: true,
         locked: false,
@@ -1634,6 +1690,8 @@ fn opacity_is_straight_alpha_in_exports() {
 fn click_makes_a_mark_and_canvas_bounds_clip_strokes() {
     let mut doc = doc();
     doc.layers[0].strokes.push(Stroke {
+        color: document::default_ink(),
+        shape: None,
         brush: Brush::Ink,
         pressures: vec![].into(),
         tool: Tool::Pencil,

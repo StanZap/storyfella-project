@@ -1,12 +1,14 @@
 use crate::{
-    app::{DockView, DrawingApp, Page, Panel, Picker},
+    app::{ui_color, DockView, DrawingApp, Page, PaintColor, Panel, Picker},
     document::{Brush, Tool},
     providers::Provider,
+    shapes::ShapeKind,
     viewport::Viewport,
 };
 use gpui_kit::{
     component::{
         button::*,
+        color_picker::ColorPicker,
         input::{Input, InputState, NumberInput, Textarea, TextareaState},
         menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem},
         select::Select,
@@ -645,6 +647,7 @@ impl DrawingApp {
             ),
             Panel::Catalog => Some(self.catalog_panel(cx)),
             Panel::Brushes => Some(self.brush_settings(cx)),
+            Panel::Shapes => Some(self.shape_settings(cx)),
             Panel::Canvas => Some(self.artboard_settings(cx)),
             Panel::Export => Some(self.export_settings(cx)),
             Panel::Settings => Some(self.provider_settings(cx)),
@@ -1040,6 +1043,10 @@ impl DrawingApp {
                         }
                         this.tool = tool;
                         this.moving_image = false;
+                        this.eyedropper = None;
+                        if this.panel == Panel::Shapes {
+                            this.panel = Panel::None;
+                        }
                         this.page = Page::Draw;
                         this.restore_prompt(window, cx);
                         window.focus(&this.focus, cx);
@@ -1049,8 +1056,20 @@ impl DrawingApp {
         }
         if self.page == Page::Draw {
             rail = rail
+                .child(
+                    tool_button("tool-shapes", "grid", "Draw and edit shapes")
+                        .atelier_selected(self.tool == Tool::Shape, cx)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.choose_shape_kind(this.shape_kind);
+                            this.panel = Panel::Shapes;
+                            window.focus(&this.focus, cx);
+                            cx.notify();
+                        })),
+                )
                 .child(separator().w(px(40.)))
-                .child(self.brush_rail_controls(cx));
+                .when(self.tool != Tool::Shape, |rail| {
+                    rail.child(self.brush_rail_controls(cx))
+                });
         }
         rail.child(separator().w(px(30.)))
             .child(
@@ -1193,7 +1212,7 @@ impl DrawingApp {
                 tool_button(
                     "generate-from-drawing",
                     "sparkle",
-                    "Create / image prompt · ⌘P",
+                    "Generate from canvas · ⌘P",
                 )
                 .atelier_selected(self.show_drawing_composer, cx)
                 .on_click(cx.listener(|this, _, window, cx| {
@@ -1313,6 +1332,10 @@ impl DrawingApp {
         let hover = self.hover;
         let brush = self.size();
         let tool = self.tool;
+        let shape_draft = self.shape_preview();
+        let selected_shape = (tool == Tool::Shape)
+            .then(|| self.selected_shape().cloned())
+            .flatten();
         let guides = self.guides;
         let artboard_tool =
             self.panel == Panel::Canvas && self.view.turns == 0 && !self.view.mirror;
@@ -1377,6 +1400,7 @@ impl DrawingApp {
                     let transformed_selection = this.last_image_point.is_some();
                     let painted = this.active_stroke;
                     this.finish_marquee(window, cx);
+                    this.finish_shape(window, cx);
                     this.finish_stroke();
                     if resized_artboard {
                         this.sync_inputs(window, cx);
@@ -1399,6 +1423,7 @@ impl DrawingApp {
                     let transformed_selection = this.last_image_point.is_some();
                     let painted = this.active_stroke;
                     this.finish_marquee(window, cx);
+                    this.finish_shape(window, cx);
                     this.finish_stroke();
                     if resized_artboard {
                         this.sync_inputs(window, cx);
@@ -1476,6 +1501,44 @@ impl DrawingApp {
                                             false,
                                         );
                                     }
+                                }
+                            }
+                        }
+                        if let Some(stroke) = shape_draft.as_ref().or(selected_shape.as_ref()) {
+                            if let Some(shape) = &stroke.shape {
+                                let make_path = |mut path: PathBuilder| {
+                                    for (index, p) in stroke.points.iter().enumerate() {
+                                        let p = view.to_view(*p, w as f32, h as f32);
+                                        let p = point(
+                                            paper.origin.x + px(p.x * scale),
+                                            paper.origin.y + px(p.y * scale),
+                                        );
+                                        if index == 0 {
+                                            path.move_to(p);
+                                        } else {
+                                            path.line_to(p);
+                                        }
+                                    }
+                                    if shape.kind.closed() {
+                                        path.close();
+                                    }
+                                    path.build().ok()
+                                };
+                                if shape_draft.is_some() {
+                                    if shape.kind.closed() && shape.fill[3] > 0 {
+                                        if let Some(path) = make_path(PathBuilder::fill()) {
+                                            window.paint_path(path, ui_color(shape.fill));
+                                        }
+                                    }
+                                    if stroke.color[3] > 0 {
+                                        if let Some(path) =
+                                            make_path(PathBuilder::stroke(px(stroke.size * scale)))
+                                        {
+                                            window.paint_path(path, ui_color(stroke.color));
+                                        }
+                                    }
+                                } else if let Some(path) = make_path(PathBuilder::stroke(px(1.))) {
+                                    window.paint_path(path, rgba(0x790e26b0));
                                 }
                             }
                         }
@@ -1773,7 +1836,7 @@ impl DrawingApp {
                                 ));
                             }
                         }
-                        if tool != Tool::Hand {
+                        if matches!(tool, Tool::Pencil | Tool::Eraser) {
                             if let Some(p) = hover.filter(|p| paper.contains(p)) {
                                 let radius = (brush * scale / 2.).max(2.);
                                 let mut ring = PathBuilder::stroke(px(1.));
@@ -1924,6 +1987,211 @@ impl DrawingApp {
                         cx.notify();
                     })),
             )
+    }
+
+    fn art_color_controls(&self, target: PaintColor, cx: &mut Context<Self>) -> Div {
+        let color = self.art_color(target);
+        let featured = self
+            .recent_colors
+            .iter()
+            .copied()
+            .map(ui_color)
+            .map(Hsla::from)
+            .collect();
+        let picker = ColorPicker::new(self.color_picker(target))
+            .label(target.label())
+            .small();
+        column()
+            .gap_1()
+            .child(
+                row()
+                    .items_end()
+                    .child(if self.recent_colors.is_empty() {
+                        picker
+                    } else {
+                        picker.featured_colors(featured)
+                    })
+                    .child(
+                        Button::new(format!("sample-{}", target.label()))
+                            .ghost()
+                            .small()
+                            .label("Sample")
+                            .tooltip("Pick a color from the canvas")
+                            .atelier_selected(self.eyedropper == Some(target), cx)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.finish_stroke();
+                                this.eyedropper =
+                                    (this.eyedropper != Some(target)).then_some(target);
+                                window.focus(&this.focus, cx);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new(format!("palette-{}", target.label()))
+                            .ghost()
+                            .small()
+                            .label(if self.doc.palette.contains(&color) {
+                                "Remove swatch"
+                            } else {
+                                "Save swatch"
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_palette_color(color);
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .when(target != PaintColor::Brush, |controls| {
+                controls.child(
+                    Button::new(format!("visibility-{}", target.label()))
+                        .ghost()
+                        .small()
+                        .label(match (target, color[3] == 0) {
+                            (PaintColor::Fill, true) => "Enable fill",
+                            (PaintColor::Fill, false) => "No fill",
+                            (PaintColor::Outline, true) => "Enable outline",
+                            _ => "No outline",
+                        })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            let [r, g, b, a] = color;
+                            this.choose_art_color(
+                                target,
+                                [r, g, b, if a == 0 { 255 } else { 0 }],
+                                window,
+                                cx,
+                            );
+                        })),
+                )
+            })
+            .when(!self.doc.palette.is_empty(), |controls| {
+                controls.child(
+                    row().flex_wrap().gap_1().children(
+                        self.doc
+                            .palette
+                            .iter()
+                            .copied()
+                            .enumerate()
+                            .map(|(index, swatch)| {
+                                Button::new(format!("{}-swatch-{index}", target.label()))
+                                    .ghost()
+                                    .small()
+                                    .tooltip(format!("Use #{:08X}", u32::from_be_bytes(swatch)))
+                                    .child(
+                                        div()
+                                            .size(px(16.))
+                                            .bg(ui_color(swatch))
+                                            .border_1()
+                                            .border_color(rgb(BORDER))
+                                            .rounded_sm(),
+                                    )
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.choose_art_color(target, swatch, window, cx)
+                                    }))
+                            }),
+                    ),
+                )
+            })
+    }
+
+    fn shape_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        let selected = self
+            .selected_shape()
+            .and_then(|stroke| stroke.shape.as_ref());
+        let kind = selected.map_or(self.shape_kind, |shape| shape.kind);
+        let content =
+            column()
+                .gap_3()
+                .child(
+                    row()
+                        .flex_wrap()
+                        .gap_1()
+                        .children(ShapeKind::ALL.into_iter().map(|kind| {
+                            Button::new(format!("shape-{kind:?}"))
+                                .ghost()
+                                .small()
+                                .label(kind.label())
+                                .atelier_selected(selected.is_none() && self.shape_kind == kind, cx)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.choose_shape_kind(kind);
+                                    window.focus(&this.focus, cx);
+                                    cx.notify();
+                                }))
+                        })),
+                )
+                .child(label(selected.map_or(
+                    "Drag to draw. Click a shape to edit it.".to_owned(),
+                    |shape| format!("{} · Option-drag to move", shape.kind.label()),
+                )))
+                .when(kind.closed(), |panel| {
+                    panel.child(self.art_color_controls(PaintColor::Fill, cx))
+                })
+                .child(self.art_color_controls(PaintColor::Outline, cx))
+                .child(
+                    row()
+                        .child(label(format!("Outline · {:.1} px", self.shape_width)))
+                        .child(
+                            tool_button("shape-outline-thinner", "minus", "Thinner outline")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.adjust_shape_width(0.8);
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            tool_button("shape-outline-thicker", "plus", "Thicker outline")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.adjust_shape_width(1.25);
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .when(selected.is_some(), |panel| {
+                    panel
+                        .child(
+                            row().flex_wrap().children(
+                                [
+                                    ("Smaller", 0.9, 0.),
+                                    ("Larger", 1. / 0.9, 0.),
+                                    ("Rotate left", 1., -std::f32::consts::PI / 12.),
+                                    ("Rotate right", 1., std::f32::consts::PI / 12.),
+                                ]
+                                .into_iter()
+                                .map(|(label, scale, angle)| {
+                                    Button::new(label).ghost().small().label(label).on_click(
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.transform_shape(scale, angle);
+                                            cx.notify();
+                                        }),
+                                    )
+                                }),
+                            ),
+                        )
+                        .child(
+                            row()
+                                .flex_wrap()
+                                .gap_1()
+                                .when(kind.closed(), |row| {
+                                    row.child(
+                                        Button::new("clip-paint-to-shape")
+                                            .ghost()
+                                            .small()
+                                            .label("Clip new paint layer")
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.clip_paint_to_shape(window, cx)
+                                            })),
+                                    )
+                                })
+                                .child(
+                                    Button::new("delete-shape")
+                                        .ghost()
+                                        .small()
+                                        .label("Delete shape")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.delete_selected_shape(cx)
+                                        })),
+                                ),
+                        )
+                });
+        self.side_panel("Shapes", content, cx).into_any_element()
     }
     fn dock_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let close = tool_button("close-inspector", "close", "Close panel").on_click(cx.listener(
@@ -2815,6 +3083,13 @@ impl DrawingApp {
                             .on_click(cx.listener(|this, _, _, cx| this.set_paint_layer(this.doc.active_layer, cx)))
                             .into_any_element()
                     }))
+                .when(unit_count == 1 && group.is_none() && selected.clip_shape.is_some(), |properties| {
+                    let linked = selected.clip_shape.and_then(|id| self.doc.shape_location(id)).is_some();
+                    properties.child(row().child(label(if linked { "Clipped to shape" } else { "Clip shape removed" }))
+                        .child(Button::new("clear-paint-clip").ghost().small().label("Clear clip")
+                            .disabled(self.selection_is_locked())
+                            .on_click(cx.listener(|this, _, _, cx| this.clear_paint_clip(this.doc.active_layer, cx)))))
+                })
                 .when(self.doc.selected_layer_bounds(&self.selected_layers).is_some(), |properties| {
                     properties
                         .child(label("Position and size"))
@@ -3485,7 +3760,8 @@ impl DrawingApp {
         let new_layer = drawing && self.doc.drawing_target == DrawingTarget::Layer;
         let region = self.doc.drawing_target.region().filter(|_| drawing);
         let selection = region.is_some();
-        let separate = region.is_some_and(|(mode, _)| mode == SelectionMode::Separate);
+        let variation = drawing && self.doc.drawing_target == DrawingTarget::Variation;
+        let separate = drawing && self.doc.drawing_target.creates_artboard();
         let has_image_options = !drawing
             || separate
             || new_layer
@@ -3495,6 +3771,8 @@ impl DrawingApp {
         let caption = if drawing {
             if new_layer {
                 "Create an image; review it as a new layer on this artboard"
+            } else if variation {
+                "Use the full canvas as input. Open the result on a new artboard."
             } else if separate {
                 "Create from the selected area; the result opens on a new artboard"
             } else if selection {
@@ -3536,11 +3814,25 @@ impl DrawingApp {
                             .small()
                             .label("Edit artboard")
                             .atelier_selected(
-                                !new_layer && !selection && !self.selecting_generation_region,
+                                !new_layer
+                                    && !variation
+                                    && !selection
+                                    && !self.selecting_generation_region,
                                 cx,
                             )
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.set_drawing_target(DrawingTarget::Full, cx);
+                                this.restore_prompt(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("drawing-variation")
+                            .ghost()
+                            .small()
+                            .label("New artboard variation")
+                            .atelier_selected(variation, cx)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.set_drawing_target(DrawingTarget::Variation, cx);
                                 this.restore_prompt(window, cx);
                             })),
                     )
@@ -3574,8 +3866,35 @@ impl DrawingApp {
                                 this.restore_prompt(window, cx);
                                 cx.notify();
                             })),
-                    ),
+                    )
+                    .when(!new_layer, |row| {
+                        row.child(
+                            Button::new("preview-canvas-source")
+                                .ghost()
+                                .small()
+                                .label(if self.canvas_source_preview().is_some() {
+                                    "Hide source"
+                                } else {
+                                    "Preview source"
+                                })
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.toggle_canvas_source_preview(cx)
+                                })),
+                        )
+                    }),
             );
+            if let Some(source) = self.canvas_source_preview().filter(|_| !new_layer) {
+                controls = controls.child(
+                    row()
+                        .child(
+                            img(source.clone())
+                                .w(px(152.))
+                                .h(px(84.))
+                                .object_fit(ObjectFit::Contain),
+                        )
+                        .child(label("Image 1 · Canvas source")),
+                );
+            }
         }
         if selection {
             controls = controls.child(
@@ -3990,7 +4309,7 @@ impl DrawingApp {
             )
     }
     fn brush_settings(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut content = column();
+        let mut content = column().child(self.art_color_controls(PaintColor::Brush, cx));
         for (index, brush) in Brush::ALL.into_iter().enumerate() {
             content = content.child(
                 row()

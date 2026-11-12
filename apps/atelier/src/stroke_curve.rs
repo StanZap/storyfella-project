@@ -59,6 +59,8 @@ mod tests {
     use crate::document::{Brush, Point, Tool};
     fn stroke(points: &[[f32; 2]]) -> Stroke {
         Stroke {
+            color: crate::document::default_ink(),
+            shape: None,
             brush: Brush::Graphite,
             tool: Tool::Pencil,
             size: 5.,

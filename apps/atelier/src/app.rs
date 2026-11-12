@@ -1,20 +1,23 @@
 use crate::{
-    document::{self, Brush, Document, History, Layer, Point as DocPoint, Stroke, Tool},
+    document::{self, Brush, Color, Document, History, Layer, Point as DocPoint, Stroke, Tool},
     native_images::ServerStatus,
     providers::{self, Settings},
     queue::{JobState, Queue, QueuedRequest},
+    shapes::ShapeKind,
     viewport::Viewport,
     worker::{self, Event, Storage, Workers},
     workflow::{DrawingTarget, SelectionMode},
 };
 use gpui_kit::{
     component::{
+        color_picker::{ColorPickerEvent, ColorPickerState},
         input::{InputEvent, InputState, TextareaState},
         select::{SearchableVec, SelectEvent, SelectState},
         IndexPath,
     },
     *,
 };
+mod art_tools;
 use std::{
     cell::Cell,
     path::PathBuf,
@@ -54,7 +57,35 @@ pub enum Panel {
     Settings,
     Help,
     Brushes,
+    Shapes,
     Activity,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaintColor {
+    Brush,
+    Fill,
+    Outline,
+}
+
+impl PaintColor {
+    pub(crate) const ALL: [Self; 3] = [Self::Brush, Self::Fill, Self::Outline];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Brush => "Brush color",
+            Self::Fill => "Fill",
+            Self::Outline => "Outline",
+        }
+    }
+
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
+pub(crate) fn ui_color(color: Color) -> Rgba {
+    rgba(u32::from_be_bytes(color))
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DockView {
@@ -291,6 +322,17 @@ pub struct DrawingApp {
     pub view: Viewport,
     pub tool: Tool,
     pub brush: Brush,
+    pub(crate) paint_color: Color,
+    pub(crate) shape_fill: Color,
+    pub(crate) shape_outline: Color,
+    pub(crate) shape_width: f32,
+    pub(crate) shape_kind: ShapeKind,
+    pub(crate) recent_colors: Vec<Color>,
+    pub(crate) eyedropper: Option<PaintColor>,
+    color_pickers: [Entity<ColorPickerState>; 3],
+    selected_shape: Option<uuid::Uuid>,
+    shape_drag: Option<(DocPoint, DocPoint, bool)>,
+    canvas_source_preview: Option<(u64, u64, Arc<RenderImage>)>,
     pub brush_previews: Vec<Arc<RenderImage>>,
     pub pressure_enabled: bool,
     pub pressure_curve: f32,
@@ -741,6 +783,24 @@ impl DrawingApp {
             view: Viewport::default(),
             tool: Tool::Pencil,
             brush: Brush::Graphite,
+            paint_color: document::default_ink(),
+            shape_fill: [180, 99, 123, 255],
+            shape_outline: document::default_ink(),
+            shape_width: 3.,
+            shape_kind: ShapeKind::Rectangle,
+            recent_colors: Vec::new(),
+            eyedropper: None,
+            color_pickers: [
+                document::default_ink(),
+                [180, 99, 123, 255],
+                document::default_ink(),
+            ]
+            .map(|color| {
+                cx.new(|cx| ColorPickerState::new(window, cx).default_value(ui_color(color)))
+            }),
+            selected_shape: None,
+            shape_drag: None,
+            canvas_source_preview: None,
             brush_previews: Brush::ALL
                 .into_iter()
                 .map(|brush| {
@@ -750,6 +810,8 @@ impl DrawingApp {
                         ..Document::default()
                     };
                     preview.layers[0].strokes.push(Stroke {
+                        color: document::default_ink(),
+                        shape: None,
                         brush,
                         tool: Tool::Pencil,
                         size: brush.size().max(7.),
@@ -1016,6 +1078,24 @@ impl DrawingApp {
                 },
             ));
         }
+        for target in PaintColor::ALL {
+            app.subscriptions.push(cx.subscribe_in(
+                app.color_picker(target),
+                window,
+                move |this, _, event: &ColorPickerEvent, window, cx| {
+                    let ColorPickerEvent::Change(Some(color)) = event else {
+                        return;
+                    };
+                    let Rgba { r, g, b, a } = Rgba::from(*color);
+                    this.choose_art_color(
+                        target,
+                        [r, g, b, a].map(|v| (v * 255.).round() as u8),
+                        window,
+                        cx,
+                    );
+                },
+            ));
+        }
         app.subscriptions.push(cx.subscribe_in(
             &app.artboard_aspect_select,
             window,
@@ -1231,6 +1311,7 @@ impl DrawingApp {
             }
         }
         self.active_stroke = false;
+        self.shape_drag = None;
         self.last_pan = None;
         self.last_image_point = None;
         self.resize_handle = None;
@@ -1715,6 +1796,7 @@ impl DrawingApp {
             opacity: 1.,
             group: None,
             candidate: false,
+            clip_shape: None,
             strokes: vec![],
             image: None,
         });
@@ -2488,8 +2570,18 @@ impl DrawingApp {
         }
         let insert = selected.last().copied().unwrap() + 1;
         let mut duplicated = Vec::with_capacity(selected.len());
+        let mut shape_ids = std::collections::HashMap::new();
         for &index in &selected {
             let mut layer = previous.layers[index].clone();
+            for shape in layer
+                .strokes
+                .iter_mut()
+                .filter_map(|stroke| stroke.shape.as_mut())
+            {
+                let id = uuid::Uuid::new_v4();
+                shape_ids.insert(shape.id, id);
+                shape.id = id;
+            }
             if let Some(group) = layer.group.as_ref().and_then(|group| copies.get(group)) {
                 layer.group = Some(group.clone());
             }
@@ -2497,6 +2589,11 @@ impl DrawingApp {
                 layer.name = format!("{} copy", layer.name);
             }
             duplicated.push(layer);
+        }
+        for layer in &mut duplicated {
+            if let Some(id) = layer.clip_shape.and_then(|id| shape_ids.get(&id)) {
+                layer.clip_shape = Some(*id);
+            }
         }
         let count = duplicated.len();
         next.layers.splice(insert..insert, duplicated);
@@ -3426,6 +3523,7 @@ impl DrawingApp {
                 opacity: 1.,
                 group: None,
                 candidate: false,
+                clip_shape: None,
                 strokes: vec![],
                 image: None,
             }];
@@ -3940,6 +4038,24 @@ impl DrawingApp {
             }
             return;
         }
+        if let (MouseButton::Left, Some(target)) = (event.button, self.eyedropper) {
+            self.eyedropper = None;
+            if let Some(point) = self.doc_point(event.position) {
+                self.sample_art_color(target, point, window, cx);
+            }
+            cx.notify();
+            return;
+        }
+        if self.tool == Tool::Shape && event.button == MouseButton::Left {
+            if let Some(point) = self.doc_point(event.position) {
+                if event.modifiers.alt {
+                    self.select_shape_at(point, window, cx);
+                }
+                self.shape_drag = Some((point, point, event.modifiers.alt));
+                cx.notify();
+            }
+            return;
+        }
         if self.tool == Tool::Hand && self.moving_image && event.button == MouseButton::Left {
             {
                 let point = self.unbounded_doc_point(event.position);
@@ -4140,6 +4256,7 @@ impl DrawingApp {
                         opacity: 1.,
                         group,
                         candidate: false,
+                        clip_shape: None,
                         strokes: vec![],
                         image: None,
                     },
@@ -4164,6 +4281,8 @@ impl DrawingApp {
             self.doc.paint_layer = Some(target);
             let brush_size = self.size();
             self.doc.layers[target].strokes.push(Stroke {
+                color: self.paint_color,
+                shape: None,
                 brush: self.brush,
                 pressures: (if self.pressure_enabled {
                     crate::tablet::current_pressure()
@@ -4356,6 +4475,20 @@ impl DrawingApp {
         }
         if let Some((anchor, _)) = self.region_drag {
             self.region_drag = Some((anchor, self.clamped_doc_point(event.position)));
+            cx.notify();
+            return;
+        }
+        if let Some((start, _, moving)) = self.shape_drag {
+            let end = self.clamped_doc_point(event.position);
+            self.shape_drag = Some((
+                start,
+                if event.modifiers.shift && !moving {
+                    self.constrain_shape(start, end)
+                } else {
+                    end
+                },
+                moving,
+            ));
             cx.notify();
             return;
         }
@@ -4932,6 +5065,9 @@ impl DrawingApp {
 
     pub fn restore_drawing_context(&mut self) {
         self.region_drag = None;
+        self.shape_drag = None;
+        self.selected_shape = None;
+        self.eyedropper = None;
         self.selecting_generation_region =
             self.page == Page::Draw && self.doc.drawing_target.region().is_some();
     }
@@ -5271,12 +5407,43 @@ impl DrawingApp {
 
     /// Opens the floating drawing prompt beside the canvas.
     pub fn open_from_drawing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.finish_stroke();
         self.show_drawing_composer = !self.show_drawing_composer;
         self.region_drag = None;
         if self.show_drawing_composer {
             self.prompt.update(cx, |state, cx| state.focus(window, cx));
         } else {
             window.focus(&self.focus, cx);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn canvas_source_preview(&self) -> Option<&Arc<RenderImage>> {
+        self.canvas_source_preview
+            .as_ref()
+            .and_then(|(epoch, revision, image)| {
+                (*epoch == self.epoch && *revision == self.revision).then_some(image)
+            })
+    }
+
+    pub(crate) fn toggle_canvas_source_preview(&mut self, cx: &mut Context<Self>) {
+        if self.canvas_source_preview().is_some() {
+            self.canvas_source_preview = None;
+        } else {
+            let target = self.doc.drawing_target;
+            let source = self.doc.generation_pixels(target.source_crop());
+            match source {
+                Ok(image) => {
+                    let preview =
+                        document::thumbnail(image::DynamicImage::ImageRgba8(image), 256).to_rgba8();
+                    self.canvas_source_preview =
+                        Some((self.epoch, self.revision, worker::render_image(preview)));
+                }
+                Err(error) => self.message(
+                    format!("Could not preview the generation source: {error:#}"),
+                    true,
+                ),
+            }
         }
         cx.notify();
     }
@@ -5314,7 +5481,10 @@ impl DrawingApp {
             self.set_drawing_target(DrawingTarget::Full, cx);
             return;
         }
-        if self.doc.drawing_target == DrawingTarget::Layer {
+        if matches!(
+            self.doc.drawing_target,
+            DrawingTarget::Layer | DrawingTarget::Variation
+        ) {
             self.set_drawing_target(DrawingTarget::Full, cx);
         }
         self.selecting_generation_region = true;
@@ -5390,13 +5560,12 @@ impl DrawingApp {
                 !self.selecting_generation_region || target.is_some(),
                 "Drag on the artboard to select an area"
             );
-            let separate = target.is_some_and(|(mode, _)| mode == SelectionMode::Separate);
+            let separate = self.doc.drawing_target.creates_artboard();
             let region = target.map(|(_, rect)| rect);
-            let source =
-                Arc::new(
-                    self.doc
-                        .generation_source(if separate { region } else { None })?,
-                );
+            let source = Arc::new(
+                self.doc
+                    .generation_source(self.doc.drawing_target.source_crop())?,
+            );
             let references = self.input_references();
             let mut settings = self.settings.clone();
             if !separate {
@@ -6914,6 +7083,11 @@ impl DrawingApp {
                     self.view_changed();
                 }
                 "escape" => {
+                    if self.shape_drag.take().is_some() || self.eyedropper.take().is_some() {
+                        cx.stop_propagation();
+                        cx.notify();
+                        return;
+                    }
                     if self.image_crop.is_some() {
                         self.cancel_image_crop(cx);
                         cx.stop_propagation();

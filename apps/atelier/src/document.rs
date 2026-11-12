@@ -21,6 +21,7 @@ pub enum Tool {
     Pencil,
     Eraser,
     Hand,
+    Shape,
     /// A rectangular region: a mask stroke whose two points are opposite
     /// corners. Only the mask editor produces it.
     Rect,
@@ -32,15 +33,26 @@ pub enum Brush {
     Ink,
     Charcoal,
     Marker,
+    Soft,
+    Dry,
 }
 impl Brush {
-    pub const ALL: [Self; 4] = [Self::Graphite, Self::Ink, Self::Charcoal, Self::Marker];
+    pub const ALL: [Self; 6] = [
+        Self::Graphite,
+        Self::Ink,
+        Self::Charcoal,
+        Self::Marker,
+        Self::Soft,
+        Self::Dry,
+    ];
     pub fn name(self) -> &'static str {
         match self {
             Self::Graphite => "Graphite pencil",
             Self::Ink => "Ink",
             Self::Charcoal => "Charcoal",
             Self::Marker => "Marker",
+            Self::Soft => "Soft brush",
+            Self::Dry => "Dry brush",
         }
     }
     pub fn size(self) -> f32 {
@@ -49,13 +61,29 @@ impl Brush {
             Self::Ink => 8.,
             Self::Charcoal => 28.,
             Self::Marker => 36.,
+            Self::Soft => 72.,
+            Self::Dry => 36.,
         }
     }
 }
+pub type Color = [u8; 4];
+
+pub const fn default_ink() -> Color {
+    [41, 37, 44, 255]
+}
+
+fn is_default_ink(color: &Color) -> bool {
+    *color == default_ink()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Stroke {
     #[serde(default)]
     pub brush: Brush,
+    #[serde(default = "default_ink", skip_serializing_if = "is_default_ink")]
+    pub color: Color,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<crate::shapes::ShapeStyle>,
     /// Empty on older projects and mouse strokes; otherwise one normalized value per point.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pressures: std::sync::Arc<Vec<f32>>,
@@ -74,6 +102,8 @@ pub struct Layer {
     pub group: Option<String>,
     /// Pending AI results can be previewed but never enter artwork exports.
     pub candidate: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip_shape: Option<uuid::Uuid>,
     pub strokes: Vec<Stroke>,
     #[serde(deserialize_with = "Deserialize::deserialize")]
     pub image: Option<ImageLayer>,
@@ -147,6 +177,7 @@ impl CanvasArtboard {
                 opacity: 1.,
                 group: None,
                 candidate: false,
+                clip_shape: None,
                 strokes: vec![],
                 image: None,
             }],
@@ -167,6 +198,8 @@ pub struct Document {
     pub asset_links: Vec<storyfella_studio_core::catalog::AssetLink>,
     pub version: u32,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub palette: Vec<Color>,
     pub width: u32,
     pub height: u32,
     pub layers: Vec<Layer>,
@@ -197,6 +230,7 @@ impl Default for Document {
             asset_links: Vec::new(),
             version: DOCUMENT_VERSION,
             title: "Untitled project".into(),
+            palette: Vec::new(),
             width: 2400,
             height: 1800,
             layers: vec![Layer {
@@ -206,6 +240,7 @@ impl Default for Document {
                 opacity: 1.,
                 group: None,
                 candidate: false,
+                clip_shape: None,
                 strokes: vec![],
                 image: None,
             }],
@@ -313,6 +348,106 @@ impl Document {
                     .position(|reference| crate::library::id(reference) == *id)
             });
         }
+        Ok(())
+    }
+
+    pub(crate) fn add_mark(&mut self, layer: usize, stroke: Stroke) -> Result<()> {
+        let target = self
+            .layers
+            .get(layer)
+            .context("Paint layer no longer exists")?;
+        ensure!(
+            !target.candidate && !self.layer_is_locked(target) && self.layer_is_visible(target),
+            "Choose a visible, unlocked artwork layer"
+        );
+        self.layers[layer].strokes.push(stroke);
+        if let Err(error) = self.validate() {
+            self.layers[layer].strokes.pop();
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn shape_location(&self, id: uuid::Uuid) -> Option<(usize, usize)> {
+        self.layers.iter().enumerate().find_map(|(layer, item)| {
+            let index = item
+                .strokes
+                .iter()
+                .position(|stroke| stroke.shape.as_ref().is_some_and(|shape| shape.id == id))?;
+            Some((layer, index))
+        })
+    }
+
+    pub(crate) fn replace_shape(&mut self, id: uuid::Uuid, stroke: Stroke) -> Result<()> {
+        let (layer, index) = self.shape_location(id).context("Shape no longer exists")?;
+        let target = &self.layers[layer];
+        ensure!(
+            !target.candidate && !self.layer_is_locked(target) && self.layer_is_visible(target),
+            "Show and unlock the shape's layer before editing"
+        );
+        ensure!(
+            stroke.shape.as_ref().is_some_and(|shape| shape.id == id),
+            "Invalid shape replacement"
+        );
+        let previous = std::mem::replace(&mut self.layers[layer].strokes[index], stroke);
+        if let Err(error) = self.validate() {
+            self.layers[layer].strokes[index] = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn add_clipped_layer(&mut self, id: uuid::Uuid) -> Result<usize> {
+        let (layer, index) = self.shape_location(id).context("Shape no longer exists")?;
+        let source = &self.layers[layer];
+        ensure!(
+            source.strokes[index]
+                .shape
+                .as_ref()
+                .is_some_and(|shape| shape.kind.closed())
+                && !source.candidate
+                && !self.layer_is_locked(source)
+                && self.layer_is_visible(source),
+            "Choose a closed shape on a visible, unlocked artwork layer"
+        );
+        ensure!(self.layers.len() < 24, "Maximum 24 layers");
+        self.layers.insert(
+            layer + 1,
+            Layer {
+                name: "Clipped paint".into(),
+                visible: true,
+                locked: false,
+                opacity: 1.,
+                group: source.group.clone(),
+                candidate: false,
+                clip_shape: Some(id),
+                strokes: Vec::new(),
+                image: None,
+            },
+        );
+        self.active_layer = layer + 1;
+        self.paint_layer = Some(layer + 1);
+        Ok(layer + 1)
+    }
+
+    pub(crate) fn clear_layer_clip(&mut self, index: usize) -> Result<()> {
+        let layer = self.layers.get(index).context("Layer no longer exists")?;
+        ensure!(
+            !layer.candidate && !self.layer_is_locked(layer),
+            "Unlock the paint layer before clearing its clip"
+        );
+        self.layers[index].clip_shape = None;
+        Ok(())
+    }
+
+    pub(crate) fn remove_shape(&mut self, id: uuid::Uuid) -> Result<()> {
+        let (layer, index) = self.shape_location(id).context("Shape no longer exists")?;
+        let target = &self.layers[layer];
+        ensure!(
+            !target.candidate && !self.layer_is_locked(target) && self.layer_is_visible(target),
+            "Show and unlock the shape's layer before editing"
+        );
+        self.layers[layer].strokes.remove(index);
         Ok(())
     }
 
@@ -497,7 +632,12 @@ impl Document {
             self.embedded_image_bytes() <= 64 * 1024 * 1024,
             "Embedded references exceed 64 MB"
         );
+        ensure!(
+            self.palette.len() <= 12,
+            "The palette holds up to 12 colors"
+        );
         let mut points = 0;
+        let mut shape_ids = std::collections::HashSet::new();
         for layer in self
             .layers
             .iter()
@@ -543,6 +683,18 @@ impl Document {
                         && (0. ..=1.).contains(&stroke.opacity)
                         && stroke.tool != Tool::Hand,
                     "Invalid stroke"
+                );
+                ensure!(
+                    match &stroke.shape {
+                        Some(shape) =>
+                            stroke.tool == Tool::Shape
+                                && stroke.pressures.is_empty()
+                                && stroke.points.len() >= if shape.kind.closed() { 3 } else { 2 }
+                                && shape.has_pigment(stroke.color)
+                                && shape_ids.insert(shape.id),
+                        None => stroke.tool != Tool::Shape,
+                    },
+                    "Invalid shape"
                 );
                 ensure!(
                     stroke.pressures.is_empty() || stroke.pressures.len() == stroke.points.len(),
@@ -995,12 +1147,18 @@ pub fn raster_layers(
                 paint_rectangle(&mut pixels, stroke, scale);
                 continue;
             }
+            if stroke.shape.is_some() {
+                crate::shapes::paint(&mut pixels, stroke, scale, (0., 0.));
+                continue;
+            }
             if stroke.brush != Brush::Ink || !stroke.pressures.is_empty() {
                 paint_brush(&mut pixels, stroke, scale);
                 continue;
             }
             let mut paint = tiny_skia::Paint::default();
-            paint.set_color_rgba8(41, 37, 44, (stroke.opacity * 255.) as u8);
+            let [r, g, b, a] = stroke.color;
+            let alpha = if stroke.tool == Tool::Eraser { 255 } else { a };
+            paint.set_color_rgba8(r, g, b, (stroke.opacity * f32::from(alpha)) as u8);
             if stroke.tool == Tool::Eraser {
                 paint.blend_mode = tiny_skia::BlendMode::DestinationOut;
             }
@@ -1040,6 +1198,14 @@ pub fn raster_layers(
                 }
             }
         }
+        let mask = if let Some(id) = layer.clip_shape {
+            let Some(shape) = crate::shapes::clip_source(layers, id) else {
+                continue;
+            };
+            Some(crate::shapes::mask(shape, w, h, scale, (0., 0.))?)
+        } else {
+            None
+        };
         let target = group_surface
             .as_mut()
             .map(|(_, _, surface)| surface)
@@ -1053,7 +1219,7 @@ pub fn raster_layers(
                 ..Default::default()
             },
             tiny_skia::Transform::identity(),
-            None,
+            mask.as_ref(),
         );
     }
     if let Some((_, opacity, surface)) = group_surface {
@@ -1245,10 +1411,11 @@ fn paint_brush(pixels: &mut tiny_skia::Pixmap, stroke: &Stroke, scale: f32) {
         for py in top..bottom {
             for px in left..right {
                 let distance = (px as f32 + 0.5 - x).hypot(py as f32 + 0.5 - y);
-                let edge = if stroke.brush == Brush::Charcoal && stroke.tool != Tool::Eraser {
-                    (1. - distance / r).clamp(0., 1.).sqrt()
-                } else {
-                    (r + 0.5 - distance).clamp(0., 1.)
+                let falloff = (1. - distance / r).clamp(0., 1.);
+                let edge = match (stroke.brush, stroke.tool) {
+                    (Brush::Charcoal, Tool::Pencil) => falloff.sqrt(),
+                    (Brush::Soft, Tool::Pencil) => falloff * falloff,
+                    _ => (r + 0.5 - distance).clamp(0., 1.),
                 };
                 let index = (py - min_y) as usize * width + (px - min_x) as usize;
                 coverage[index] = coverage[index].max(edge * strength);
@@ -1293,11 +1460,15 @@ fn paint_brush(pixels: &mut tiny_skia::Pixmap, stroke: &Stroke, scale: f32) {
                     }
                     Brush::Charcoal => 0.35 + grain * 0.65,
                     Brush::Marker => 0.35,
-                    Brush::Ink => 1.,
+                    Brush::Dry if grain < 0.36 => 0.06,
+                    Brush::Dry => grain,
+                    Brush::Ink | Brush::Soft => 1.,
                 };
+                alpha *= f32::from(stroke.color[3]) / 255.;
             }
             let i = (py as usize * stride + px as usize) * 4;
-            let colors = [41., 37., 44., 255.];
+            let [r, g, b, _] = stroke.color.map(f32::from);
+            let colors = [r, g, b, 255.];
             for c in 0..4 {
                 data[i + c] = if stroke.tool == Tool::Eraser {
                     (data[i + c] as f32 * (1. - alpha)).round() as u8

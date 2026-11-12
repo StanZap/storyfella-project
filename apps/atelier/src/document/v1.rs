@@ -72,6 +72,7 @@ impl Canvas {
                     opacity: layer.opacity,
                     group: None,
                     candidate: false,
+                    clip_shape: None,
                     strokes: layer.strokes,
                     image: layer.image.map(|image| ImageLayer {
                         reference: image.reference,

@@ -26,7 +26,12 @@ kernel void brush_tile(const device Segment *segments [[buffer(0)]], constant fl
         float pressure = mix(s.pa,s.pb,t);
         float radius = max(u[3]*(0.12+0.88*pressure),0.25);
         float distance = length(position-mix(a,b,t));
-        float edge = uint(u[5]) == 2 && u[6] == 0 ? sqrt(clamp(1-distance/radius,0.0,1.0)) : clamp(radius+0.5-distance,0.0,1.0);
+        float falloff = clamp(1-distance/radius,0.0,1.0);
+        float edge = clamp(radius+0.5-distance,0.0,1.0);
+        if (u[6] == 0) {
+            if (uint(u[5]) == 2) edge = sqrt(falloff);
+            if (uint(u[5]) == 4) edge = falloff*falloff;
+        }
         float strength = u[6] > 0 ? 1 : 0.15+0.85*pressure;
         value = max(value,edge*strength);
     }
@@ -40,15 +45,24 @@ kernel void brush_tile(const device Segment *segments [[buffer(0)]], constant fl
             case 0: alpha *= grain < 0.18 ? 0.12 : 0.3+grain*0.65; break;
             case 2: alpha *= 0.35+grain*0.65; break;
             case 3: alpha *= 0.35; break;
+            case 5: alpha *= grain < 0.36 ? 0.06 : grain; break;
         }
+        alpha *= u[15];
     }
     float4 original = base.read(p);
-    painted.write(u[6] > 0 ? original*(1-alpha) : float4(float3(41,37,44)/255.0,1)*alpha+original*(1-alpha),p);
+    painted.write(u[6] > 0 ? original*(1-alpha) : float4(u[12],u[13],u[14],1)*alpha+original*(1-alpha),p);
 }
 kernel void composite_tile(texture2d<float, access::read> layer [[texture(0)]],
     texture2d<float, access::read_write> output [[texture(1)]], constant float *u [[buffer(0)]], uint2 p [[thread_position_in_grid]]) {
     if (p.x >= output.get_width() || p.y >= output.get_height()) return;
     float4 pigment = layer.read(p)*u[0];
+    output.write(pigment+output.read(p)*(1-pigment.a),p);
+}
+kernel void composite_clipped_tile(texture2d<float, access::read> layer [[texture(0)]],
+    texture2d<float, access::read> mask [[texture(1)]],
+    texture2d<float, access::read_write> output [[texture(2)]], constant float *u [[buffer(0)]], uint2 p [[thread_position_in_grid]]) {
+    if (p.x >= output.get_width() || p.y >= output.get_height()) return;
+    float4 pigment = layer.read(p)*u[0]*mask.read(p).r;
     output.write(pigment+output.read(p)*(1-pigment.a),p);
 }
 kernel void trace_tile(texture2d<float, access::read> reference [[texture(0)]],

@@ -166,6 +166,8 @@ fn branching_chapter_survives_partial_publication_and_stale_authoring() {
         width: 128,
         height: 96,
         strokes: vec![Stroke {
+            color: crate::document::default_ink(),
+            shape: None,
             brush: Brush::Ink,
             pressures: vec![].into(),
             tool: Tool::Rect,

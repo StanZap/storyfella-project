@@ -1,5 +1,20 @@
 # Storyfella Studio design standard and UX audit
 
+### Atelier drawing and painting · 2026-11-11
+
+The drawing rail opens the Shapes and Brushes panels. Both use the same color
+picker, canvas sampling and project swatches. Shape edits apply to one item
+inside its layer. A closed shape can create a clipped paint target above it.
+The drawing composer previews the accepted canvas source and can place a
+variation on a new artboard.
+
+In an isolated macOS build, a rectangle was drawn, recolored, and used to
+clip a soft brush stroke dragged across both edges. The composer displayed
+that composition in New artboard variation mode. Automated checks exercise
+editable save and reopen, shape transforms and undo, Metal and CPU clipping
+across tile boundaries, Studio publication, and generation with a provider
+fixture.
+
 ### Focus treatment and explorer rename
 
 Avoid bulky, offset focus outlines and bright purple focus rings. Replace them

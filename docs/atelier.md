@@ -44,6 +44,37 @@ into artboard**, and selection **Create separate image** contexts. Local edits
 are candidates to review, accept, hide, discard or save as references. Separate
 images become new artboards. Accepted artwork remains intact until review.
 
+### Drawing and painting
+
+Open **Brushes** to choose graphite, ink, charcoal, marker, soft brush or dry
+brush. The brush color picker supports opacity and exact hex values. **Sample**
+picks a color from accepted canvas artwork. Recent colors are available in the
+picker, and **Save swatch** keeps a color in the editable project's palette.
+Brush width, stroke opacity, smoothing and pen pressure can be adjusted while
+working.
+
+Open **Shapes** and drag to place a rectangle, rounded rectangle, ellipse, line,
+triangle or pentagon on the paint target. Hold Shift to constrain proportions
+or snap a line to 45°. Click a shape to edit its fill, outline and outline
+width, rotate or resize it, or delete it. Option/Alt-drag moves one shape.
+Several shapes and freehand strokes can share one layer, in the order drawn.
+The normal selection tool moves or transforms the whole layer.
+
+With a closed shape selected, **Clip new paint layer** adds a paint target above
+it. The clip follows changes to the shape's position and geometry. Hiding the
+source shape's layer leaves the clip in effect. Removing the source shape hides
+the clipped artwork until you undo the removal or choose **Clear clip** in the
+paint layer's properties. Shapes, color, clipping and the palette survive
+saving and reopening. Linked artboards publish to Studio through ordinary Save.
+
+**Generate from canvas** opens the composer. Use **Preview source** to see the
+artwork captured for Image 1. **Edit artboard** returns a candidate layer, and
+**New artboard variation** uses the full composition as input for a new
+artboard. The source preview reflects Atelier's image before any provider
+format conversion.
+
+### Canvas interaction
+
 In the drawing workspace, **Select** (V) selects the topmost visible, unlocked
 layer under the pointer, including visible image pixels and nearby paint strokes.
 Shift-click adds or removes a layer; Command/Control-click cycles overlapping
@@ -479,6 +510,7 @@ separate data task.
 | --- | --- |
 | Artboards | A new composition becomes a new artboard. Selected references use the editing route as image input; the destination remains a new artboard. |
 | Open drawing artboard | The accepted artwork is captured at full resolution. The result is a candidate on that artboard. |
+| New artboard variation | Use the complete accepted artwork as input. The result opens on a separate artboard. |
 | Area → Blend into artboard | Send the complete accepted artboard for surrounding context. Normalize the returned raster to source coordinates and crop the selected rectangle. Attach only that rectangle as a candidate at the captured location and size. Pixels outside it remain original. |
 | Area → Create separate image | Send the selected crop as input; expose output dimensions. The result becomes a separate artboard. |
 | Inspected library/result image | Create a variation as a new artboard. **Add to canvas** explicitly promotes the image to an artwork layer. |
