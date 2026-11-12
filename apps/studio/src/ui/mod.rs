@@ -122,6 +122,8 @@ pub struct WriterCaret {
 #[derive(Clone, Copy)]
 struct SidebarVisibility(Signal<bool>);
 #[derive(Clone, Copy)]
+struct WritingHelp(Signal<bool>);
+#[derive(Clone, Copy)]
 struct ProjectFilePreview(Signal<Option<PathBuf>>);
 impl WriterCaret {
     pub fn navigate(mut self, position: storyfella_language::Position) {
@@ -226,7 +228,7 @@ pub fn Workspace(
     // asset catalog cannot save until a project file is bound.
     let mut screen = use_signal(|| AppScreen::Projects);
     let mut writing_help = use_signal(|| false);
-    use_context_provider(|| writing_help);
+    use_context_provider(|| WritingHelp(writing_help));
     let selected_scene = use_signal(|| None::<String>);
     use_context_provider(|| selected_scene);
     let mut sidebar_visible = use_signal(|| true);
@@ -717,6 +719,27 @@ mod asset_tests {
     use storyfella_studio_core::registry::{
         ArtifactKind, ArtifactRegistry, CreateArtifact, RevisionOrigin,
     };
+
+    #[component]
+    fn WritingHelpContextProbe() -> Element {
+        let writing_help = use_signal(|| true);
+        use_context_provider(|| WritingHelp(writing_help));
+        let palette = use_signal(|| false);
+        use_context_provider(|| palette);
+        rsx! { WritingHelpContextChild {} }
+    }
+
+    #[component]
+    fn WritingHelpContextChild() -> Element {
+        assert!(use_context::<WritingHelp>().0());
+        assert!(!use_context::<Signal<bool>>()());
+        rsx! {}
+    }
+
+    #[test]
+    fn writing_help_context_is_independent_of_palette() {
+        VirtualDom::new(WritingHelpContextProbe).rebuild_in_place();
+    }
 
     #[test]
     fn artwork_urls_resolve_only_registered_paths_and_distinguish_matching_filenames() {

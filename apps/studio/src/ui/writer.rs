@@ -1178,7 +1178,7 @@ fn MainWriter(
     let mut problem_filter = use_signal(|| "all".to_owned());
     let mut show_problems = use_signal(|| false);
     let mut edit_error = use_signal(|| None::<String>);
-    let mut writing_help = use_context::<Signal<bool>>();
+    let mut writing_help = use_context::<super::WritingHelp>().0;
     let review_controller = super::writing_review::ReviewController {
         review: use_signal(|| None),
         mode: use_signal(super::writing_review::ReviewMode::default),
