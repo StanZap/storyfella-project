@@ -170,13 +170,15 @@ Run `cargo xtask atelier bundle` on the target platform. On macOS it builds
 `dist/atelier/Atelier.app`, signs it ad hoc, and defaults to debug. Pass
 `--release` for an optimized build.
 
-On Linux, install the [desktop build dependencies](#linux-system-packages) and
-[cargo-packager](https://github.com/crabnebula-dev/cargo-packager). The task uses
-it to package the Cargo-built Atelier executable. The first AppImage build
-downloads the packaging tools.
+On Linux, install the [desktop build dependencies](#linux-system-packages). The
+task builds the executable with Cargo and packages it with
+[cargo-packager](https://github.com/crabnebula-dev/cargo-packager) `0.11.8`,
+which it installs into `target/tools/cargo-packager` the first time it is needed
+— there is no manual `cargo install` step, and a matching install on `PATH` is
+reused instead. The first AppImage build also downloads the AppImage packaging
+tools, so that run needs network access and later runs reuse both.
 
 ```sh
-cargo install cargo-packager --version 0.11.8 --locked
 cargo xtask atelier bundle                               # AppImage
 cargo xtask atelier bundle --package-types appimage deb    # AppImage and Debian package
 ```

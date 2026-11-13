@@ -6,7 +6,7 @@
 //! everything else is a command assembled and handed to [`crate::proc`].
 
 use std::fs::{self, OpenOptions};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command as Process, ExitCode, ExitStatus};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -157,9 +157,7 @@ fn bundle_atelier_linux(
     profile: Profile,
     formats: &str,
 ) -> Result<()> {
-    if proc::version("cargo-packager", "--version").is_none() {
-        bail!("install the Linux packager with `cargo install cargo-packager --version 0.11.8 --locked`");
-    }
+    let packager = cargo_packager(ws)?;
 
     let target_dir = ws.target_dir()?;
     let mut build = Process::new("cargo");
@@ -184,14 +182,17 @@ fn bundle_atelier_linux(
         .prefix(".bundle-")
         .tempdir_in(out_dir)
         .with_context(|| format!("creating a staging directory in {}", out_dir.display()))?;
-    let mut package = Process::new("cargo");
+    // Run the packager binary itself rather than `cargo packager`: its wrapper
+    // only strips the extra `packager` argument cargo passes, so the same
+    // arguments work either way and a checkout-local install needs no PATH
+    // entry.
+    let mut package = Process::new(&packager);
     package
         .current_dir(ws.root().join("apps/atelier"))
         .env("CARGO_TARGET_DIR", &target_dir)
         .env("XDG_CACHE_HOME", target_dir.join("atelier-packaging-cache"))
         .env("APPIMAGE_EXTRACT_AND_RUN", "1")
         .args([
-            "packager",
             "--packages",
             "storyfella-atelier",
             "--formats",
@@ -202,7 +203,12 @@ fn bundle_atelier_linux(
     if profile.is_release() {
         package.arg("--release");
     }
-    proc::require(&mut package)?;
+    proc::require(&mut package).with_context(|| {
+        format!(
+            "packaging Atelier as {formats} (the first AppImage build downloads \
+             linuxdeploy from GitHub, and the packager's own log above names the failing step)"
+        )
+    })?;
 
     let mut artifacts = Vec::new();
     for entry in fs::read_dir(staging.path())? {
@@ -222,6 +228,71 @@ fn bundle_atelier_linux(
         proc::done(format!("built {}", dest.display()));
     }
     Ok(())
+}
+
+/// The `cargo-packager` release this task drives. Its CLI and
+/// `[package.metadata.packager]` schema change between releases, and the
+/// workspace's `apps/atelier/Cargo.toml` config is written for this one.
+const CARGO_PACKAGER_VERSION: &str = "0.11.8";
+
+/// The pinned packager binary.
+///
+/// An exact match on `PATH` is used as-is; otherwise the pinned release is
+/// installed into `<target>/tools/cargo-packager` the first time it is needed,
+/// the same way the other workflows provision their tools. Nothing has to be
+/// installed by hand, and nothing is written outside the checkout.
+fn cargo_packager(ws: &Workspace) -> Result<PathBuf> {
+    match proc::version("cargo-packager", "--version") {
+        Some(found) if reports_version(&found, CARGO_PACKAGER_VERSION) => {
+            return Ok(PathBuf::from("cargo-packager"));
+        }
+        Some(found) => proc::step(format!(
+            "cargo-packager on PATH reports `{found}`; using the pinned {CARGO_PACKAGER_VERSION} copy instead"
+        )),
+        None => {}
+    }
+
+    let root = ws.target_dir()?.join("tools").join("cargo-packager");
+    let binary = root.join("bin").join("cargo-packager");
+    if !binary.is_file() {
+        proc::step(format!(
+            "installing cargo-packager {CARGO_PACKAGER_VERSION} into {}",
+            root.display()
+        ));
+        let mut install = Process::new("cargo");
+        install
+            .current_dir(ws.root())
+            .args([
+                "install",
+                "cargo-packager",
+                "--version",
+                CARGO_PACKAGER_VERSION,
+                "--locked",
+                "--root",
+            ])
+            .arg(&root);
+        proc::require(&mut install).with_context(|| {
+            format!(
+                "installing cargo-packager {CARGO_PACKAGER_VERSION} (the first run needs \
+                 network access to crates.io)"
+            )
+        })?;
+    }
+
+    let shown = binary.display().to_string();
+    match proc::version(&shown, "--version") {
+        Some(reported) if reports_version(&reported, CARGO_PACKAGER_VERSION) => Ok(binary),
+        Some(reported) => bail!(
+            "{} reports `{reported}`, not cargo-packager {CARGO_PACKAGER_VERSION}",
+            binary.display()
+        ),
+        None => bail!("{} does not run — remove it and retry", binary.display()),
+    }
+}
+
+/// Whether a `--version` line names `version` (`cargo-packager 0.11.8`).
+fn reports_version(line: &str, version: &str) -> bool {
+    line.split_whitespace().last() == Some(version)
 }
 
 fn restart_atelier(data_dir: &Path) -> Result<()> {

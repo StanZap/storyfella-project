@@ -21,13 +21,17 @@ open dist/atelier/Atelier.app
 The macOS bundle defaults to debug and uses ad hoc signing. Pass `--release`
 for an optimized build.
 
-On Linux, install [cargo-packager](https://github.com/crabnebula-dev/cargo-packager)
-and build the AppImage:
+On Linux, build the AppImage:
 
 ```sh
-cargo install cargo-packager --version 0.11.8 --locked
 cargo xtask atelier bundle
 ```
+
+The task builds the executable with Cargo and packages it with the pinned
+[cargo-packager](https://github.com/crabnebula-dev/cargo-packager) 0.11.8,
+installing it into `target/tools/cargo-packager` on first use. Building an
+AppImage also downloads `linuxdeploy` the first time, so the first run needs
+network access; later runs reuse both.
 
 Linux packages default to release. Use `--package-types appimage deb` to build
 both formats, or `--package-types deb` for Debian only. Packages are written to

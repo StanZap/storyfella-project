@@ -13,7 +13,10 @@ path = "src/main.rs"
 [package.metadata.packager]
 product-name = "Atelier"
 identifier = "com.storyfella.atelier"
-category = "Graphics"
+# cargo-packager validates this against its own category list (it derives the
+# Debian `Graphics;` and macOS `graphics-design` values from it); the bare
+# word "Graphics" is rejected.
+category = "Graphics and Design"
 icons = ["packaging/atelier.png"]
 binaries = [{ path = "atelier", main = true }]
 
