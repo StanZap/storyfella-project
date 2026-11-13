@@ -41,7 +41,8 @@ pub fn App() -> Element {
     use_context_provider(|| crate::ui::components::ErrorDetails(details));
     let retry_launch = plan_launch.clone();
     let mut open_error = use_signal(|| None::<String>);
-    // Startup failures have no Workspace/CloseGuard, but native Quit still works.
+    // Startup failures have no Workspace/CloseGuard, but the macOS Quit item
+    // still reports through the menu event handler.
     let failure_window = dioxus::desktop::use_window();
     dioxus::desktop::use_muda_event_handler(move |event| {
         if event.id.0 == crate::ui::QUIT_MENU_ID && config_result.peek().is_err() {

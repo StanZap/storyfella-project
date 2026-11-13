@@ -31,15 +31,28 @@ fn main() {
         ))
         .with_maximized(plan_launch.window_size.is_none());
     dioxus::LaunchBuilder::new()
-        .with_cfg(
-            dioxus::desktop::Config::new()
-                .with_window(window)
-                .with_menu(desktop_menu()),
-        )
+        .with_cfg(launch_config(window))
         .with_context(plan_launch)
         .launch(storyfella_studio::app::App);
 }
 
+/// The desktop configuration for this platform.
+///
+/// macOS needs the native menu bar: its Edit submenu supplies cut/copy/paste
+/// and select-all to the webview. On Linux and Windows Dioxus draws that bar
+/// inside the window, where the workspace's own controls cover those actions,
+/// so neither the custom menu nor the default one is wanted there.
+fn launch_config(window: dioxus::desktop::WindowBuilder) -> dioxus::desktop::Config {
+    let config = dioxus::desktop::Config::new().with_window(window);
+    #[cfg(target_os = "macos")]
+    let config = config.with_menu(desktop_menu());
+    #[cfg(not(target_os = "macos"))]
+    let config = config.with_menu(None::<dioxus::desktop::muda::Menu>);
+    config
+}
+
+/// The macOS menu bar; [`launch_config`] explains why it is macOS-only.
+#[cfg(target_os = "macos")]
 fn desktop_menu() -> dioxus::desktop::muda::Menu {
     use dioxus::desktop::muda::{
         accelerator::{Accelerator, Code, Modifiers},
@@ -47,18 +60,13 @@ fn desktop_menu() -> dioxus::desktop::muda::Menu {
     };
     let menu = Menu::new();
     let app = Submenu::new("Storyfella", true);
-    let modifier = if cfg!(target_os = "macos") {
-        Modifiers::META
-    } else {
-        Modifiers::CONTROL
-    };
     app.append_items(&[
         &PredefinedMenuItem::hide(None),
         &MenuItem::with_id(
             storyfella_studio::ui::QUIT_MENU_ID,
             "Quit Storyfella",
             true,
-            Some(Accelerator::new(Some(modifier), Code::KeyQ)),
+            Some(Accelerator::new(Some(Modifiers::META), Code::KeyQ)),
         ),
     ])
     .expect("application menu");

@@ -22,8 +22,14 @@ fn main() {
     let window = dioxus::desktop::WindowBuilder::new()
         .with_title("Storyfella Player")
         .with_inner_size(dioxus::desktop::LogicalSize::new(1280., 720.));
+    // Dioxus's default menu bar is drawn inside the window on Linux and
+    // Windows, where the Player has no menu action to offer. Keep it only on
+    // macOS, whose Edit submenu supplies the webview's editing shortcuts.
+    let config = dioxus::desktop::Config::new().with_window(window);
+    #[cfg(not(target_os = "macos"))]
+    let config = config.with_menu(None::<dioxus::desktop::muda::Menu>);
     dioxus::LaunchBuilder::new()
-        .with_cfg(dioxus::desktop::Config::new().with_window(window))
+        .with_cfg(config)
         .with_context(options)
         .launch(Player);
 }
