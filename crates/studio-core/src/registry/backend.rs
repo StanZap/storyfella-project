@@ -3,12 +3,12 @@
 
 use agentkit_ai::deployments::{Capability, ChatDeployment, ProviderKind};
 use agentkit_ai::native::sd::GenerateRequest;
-use agentkit_ai::native::{control::Managed, service};
+use agentkit_ai::native::service;
 use futures_util::future::BoxFuture;
 
 use crate::{
     config::{AppConfig, HostedImageProvider},
-    llm::{strip_json_fence, ChatMessage, ChatOptions, LlmClient},
+    llm::{strip_json_fence, ChatMessage, ChatOptions, LlmClient, LlmConfig},
     runtime::{CreativeRuntime, CreativeRuntimeError},
 };
 
@@ -55,6 +55,35 @@ fn generate_context(
         context.push(("job", job.to_owned()));
     }
     context
+}
+
+/// A planner request routed by the inference service for the selected chat
+/// provider.
+///
+/// A managed (`llamacpp`) provider's `llama-server` listens on the port the
+/// service allocated for it, never on the address recorded in the registry —
+/// that address is the provider's identity. Requests therefore use
+/// [`config`](Self::config), and the allocation is held for the whole
+/// operation because dropping it releases the worker.
+pub struct PlannerAllocation {
+    config: LlmConfig,
+    _lease: Option<service::Lease>,
+}
+
+impl PlannerAllocation {
+    /// The endpoint and model a planner request must use.
+    pub fn config(&self) -> &LlmConfig {
+        &self.config
+    }
+}
+
+impl std::fmt::Debug for PlannerAllocation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PlannerAllocation")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The real backend the CLI (and the canvas) executes pipelines against.
@@ -249,19 +278,18 @@ impl CreativeBackend {
         self.edit_runtime = edit_runtime(config);
     }
 
-    /// Make the selected managed text model resident before a planner operation.
-    pub async fn ensure_planner_ready(&self) -> Result<(), CreativeRuntimeError> {
-        if let Some(server) = self
-            .chat
-            .as_ref()
-            .and_then(|deployment| deployment.server.as_ref())
-        {
-            service::Client::new(&self.state_dir)
-                .warm(&Managed::Chat(server.clone()))
-                .await
-                .map_err(|error| CreativeRuntimeError::ChatServer(error.to_string()))?;
-        }
-        Ok(())
+    /// Route the selected chat provider for one planner operation, starting its
+    /// managed server when needed. `None` when no provider serves `text`.
+    pub async fn planner_allocation(
+        &self,
+    ) -> Result<Option<PlannerAllocation>, CreativeRuntimeError> {
+        let Some((client, lease)) = self.acquire_planner().await? else {
+            return Ok(None);
+        };
+        Ok(Some(PlannerAllocation {
+            config: client.config().clone(),
+            _lease: lease,
+        }))
     }
 
     async fn acquire_planner(
@@ -1086,7 +1114,7 @@ mod tests {
         config.state_dir = dir.path().join("state");
         let mut backend = CreativeBackend::new(&config);
         assert!(backend
-            .ensure_planner_ready()
+            .planner_allocation()
             .await
             .unwrap_err()
             .to_string()
@@ -1096,7 +1124,7 @@ mod tests {
         config.state_dir = dir.path().join("state");
         backend.set_config(&config);
         assert!(backend
-            .ensure_planner_ready()
+            .planner_allocation()
             .await
             .unwrap_err()
             .to_string()

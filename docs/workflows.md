@@ -29,8 +29,11 @@ in SF-PLAN-28.
 current beat, current scene or Entire file; choose Rewrite or Expand and enter custom
 instructions. Preserve facts is the default; creative changes are explicit.
 The request includes the containing scene and descriptions of its resolved
-assets. It uses the current text-provider binding from Settings, including the
-existing managed-server readiness path.
+assets. It uses the current text-provider binding from Settings. A managed
+(`llamacpp`) provider is reached through the worker the shared inference
+service allocates — the address in `clipforge.toml` is only the provider's
+identity — and its lease is held for the whole request, repair attempts
+included; a hosted provider is called at its configured address.
 Entire file captures the complete source, including every scene, comments and
 boundary whitespace, without depending on the caret. Retry keeps this scope.
 

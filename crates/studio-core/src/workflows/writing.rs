@@ -12,7 +12,14 @@ use serde::{Deserialize, Serialize};
 use storyfella_language::{analyze, Diagnostic, Node, NodeKind, Severity, Span};
 
 use super::{execute, Cancellation, RunStore};
-use crate::{authoring::AssetCatalog, llm::LlmConfig, registry::ArtifactRegistry};
+use crate::{
+    authoring::AssetCatalog,
+    llm::LlmConfig,
+    registry::{
+        backend::{CreativeBackend, PlannerAllocation},
+        ArtifactRegistry,
+    },
+};
 
 const MAX_REPAIR_ATTEMPTS: usize = 2;
 const WRITING_SYSTEM: &str = r#"You edit Storyfella DSL source. Return only the replacement source, without fences or explanation.
@@ -339,20 +346,66 @@ impl WritingProposal {
     }
 }
 
-pub async fn run(
+/// Run a writing request against the selected text provider.
+///
+/// A managed provider's server answers only on the port the inference service
+/// allocated for it, so the request is built from the routed allocation rather
+/// than the registry address, and the allocation lives until the run — including
+/// its repair attempts — finishes.
+pub async fn run_with_backend(
     request: WritingRequest,
-    config: LlmConfig,
+    backend: &CreativeBackend,
     registry: &ArtifactRegistry,
     store: &RunStore,
     cancel: Cancellation,
     feedback: impl Fn(super::Feedback) + Send + Sync + 'static,
 ) -> Result<Option<WritingProposal>> {
+    let Some(allocation) = wait_for_allocation(backend, &cancel).await? else {
+        return Ok(None);
+    };
+    run_with_model(
+        request,
+        chat_model(allocation.config()),
+        registry,
+        store,
+        cancel,
+        feedback,
+    )
+    .await
+}
+
+fn chat_model(config: &LlmConfig) -> agentkit_workflow::SharedStreamingModel {
     let mut model = OpenAiCompatibleChatModel::new(&config.base_url, &config.model)
         .with_timeout(config.timeout);
-    if let Some(key) = config.api_key {
-        model = model.with_api_key(key);
+    if let Some(key) = &config.api_key {
+        model = model.with_api_key(key.clone());
     }
-    run_with_model(request, Arc::new(model), registry, store, cancel, feedback).await
+    Arc::new(model)
+}
+
+/// Start the selected provider and route the request to its worker. A managed
+/// model may take minutes to load, so cancellation applies while waiting.
+async fn wait_for_allocation(
+    backend: &CreativeBackend,
+    cancel: &Cancellation,
+) -> Result<Option<PlannerAllocation>> {
+    let allocation = backend.planner_allocation();
+    tokio::pin!(allocation);
+    loop {
+        tokio::select! {
+            result = &mut allocation => {
+                let Some(allocation) = result? else {
+                    anyhow::bail!("No text provider is configured. Choose one in Settings.");
+                };
+                return Ok(Some(allocation));
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(25)) => {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Ok(None);
+                }
+            }
+        }
+    }
 }
 
 pub async fn run_with_model(

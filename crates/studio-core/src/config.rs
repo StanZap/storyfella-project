@@ -1695,7 +1695,17 @@ api_key = 'test-kept-key'
                     .is_err()
             );
             let backend = CreativeBackend::new(&config);
-            backend.ensure_planner_ready().await.unwrap();
+            let allocation = backend
+                .planner_allocation()
+                .await
+                .unwrap()
+                .expect("a hosted text provider needs no managed server");
+            assert_eq!(allocation.config().model, "writer-test");
+            assert_eq!(
+                allocation.config().base_url,
+                "http://127.0.0.1:1/v1",
+                "a hosted provider is called at its configured address"
+            );
             assert_eq!(std::fs::read_to_string(&ai).unwrap(), contents);
         }
     }

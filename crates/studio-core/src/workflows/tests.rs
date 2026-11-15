@@ -59,14 +59,13 @@ async fn writing_uses_the_bound_provider_and_streaming_http_contract() {
     });
     let directory = tempfile::tempdir().unwrap();
     let store = RunStore::open(&directory.path().join("runs.sqlite3")).unwrap();
-    let proposal = writing::run(
+    let model =
+        agentkit_ai::providers::openai::OpenAiCompatibleChatModel::new(&endpoint, "writing-model")
+            .with_timeout(Duration::from_secs(5))
+            .with_api_key("workflow-test-secret");
+    let proposal = writing::run_with_model(
         request,
-        crate::llm::LlmConfig {
-            base_url: endpoint,
-            model: "writing-model".into(),
-            api_key: Some("workflow-test-secret".into()),
-            timeout: Duration::from_secs(5),
-        },
+        Arc::new(model),
         &crate::registry::ArtifactRegistry::new(),
         &store,
         Arc::new(AtomicBool::new(false)),

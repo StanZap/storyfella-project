@@ -66,7 +66,8 @@ HTTP.
 - **The LLM endpoints** (text and vision) are OpenAI-compatible services
   accessed directly from Rust and resolved from the shared `clipforge.toml` as
   separate capabilities. An `openai` provider is external and never started; a
-  `llamacpp` provider is a managed `llama-server` the app starts on demand.
+  `llamacpp` provider is a managed `llama-server` the app starts on demand and
+  reaches through the worker address the shared inference service allocates.
   `crates/studio-core/src/llm/` is the client; the planner business logic lives in
   `crates/studio-core/src/registry/`.
 

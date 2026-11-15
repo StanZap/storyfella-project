@@ -92,7 +92,7 @@ pub fn WritingAssistant(
 ) -> Element {
     let mut screen = use_context::<Signal<super::AppScreen>>();
     let mut controller = use_context::<super::writing_review::ReviewController>();
-    let text_configured = backend.read().planner_config().is_some();
+    let text_configured = backend.read().has_llm();
     let mut scope = use_signal(|| "beat".to_owned());
     let mut action = use_signal(WritingAction::default);
     let mut instructions = use_signal(String::new);
@@ -149,9 +149,9 @@ pub fn WritingAssistant(
         if busy() || recovery.conflict.read().is_some() {
             return;
         }
-        let Some(config) = backend.read().planner_config() else {
+        if !backend.read().has_llm() {
             return;
-        };
+        }
         let selected_scope = scope();
         let selected_action = action();
         let selected_instructions = instructions();
@@ -213,18 +213,8 @@ pub fn WritingAssistant(
             let registry = app_state.read().registry.clone();
             let result = async {
                 let store = RunStore::open(&captured.project.with_extension("workflows.sqlite3"))?;
-                let readiness = backend.ensure_planner_ready();
-                tokio::pin!(readiness);
-                loop {
-                    tokio::select! {
-                        result = &mut readiness => { result?; break; }
-                        _ = tokio::time::sleep(std::time::Duration::from_millis(25)) => {
-                            if cancel.load(Ordering::Relaxed) { return Ok(None); }
-                        }
-                    }
-                }
                 let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
-                let run = writing::run(captured, config, &registry, &store, cancel.clone(), move |event| { let _ = send.send(event); });
+                let run = writing::run_with_backend(captured, &backend, &registry, &store, cancel.clone(), move |event| { let _ = send.send(event); });
                 tokio::pin!(run);
                 loop {
                     tokio::select! {

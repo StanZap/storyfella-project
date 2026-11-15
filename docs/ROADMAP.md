@@ -218,6 +218,13 @@ built at the time, not the target ownership.
   The Settings provider selector also remains available for a single configured
   endpoint, enabling first-provider assignment. LM Studio text setup and a
   minimal completion were verified locally with the already-loaded Gemma model.
+  Managed text routing (2026-11-15): Writing help now routes through the shared
+  inference service's allocation for the selected chat provider. A managed
+  `llamacpp` server listens on the port the supervisor assigns, not on the
+  address recorded in `clipforge.toml`, so sending the configured address failed
+  with `EndpointUnavailable` while Clipforge's own chat worked. A hosted provider
+  keeps its configured address; the allocation's lease lives for the whole
+  writing request, repair attempts included.
 - [ ] **SF-PLAN-29 — Controlled model downloads through Agentkit.** Provide
   reusable model provisioning with typed download state, progress events and
   explicit Pause, Resume and Cancel controls. Report current-file and aggregate
