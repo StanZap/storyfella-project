@@ -16,6 +16,7 @@ use crate::cli::{
     AtelierArgs, AtelierBundleArgs, AtelierCommand, AtelierPackageType, BuildArgs, BundleArgs, Cli,
     ClippyArgs, Command, CssArgs, FmtArgs, PlanArgs, RunArgs, ServeArgs,
 };
+use crate::install;
 use crate::proc;
 use crate::workspace::{Profile, Workspace};
 
@@ -147,6 +148,9 @@ fn bundle_atelier(ws: &Workspace, args: AtelierBundleArgs) -> Result<ExitCode> {
             cmd.arg("--release");
         }
         proc::require(&mut cmd)?;
+    }
+    if args.install {
+        install::bundled(&out_dir, &install::ATELIER)?;
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -377,6 +381,9 @@ fn bundle(ws: &Workspace, args: BundleArgs) -> Result<ExitCode> {
         for name in names {
             proc::done(format!("{}/{}", out_dir.display(), name));
         }
+    }
+    if args.install {
+        install::bundled(&out_dir, &install::STUDIO)?;
     }
     Ok(ExitCode::SUCCESS)
 }

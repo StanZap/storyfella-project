@@ -28,6 +28,7 @@ use crate::workspace::Profile;
         cargo xtask plan config/plans/smoke.yaml\n  \
         cargo xtask plan config/plans/ui-tour.yaml --mode guide\n  \
         cargo xtask bundle --package-types appimage deb\n  \
+        cargo xtask bundle --install             install the AppImage for this user\n  \
         cargo xtask test"
 )]
 pub struct Cli {
@@ -138,6 +139,10 @@ pub struct AtelierBundleArgs {
     /// Package formats (macos on macOS, appimage or deb on Linux). Repeatable.
     #[arg(long, value_enum, num_args = 1.., value_name = "TYPE")]
     pub package_types: Vec<AtelierPackageType>,
+    /// Install the packaged app for the current user (`$XDG_BIN_HOME`, else
+    /// `~/.local/bin`).
+    #[arg(long)]
+    pub install: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -218,6 +223,10 @@ pub struct BundleArgs {
     /// Where to place the artifacts (default `dist/` at the workspace root).
     #[arg(long, value_name = "DIR")]
     pub out_dir: Option<PathBuf>,
+    /// Copy the bundled app into the current user's bin directory
+    /// (`$XDG_BIN_HOME`, else `~/.local/bin`) so it runs from `PATH`.
+    #[arg(long)]
+    pub install: bool,
 }
 
 /// The `dx bundle --package-types` values. Only the ones a desktop app can use

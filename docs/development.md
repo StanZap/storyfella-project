@@ -134,6 +134,8 @@ cargo xtask plan config/plans/smoke.yaml --mode check
 cargo xtask serve                 # dx serve (hot reload)
 cargo xtask bundle                # release AppImage into dist/
 cargo xtask bundle --package-types appimage deb
+cargo xtask bundle --install      # …and install it for the current user
+cargo xtask atelier bundle --install  # …same for Atelier
 cargo xtask check                 # cargo check --workspace --all-targets
 cargo xtask clippy [--deny]        # cargo clippy …; --deny errors on warnings
 cargo xtask fmt [--check]         # cargo fmt --all
@@ -154,6 +156,16 @@ pipeline) and launch the binary from the workspace root so the app's
 project-root path resolution finds `config/plans`. `-l`/`--log` tees the
 app's stdout/stderr to `.svs-e2e/logs/app-<unix>.log` for the GUI live-test
 workflow. `bundle` writes to `dist/` (git-ignored) and lists each artifact.
+
+`bundle --install` (and `atelier bundle --install`) copies the artifact the
+bundle just wrote into the current user's bin directory — `$XDG_BIN_HOME`, else
+`~/.local/bin` — as `storyfella-studio` / `atelier`, so the app starts by name
+from a shell; it says so when that directory is not on `PATH`. The artifact
+stays in `dist/` and the installed command is a copy the next `--install`
+replaces, chosen by the product name in its file name. On macOS the `.app` is
+installed into `~/Applications` and its executable linked from that directory.
+Installing needs the `appimage` package type on Linux (the default); `deb` and
+`rpm` are installed by the system package manager instead.
 
 `cargo xtask <command> --help` documents the flags. The sections below remain
 the reference for the underlying commands, for when you need a flag the task
@@ -184,7 +196,8 @@ cargo xtask atelier bundle --package-types appimage deb    # AppImage and Debian
 ```
 
 Linux packages go to `dist/atelier/` and default to release. Pass `--debug`
-for a debug package. Use a build host compatible with the intended Linux
+for a debug package. `--install` puts the packaged app in the user's bin
+directory (see [the task runner](#task-runner-cargo-xtask)). Use a build host compatible with the intended Linux
 distribution and architecture. Atelier's native inference runtime and weights
 are provisioned separately through the [provider setup](atelier.md#local-qwen-and-krea-on-linux-with-cuda).
 
