@@ -908,6 +908,7 @@ executable = "runtime/sd-server"
     .unwrap();
     let mut settings = Settings {
         provider: Provider::QwenNative,
+        provider_id: Some("qwen".into()),
         ..Default::default()
     };
     for editing in [false, true] {
@@ -921,8 +922,8 @@ executable = "runtime/sd-server"
         );
     }
     settings.provider = Provider::KreaNative;
+    settings.provider_id = Some("krea".into());
     assert!(!settings.provider.supports_edit());
-    assert!(settings.provider.key_env().is_empty());
     assert_eq!(
         crate::native_images::deployment(&settings, &providers, false)
             .unwrap()
@@ -932,7 +933,7 @@ executable = "runtime/sd-server"
     assert!(crate::native_images::deployment(&settings, &providers, true).is_err());
 
     settings.provider = Provider::MossNative;
-    assert!(Provider::ALL.contains(&Provider::MossNative));
+    settings.provider_id = Some("moss".into());
     assert!(!settings.provider.supports_edit());
     let moss = crate::native_images::deployment(&settings, &providers, false).unwrap();
     assert_eq!(moss.architecture, "moss-image-sft");
@@ -955,6 +956,7 @@ executable = "runtime/sd-server"
         .unwrap();
     let shared = agentkit_ai::deployments::Providers::load(&path).unwrap();
     settings.provider = Provider::QwenNative;
+    settings.provider_id = Some("qwen".into());
     for editing in [false, true] {
         assert_eq!(
             crate::native_images::deployment(&settings, &shared, editing).unwrap(),
@@ -1855,49 +1857,95 @@ fn settings_save_reports_failures_without_claiming_success() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 #[test]
-fn shared_provider_config_supplies_hosted_image_credentials() {
+fn shared_choices_preserve_distinct_provider_identities() {
     let registry = agentkit_ai::deployments::Providers::from_toml(
         r#"
-            [defaults]
-            t2i = "replicate-image"
-            edit = "replicate-image"
-
-            [providers.replicate-image]
-            kind = "replicate"
-            capabilities = ["t2i", "edit"]
-            base_url = "https://api.replicate.com/v1"
-            model = "alibaba/qwen-image-3"
-            api_key = "replicate-from-shared-config"
-        "#,
+[providers.first]
+kind = "sdcpp"
+capabilities = ["t2i", "edit"]
+base_url = "http://127.0.0.1:7860"
+architecture = "qwen-image-2.1"
+model_dir = "/models/first"
+[providers.second]
+kind = "sdcpp"
+capabilities = ["t2i", "edit"]
+base_url = "http://127.0.0.1:7860"
+architecture = "qwen-image-2.1"
+model_dir = "/models/second"
+[providers.cloud_a]
+kind = "replicate"
+capabilities = ["t2i"]
+base_url = "https://api.replicate.com/v1"
+model = "black-forest-labs/flux-schnell"
+api_key = "a"
+[providers.cloud_b]
+kind = "replicate"
+capabilities = ["t2i"]
+base_url = "https://api.replicate.com/v1"
+model = "alibaba/qwen-image-3"
+api_key = "b"
+"#,
         std::path::Path::new("."),
     )
     .unwrap();
-
+    let choices = providers::shared_choices(&registry);
+    assert_eq!(choices.len(), 4);
+    let mut settings = Settings::default();
+    settings.select_shared(choices.iter().find(|choice| choice.id == "second").unwrap());
     assert_eq!(
-        providers::shared_config_key(Provider::Replicate, &registry).as_deref(),
-        Some("replicate-from-shared-config")
+        crate::native_images::deployment(&settings, &registry, false)
+            .unwrap()
+            .model_dir,
+        std::path::Path::new("/models/second")
     );
-    assert_eq!(
-        providers::shared_stored_api_key(Provider::Replicate, &registry).as_deref(),
-        Some("replicate-from-shared-config")
+    settings.provider_id = Some("removed".into());
+    assert!(crate::native_images::deployment(&settings, &registry, false).is_err());
+    settings.select_shared(
+        choices
+            .iter()
+            .find(|choice| choice.id == "cloud_b")
+            .unwrap(),
     );
-
-    let environment_registry = agentkit_ai::deployments::Providers::from_toml(
-        r#"
-            [defaults]
-            t2i = "replicate-image"
-
-            [providers.replicate-image]
-            kind = "replicate"
-            capabilities = ["t2i"]
-            base_url = "https://api.replicate.com/v1"
-            model = "alibaba/qwen-image-3"
-            api_key_env = "ATELIER_TEST_PROVIDER_KEY"
-        "#,
-        std::path::Path::new("."),
+    assert_eq!(settings.provider_id.as_deref(), Some("cloud_b"));
+    assert_eq!(settings.model, "alibaba/qwen-image-3");
+    assert!(agentkit_ai::images::Client::from_registry_for(
+        &registry,
+        settings.provider_id.as_deref().unwrap(),
+        agentkit_ai::deployments::Capability::T2i,
+        None,
     )
-    .unwrap();
-    assert!(providers::shared_stored_api_key(Provider::Replicate, &environment_registry).is_none());
+    .is_ok());
+}
+
+#[test]
+fn queued_provider_snapshot_rejects_routing_changes_without_storing_credentials() {
+    let source = "[providers.cloud]\nkind='replicate'\ncapabilities=['t2i']\nbase_url='https://api.replicate.com/v1'\nmodel='black-forest-labs/flux-schnell'\napi_key='secret-one'\n";
+    let parse = |text: &str| {
+        agentkit_ai::deployments::Providers::from_toml(text, std::path::Path::new(".")).unwrap()
+    };
+    let original = parse(source);
+    let mut settings = Settings::default();
+    settings.select_shared(&providers::shared_choices(&original)[0]);
+    settings.capture_provider_from(&original).unwrap();
+    assert!(!format!("{:?}", settings.provider_snapshot).contains("secret-one"));
+    assert!(!serde_json::to_string(&settings)
+        .unwrap()
+        .contains("secret-one"));
+    assert!(settings
+        .verify_provider(&parse(&source.replace("secret-one", "secret-two")))
+        .is_ok());
+    let changed = parse(&source.replace("black-forest-labs/flux-schnell", "alibaba/qwen-image-3"));
+    assert!(settings
+        .verify_provider(&changed)
+        .unwrap_err()
+        .to_string()
+        .contains("changed while this request was queued"));
+    assert!(settings.verify_provider(&parse("")).is_err());
+    assert!(settings
+        .capture_provider_from(&changed)
+        .unwrap_err()
+        .to_string()
+        .contains("Refresh Clipforge providers"));
 }
 fn workflow() -> serde_json::Value {
     serde_json::json!({"6":{"class_type":"CLIPTextEncode","inputs":{"text":"old"}},"5":{"class_type":"EmptyLatentImage","inputs":{"width":512,"height":512,"batch_size":4}},"3":{"class_type":"KSampler","inputs":{"seed":1}},"9":{"class_type":"SaveImage","inputs":{}}})
@@ -1966,7 +2014,6 @@ fn comfy_workflow_roundtrip_stores_output_and_reopens_in_atelier() {
     let directory = temporary("creative-workflow");
     let (reference, thumbnail) = crate::creative_workflow::generate(
         providers::Request {
-            native: Arc::new(Default::default()),
             settings: Settings {
                 provider: Provider::Comfy,
                 endpoint: format!("http://{address}"),
@@ -2195,7 +2242,6 @@ fn generation_cancellation_prevents_network_submission() {
     let directory = temporary("workflow-cancel");
     let result = crate::creative_workflow::generate(
         providers::Request {
-            native: Arc::new(Default::default()),
             settings: Settings::default(),
             prompt: "Study".into(),
             source: None,

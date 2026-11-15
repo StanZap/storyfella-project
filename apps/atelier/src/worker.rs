@@ -171,7 +171,6 @@ pub enum Storage {
     Barrier(Sender<()>),
 }
 pub struct Workers {
-    pub native: Arc<crate::native_images::NativeImages>,
     pub mask: Sender<(u64, crate::edit::MaskDraft)>,
     pub storage: Sender<Storage>,
     pub probe: Sender<providers::Settings>,
@@ -605,7 +604,9 @@ pub fn start() -> Workers {
                 Storage::ApplySettings(settings, path) => {
                     Event::SettingsApplied(apply_settings(&settings, &path))
                 }
-                Storage::OpenClipforge => Event::ClipforgeOpened(open_clipforge()),
+                Storage::OpenClipforge => Event::ClipforgeOpened(
+                    storyfella_studio_core::ai_config::open_provider_manager().map_err(Into::into),
+                ),
                 Storage::Barrier(ack) => {
                     let _ = ack.send(());
                     continue;
@@ -658,7 +659,6 @@ pub fn start() -> Workers {
         }
     });
     Workers {
-        native: Arc::new(Default::default()),
         mask,
         storage,
         probe,
@@ -699,29 +699,6 @@ pub fn render_image(mut image: RgbaImage) -> Arc<gpui_kit::RenderImage> {
         pixel.swap(0, 2);
     }
     Arc::new(gpui_kit::RenderImage::new(vec![image::Frame::new(image)]))
-}
-
-fn open_clipforge() -> Result<()> {
-    // Clipforge has a desktop identity but no setup deep-link contract.
-    #[cfg(target_os = "macos")]
-    {
-        let status = std::process::Command::new("open")
-            .args(["-b", "com.clipforge.desktop"])
-            .status()?;
-        anyhow::ensure!(
-            status.success(),
-            "Could not open Clipforge. Install its desktop app, then retry."
-        );
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        #[cfg(target_os = "windows")]
-        let executable = "clipforge-desktop.exe";
-        #[cfg(not(target_os = "windows"))]
-        let executable = "clipforge-desktop";
-        std::process::Command::new(executable).spawn()?;
-    }
-    Ok(())
 }
 
 pub fn projects(directory: PathBuf, sender: Sender<Event>) {

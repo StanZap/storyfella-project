@@ -94,7 +94,8 @@ async fn native_qwen_three_ordered_rgba_inputs() -> Result {
         Providers::load(&workspace().join(".svs-e2e/native-acceptance/providers.toml"))?;
     let deployment = providers.image_deployment(Capability::T2i)?;
     assert_eq!(deployment.architecture, "qwen-image-2.1");
-    let client = Client::native(deployment);
+    let state = tempfile::tempdir_in(workspace().join(".svs-e2e"))?;
+    let client = Client::native(deployment, state.path());
     assert_eq!(client.capabilities().max_input_images, 3);
     assert_eq!(client.capabilities().alpha_input, AlphaInput::Preserved);
     assert!(client.capabilities().alpha_output);
@@ -124,7 +125,12 @@ async fn native_qwen_three_ordered_rgba_inputs() -> Result {
         }
     }));
     let started = Instant::now();
-    let output = client.generate(request).await?;
+    let output = client.generate(request).await;
+    let cleanup = agentkit_ai::native::service::Client::new(state.path())
+        .shutdown()
+        .await;
+    let output = output?;
+    cleanup?;
     save_alpha("qwen-three-references.png", &output.bytes)?;
     eprintln!(
         "Three ordered RGBA inputs: {:?}; job {:?}",

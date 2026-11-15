@@ -4698,7 +4698,7 @@ impl DrawingApp {
             ));
         if provider.native_architecture().is_some() {
             content = content
-                .child(label(if provider.supports_edit() {
+                .child(label(if self.settings.supports_edit() {
                     "Generation and reference editing"
                 } else {
                     "Generation only"
@@ -4707,56 +4707,10 @@ impl DrawingApp {
                 .child(label(
                     "Size and sampling are in Image options; LoRA adapters are set below.",
                 ));
+        } else if self.settings.provider_id.is_some() {
+            content = content.child(label("Model and credentials are managed in Clipforge."));
         } else if provider != Provider::Comfy {
-            content = content
-                .child(separator())
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("Models"),
-                )
-                .child(label("Model presets"))
-                .child(column().children(provider.presets().into_iter().map(
-                    |(name, model, edit)| {
-                        Button::new(format!("preset-{model}-{edit}"))
-                            .ghost()
-                            .small()
-                            .label(name)
-                            .atelier_selected(
-                                self.model.read(cx).value() == model
-                                    && self.edit_model.read(cx).value() == edit,
-                                cx,
-                            )
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.select_image_preset(model, edit, window, cx)
-                            }))
-                    },
-                )))
-                .child(
-                    Button::new("advanced-provider-models")
-                        .ghost()
-                        .small()
-                        .label(if self.show_advanced_provider {
-                            "Hide model details"
-                        } else {
-                            "Model details…"
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.show_advanced_provider = !this.show_advanced_provider;
-                            cx.notify();
-                        })),
-                )
-                .when(self.show_advanced_provider, |content| {
-                    content
-                        .child(field("Generation model", &self.model))
-                        .child(field("Editing model", &self.edit_model))
-                        .child(label(
-                            "Leave editing model blank for models that only create images.",
-                        ))
-                });
-            content = content.child(separator())
-                .child(label("Connections and credentials are managed in Clipforge. Model choices are saved here."));
+            content = content.child(label("Choose a provider configured in Clipforge."));
         } else {
             content = content
                 .child(separator())

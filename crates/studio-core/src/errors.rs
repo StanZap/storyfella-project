@@ -903,30 +903,6 @@ impl CodedError for agentkit_ai::deployments::chat::ChatError {
     }
 }
 
-/// The shared lifecycle owner's errors (`agentkit_ai::native::control`): a
-/// managed image/chat server's start/stop failure, a marker write/kill, or a
-/// registry problem. Coded here so a start/stop surfaced through Studio carries
-/// the same code as one surfaced through the CLI.
-impl CodedError for agentkit_ai::native::control::ControlError {
-    fn code(&self) -> ErrorCode {
-        match self {
-            Self::Image(error) => error.code(),
-            Self::Chat(_) => ErrorCode::LlmServer,
-            Self::Marker(agentkit_ai::native::servers::MarkerError::Write { .. }) => {
-                ErrorCode::RuntimeGenerationStart
-            }
-            Self::Marker(agentkit_ai::native::servers::MarkerError::Kill { .. }) => {
-                ErrorCode::RuntimeGenerationStop
-            }
-            Self::UnverifiedServer(_, _) => ErrorCode::RuntimeGenerationStop,
-            Self::Provider(_) => ErrorCode::ConfigProviders,
-            // Reaching either from the image lifecycle means the configured
-            // registry no longer serves a managed image server.
-            Self::NoProvider(_) | Self::External(_) => ErrorCode::ConfigProviders,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{CodedError, ErrorCode};

@@ -279,6 +279,28 @@ built at the time, not the target ownership.
   Regression coverage exercises persisted routing and the missing-provider row.
   Cleanup remains for superseded provider-administration helpers in Studio core.
 
+**Shared local inference milestone** (Clipforge, Storyfella, Agentkit)
+- [x] Read and edit one shared provider registry. Studio and Atelier select
+  configured providers. Providers can retain the same local address.
+- [x] Route all managed text, optional vision, generation and editing through
+  one supervisor. Worker ports are temporary and assigned per model.
+- [x] Admit concurrent work within the memory and slot limits. Queue unloaded
+  models, evict idle workers and learn estimates from model starts and memory
+  observations. Agentkit service tests exercise this with temporary workers.
+- [x] Expose load, cancel, offload, queue, policy and failures in Clipforge.
+  Studio's Models setup link opens the provider management page.
+- [ ] Finish release validation. On an M3 Max, real Qwen 3.5 text and MOSS
+  image requests ran concurrently under the same supervisor. Storyfella
+  vision identified the generated cup with a Qwen3-VL projector, and the
+  Qwen image editor returned an edited 512×512 PNG. The Studio handoff
+  opened Clipforge's provider management page. A text provider added there
+  became selectable in Studio without changing its Vision choice. Packaged
+  Atelier generated a real 512×512 MOSS PNG. The dx-built Clipforge
+  cancelled a queued Qwen load while Atelier's request continued and
+  offloaded MOSS after it finished. Agentkit's inference suite passed.
+  Paid cloud inference and Linux runtime acceptance remain unverified.
+  The Windows native inference service transport is deferred.
+
 **Delivery order:** start SF-PLAN-27 early, before expanding the former Clipforge
 inference implementation. Establish the image contract in SF-PLAN-25 as part of
 that migration, then add MOSS (SF-PLAN-24) and expose the capabilities in Atelier

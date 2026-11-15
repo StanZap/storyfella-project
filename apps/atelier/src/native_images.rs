@@ -1,9 +1,8 @@
 use crate::providers::Settings;
-use agentkit_ai::deployments::{Capability, ImageDeployment, ProviderKind, Providers};
+use agentkit_ai::deployments::{Capability, ImageDeployment, Providers};
 use agentkit_ai::images::{Client, Output, Request};
-use agentkit_ai::native::control::{self, Managed};
+use agentkit_ai::native::{control::Managed, service};
 use anyhow::{ensure, Context, Result};
-use std::sync::Mutex;
 use storyfella_studio_core::ai_config as config;
 
 /// The deployment Atelier generates with: the shared registry's `sdcpp` provider
@@ -24,26 +23,23 @@ pub(crate) fn deployment(
     } else {
         Capability::T2i
     };
-    let mut candidates = providers.list().filter(|(_, p)| {
-        p.kind == ProviderKind::Sdcpp
-            && p.architecture.as_deref() == Some(architecture)
-            && p.capabilities.contains(&capability)
-    });
-    let (id, _) = candidates
-        .next()
-        .with_context(|| format!("Configure a {architecture} provider for {capability}"))?;
+    let id = settings
+        .provider_id
+        .as_deref()
+        .context("Choose an image provider configured in Clipforge")?;
+    let deployment = providers.image_deployment_for(id, capability)?;
     ensure!(
-        candidates.next().is_none(),
-        "Configure only one {architecture} provider for {capability}"
+        deployment.architecture == architecture,
+        "The selected provider changed in Clipforge; refresh the provider list"
     );
-    Ok(providers.image_deployment_for(id, capability)?)
+    Ok(deployment)
 }
 
 /// The LoRA adapters the selected local provider registers, named as the server
 /// expects (see `sd::prepare_lora_links`). Empty when no local provider is
 /// selected or its directory is missing.
 pub fn available_loras(settings: &Settings) -> Vec<String> {
-    let Ok(providers) = config::user_or_built_in() else {
+    let Ok(providers) = config::shared_registry() else {
         return Vec::new();
     };
     let Ok(deployment) = deployment(settings, &providers, false) else {
@@ -71,7 +67,7 @@ pub fn server_status(settings: &Settings) -> ServerStatus {
     if settings.provider.native_architecture().is_none() {
         return ServerStatus::NotLocal;
     }
-    let Ok(providers) = config::user_or_built_in() else {
+    let Ok(providers) = config::shared_registry() else {
         return ServerStatus::Unavailable;
     };
     let Ok(deployment) = deployment(settings, &providers, false) else {
@@ -87,73 +83,40 @@ pub fn server_status(settings: &Settings) -> ServerStatus {
         return ServerStatus::Unavailable;
     };
     runtime.block_on(async {
-        if !matches!(
-            control::status(&Managed::Image(deployment.clone()), &state_dir).await,
-            control::ServerState::Up { .. }
-        ) {
-            return ServerStatus::Stopped;
+        let client = service::Client::new(state_dir);
+        let Ok(id) = service::model_id(&Managed::Image(deployment)) else {
+            return ServerStatus::Unavailable;
+        };
+        match client.status().await {
+            Ok(status) => status
+                .resident
+                .into_iter()
+                .find(|worker| worker.id == id)
+                .map(|worker| ServerStatus::Running {
+                    model: Some(worker.model),
+                })
+                .unwrap_or(ServerStatus::Stopped),
+            Err(_) => ServerStatus::Unavailable,
         }
-        let model = agentkit_ai::native::sd::Client::new(format!(
-            "http://{}:{}",
-            deployment.host, deployment.port
-        ))
-        .capabilities()
-        .await
-        .ok()
-        .map(|capabilities| capabilities.model.name);
-        ServerStatus::Running { model }
     })
 }
 
-struct CachedClient {
-    deployment: ImageDeployment,
-    client: Client,
-}
-
-#[derive(Default)]
-pub struct NativeImages {
-    client: Mutex<Option<CachedClient>>,
-}
-impl NativeImages {
-    pub fn generate(&self, settings: &Settings, request: Request) -> Result<Output> {
-        ensure!(
-            settings.provider.supports_edit() || request.source.is_none(),
-            "{} supports generation only",
-            settings.provider.name()
-        );
-        let providers = config::user_or_built_in()?;
-        let editing = request.source.is_some();
-        let selected = deployment(settings, &providers, editing)?;
-        let state_dir =
-            storyfella_studio_core::paths::state_dir().context("No platform data directory")?;
-        let mut cached = self
-            .client
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Local image worker stopped; restart Atelier"))?;
-        if cached.as_ref().is_none_or(|c| c.deployment != selected) {
-            // Drop the previous client before loading another model on the GPU.
-            *cached = None;
-            *cached = Some(CachedClient {
-                deployment: selected.clone(),
-                client: Client::native(selected.clone()),
-            });
-        }
-        let client = &cached
-            .as_ref()
-            .context("Missing local image client")?
-            .client;
-        client.validate_request(&request)?;
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        runtime.block_on(async {
-            // Ensure the machine's shared `sd-server` — started detached, owned
-            // through its marker, reused if another front end already runs it —
-            // before generating; the client then finds it resident.
-            control::load(&Managed::Image(selected), &state_dir)
-                .await
-                .map_err(|error| anyhow::anyhow!("{error}"))?;
-            client.generate(request).await.map_err(Into::into)
-        })
-    }
+pub fn generate(settings: &Settings, request: Request) -> Result<Output> {
+    ensure!(
+        settings.supports_edit() || request.source.is_none(),
+        "{} supports generation only",
+        settings.provider.name()
+    );
+    let providers = config::shared_registry()?;
+    settings.verify_provider(&providers)?;
+    let editing = request.source.is_some();
+    let selected = deployment(settings, &providers, editing)?;
+    let state_dir =
+        storyfella_studio_core::paths::state_dir().context("No platform data directory")?;
+    let client = Client::native(selected, state_dir);
+    client.validate_request(&request)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async { client.generate(request).await.map_err(Into::into) })
 }

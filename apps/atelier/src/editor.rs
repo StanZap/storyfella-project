@@ -378,7 +378,7 @@ impl DrawingApp {
         }
         self.page = Page::Image;
         self.show_edit_composer = false;
-        self.editing_image = self.settings.provider.supports_edit();
+        self.editing_image = self.settings.supports_edit();
         self.comparing = false;
         self.comparison_requested = None;
         self.mask_tool = Tool::Hand;

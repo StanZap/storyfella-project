@@ -1,6 +1,7 @@
 use tracing::Level;
 
 fn main() {
+    agentkit_ai::native::service::run_if_requested();
     let args: Vec<String> = std::env::args().collect();
     let plan_launch = storyfella_studio::driver::PlanLaunch::from_args(&args);
     // A plan run is hermetic: it reads and writes scratch config under

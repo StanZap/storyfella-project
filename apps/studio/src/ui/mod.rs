@@ -249,6 +249,8 @@ pub fn Workspace(
     // The backend lives in a signal so the Settings model picker can swap
     // the writing model; provider edits rebuild its client.
     let backend = use_signal(|| CreativeBackend::new(&backend_config));
+    // Shared with Settings so new workflows use the latest provider selection.
+    let live_config = use_signal(|| config.clone());
     let project_file_preview = use_signal(|| None::<PathBuf>);
     use_context_provider(|| ProjectFilePreview(project_file_preview));
     dioxus::desktop::use_asset_handler("generated", move |request, responder| {
@@ -480,15 +482,12 @@ pub fn Workspace(
         last_key.set(Some((next, press)));
     });
 
-    // The Plans screen's run handler (captures its own config clone — the
-    // `move` closure must not steal the component's `config`; clones inside
-    // the body keep it `FnMut` for the `EventHandler`).
-    let plans_config = config.clone();
+    // Each plan snapshots the latest configuration at the moment it starts.
     let plans_driver_ui = driver_ui.clone();
     let on_run_plan = {
         move |(plan, mode): (Plan, GuideMode)| {
             start_plan(
-                plans_config.clone(),
+                live_config.read().clone(),
                 app_state,
                 defaults,
                 screen,
@@ -590,7 +589,7 @@ pub fn Workspace(
                 div { hidden: screen() != AppScreen::Assets, class: "h-full", ProjectGate { open: app_state.read().project_path.is_some(), Assets { app_state } } }
                 div { hidden: screen() != AppScreen::Preview, class: "h-full", ProjectGate { open: app_state.read().project_path.is_some(), preview::Preview { app_state } } }
                 div { hidden: screen() != AppScreen::Plans, class: "h-full", Plans { on_run: on_run_plan, running: app_state.read().operation_in_progress() || session.read().as_ref().is_some_and(|run| matches!(run.state, driver::GuideState::Running)) } }
-                div { hidden: screen() != AppScreen::Settings, class: "h-full", Settings { config: config.clone(), backend } }
+                div { hidden: screen() != AppScreen::Settings, class: "h-full", Settings { config: live_config, backend } }
                 }
                 }
             }

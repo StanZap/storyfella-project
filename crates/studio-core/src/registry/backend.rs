@@ -1,16 +1,13 @@
 //! The live [`GenerationBackend`]: `CreativeRuntime` for generation,
 //! `LlmClient` for the soft LLM steps.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
-use agentkit_ai::deployments::ManagedChatServer;
-use agentkit_ai::native::llama;
+use agentkit_ai::deployments::{Capability, ChatDeployment, ProviderKind};
 use agentkit_ai::native::sd::GenerateRequest;
+use agentkit_ai::native::{control::Managed, service};
 use futures_util::future::BoxFuture;
 
 use crate::{
-    config::AppConfig,
+    config::{AppConfig, HostedImageProvider},
     llm::{strip_json_fence, ChatMessage, ChatOptions, LlmClient},
     runtime::{CreativeRuntime, CreativeRuntimeError},
 };
@@ -60,36 +57,125 @@ fn generate_context(
     context
 }
 
-/// The managed `llama-server` each chat provider launches, by provider id, and
-/// the `text` provider id (the planner's server is started on demand).
-fn chat_supervision(config: &AppConfig) -> (HashMap<String, ManagedChatServer>, Option<String>) {
-    let servers = config
-        .chat_providers
-        .iter()
-        .filter_map(|provider| {
-            provider
-                .deployment
-                .server
-                .clone()
-                .map(|server| (provider.id.clone(), server))
-        })
-        .collect();
-    (servers, config.text_provider_id.clone())
-}
-
 /// The real backend the CLI (and the canvas) executes pipelines against.
 #[derive(Clone)]
 pub struct CreativeBackend {
     runtime: CreativeRuntime,
+    edit_runtime: CreativeRuntime,
     llm: Option<LlmClient>,
-    /// The `text` provider id, so a planner call can start its managed server.
-    text_provider_id: Option<String>,
-    /// What each `llamacpp` chat provider launches, by provider id. An external
-    /// endpoint has no entry.
-    managed_servers: HashMap<String, ManagedChatServer>,
-    /// The managed chat servers this app started, by provider id. An
-    /// `Arc<Mutex<…>>` so a `spawn`ed task and the UI share the same handles.
-    running_servers: Arc<Mutex<HashMap<String, Arc<llama::Runtime>>>>,
+    /// Current shared chat deployment and server state directory.
+    chat: Option<ChatDeployment>,
+    hosted_image: Option<HostedImageProvider>,
+    hosted_edit: Option<HostedImageProvider>,
+    state_dir: std::path::PathBuf,
+}
+
+fn selected_hosted_image(config: &AppConfig, editing: bool) -> Option<HostedImageProvider> {
+    let id = if editing {
+        &config.image_edit_provider_id
+    } else {
+        &config.image_provider_id
+    };
+    id.as_ref()
+        .and_then(|id| {
+            config.image_providers.iter().find(|p| {
+                &p.id == id
+                    && p.capabilities.contains(&if editing {
+                        Capability::Edit
+                    } else {
+                        Capability::T2i
+                    })
+            })
+        })
+        .and_then(|p| p.hosted.clone())
+}
+
+fn edit_runtime(config: &AppConfig) -> CreativeRuntime {
+    let image = config
+        .image_edit_provider_id
+        .as_ref()
+        .and_then(|id| {
+            config.image_providers.iter().find(|provider| {
+                &provider.id == id && provider.capabilities.contains(&Capability::Edit)
+            })
+        })
+        .and_then(|provider| provider.deployment.as_ref());
+    CreativeRuntime::with_image(config, image)
+}
+
+fn hosted_client(
+    provider: &HostedImageProvider,
+    editing: bool,
+) -> Result<agentkit_ai::images::Client, String> {
+    use agentkit_ai::images::{ApiKey, Client, HostedDeployment, HostedProvider, ImageOperation};
+    let capability = if editing {
+        Capability::Edit
+    } else {
+        Capability::T2i
+    };
+    if !provider.capabilities.contains(&capability) {
+        return Err(format!("The selected image provider does not support {capability}; choose a compatible provider in Clipforge."));
+    }
+    let kind = match provider.kind {
+        ProviderKind::Fal => HostedProvider::Fal,
+        ProviderKind::Replicate => HostedProvider::Replicate,
+        ProviderKind::Alibaba => HostedProvider::Alibaba,
+        ProviderKind::GptImage => HostedProvider::GptImage,
+        _ => return Err("The selected image provider is not hosted".into()),
+    };
+    let mut deployment = HostedDeployment::at(kind, &provider.model, &provider.base_url)
+        .map_err(|e| e.to_string())?;
+    deployment.timeout = std::time::Duration::from_secs(provider.timeout_seconds.unwrap_or(300));
+    let key = provider
+        .api_key
+        .clone()
+        .or_else(|| std::env::var(provider.api_key_env.as_deref().unwrap_or(kind.key_env())).ok())
+        .ok_or("Configure an API key for this provider in Clipforge")?;
+    Client::hosted(deployment, ApiKey::new(key).map_err(|e| e.to_string())?)
+        .and_then(|client| {
+            client.for_operation(if editing {
+                ImageOperation::Edit
+            } else {
+                ImageOperation::Generate
+            })
+        })
+        .map_err(|e| e.to_string())
+}
+
+fn hosted_request(request: &GenerateRequest) -> Result<agentkit_ai::images::Request, String> {
+    use agentkit_ai::native::sd;
+    if request.cfg_scale != sd::DEFAULT_CFG_SCALE
+        || request.sample_method != sd::DEFAULT_SAMPLE_METHOD
+    {
+        return Err("Cloud image providers use their own CFG and sampling method; remove the custom settings.".into());
+    }
+    let mut result =
+        agentkit_ai::images::Request::new(&request.prompt, request.width, request.height);
+    result.steps = (request.steps != sd::DEFAULT_STEPS).then_some(request.steps);
+    result.seed = request.seed;
+    result.loras = request.loras.clone();
+    Ok(result)
+}
+
+fn hosted_png(bytes: Vec<u8>) -> Result<(Vec<u8>, u32, u32), String> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(128 * 1024 * 1024);
+    reader.limits(limits);
+    let image = reader.decode().map_err(|e| e.to_string())?;
+    if u64::from(image.width()) * u64::from(image.height()) > 32_000_000 {
+        return Err("Provider image exceeds 32 megapixels".into());
+    }
+    let (width, height) = (image.width(), image.height());
+    let mut png = std::io::Cursor::new(Vec::new());
+    image
+        .write_to(&mut png, image::ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    Ok((png.into_inner(), width, height))
 }
 
 impl PartialEq for CreativeBackend {
@@ -102,13 +188,14 @@ impl PartialEq for CreativeBackend {
 
 impl CreativeBackend {
     pub fn new(config: &AppConfig) -> Self {
-        let (managed_servers, text_provider_id) = chat_supervision(config);
         Self {
             runtime: CreativeRuntime::new(config),
+            edit_runtime: edit_runtime(config),
             llm: config.planner_config().map(LlmClient::new),
-            text_provider_id,
-            managed_servers,
-            running_servers: Arc::new(Mutex::new(HashMap::new())),
+            chat: config.text.clone(),
+            hosted_image: selected_hosted_image(config, false),
+            hosted_edit: selected_hosted_image(config, true),
+            state_dir: config.state_dir.clone(),
         }
     }
 
@@ -145,120 +232,49 @@ impl CreativeBackend {
         self.llm.as_ref().map(LlmClient::model).map(str::to_owned)
     }
 
-    /// Points the chat side at `config` — the Settings provider switches and
-    /// endpoint edits. It rebuilds the planner client and the managed-server
-    /// map, and stops a running server whose provider is gone or is no longer
-    /// managed, so the app never holds a process the config does not name.
+    /// Refresh the selected shared chat deployment without stopping servers.
     pub fn set_chat(&mut self, config: &AppConfig) {
         self.llm = config.planner_config().map(LlmClient::new);
-        let (managed_servers, text_provider_id) = chat_supervision(config);
-        self.text_provider_id = text_provider_id;
-        let stale: Vec<Arc<llama::Runtime>> = {
-            let mut running = self.running_servers.lock().unwrap();
-            let stale_ids: Vec<String> = running
-                .keys()
-                .filter(|id| !managed_servers.contains_key(*id))
-                .cloned()
-                .collect();
-            stale_ids
-                .iter()
-                .filter_map(|id| running.remove(id))
-                .collect()
-        };
-        for runtime in stale {
-            tokio::spawn(async move {
-                let _ = runtime.stop().await;
-            });
+        self.chat = config.text.clone();
+        self.state_dir = config.state_dir.clone();
+    }
+
+    /// Replace the shared deployments for future jobs; running jobs retain the
+    /// runtime snapshot they started with.
+    pub fn set_config(&mut self, config: &AppConfig) {
+        self.set_chat(config);
+        self.runtime = CreativeRuntime::new(config);
+        self.hosted_image = selected_hosted_image(config, false);
+        self.hosted_edit = selected_hosted_image(config, true);
+        self.edit_runtime = edit_runtime(config);
+    }
+
+    /// Make the selected managed text model resident before a planner operation.
+    pub async fn ensure_planner_ready(&self) -> Result<(), CreativeRuntimeError> {
+        if let Some(server) = self
+            .chat
+            .as_ref()
+            .and_then(|deployment| deployment.server.as_ref())
+        {
+            service::Client::new(&self.state_dir)
+                .warm(&Managed::Chat(server.clone()))
+                .await
+                .map_err(|error| CreativeRuntimeError::ChatServer(error.to_string()))?;
         }
-        self.managed_servers = managed_servers;
+        Ok(())
     }
 
-    /// Whether the managed server for `provider_id` is running.
-    pub fn chat_server_running(&self, provider_id: &str) -> bool {
-        self.running_servers
-            .lock()
-            .unwrap()
-            .get(provider_id)
-            .is_some_and(|runtime| runtime.is_running())
-    }
-
-    /// The managed chat servers currently running, by provider id.
-    pub fn running_chat_servers(&self) -> Vec<String> {
-        self.running_servers
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(_, runtime)| runtime.is_running())
-            .map(|(id, _)| id.clone())
-            .collect()
-    }
-
-    /// Starts the managed `llama-server` for `provider_id` when that provider is
-    /// a `llamacpp` one — the same server kind the planner and `svs eval` use. A
-    /// no-op for an external endpoint or unknown id.
-    pub async fn start_chat_server(&self, provider_id: &str) -> Result<(), CreativeRuntimeError> {
-        let Some(server) = self.managed_servers.get(provider_id) else {
-            return Ok(());
+    async fn acquire_planner(
+        &self,
+    ) -> Result<Option<(LlmClient, Option<service::Lease>)>, CreativeRuntimeError> {
+        let Some(deployment) = &self.chat else {
+            return Ok(self.llm.clone().map(|client| (client, None)));
         };
-        if self.chat_server_running(provider_id) {
-            return Ok(());
-        }
-        let runtime = Arc::new(server.runtime());
-        runtime
-            .ensure_ready(&server.host, server.port)
+        let (routed, lease) = service::Client::new(&self.state_dir)
+            .chat(deployment)
             .await
             .map_err(|error| CreativeRuntimeError::ChatServer(error.to_string()))?;
-        self.running_servers
-            .lock()
-            .unwrap()
-            .insert(provider_id.to_owned(), runtime);
-        Ok(())
-    }
-
-    /// Stops the managed chat server for `provider_id`, when the app started it.
-    pub async fn stop_chat_server(&self, provider_id: &str) -> Result<(), CreativeRuntimeError> {
-        let runtime = self.running_servers.lock().unwrap().remove(provider_id);
-        if let Some(runtime) = runtime {
-            runtime
-                .stop()
-                .await
-                .map_err(|error| CreativeRuntimeError::ChatServer(error.to_string()))?;
-        }
-        Ok(())
-    }
-
-    /// Restarts the managed chat server for `provider_id`.
-    pub async fn restart_chat_server(&self, provider_id: &str) -> Result<(), CreativeRuntimeError> {
-        self.stop_chat_server(provider_id).await?;
-        self.start_chat_server(provider_id).await
-    }
-
-    /// Stops every managed chat server the app started — called before a
-    /// generation, so no chat model shares the card with the image engine.
-    pub async fn stop_chat_servers(&self) -> Result<(), CreativeRuntimeError> {
-        let runtimes: Vec<Arc<llama::Runtime>> = self
-            .running_servers
-            .lock()
-            .unwrap()
-            .drain()
-            .map(|(_, runtime)| runtime)
-            .collect();
-        for runtime in runtimes {
-            runtime
-                .stop()
-                .await
-                .map_err(|error| CreativeRuntimeError::ChatServer(error.to_string()))?;
-        }
-        Ok(())
-    }
-
-    /// Starts the planner's managed server, when its `text` provider is a
-    /// `llamacpp` one. A no-op for an external endpoint or no provider.
-    pub async fn ensure_planner_ready(&self) -> Result<(), CreativeRuntimeError> {
-        match &self.text_provider_id {
-            Some(id) => self.start_chat_server(id).await,
-            None => Ok(()),
-        }
+        Ok(Some((LlmClient::new((&routed).into()), lease)))
     }
 
     pub fn planner_config(&self) -> Option<crate::llm::LlmConfig> {
@@ -511,18 +527,19 @@ impl CreativeBackend {
         viewing: Option<&Artifact>,
         message: &str,
     ) -> Result<OperationStack, String> {
-        let Some(client) = &self.llm else {
+        let Some((client, _lease)) = self
+            .acquire_planner()
+            .await
+            .map_err(|error| error.to_string())?
+        else {
             return Err(
                 "The LLM endpoint is not configured or unreachable — use slash commands instead"
                     .to_owned(),
             );
         };
-        self.ensure_planner_ready()
-            .await
-            .map_err(|error| error.to_string())?;
         // Preferred: the model discovers artifacts/adapters by calling
         // tools (any number of rounds), then emits the stack.
-        match Self::propose_with_tools(client, registry, defaults, viewing, message).await {
+        match Self::propose_with_tools(&client, registry, defaults, viewing, message).await {
             Ok(stack) => return Ok(stack),
             Err(ProposeError::ToolsUnsupported(error)) => {
                 tracing::warn!(%error, "tool calling unavailable; falling back to the static planner");
@@ -530,7 +547,7 @@ impl CreativeBackend {
             Err(ProposeError::Failed(error)) => return Err(error),
         }
         // Fallback: the static listing + strict JSON schema.
-        Self::propose_static(client, registry, defaults, viewing, message).await
+        Self::propose_static(&client, registry, defaults, viewing, message).await
     }
 
     /// The tool-calling planner: multi-round discovery, then the final JSON
@@ -644,39 +661,78 @@ impl GenerationBackend for CreativeBackend {
         let this = self.clone();
         let request = request.clone();
         Box::pin(async move {
-            let client = this.runtime.client().map_err(|error| {
+            let editing = request.reference_image_path.is_some();
+            let runtime = if editing {
+                &this.edit_runtime
+            } else {
+                &this.runtime
+            };
+            let hosted = if editing {
+                &this.hosted_edit
+            } else {
+                &this.hosted_image
+            };
+            if let Some(provider) = hosted {
+                let fail = |error: String| {
+                    PipelineError::backend_with_context(error, generate_context(&request, None))
+                };
+                let client = hosted_client(provider, request.reference_image_path.is_some())
+                    .map_err(&fail)?;
+                let mut hosted = hosted_request(&request).map_err(&fail)?;
+                if let Some(path) = &request.reference_image_path {
+                    hosted.source = Some(
+                        tokio::fs::read(path)
+                            .await
+                            .map_err(|error| fail(error.to_string()))?,
+                    );
+                }
+                let output = client
+                    .generate(hosted)
+                    .await
+                    .map_err(|error| fail(error.to_string()))?;
+                let (png, width, height) =
+                    tokio::task::spawn_blocking(move || hosted_png(output.bytes))
+                        .await
+                        .map_err(|error| fail(error.to_string()))?
+                        .map_err(&fail)?;
+                let generated = runtime
+                    .store_image(&png)
+                    .await
+                    .map_err(|error| fail(error.to_string()))?;
+                return Ok(GenerateResponse {
+                    status: "completed".into(),
+                    image_path: Some(generated.display().to_string()),
+                    seed: request.seed,
+                    width: Some(width),
+                    height: Some(height),
+                    error: None,
+                });
+            }
+            let lease = runtime.acquire_image().await.map_err(|error| {
                 PipelineError::backend_with_context(error, generate_context(&request, None))
             })?;
-            // The generator and a chat model cannot share the card: stop every
-            // managed chat server before the resident image server starts.
-            this.stop_chat_servers().await.map_err(|error| {
-                PipelineError::backend_with_context(error, generate_context(&request, None))
-            })?;
-            this.runtime.ensure_ready().await.map_err(|error| {
-                PipelineError::backend_with_context(error, generate_context(&request, None))
-            })?;
-            let job = client.generate(&request).await.map_err(|error| {
-                PipelineError::backend_with_context(error, generate_context(&request, None))
-            })?;
+            let job = lease
+                .image_client()
+                .generate(&request)
+                .await
+                .map_err(|error| {
+                    PipelineError::backend_with_context(error, generate_context(&request, None))
+                })?;
             // The job id lets a failed run be cross-referenced against the
             // server logs.
             let job_id = job.id.clone();
-            let generated = this.runtime.wait_for_job(job).await.map_err(|error| {
+            let generated = runtime.wait_for_job(lease, job).await.map_err(|error| {
                 PipelineError::backend_with_context(
                     error,
                     generate_context(&request, Some(&job_id)),
                 )
             })?;
-            let imported = this
-                .runtime
-                .import_asset(generated)
-                .await
-                .map_err(|error| {
-                    PipelineError::backend_with_context(
-                        error,
-                        generate_context(&request, Some(&job_id)),
-                    )
-                })?;
+            let imported = runtime.import_asset(generated).await.map_err(|error| {
+                PipelineError::backend_with_context(
+                    error,
+                    generate_context(&request, Some(&job_id)),
+                )
+            })?;
             Ok(GenerateResponse {
                 status: "completed".to_owned(),
                 image_path: Some(imported),
@@ -692,13 +748,14 @@ impl GenerationBackend for CreativeBackend {
         let this = self.clone();
         let request = request.to_owned();
         Box::pin(async move {
-            let Some(client) = &this.llm else {
-                return Ok(None);
+            let (client, _lease) = match this.acquire_planner().await {
+                Ok(Some(allocation)) => allocation,
+                Ok(None) => return Ok(None),
+                Err(error) => {
+                    tracing::warn!(%error, "the planner server did not start; the draft is skipped");
+                    return Ok(None);
+                }
             };
-            if let Err(error) = this.ensure_planner_ready().await {
-                tracing::warn!(%error, "the planner server did not start; the draft is skipped");
-                return Ok(None);
-            }
             let messages = [
                 ChatMessage::text("system", Self::draft_system_prompt()),
                 ChatMessage::text("user", request),
@@ -735,13 +792,14 @@ impl GenerationBackend for CreativeBackend {
         let this = self.clone();
         let request = request.to_owned();
         Box::pin(async move {
-            let Some(client) = &this.llm else {
-                return Ok(None);
+            let (client, _lease) = match this.acquire_planner().await {
+                Ok(Some(allocation)) => allocation,
+                Ok(None) => return Ok(None),
+                Err(error) => {
+                    tracing::warn!(%error, "the planner server did not start; grounding is skipped");
+                    return Ok(None);
+                }
             };
-            if let Err(error) = this.ensure_planner_ready().await {
-                tracing::warn!(%error, "the planner server did not start; grounding is skipped");
-                return Ok(None);
-            }
             let messages = [
                 ChatMessage::text("system", Self::ground_system_prompt()),
                 ChatMessage::text("user", request),
@@ -932,6 +990,124 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hosted_sampling_uses_provider_defaults_and_rejects_unmapped_controls() {
+        let mut request = GenerateRequest::new("draw a house", 1024, 1024);
+        let hosted = hosted_request(&request).unwrap();
+        assert_eq!(hosted.steps, None);
+        request.steps = 12;
+        assert_eq!(hosted_request(&request).unwrap().steps, Some(12));
+        request.cfg_scale = 2.0;
+        assert!(hosted_request(&request).err().unwrap().contains("CFG"));
+    }
+
+    #[test]
+    fn hosted_jpeg_output_is_saved_as_png() {
+        let image = image::DynamicImage::new_rgb8(8, 8);
+        let mut jpeg = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut jpeg, image::ImageFormat::Jpeg).unwrap();
+        let (png, width, height) = hosted_png(jpeg.into_inner()).unwrap();
+        assert_eq!((width, height), (8, 8));
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(hosted_png(b"not an image".to_vec()).is_err());
+    }
+
+    #[test]
+    fn hosted_provider_resolves_credentials_and_enforces_declared_capability() {
+        let provider = HostedImageProvider {
+            kind: ProviderKind::Replicate,
+            model: "black-forest-labs/flux-schnell".into(),
+            base_url: "https://api.replicate.com/v1".into(),
+            api_key: Some("secret-test".into()),
+            api_key_env: None,
+            timeout_seconds: None,
+            capabilities: vec![Capability::T2i],
+        };
+        assert!(hosted_client(&provider, false).is_ok());
+        assert!(hosted_client(&provider, true)
+            .err()
+            .unwrap()
+            .contains("does not support"));
+        assert!(!format!("{provider:?}").contains("secret-test"));
+    }
+
+    #[tokio::test]
+    async fn hosted_backend_rejects_unsupported_sampling_before_network_submission() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
+        std::fs::create_dir_all(&root).unwrap();
+        let directory = tempfile::tempdir_in(root).unwrap();
+        let config_path = directory.path().join("providers.toml");
+        std::fs::write(&config_path, "[defaults]\nt2i='cloud'\n[providers.cloud]\nkind='replicate'\ncapabilities=['t2i']\nbase_url='https://api.replicate.com/v1'\nmodel='black-forest-labs/flux-schnell'\napi_key='fixture-key'\n").unwrap();
+        let config = AppConfig::load_from(config_path).unwrap();
+        let backend = CreativeBackend::new(&config);
+        let mut request = GenerateRequest::new("test", 1024, 1024);
+        request.cfg_scale = 3.0;
+        let error = backend.generate(&request).await.unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Cloud image providers use their own CFG"));
+    }
+
+    #[test]
+    fn refreshing_config_updates_the_image_runtime_for_future_jobs() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
+        std::fs::create_dir_all(&root).unwrap();
+        let directory = tempfile::tempdir_in(root).unwrap();
+        let path = directory.path().join("providers.toml");
+        std::fs::write(&path, "[defaults]\nt2i='local'\n[providers.local]\nkind='sdcpp'\ncapabilities=['t2i']\narchitecture='qwen-image-2.1'\nbase_url='http://127.0.0.1:7860'\n").unwrap();
+        let mut config = AppConfig::load_from(path).unwrap();
+        let mut backend = CreativeBackend::new(&config);
+        let previous = backend.runtime();
+        config.image.as_mut().unwrap().weights.diffusion =
+            Some(directory.path().join("new-weights.gguf"));
+        backend.set_config(&config);
+        assert_ne!(previous.expected_model().unwrap(), "new-weights.gguf");
+        assert_eq!(
+            backend.runtime().expected_model().unwrap(),
+            "new-weights.gguf"
+        );
+    }
+
+    #[tokio::test]
+    async fn planner_refresh_uses_the_new_shared_model_before_admission() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
+        std::fs::create_dir_all(&root).unwrap();
+        let dir = tempfile::tempdir_in(root).unwrap();
+        let executable = dir.path().join("llama-server");
+        std::fs::write(&executable, b"fixture").unwrap();
+        let config_file = dir.path().join("config.toml");
+        let write_config = |model: &str| {
+            std::fs::write(&config_file, format!(
+            "[defaults]\ntext='local'\n[providers.local]\nkind='llamacpp'\ncapabilities=['text']\nbase_url='http://127.0.0.1:17890/v1'\nmodel={model:?}\nmodel_path={:?}\nexecutable={:?}\n",
+            dir.path().join(model).display().to_string(), executable.display().to_string()
+        )).unwrap()
+        };
+        write_config("first.gguf");
+        let mut config = AppConfig::load_from(&config_file).unwrap();
+        config.state_dir = dir.path().join("state");
+        let mut backend = CreativeBackend::new(&config);
+        assert!(backend
+            .ensure_planner_ready()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("first.gguf"));
+        write_config("second.gguf");
+        let mut config = AppConfig::load_from(&config_file).unwrap();
+        config.state_dir = dir.path().join("state");
+        backend.set_config(&config);
+        assert!(backend
+            .ensure_planner_ready()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("second.gguf"));
+        assert!(
+            !config.state_dir.exists(),
+            "missing weights are rejected before startup"
+        );
+    }
+
+    #[test]
     fn stack_schema_is_strict_with_per_op_requirements() {
         let schema = CreativeBackend::stack_response_format();
         assert_eq!(
@@ -965,7 +1141,7 @@ mod tests {
     }
 
     #[test]
-    fn set_chat_rebuilds_the_client_and_the_managed_server_map() {
+    fn set_chat_rebuilds_the_planner_client() {
         let dir = std::env::temp_dir().join(format!("svs-backend-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let path = dir.join("clipforge.toml");
@@ -997,10 +1173,6 @@ mod tests {
         let mut backend = CreativeBackend::new(&config);
         assert!(backend.has_llm());
         assert_eq!(backend.llm_model().as_deref(), Some("local-model"));
-        assert!(
-            !backend.chat_server_running("probe"),
-            "an external endpoint owns no server"
-        );
 
         config.text = None;
         config.text_provider_id = None;

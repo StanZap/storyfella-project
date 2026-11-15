@@ -53,6 +53,7 @@ gpui_kit::actions!(
     ]
 );
 fn main() {
+    agentkit_ai::native::service::run_if_requested();
     let mut args = std::env::args().skip(1);
     let first = args.next();
     let command = match first.as_deref() {

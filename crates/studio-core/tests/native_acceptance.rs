@@ -2,7 +2,7 @@
 use agentkit_ai::{
     deployments::{Capability, Providers},
     images::{Client, Error, Request},
-    native::control,
+    native::{control::Managed, service},
 };
 use std::{
     path::PathBuf,
@@ -11,8 +11,6 @@ use std::{
 };
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
-mod support;
-use support::ServerCleanup;
 
 fn workspace() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -55,15 +53,12 @@ fn save_and_reopen(name: &str, bytes: &[u8]) -> Result {
 async fn native_generation_reuse_abort_and_saved_output() -> Result {
     let providers = providers()?;
     let deployment = providers.image_deployment(Capability::T2i)?;
-    let runtime = deployment.runtime();
-    // This scenario deliberately reuses a server started by the user or the switching test.
-    let wire = runtime.client(&deployment.host, deployment.port);
-    let before = wire.capabilities().await?;
-    runtime
-        .ensure_ready(&deployment.host, deployment.port)
-        .await?;
-    assert_eq!(runtime.pid(), None, "must reuse the resident server");
-    let client = Client::native(deployment.clone());
+    let state = tempfile::tempdir_in(workspace().join(".svs-e2e/native-acceptance"))?;
+    let service = service::Client::new(state.path());
+    let managed = Managed::Image(deployment.clone());
+    service.warm(&managed).await?;
+    let pid = service.status().await?.resident[0].pid;
+    let client = Client::native(deployment.clone(), state.path());
     let started = Instant::now();
     let output = client.generate(request()).await?;
     eprintln!(
@@ -90,8 +85,7 @@ async fn native_generation_reuse_abort_and_saved_output() -> Result {
     let abort_latency = abort_time.lock().unwrap().expect("job progress").elapsed();
     assert!(abort_latency < Duration::from_secs(1));
     let Error::Cancelled {
-        job_id: Some(id),
-        remote_cancelled: false,
+        job_id: Some(id), ..
     } = error
     else {
         return Err(
@@ -102,18 +96,12 @@ async fn native_generation_reuse_abort_and_saved_output() -> Result {
         "Local abort latency {abort_latency:?}; total request {:?}; submitted job {id}",
         started.elapsed(),
     );
-    // There is no verified active-sampling cancellation endpoint. Drain the actual
-    // job explicitly so subsequent acceptance does not leave hidden GPU work.
-    let drained = wire.wait(&id, Duration::from_secs(1200)).await?;
-    assert!(!drained.is_empty());
-    assert_eq!(wire.capabilities().await?.model.name, before.model.name);
-    eprintln!("Aborted remote job finished; resident server remains available");
-
     let mut recovery = request();
     recovery.steps = Some(2);
     let output = client.generate(recovery).await?;
     save_and_reopen("native-after-abort.png", &output.bytes)?;
-    assert_eq!(runtime.pid(), None);
+    assert_ne!(service.status().await?.resident[0].pid, pid);
+    service.shutdown().await?;
     Ok(())
 }
 
@@ -129,36 +117,36 @@ async fn native_model_switching_and_reuse() -> Result {
     assert_eq!(qwen.host, krea.host);
     assert_eq!(qwen.port, krea.port);
     assert_ne!(qwen.port, providers.image_deployment(Capability::T2i)?.port);
-    let state = workspace().join(".svs-e2e/native-acceptance/servers");
-    std::fs::create_dir_all(&state)?;
-    // Refuse to replace anything already running on the acceptance port.
-    assert!(qwen
-        .runtime()
-        .client(&qwen.host, qwen.port)
-        .capabilities()
-        .await
-        .is_err());
-    let _cleanup = ServerCleanup {
-        state: state.clone(),
-        port: qwen.port,
-    };
+    let state = tempfile::tempdir_in(workspace().join(".svs-e2e/native-acceptance"))?;
+    let client = service::Client::new(state.path());
+    client
+        .set_policy(service::Policy {
+            max_models: 1,
+            ..service::Policy::default()
+        })
+        .await?;
     let outcome: Result = async {
+        let mut previous_pid = None;
         for (index, deployment) in [qwen.clone(), krea, qwen.clone()].into_iter().enumerate() {
-            let managed = control::Managed::Image(deployment.clone());
+            let managed = Managed::Image(deployment.clone());
             let started = Instant::now();
-            let pid = control::load(&managed, &state).await?;
-            assert!(
-                pid.is_some(),
-                "each model switch must start a new owned process"
-            );
-            assert_eq!(control::load(&managed, &state).await?, None);
+            client.warm(&managed).await?;
+            let resident = client.status().await?.resident;
+            assert_eq!(resident.len(), 1);
+            let pid = resident[0].pid;
+            assert_ne!(previous_pid, Some(pid));
+            client.warm(&managed).await?;
+            assert_eq!(client.status().await?.resident[0].pid, pid);
+            previous_pid = Some(pid);
             let mut smoke = request();
             smoke.steps = Some(if deployment.architecture == "krea2-turbo" {
                 8
             } else {
                 2
             });
-            let output = Client::native(deployment.clone()).generate(smoke).await?;
+            let output = Client::native(deployment.clone(), state.path())
+                .generate(smoke)
+                .await?;
             save_and_reopen(
                 &format!("switch-{index}-{}.png", deployment.architecture),
                 &output.bytes,
@@ -172,7 +160,7 @@ async fn native_model_switching_and_reuse() -> Result {
         Ok(())
     }
     .await;
-    let cleanup = control::stop(&state, qwen.port);
+    let cleanup = client.shutdown().await;
     outcome?;
     cleanup?;
     Ok(())

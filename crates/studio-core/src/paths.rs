@@ -47,9 +47,7 @@ pub const APP_CONFIG_ENV: &str = "SVS_USER_CONFIG";
 /// `clipforge.toml`.
 pub const AI_CONFIG_ENV: &str = "SVS_AI_CONFIG";
 
-/// The environment variable overriding the shared native-server state directory
-/// (process markers and detached-server logs), so tests and hermetic plan runs
-/// never touch the machine's real one.
+/// Override for the shared inference state directory in tests and plan runs.
 pub const STATE_DIR_ENV: &str = "SVS_STATE_DIR";
 
 /// Where plans live, relative to the project root — and the directory that
@@ -107,8 +105,8 @@ pub fn project_dirs() -> Option<ProjectDirs> {
 /// The machine's shared AI configuration file — `clipforge.toml` at the
 /// platform location every front end resolves
 /// (`crate::ai_config::default_config_path()`; on Linux
-/// `~/.config/clipforge/clipforge.toml`). It is created with Storyfella's
-/// defaults on first load when absent (see `config::load`).
+/// `~/.config/clipforge/clipforge.toml`). Clipforge manages the registry.
+/// Studio treats an absent registry as empty.
 ///
 /// `$SVS_AI_CONFIG` overrides the location when set and non-empty, so tests and
 /// scratch runs can point it at a temporary file. `None` when it is unset and

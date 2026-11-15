@@ -2,8 +2,8 @@
 //!
 //! One home for the two things an image assessment needs: encoding an image
 //! file for an OpenAI vision request (downscaled to a fixed maximum edge), and
-//! starting the managed `llama.cpp` server a local `vision` provider names and
-//! holding it for the life of a session. `svs eval`, the plan driver's
+//! starting the managed `llama.cpp` server a local `vision` provider names.
+//! `svs eval`, the plan driver's
 //! `expect_vision` step, and any future assessment surface all go through
 //! [`VisionSession`], so neither is reimplemented per caller.
 //!
@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use agentkit_ai::deployments::chat::{self, ChatImage};
 use agentkit_ai::deployments::ChatDeployment;
-use agentkit_ai::native::llama;
+use agentkit_ai::native::service;
 use thiserror::Error;
 
 use crate::errors::{CodedError, ErrorCode};
@@ -112,38 +112,18 @@ pub fn check(answer: &str, expect: Option<&str>, expect_not: Option<&str>) -> Re
     Ok(())
 }
 
-/// A vision call target: the chat client plus the managed server it owns (if
-/// any), held for the session's lifetime.
-///
-/// Dropping a [`llama::Runtime`] kills its child, so the runtime is held rather
-/// than created per call: a plan with several `expect_vision` steps must not
-/// reload the model (minutes on a 24 GiB card) between them.
+/// A vision call target using the shared managed-server lifecycle.
 pub struct VisionSession {
     deployment: ChatDeployment,
-    client: chat::Client,
-    _server: Option<llama::Runtime>,
+    service: service::Client,
 }
 
 impl VisionSession {
-    /// A session for `deployment`, starting its managed server when it has one.
-    /// An `openai` provider has no server and is called as-is.
-    pub async fn start(deployment: ChatDeployment) -> Result<Self, VisionError> {
-        let server = match &deployment.server {
-            Some(server) => {
-                let runtime = server.runtime();
-                runtime
-                    .ensure_ready(&server.host, server.port)
-                    .await
-                    .map_err(|error| VisionError::Server(error.to_string()))?;
-                Some(runtime)
-            }
-            None => None,
-        };
-        Ok(Self {
-            client: chat::Client::new(deployment.clone()),
+    pub fn new(deployment: ChatDeployment, state_dir: &Path) -> Self {
+        Self {
             deployment,
-            _server: server,
-        })
+            service: service::Client::new(state_dir),
+        }
     }
 
     /// The model id requests go to.
@@ -159,7 +139,12 @@ impl VisionSession {
         question: &str,
         max_tokens: u32,
     ) -> Result<String, VisionError> {
-        self.client
+        let (deployment, _lease) = self
+            .service
+            .chat(&self.deployment)
+            .await
+            .map_err(|error| VisionError::Server(error.to_string()))?;
+        chat::Client::new(deployment)
             .complete_with_images(Some(SYSTEM_PROMPT), question, images, Some(max_tokens))
             .await
             .map_err(|error| VisionError::Chat(error.to_string()))

@@ -24,16 +24,6 @@ pub enum Provider {
     MossNative,
 }
 impl Provider {
-    pub const ALL: [Self; 8] = [
-        Self::QwenNative,
-        Self::KreaNative,
-        Self::MossNative,
-        Self::Fal,
-        Self::Replicate,
-        Self::Alibaba,
-        Self::GptImage,
-        Self::Comfy,
-    ];
     pub fn name(self) -> &'static str {
         match self {
             Self::QwenNative => "Qwen Image 2.1 · local",
@@ -53,9 +43,6 @@ impl Provider {
             Self::KreaNative => "krea-native",
             Self::MossNative => "moss-native",
         }
-    }
-    pub fn key_env(self) -> &'static str {
-        self.hosted().map(|p| p.key_env()).unwrap_or("")
     }
     pub fn supports_edit(self) -> bool {
         if let Some(architecture) = self.native_architecture() {
@@ -97,11 +84,6 @@ impl Provider {
             _ => None,
         }
     }
-    pub fn presets(self) -> Vec<(&'static str, &'static str, &'static str)> {
-        self.hosted()
-            .map(|p| p.presets().to_vec())
-            .unwrap_or_default()
-    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProviderProfile {
@@ -121,6 +103,12 @@ pub struct LoraSetting {
 #[serde(default)]
 pub struct Settings {
     pub provider: Provider,
+    /// The exact image provider selected from Clipforge; ComfyUI is app-owned.
+    pub provider_id: Option<String>,
+    pub provider_supports_edit: bool,
+    /// Captured for a queued request only; never written to settings or projects.
+    #[serde(skip)]
+    pub(crate) provider_snapshot: Option<ProviderSnapshot>,
     pub model: String,
     pub edit_model: String,
     pub endpoint: String,
@@ -145,6 +133,9 @@ impl Default for Settings {
         let profile = Provider::GptImage.defaults();
         Self {
             provider: Provider::GptImage,
+            provider_id: None,
+            provider_supports_edit: false,
+            provider_snapshot: None,
             model: profile.model,
             edit_model: profile.edit_model,
             endpoint: "http://127.0.0.1:8188".into(),
@@ -184,13 +175,181 @@ impl Settings {
             .cloned()
             .unwrap_or_else(|| provider.defaults());
         self.provider = provider;
+        self.provider_id = None;
+        self.provider_snapshot = None;
+        self.provider_supports_edit = provider.supports_edit();
         self.model = profile.model;
         self.edit_model = profile.edit_model;
         self.endpoint = profile.endpoint;
     }
 }
+
+/// One usable Clipforge image provider, including distinct entries for the
+/// same service or model architecture.
+#[derive(Clone, Debug)]
+pub(crate) struct SharedChoice {
+    pub id: String,
+    pub label: String,
+    pub provider: Provider,
+    pub model: String,
+    pub endpoint: String,
+    pub supports_edit: bool,
+}
+
+pub(crate) fn shared_choices(registry: &agentkit_ai::deployments::Providers) -> Vec<SharedChoice> {
+    use agentkit_ai::deployments::{Capability, ProviderKind};
+    registry
+        .list()
+        .filter_map(|(id, configured)| {
+            if !configured
+                .capabilities
+                .iter()
+                .any(|cap| matches!(cap, Capability::T2i | Capability::Edit))
+            {
+                return None;
+            }
+            let provider = match configured.kind {
+                ProviderKind::Sdcpp => match configured.architecture.as_deref()? {
+                    "qwen-image-2.1" => Provider::QwenNative,
+                    "krea2-turbo" => Provider::KreaNative,
+                    "moss-image-sft" => Provider::MossNative,
+                    _ => return None,
+                },
+                ProviderKind::Fal => Provider::Fal,
+                ProviderKind::Replicate => Provider::Replicate,
+                ProviderKind::Alibaba => Provider::Alibaba,
+                ProviderKind::GptImage => Provider::GptImage,
+                _ => return None,
+            };
+            let model = configured
+                .model
+                .clone()
+                .or(configured.architecture.clone())
+                .unwrap_or_default();
+            Some(SharedChoice {
+                id: id.to_owned(),
+                label: format!("{id} · {model}"),
+                provider,
+                model,
+                endpoint: configured.base_url.clone(),
+                supports_edit: configured.capabilities.contains(&Capability::Edit),
+            })
+        })
+        .collect()
+}
+
+impl Settings {
+    pub fn supports_edit(&self) -> bool {
+        if self.provider_id.is_some() {
+            self.provider_supports_edit
+        } else {
+            self.provider.supports_edit()
+        }
+    }
+
+    pub(crate) fn select_shared(&mut self, choice: &SharedChoice) {
+        self.provider = choice.provider;
+        self.provider_id = Some(choice.id.clone());
+        self.provider_snapshot = None;
+        self.provider_supports_edit = choice.supports_edit;
+        self.model = choice.model.clone();
+        self.edit_model = choice.model.clone();
+        self.endpoint = choice.endpoint.clone();
+    }
+
+    /// Capture only non-secret routing and model settings for a queued job.
+    pub(crate) fn capture_provider(&mut self) -> Result<()> {
+        if self.provider == Provider::Comfy && self.provider_id.is_none() {
+            self.provider_snapshot = None;
+            return Ok(());
+        }
+        let registry = storyfella_studio_core::ai_config::shared_registry()?;
+        self.capture_provider_from(&registry)
+    }
+
+    pub(crate) fn capture_provider_from(
+        &mut self,
+        registry: &agentkit_ai::deployments::Providers,
+    ) -> Result<()> {
+        let Some(id) = self.provider_id.as_deref() else {
+            ensure!(
+                self.provider == Provider::Comfy,
+                "Choose an image provider configured in Clipforge"
+            );
+            self.provider_snapshot = None;
+            return Ok(());
+        };
+        let choice = shared_choices(registry)
+            .into_iter()
+            .find(|choice| choice.id == id)
+            .with_context(|| format!("Provider {id:?} is no longer configured in Clipforge"))?;
+        ensure!(choice.provider == self.provider && choice.model == self.model && choice.endpoint == self.endpoint && choice.supports_edit == self.provider_supports_edit,
+            "Provider configuration changed. Refresh Clipforge providers and submit the request again.");
+        self.provider_snapshot = Some(ProviderSnapshot::read(registry, id)?);
+        Ok(())
+    }
+
+    pub(crate) fn verify_provider(
+        &self,
+        registry: &agentkit_ai::deployments::Providers,
+    ) -> Result<()> {
+        let id = self
+            .provider_id
+            .as_deref()
+            .context("Choose an image provider configured in Clipforge")?;
+        let captured = self
+            .provider_snapshot
+            .as_ref()
+            .context("Provider configuration was not captured; submit the request again")?;
+        ensure!(*captured == ProviderSnapshot::read(registry, id)?, "Provider configuration changed while this request was queued. Review the settings and submit it again.");
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ProviderSnapshot {
+    kind: agentkit_ai::deployments::ProviderKind,
+    capabilities: Vec<agentkit_ai::deployments::Capability>,
+    address: String,
+    model: Option<String>,
+    architecture: Option<String>,
+    model_dir: Option<std::path::PathBuf>,
+    lora_dir: Option<std::path::PathBuf>,
+    executable: Option<std::path::PathBuf>,
+    weights: [Option<std::path::PathBuf>; 5],
+    residency: Option<String>,
+    timeout_seconds: Option<u64>,
+}
+
+impl ProviderSnapshot {
+    fn read(registry: &agentkit_ai::deployments::Providers, id: &str) -> Result<Self> {
+        let provider = registry
+            .list()
+            .find(|(name, _)| *name == id)
+            .map(|(_, provider)| provider)
+            .with_context(|| format!("Provider {id:?} is no longer configured in Clipforge"))?;
+        Ok(Self {
+            kind: provider.kind,
+            capabilities: provider.capabilities.clone(),
+            address: provider.base_url.clone(),
+            model: provider.model.clone(),
+            architecture: provider.architecture.clone(),
+            model_dir: provider.model_dir.clone(),
+            lora_dir: provider.lora_dir.clone(),
+            executable: provider.executable.clone(),
+            weights: [
+                provider.weights.diffusion.clone(),
+                provider.weights.text_encoder.clone(),
+                provider.weights.vae.clone(),
+                provider.weights.vision.clone(),
+                provider.weights.tokenizer.clone(),
+            ],
+            residency: provider.residency.clone(),
+            timeout_seconds: provider.timeout_seconds,
+        })
+    }
+}
 pub struct Request {
-    pub native: Arc<crate::native_images::NativeImages>,
     pub settings: Settings,
     pub prompt: String,
     pub size: (u32, u32),
@@ -234,92 +393,6 @@ pub(crate) fn response_json(response: Response) -> Result<Value> {
     Ok(value)
 }
 
-pub(crate) fn shared_config_key(
-    provider: Provider,
-    registry: &agentkit_ai::deployments::Providers,
-) -> Option<String> {
-    let configured = shared_provider(registry, provider)?;
-    shared_stored_api_key(provider, registry).or_else(|| {
-        configured
-            .api_key_env
-            .as_deref()
-            .and_then(|name| std::env::var(name).ok())
-            .filter(|key| !key.trim().is_empty())
-            .map(|key| key.trim().to_owned())
-    })
-}
-
-pub(crate) fn shared_stored_api_key(
-    provider: Provider,
-    registry: &agentkit_ai::deployments::Providers,
-) -> Option<String> {
-    shared_provider(registry, provider)?
-        .api_key
-        .clone()
-        .filter(|key| !key.trim().is_empty())
-        .map(|key| key.trim().to_owned())
-}
-
-fn shared_provider(
-    registry: &agentkit_ai::deployments::Providers,
-    provider: Provider,
-) -> Option<&agentkit_ai::deployments::Provider> {
-    let hosted = provider.hosted()?;
-    let matches = |configured: &agentkit_ai::deployments::Provider| {
-        matches!(
-            (hosted, configured.kind),
-            (
-                agentkit_ai::images::HostedProvider::Fal,
-                agentkit_ai::deployments::ProviderKind::Fal,
-            ) | (
-                agentkit_ai::images::HostedProvider::Replicate,
-                agentkit_ai::deployments::ProviderKind::Replicate,
-            ) | (
-                agentkit_ai::images::HostedProvider::Alibaba,
-                agentkit_ai::deployments::ProviderKind::Alibaba,
-            ) | (
-                agentkit_ai::images::HostedProvider::GptImage,
-                agentkit_ai::deployments::ProviderKind::GptImage,
-            )
-        )
-    };
-    registry
-        .provider_for(agentkit_ai::deployments::Capability::T2i)
-        .filter(|(_, configured)| matches(configured))
-        .or_else(|| {
-            registry
-                .provider_for(agentkit_ai::deployments::Capability::Edit)
-                .filter(|(_, configured)| matches(configured))
-        })
-        .or_else(|| registry.list().find(|(_, configured)| matches(configured)))
-        .map(|(_, configured)| configured)
-}
-
-pub fn shared_endpoint(
-    provider: Provider,
-    registry: &agentkit_ai::deployments::Providers,
-) -> Option<String> {
-    shared_provider(registry, provider).map(|p| p.base_url.clone())
-}
-
-pub(crate) fn api_key(provider: Provider) -> Result<String> {
-    if let Some(key) = std::env::var(provider.key_env())
-        .ok()
-        .filter(|key| !key.trim().is_empty())
-    {
-        return Ok(key.trim().to_owned());
-    }
-    if let Ok(registry) = storyfella_studio_core::ai_config::user_or_built_in() {
-        if let Some(key) = shared_config_key(provider, &registry) {
-            return Ok(key);
-        }
-    }
-    bail!(
-        "Configure {} in the shared clipforge.toml or set {}",
-        provider.name(),
-        provider.key_env()
-    )
-}
 pub fn generate(request: Request) -> Result<Reference> {
     ensure!(
         !request.prompt.trim().is_empty(),
@@ -353,6 +426,45 @@ pub(crate) fn image_capabilities(
     settings: &Settings,
     editing: bool,
 ) -> Result<Option<agentkit_ai::images::ImageCapabilities>> {
+    if let Some(id) = &settings.provider_id {
+        let registry = storyfella_studio_core::ai_config::shared_registry()?;
+        let capability = if editing {
+            agentkit_ai::deployments::Capability::Edit
+        } else {
+            agentkit_ai::deployments::Capability::T2i
+        };
+        // A native client does not require credentials. Hosted capability
+        // resolution below uses the validated configured route without keys.
+        let configured = registry
+            .list()
+            .find(|(name, _)| *name == id)
+            .map(|(_, p)| p)
+            .with_context(|| format!("Provider {id:?} is no longer configured in Clipforge"))?;
+        ensure!(
+            configured.capabilities.contains(&capability),
+            "Provider {id:?} does not support {capability}"
+        );
+        if configured.kind == agentkit_ai::deployments::ProviderKind::Sdcpp {
+            return Ok(Some(
+                registry
+                    .image_deployment_for(id, capability)?
+                    .profile()
+                    .image_capabilities(),
+            ));
+        }
+        let model = configured
+            .model
+            .as_deref()
+            .context("Configured image model is missing")?;
+        let hosted = settings
+            .provider
+            .hosted()
+            .context("Configured image provider type changed; refresh Clipforge")?;
+        return Ok(Some(
+            agentkit_ai::images::HostedDeployment::at(hosted, model, &configured.base_url)?
+                .capabilities(),
+        ));
+    }
     if let Some(provider) = settings.provider.hosted() {
         let model = if editing {
             &settings.edit_model
@@ -381,7 +493,7 @@ pub(crate) fn validate_capabilities(
     mask: bool,
 ) -> Result<()> {
     ensure!(
-        !editing || settings.provider.supports_edit(),
+        !editing || settings.supports_edit(),
         "This provider creates new images only; choose an editing provider"
     );
     if let Some(capabilities) = image_capabilities(settings, editing)? {
@@ -409,11 +521,25 @@ pub fn validate_inputs(
     mask: bool,
 ) -> Result<()> {
     validate_capabilities(settings, editing, additional, mask)?;
+    ensure!(
+        settings.provider == Provider::Comfy || settings.provider_id.is_some(),
+        "Choose an image provider configured in Clipforge"
+    );
     if settings.provider.hosted().is_some() {
-        api_key(settings.provider)
+        let id = settings
+            .provider_id
+            .as_deref()
+            .context("Choose an image provider configured in Clipforge")?;
+        let registry = storyfella_studio_core::ai_config::shared_registry()?;
+        let capability = if editing {
+            agentkit_ai::deployments::Capability::Edit
+        } else {
+            agentkit_ai::deployments::Capability::T2i
+        };
+        agentkit_ai::images::Client::from_registry_for(&registry, id, capability, None)
             .context("Set up this provider in Clipforge, then refresh readiness")?;
     } else if settings.provider.native_architecture().is_some() {
-        let registry = storyfella_studio_core::ai_config::user_or_built_in()?;
+        let registry = storyfella_studio_core::ai_config::shared_registry()?;
         crate::native_images::deployment(settings, &registry, editing)?;
     } else {
         ensure!(

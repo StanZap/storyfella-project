@@ -1,31 +1,15 @@
 //! Atelier's storage and configuration boundary over Clipforge's image client.
 use crate::{
     document::{self, Reference},
-    providers::{self, Provider, Request},
+    providers::Request,
 };
-use agentkit_ai::images::{ApiKey, Client, HostedDeployment, Request as ImageRequest};
-use anyhow::{ensure, Context, Result};
+use agentkit_ai::images::{Client, Request as ImageRequest};
+use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 
 pub fn generate(request: Request) -> Result<Reference> {
     let provider = request.settings.provider;
     let editing = request.source.is_some();
-    let model = if editing {
-        &request.settings.edit_model
-    } else {
-        &request.settings.model
-    };
-    let deployment = if let Some(hosted) = provider.hosted() {
-        ensure!(!model.trim().is_empty(), "Choose a model in Settings");
-        let endpoint = if provider == Provider::Alibaba {
-            &request.settings.endpoint
-        } else {
-            hosted.default_endpoint()
-        };
-        Some(HostedDeployment::at(hosted, model.trim(), endpoint)?)
-    } else {
-        None
-    };
     let source_note = request
         .source
         .as_ref()
@@ -62,18 +46,26 @@ pub fn generate(request: Request) -> Result<Reference> {
     image_request.cancel = request.cancel;
     image_request.progress = request.progress;
     // The GPUI worker owns its runtime; Agentkit remains async and UI-independent.
-    let output = if let Some(deployment) = deployment {
-        let key = ApiKey::new(providers::api_key(provider)?)?;
+    let output = if provider.hosted().is_some() {
+        let id = request
+            .settings
+            .provider_id
+            .as_deref()
+            .context("Choose an image provider configured in Clipforge")?;
+        let registry = storyfella_studio_core::ai_config::shared_registry()?;
+        request.settings.verify_provider(&registry)?;
+        let capability = if editing {
+            agentkit_ai::deployments::Capability::Edit
+        } else {
+            agentkit_ai::deployments::Capability::T2i
+        };
+        let client = Client::from_registry_for(&registry, id, capability, None)?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        runtime.block_on(async {
-            Client::hosted(deployment, key)?
-                .generate(image_request)
-                .await
-        })?
+        runtime.block_on(async { client.generate(image_request).await })?
     } else {
-        request.native.generate(&request.settings, image_request)?
+        crate::native_images::generate(&request.settings, image_request)?
     };
     let job = output
         .job_id

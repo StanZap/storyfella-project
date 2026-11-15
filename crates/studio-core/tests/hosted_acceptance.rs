@@ -60,8 +60,8 @@ async fn hosted_replicate_abort_deadline_and_recovery() -> Result {
         .map(|(_, provider)| provider)
         .ok_or("Acceptance provider is not configured")?;
     assert_eq!(provider.kind, ProviderKind::Replicate);
-    let client = Client::from_registry_for(&providers, &id, Capability::T2i)?;
-    let editor = Client::from_registry_for(&providers, &id, Capability::Edit)?;
+    let client = Client::from_registry_for(&providers, &id, Capability::T2i, None)?;
+    let editor = Client::from_registry_for(&providers, &id, Capability::Edit, None)?;
     assert_eq!(
         client.capabilities().dimensions,
         ImageDimensions::AspectRatios

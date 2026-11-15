@@ -2,10 +2,7 @@
 use agentkit_ai::{
     deployments::{Capability, Providers},
     images::{Client, Request},
-    native::{
-        control::{self, Managed},
-        sd, ModelStore,
-    },
+    native::{control::Managed, sd, service, ModelStore},
 };
 use std::{
     path::PathBuf,
@@ -13,8 +10,6 @@ use std::{
 };
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
-mod support;
-use support::ServerCleanup;
 
 fn directory() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/moss-integration")
@@ -72,31 +67,22 @@ async fn moss_generation_and_server_reuse() -> Result {
     assert_eq!(deployment.architecture, "moss-image-sft");
     assert_eq!(deployment.host, "127.0.0.1");
     assert_eq!(deployment.port, 17864);
-    let state = directory.join("servers");
+    let state = tempfile::tempdir_in(&directory)?;
+    let service = service::Client::new(state.path());
     let managed = Managed::Image(deployment.clone());
-    // Preserve any unrelated server already occupying the acceptance port.
-    assert!(deployment
-        .runtime()
-        .client(&deployment.host, deployment.port)
-        .capabilities()
-        .await
-        .is_err());
-    let _cleanup = ServerCleanup {
-        state: state.clone(),
-        port: deployment.port,
-    };
     let started = Instant::now();
     let outcome: Result = async {
-        let pid = control::load(&managed, &state).await?;
-        assert!(pid.is_some());
+        service.warm(&managed).await?;
+        let pid = service.status().await?.resident[0].pid;
         let startup = started.elapsed();
-        assert_eq!(control::load(&managed, &state).await?, None);
+        service.warm(&managed).await?;
+        assert_eq!(service.status().await?.resident[0].pid, pid);
         let mut request = Request::new("A red ceramic cup on a wooden table, simple studio photograph", 512, 512);
         request.steps = Some(50);
         request.seed = Some(42);
         request.timeout = Some(Duration::from_secs(1800));
         let started = Instant::now();
-        let output = Client::native(deployment.clone()).generate(request).await?;
+        let output = Client::native(deployment.clone(), state.path()).generate(request).await?;
         let elapsed = started.elapsed();
         let path = directory.join("moss-create.png");
         std::fs::write(&path, &output.bytes)?;
@@ -109,7 +95,7 @@ async fn moss_generation_and_server_reuse() -> Result {
         std::fs::write(directory.join("RESULTS.txt"), result)?;
         Ok(())
     }.await;
-    let cleanup = control::stop(&state, deployment.port);
+    let cleanup = service.shutdown().await;
     outcome?;
     cleanup?;
     Ok(())

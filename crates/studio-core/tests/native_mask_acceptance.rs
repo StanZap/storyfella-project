@@ -120,7 +120,8 @@ async fn native_qwen_shared_masked_edit_with_ordered_rgba_references() -> Result
     let providers = Providers::load(&root.join(".svs-e2e/native-acceptance/providers.toml"))?;
     let deployment = providers.image_deployment(Capability::T2i)?;
     assert_eq!(deployment.architecture, "qwen-image-2.1");
-    let client = Client::native(deployment);
+    let state = tempfile::tempdir_in(workspace().join(".svs-e2e"))?;
+    let client = Client::native(deployment, state.path());
     assert_eq!(client.capabilities().mask, MaskSupport::OptionalLatent);
     let mut request = Request::new("Replace the red cup with a bright blue sphere, using image 2 and image 3 as color references. Keep the table and composition.", 512, 512);
     request.source = Some(std::fs::read(directory.join("source.png"))?);
@@ -134,7 +135,12 @@ async fn native_qwen_shared_masked_edit_with_ordered_rgba_references() -> Result
     request.seed = Some(42);
     request.timeout = Some(Duration::from_secs(1200));
     let started = Instant::now();
-    let output = client.generate(request).await?;
+    let output = client.generate(request).await;
+    let cleanup = agentkit_ai::native::service::Client::new(state.path())
+        .shutdown()
+        .await;
+    let output = output?;
+    cleanup?;
     let path = directory.join("qwen-mask-shared.png");
     std::fs::write(&path, &output.bytes)?;
     let reopened = std::fs::read(&path)?;

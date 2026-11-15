@@ -33,7 +33,6 @@ use uuid::Uuid;
 
 use crate::{
     document::{self, Document, Reference},
-    native_images::NativeImages,
     ownership::{self, Owner},
     providers::{self, Request, Settings},
     queue::{JobState, Queue, QueuedRequest},
@@ -259,7 +258,6 @@ struct Tools {
     allow_publish: bool,
     settings: Settings,
     data_dir: PathBuf,
-    native: Arc<NativeImages>,
     queue: Queue,
     sender: mpsc::Sender<Event>,
     events: mpsc::Receiver<Event>,
@@ -311,7 +309,6 @@ impl Tools {
             allow_generate: args.allow_generate,
             max_submissions: args.max_submissions,
             allow_publish: args.allow_publish,
-            native: Arc::default(),
             queue: Queue::default(),
             provider: providers::generate,
             active_job: None,
@@ -530,6 +527,9 @@ impl Tools {
         let editing = source.is_some();
         providers::validate_capabilities(&settings, editing, 0, false)
             .map_err(|_| anyhow::anyhow!("The configured Atelier provider cannot run this request. Check its model and size in Atelier Settings"))?;
+        if settings.provider_id.is_some() {
+            settings.capture_provider()?;
+        }
 
         self.check_jobs_dir()?;
         fs::create_dir_all(&self.jobs_dir)?;
@@ -592,7 +592,7 @@ impl Tools {
             cancel: cancel.clone(),
         });
         worker::generate_using(
-            request.into_provider_request(self.native.clone(), cancel),
+            request.into_provider_request(cancel),
             queued,
             self.sender.clone(),
             self.data_dir.clone(),

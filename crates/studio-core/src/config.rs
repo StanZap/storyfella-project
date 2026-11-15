@@ -28,9 +28,7 @@ pub struct ChatProvider {
     /// How the provider runs: `openai` is an external endpoint the app never
     /// starts, `llamacpp` a managed server it does.
     pub kind: ProviderKind,
-    /// The capabilities the provider declares (`text`, `vision`). Selecting a
-    /// provider for a new capability adds it (see
-    /// [`AppConfig::with_text_provider`]).
+    /// The capabilities the provider declares (`text`, `vision`).
     pub capabilities: Vec<String>,
     /// The endpoint, model, key and timeout this provider resolves to.
     pub deployment: ChatDeployment,
@@ -42,56 +40,6 @@ impl ChatProvider {
     /// provider id legible as the endpoint it names.
     pub fn label(&self) -> String {
         format!("{} · {} · {}", self.id, self.kind, self.deployment.base_url)
-    }
-
-    /// Whether this is an external endpoint the app calls but never starts
-    /// (`openai`), rather than a managed native server (`llamacpp`). The user
-    /// owns an external endpoint's URL; a managed server's is the app's.
-    pub fn is_external(&self) -> bool {
-        self.kind == ProviderKind::Openai
-    }
-
-    /// What the app launches for a managed server, or `None` for an external
-    /// endpoint. The endpoint of a managed server is derived, not entered.
-    pub fn managed_launch(&self) -> Option<ManagedLaunch> {
-        let server = self.deployment.server.as_ref()?;
-        Some(ManagedLaunch {
-            executable: server.executable.display().to_string(),
-            model_path: server.model_path.display().to_string(),
-            mmproj: server
-                .mmproj
-                .as_ref()
-                .map(|path| path.display().to_string()),
-        })
-    }
-}
-
-/// What the app launches for a managed chat server (a `llamacpp` provider).
-#[derive(Clone, Debug, PartialEq)]
-pub struct ManagedLaunch {
-    pub executable: String,
-    pub model_path: String,
-    /// The vision projector, for a multimodal model.
-    pub mmproj: Option<String>,
-}
-
-/// One editable field of a chat provider's endpoint — what the Settings
-/// endpoint editor writes under `[providers.<id>]`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ChatEndpointField {
-    BaseUrl,
-    Model,
-    ApiKey,
-}
-
-impl ChatEndpointField {
-    /// The TOML key this field writes.
-    pub const fn key(self) -> &'static str {
-        match self {
-            Self::BaseUrl => "base_url",
-            Self::Model => "model",
-            Self::ApiKey => "api_key",
-        }
     }
 }
 
@@ -118,42 +66,6 @@ impl ChatCapability {
             Self::Vision => "Vision (LLM)",
         }
     }
-}
-
-/// How a chat provider created from Settings runs.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NewChatProviderKind {
-    /// An external OpenAI-compatible endpoint the app calls but never starts.
-    External,
-    /// A native `llama.cpp` server the app starts and supervises.
-    Managed,
-}
-
-impl NewChatProviderKind {
-    /// The `kind` value written under `[providers.<id>]`.
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::External => "openai",
-            Self::Managed => "llamacpp",
-        }
-    }
-}
-
-/// A chat provider to create from the Settings UI, written under
-/// `[providers.<id>]` in the user overlay.
-#[derive(Clone, Debug, PartialEq)]
-pub struct NewChatProvider {
-    pub id: String,
-    pub kind: NewChatProviderKind,
-    pub capabilities: Vec<ChatCapability>,
-    pub base_url: String,
-    pub model: String,
-    /// The inline bearer token for an external endpoint, when one is needed.
-    pub api_key: Option<String>,
-    /// The `llama-server` executable, for a managed provider.
-    pub executable: Option<String>,
-    /// The model file a managed server loads.
-    pub model_path: Option<String>,
 }
 
 /// Studio appearance. System is resolved by the desktop host, never core.
@@ -187,6 +99,36 @@ impl ThemePreference {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct ImageProvider {
+    pub id: String,
+    pub model: String,
+    pub capabilities: Vec<Capability>,
+    pub deployment: Option<ImageDeployment>,
+    pub hosted: Option<HostedImageProvider>,
+}
+
+#[derive(Clone, PartialEq)]
+pub struct HostedImageProvider {
+    pub kind: ProviderKind,
+    pub model: String,
+    pub base_url: String,
+    pub api_key: Option<String>,
+    pub api_key_env: Option<String>,
+    pub timeout_seconds: Option<u64>,
+    pub capabilities: Vec<Capability>,
+}
+
+impl std::fmt::Debug for HostedImageProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostedImageProvider")
+            .field("kind", &self.kind)
+            .field("model", &self.model)
+            .field("base_url", &self.base_url)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct AppConfig {
     pub theme: ThemePreference,
     pub preview: PreviewSettings,
@@ -211,17 +153,18 @@ pub struct AppConfig {
     /// The provider id serving `t2i`, kept so Settings can persist the
     /// residency choice under the right `[providers.<id>]` section.
     pub image_provider_id: Option<String>,
+    pub image_edit_provider_id: Option<String>,
     /// The optional native image-generation deployment resolved from the shared
     /// `clipforge.toml`: the `sd-server` executable, model tree, LoRA root,
     /// endpoint, and weights. Hosted or absent t2i defaults leave this unset;
     /// authoring and playback do not require a native image engine.
     pub image: Option<ImageDeployment>,
+    /// Image generation providers available in the shared registry.
+    pub image_providers: Vec<ImageProvider>,
     /// Every configured provider that serves a chat capability — `openai` or
     /// `llamacpp` — in id order, with the endpoint each resolves to. Both the
     /// text and vision pickers choose from this one list.
     pub chat_providers: Vec<ChatProvider>,
-    /// The provider ids the shared `clipforge.toml` defines.
-    pub user_providers: Vec<String>,
     pub cache_dir: PathBuf,
     /// The shared native-server state directory (see [`paths::state_dir`]) —
     /// process markers and detached-server logs, shared by every front end so a
@@ -283,7 +226,7 @@ pub enum ConfigError {
     Serialize { source: toml::ser::Error },
     #[error(transparent)]
     Providers(#[from] ProviderError),
-    #[error("Studio's native image engine is not selected. Use Atelier for hosted image generation, or select an sdcpp t2i provider in clipforge.toml. Writing and playback remain available.")]
+    #[error("A local image provider is not selected. Configure one in Clipforge and select it in Studio Settings.")]
     NativeImageUnavailable,
 }
 
@@ -370,9 +313,9 @@ struct ModelsConfig {
     /// capability. Provider credentials remain in the shared AI registry.
     separate_vision: Option<bool>,
     text_provider: Option<String>,
-    text_model: Option<String>,
     vision_provider: Option<String>,
-    vision_model: Option<String>,
+    image_provider: Option<String>,
+    image_edit_provider: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -443,20 +386,21 @@ struct PathOverrides {
 impl AppConfig {
     /// Loads the effective config: this app's settings from the platform
     /// `studio.toml` (created with defaults when absent; see [`paths::config_path`])
-    /// and the inference settings from the machine's shared `clipforge.toml`
-    /// (created with Storyfella's defaults when absent).
+    /// and the inference settings from the machine's shared `clipforge.toml`.
     pub fn load() -> Result<Self, ConfigError> {
         if std::env::var_os(paths::APP_CONFIG_ENV).is_none_or(|value| value.is_empty()) {
             crate::identity::migrate()?;
         }
-        let app = paths::config_path();
-        let ai = paths::clipforge_config_path();
+        Self::load_at(paths::config_path(), paths::clipforge_config_path())
+    }
+
+    fn load_at(app: Option<PathBuf>, ai: Option<PathBuf>) -> Result<Self, ConfigError> {
         migrate_legacy_settings(app.as_deref(), ai.as_deref())?;
         if let Some(path) = app.as_deref() {
             seed_app_config(path)?;
         }
         if let Some(path) = ai.as_deref() {
-            prepare_shared_config(path)?;
+            crate::ai_config::migrate_legacy_config_at(path);
         }
         Self::load_split(app, ai)
     }
@@ -480,13 +424,6 @@ impl AppConfig {
             .ok_or(ConfigError::NativeImageUnavailable)
     }
 
-    /// The shared AI config file provider edits are written to.
-    fn ai_path(&self) -> Result<&Path, ConfigError> {
-        self.ai_config_path
-            .as_deref()
-            .ok_or(ConfigError::PlatformDirectories)
-    }
-
     /// The production loader: this app's settings from the platform `app` config
     /// file, and the provider registry from the shared inference file `ai`.
     fn load_split(app: Option<PathBuf>, ai: Option<PathBuf>) -> Result<Self, ConfigError> {
@@ -503,15 +440,11 @@ impl AppConfig {
         })?;
         // The inference half is its own shared file (created above when absent),
         // so a provider edit is visible to every front end on the machine.
-        let (providers, user_providers) = match ai.as_deref() {
-            Some(ai_path) => {
-                let value = read_config_value(ai_path)?;
-                let ids = provider_ids(&value);
-                (providers_from_value(&value, provider_base(ai_path))?, ids)
-            }
-            None => (Providers::built_in(), Vec::new()),
+        let providers = match ai.as_deref() {
+            Some(ai_path) => crate::ai_config::shared_registry_at(ai_path)?,
+            None => Providers::from_toml("", Path::new("."))?,
         };
-        Self::assemble(providers, user_providers, file, &parse_path, app, ai)
+        Self::assemble(providers, file, &parse_path, app, ai)
     }
 
     /// Reads `base`, merges `user` over it (deeply; see [`merge_toml`]), and
@@ -523,11 +456,9 @@ impl AppConfig {
     fn load_layered(base: PathBuf, user: Option<PathBuf>) -> Result<Self, ConfigError> {
         let path = base.as_path();
         let mut value = read_config_value(path)?;
-        let mut user_providers = Vec::new();
         if let Some(overlay) = user.as_deref() {
             if overlay != path {
                 let overlay_value = read_config_value(overlay)?;
-                user_providers = provider_ids(&overlay_value);
                 merge_toml(&mut value, overlay_value);
             }
         }
@@ -541,8 +472,8 @@ impl AppConfig {
                 path: parse_path,
                 source,
             })?;
-        let providers = providers_from_value(&value, &paths::root())?;
-        Self::assemble(providers, user_providers, file, path, user, None)
+        let providers = providers_from_value(&value, provider_base(path))?;
+        Self::assemble(providers, file, path, user, None)
     }
 
     /// Resolves a parsed app file and a validated provider registry into the
@@ -550,18 +481,101 @@ impl AppConfig {
     /// and `ai_config` are the paths Settings persists to.
     fn assemble(
         providers: Providers,
-        user_providers: Vec<String>,
         file: FileConfig,
         base: &Path,
         app_config: Option<PathBuf>,
         ai_config: Option<PathBuf>,
     ) -> Result<Self, ConfigError> {
         let path = base;
-        let image = match providers.image_deployment(Capability::T2i) {
-            Ok(image) => Some(image),
-            Err(ProviderError::NotImageProvider { .. } | ProviderError::NoProvider(_)) => None,
-            Err(error) => return Err(error.into()),
-        };
+        let image_providers: Vec<_> = providers
+            .list()
+            .filter(|(_, provider)| {
+                provider
+                    .capabilities
+                    .iter()
+                    .any(|cap| matches!(cap, Capability::T2i | Capability::Edit))
+            })
+            .filter_map(|(id, provider)| {
+                if provider.kind == ProviderKind::Sdcpp {
+                    let capability = if provider.capabilities.contains(&Capability::T2i) {
+                        Capability::T2i
+                    } else {
+                        Capability::Edit
+                    };
+                    let deployment = providers.image_deployment_for(id, capability).ok()?;
+                    Some(ImageProvider {
+                        id: id.to_owned(),
+                        model: deployment.architecture.clone(),
+                        capabilities: provider.capabilities.clone(),
+                        deployment: Some(deployment),
+                        hosted: None,
+                    })
+                } else if matches!(
+                    provider.kind,
+                    ProviderKind::Fal
+                        | ProviderKind::Replicate
+                        | ProviderKind::Alibaba
+                        | ProviderKind::GptImage
+                ) {
+                    let model = provider.model.clone()?;
+                    Some(ImageProvider {
+                        id: id.to_owned(),
+                        model: model.clone(),
+                        capabilities: provider.capabilities.clone(),
+                        deployment: None,
+                        hosted: Some(HostedImageProvider {
+                            kind: provider.kind,
+                            model,
+                            base_url: provider.base_url.clone(),
+                            api_key: provider.api_key.clone(),
+                            api_key_env: provider.api_key_env.clone(),
+                            timeout_seconds: provider.timeout_seconds,
+                            capabilities: provider.capabilities.clone(),
+                        }),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let image_provider_id = file.models.image_provider.clone().or_else(|| {
+            providers
+                .default_provider(Capability::T2i)
+                .filter(|id| {
+                    image_providers.iter().any(|provider| {
+                        provider.id == *id && provider.capabilities.contains(&Capability::T2i)
+                    })
+                })
+                .map(str::to_owned)
+        });
+        let image = image_provider_id
+            .as_ref()
+            .and_then(|id| {
+                image_providers.iter().find(|provider| {
+                    &provider.id == id && provider.capabilities.contains(&Capability::T2i)
+                })
+            })
+            .and_then(|provider| provider.deployment.clone());
+        let image_edit_provider_id = file.models.image_edit_provider.clone().or_else(|| {
+            providers
+                .default_provider(Capability::Edit)
+                .filter(|id| {
+                    image_providers
+                        .iter()
+                        .any(|p| p.id == *id && p.capabilities.contains(&Capability::Edit))
+                })
+                .map(str::to_owned)
+                .or_else(|| {
+                    image_provider_id
+                        .as_ref()
+                        .filter(|id| {
+                            image_providers
+                                .iter()
+                                .any(|p| &p.id == *id && p.capabilities.contains(&Capability::Edit))
+                        })
+                        .cloned()
+                })
+        });
         // The chat capabilities are optional: an unconfigured planner or vision
         // endpoint leaves the app fully usable, with those features degraded.
         let chat_providers = chat_providers(&providers);
@@ -575,16 +589,12 @@ impl AppConfig {
                 .default_provider(Capability::Vision)
                 .map(str::to_owned)
         });
-        let mut text = active_deployment(&chat_providers, &text_provider_id);
-        let mut configured_vision =
-            active_deployment(&chat_providers, &configured_vision_provider_id);
-        if let (Some(deployment), Some(model)) = (&mut text, &file.models.text_model) {
-            deployment.model = model.clone();
-        }
-        if let (Some(deployment), Some(model)) = (&mut configured_vision, &file.models.vision_model)
-        {
-            deployment.model = model.clone();
-        }
+        let text = active_deployment(&chat_providers, &text_provider_id, Capability::Text);
+        let configured_vision = active_deployment(
+            &chat_providers,
+            &configured_vision_provider_id,
+            Capability::Vision,
+        );
         let same_model = text.is_some()
             && configured_vision_provider_id == text_provider_id
             && configured_vision == text;
@@ -592,13 +602,11 @@ impl AppConfig {
         let (vision, vision_provider_id) = if separate_vision {
             (configured_vision, configured_vision_provider_id.clone())
         } else {
-            (text.clone(), text_provider_id.clone())
+            (
+                active_deployment(&chat_providers, &text_provider_id, Capability::Vision),
+                text_provider_id.clone(),
+            )
         };
-        let image_provider_id = image
-            .as_ref()
-            .and_then(|_| providers.default_provider(Capability::T2i))
-            .map(str::to_owned);
-
         let dirs = paths::project_dirs().ok_or(ConfigError::PlatformDirectories)?;
         let data_dir = dirs.data_dir();
 
@@ -644,9 +652,10 @@ impl AppConfig {
             text_provider_id,
             vision_provider_id,
             image_provider_id,
+            image_edit_provider_id,
             image,
+            image_providers,
             chat_providers,
-            user_providers,
             cache_dir: file
                 .paths
                 .cache_dir
@@ -719,23 +728,69 @@ impl AppConfig {
         self.persist_app_setting("models", "separate_vision", separate.to_string())
     }
 
-    /// Save a Studio-owned provider and model selection without editing the
-    /// shared provider registry. Changing provider clears the old model choice.
-    pub fn persist_model_selection(
+    /// Save a Studio selection of a configured image generation provider.
+    pub fn persist_image_provider_selection(
+        &self,
+        capability: Capability,
+        id: &str,
+    ) -> Result<(), ConfigError> {
+        if !matches!(capability, Capability::T2i | Capability::Edit)
+            || !self
+                .image_providers
+                .iter()
+                .any(|provider| provider.id == id && provider.capabilities.contains(&capability))
+        {
+            return Err(ProviderError::UnknownProvider { id: id.to_owned() }.into());
+        }
+        self.persist_app_setting(
+            "models",
+            if capability == Capability::Edit {
+                "image_edit_provider"
+            } else {
+                "image_provider"
+            },
+            toml::Value::String(id.to_owned()).to_string(),
+        )
+    }
+
+    /// Save a Studio-owned provider selection from the shared registry.
+    pub fn persist_provider_selection(
         &self,
         capability: ChatCapability,
         provider: &str,
-        model: Option<&str>,
     ) -> Result<(), ConfigError> {
+        let configured = self
+            .chat_providers
+            .iter()
+            .find(|entry| entry.id == provider)
+            .ok_or_else(|| ProviderError::UnknownProvider {
+                id: provider.to_owned(),
+            })?;
+        if !configured
+            .capabilities
+            .iter()
+            .any(|item| item == capability.as_str())
+        {
+            let capability = match capability {
+                ChatCapability::Text => Capability::Text,
+                ChatCapability::Vision => Capability::Vision,
+            };
+            return Err(ProviderError::UnsupportedCapability {
+                id: provider.to_owned(),
+                kind: configured.kind,
+                capability,
+            }
+            .into());
+        }
         let path = self
             .app_config_path
             .as_deref()
             .ok_or(ConfigError::PlatformDirectories)?;
         let contents = read_config_contents(path)?;
         let mut lines: Vec<_> = contents.lines().map(str::to_owned).collect();
-        let (provider_key, model_key) = match capability {
-            ChatCapability::Text => ("text_provider", "text_model"),
-            ChatCapability::Vision => ("vision_provider", "vision_model"),
+        let provider_key = match capability {
+            ChatCapability::Text => "text_provider",
+            ChatCapability::Vision => "vision_provider",
         };
         write_key(
             &mut lines,
@@ -743,464 +798,8 @@ impl AppConfig {
             provider_key,
             Some(toml::Value::String(provider.to_owned()).to_string()),
         );
-        write_key(
-            &mut lines,
-            "models",
-            model_key,
-            model.map(|value| toml::Value::String(value.to_owned()).to_string()),
-        );
         write_config_file(path, lines.join("\n"))
     }
-
-    pub fn with_separate_vision(&self, separate: bool) -> Self {
-        let mut next = self.clone();
-        next.separate_vision = separate;
-        next.vision_provider_id = if separate {
-            next.configured_vision_provider_id.clone()
-        } else {
-            next.text_provider_id.clone()
-        };
-        next.vision = active_deployment(&next.chat_providers, &next.vision_provider_id);
-        next
-    }
-
-    /// Persists a chat provider's `capabilities` array to the shared AI config —
-    /// used when a provider is assigned to a capability it did not declare.
-    pub fn persist_provider_capabilities(
-        &self,
-        provider_id: &str,
-        capabilities: &[String],
-    ) -> Result<(), ConfigError> {
-        let path = self.ai_path()?;
-        Self::persist_provider_capabilities_to(path, provider_id, capabilities)
-    }
-
-    /// Testable variant of [`AppConfig::persist_provider_capabilities`].
-    pub fn persist_provider_capabilities_to(
-        path: impl AsRef<Path>,
-        provider_id: &str,
-        capabilities: &[String],
-    ) -> Result<(), ConfigError> {
-        let path = path.as_ref();
-        let contents = read_config_contents(path)?;
-        let mut lines: Vec<String> = contents.lines().map(str::to_owned).collect();
-        let section = format!("providers.{provider_id}");
-        let value = format!(
-            "[{}]",
-            capabilities
-                .iter()
-                .map(|capability| format!("{capability:?}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        write_key(&mut lines, &section, "capabilities", Some(value));
-        write_config_file(path, lines.join("\n"))
-    }
-
-    /// Persists which configured provider serves the planner (`text`) by
-    /// writing `[defaults] text = "<provider_id>"` to the shared AI config (see
-    /// [`paths::clipforge_config_path`]); line-preserving like the other
-    /// settings, so the choice survives restarts without a file edit.
-    pub fn persist_text_provider(&self, provider_id: &str) -> Result<(), ConfigError> {
-        self.persist_default_provider(Capability::Text, provider_id)
-    }
-
-    /// A copy with the planner (`text`) re-pointed at `provider_id` — the
-    /// Settings provider switch applied in memory. `None` when no provider
-    /// serving `text` carries that id. It keeps the selected id and the
-    /// resolved deployment in step, so callers never have to.
-    pub fn with_text_provider(&self, provider_id: &str) -> Option<Self> {
-        self.with_chat_provider(Capability::Text, provider_id)
-    }
-
-    /// A copy with `vision` re-pointed at `provider_id` (see
-    /// [`AppConfig::with_text_provider`]).
-    pub fn with_vision_provider(&self, provider_id: &str) -> Option<Self> {
-        self.with_chat_provider(Capability::Vision, provider_id)
-    }
-
-    fn with_chat_provider(&self, capability: Capability, provider_id: &str) -> Option<Self> {
-        if !matches!(capability, Capability::Text | Capability::Vision) {
-            return None;
-        }
-        let deployment = self
-            .chat_providers
-            .iter()
-            .find(|provider| provider.id == provider_id)?
-            .deployment
-            .clone();
-        let mut next = self.clone();
-        // `[defaults]` may only name a provider that declares the capability, so
-        // assigning a provider to a new capability records it there (the user
-        // decides which provider serves what).
-        if let Some(provider) = next
-            .chat_providers
-            .iter_mut()
-            .find(|provider| provider.id == provider_id)
-        {
-            let capability = capability.as_str().to_owned();
-            if !provider.capabilities.contains(&capability) {
-                provider.capabilities.push(capability);
-            }
-        }
-        if capability == Capability::Text {
-            next.text = Some(deployment);
-            next.text_provider_id = Some(provider_id.to_owned());
-            if !next.separate_vision {
-                next.vision = next.text.clone();
-                next.vision_provider_id = next.text_provider_id.clone();
-            }
-        } else {
-            next.vision = Some(deployment);
-            next.vision_provider_id = Some(provider_id.to_owned());
-            next.configured_vision_provider_id = Some(provider_id.to_owned());
-            next.separate_vision = true;
-        }
-        Some(next)
-    }
-
-    /// A copy with one endpoint field of the named chat provider changed in
-    /// memory — the Settings endpoint editor. It updates the provider list
-    /// entry and, when that provider serves a capability, the resolved
-    /// deployment, so the two never drift. Editing a managed provider's base
-    /// URL also moves the `llama-server` it launches, since that address is
-    /// derived from the URL. `None` when no chat provider carries the id, when
-    /// an empty value would clear a field that must hold one (only the API key
-    /// may be cleared), or when a managed base URL cannot be parsed. The edit is
-    /// persisted separately (see [`AppConfig::persist_chat_endpoint`]).
-    pub fn with_chat_endpoint(
-        &self,
-        provider_id: &str,
-        field: ChatEndpointField,
-        value: &str,
-    ) -> Option<Self> {
-        let value = value.trim();
-        if value.is_empty() && field != ChatEndpointField::ApiKey {
-            return None;
-        }
-        let managed = self
-            .chat_providers
-            .iter()
-            .find(|provider| provider.id == provider_id)?
-            .deployment
-            .server
-            .is_some();
-        let launch = if managed && field == ChatEndpointField::BaseUrl {
-            Some(sd::parse_base_url(value).ok()?)
-        } else {
-            None
-        };
-        self.with_chat_provider_edited(provider_id, |deployment| match field {
-            ChatEndpointField::BaseUrl => {
-                deployment.base_url = value.to_owned();
-                if let (Some(server), Some((host, port))) =
-                    (deployment.server.as_mut(), launch.clone())
-                {
-                    server.host = host;
-                    server.port = port;
-                }
-            }
-            ChatEndpointField::Model => deployment.model = value.to_owned(),
-            // An empty key clears the inline secret and falls back to any
-            // `api_key_env` the provider names.
-            ChatEndpointField::ApiKey => {
-                deployment.api_key = (!value.is_empty()).then(|| value.to_owned());
-            }
-        })
-    }
-
-    fn with_chat_provider_edited(
-        &self,
-        provider_id: &str,
-        edit: impl Fn(&mut ChatDeployment),
-    ) -> Option<Self> {
-        let mut next = self.clone();
-        let provider = next
-            .chat_providers
-            .iter_mut()
-            .find(|provider| provider.id == provider_id)?;
-        edit(&mut provider.deployment);
-        next.text = active_deployment(&next.chat_providers, &next.text_provider_id);
-        next.vision = active_deployment(&next.chat_providers, &next.vision_provider_id);
-        Some(next)
-    }
-
-    /// Persists which configured provider serves `vision` (see
-    /// [`AppConfig::persist_text_provider`]).
-    pub fn persist_vision_provider(&self, provider_id: &str) -> Result<(), ConfigError> {
-        self.persist_default_provider(Capability::Vision, provider_id)
-    }
-
-    /// Writes `[defaults] <capability> = "<provider_id>"` to the shared AI
-    /// config.
-    fn persist_default_provider(
-        &self,
-        capability: Capability,
-        provider_id: &str,
-    ) -> Result<(), ConfigError> {
-        let path = self.ai_path()?;
-        Self::persist_default_provider_to(path, capability, provider_id)
-    }
-
-    /// Testable variant of [`AppConfig::persist_default_provider`]; creates the
-    /// file when it does not exist yet.
-    pub fn persist_default_provider_to(
-        path: impl AsRef<Path>,
-        capability: Capability,
-        provider_id: &str,
-    ) -> Result<(), ConfigError> {
-        let path = path.as_ref();
-        let contents = read_config_contents(path)?;
-        let mut lines: Vec<String> = contents.lines().map(str::to_owned).collect();
-        write_key(
-            &mut lines,
-            "defaults",
-            capability.as_str(),
-            Some(format!("{provider_id:?}")),
-        );
-        write_config_file(path, lines.join("\n"))
-    }
-
-    /// Persists one endpoint field of the named chat provider to the shared AI
-    /// config (see [`paths::clipforge_config_path`]) — the Settings endpoint
-    /// editor writes here so an edit survives restarts and reaches every front
-    /// end. Line-preserving.
-    pub fn persist_chat_endpoint(
-        &self,
-        provider_id: &str,
-        field: ChatEndpointField,
-        value: &str,
-    ) -> Result<(), ConfigError> {
-        let path = self.ai_path()?;
-        Self::persist_chat_endpoint_to(path, provider_id, field, value)
-    }
-
-    /// Testable variant of [`AppConfig::persist_chat_endpoint`] that targets an
-    /// arbitrary path; creates the file when it does not exist yet. The write
-    /// is line-preserving: only the touched key under `[providers.<provider_id>]`
-    /// changes, so comments and key order elsewhere survive.
-    pub fn persist_chat_endpoint_to(
-        path: impl AsRef<Path>,
-        provider_id: &str,
-        field: ChatEndpointField,
-        value: &str,
-    ) -> Result<(), ConfigError> {
-        let path = path.as_ref();
-        let contents = read_config_contents(path)?;
-        let mut lines: Vec<String> = contents.lines().map(str::to_owned).collect();
-        let section = format!("providers.{provider_id}");
-        // An empty value (a cleared API key) removes the key rather than
-        // writing `= ""`, so a provider's `api_key_env` can apply again.
-        let encoded = (!value.is_empty()).then(|| format!("{value:?}"));
-        write_key(&mut lines, &section, field.key(), encoded);
-        write_config_file(path, lines.join("\n"))
-    }
-
-    /// Persists the image provider's residency to the shared AI config (see
-    /// [`paths::clipforge_config_path`]) — the Settings control writes here so
-    /// the choice survives restarts.
-    pub fn persist_image_residency(&self, residency: &str) -> Result<(), ConfigError> {
-        self.native_image()?;
-        let path = self.ai_path()?;
-        let provider_id = self
-            .image_provider_id
-            .as_deref()
-            .ok_or(ConfigError::Providers(ProviderError::NoProvider(
-                Capability::T2i,
-            )))?;
-        Self::persist_image_residency_to(path, provider_id, residency)
-    }
-
-    /// Testable variant of [`AppConfig::persist_image_residency`]; creates the
-    /// file when it does not exist yet. Line-preserving: only the `residency`
-    /// key under `[providers.<provider_id>]` changes.
-    pub fn persist_image_residency_to(
-        path: impl AsRef<Path>,
-        provider_id: &str,
-        residency: &str,
-    ) -> Result<(), ConfigError> {
-        let path = path.as_ref();
-        let contents = read_config_contents(path)?;
-        let mut lines: Vec<String> = contents.lines().map(str::to_owned).collect();
-        let section = format!("providers.{provider_id}");
-        write_key(
-            &mut lines,
-            &section,
-            "residency",
-            Some(format!("{residency:?}")),
-        );
-        write_config_file(path, lines.join("\n"))
-    }
-
-    /// Save an absolute model-tree override in the shared AI config. Files stay
-    /// in place: selecting an existing tree reuses its downloads.
-    pub fn persist_model_dir(&self, directory: &Path) -> Result<(), ConfigError> {
-        self.native_image()?;
-        let path = self.ai_path()?;
-        let provider = self
-            .image_provider_id
-            .as_deref()
-            .ok_or(ConfigError::Providers(ProviderError::NoProvider(
-                Capability::T2i,
-            )))?;
-        Self::persist_model_dir_to(path, provider, directory)
-    }
-
-    pub fn persist_model_dir_to(
-        path: &Path,
-        provider: &str,
-        directory: &Path,
-    ) -> Result<(), ConfigError> {
-        let directory = std::path::absolute(directory).map_err(|source| ConfigError::Read {
-            path: directory.to_owned(),
-            source,
-        })?;
-        let contents = read_config_contents(path)?;
-        let encoded = toml::Value::String(directory.to_string_lossy().into_owned()).to_string();
-        let mut lines = contents.lines().map(str::to_owned).collect();
-        write_key(
-            &mut lines,
-            &format!("providers.{provider}"),
-            "model_dir",
-            Some(encoded),
-        );
-        write_config_file(path, lines.join("\n"))
-    }
-
-    /// Adds a chat provider to the shared AI config (see
-    /// [`paths::clipforge_config_path`]) — the Settings "Add provider" action.
-    /// The candidate is validated as part of the whole registry before it is
-    /// written, so a registry the app cannot load is never persisted.
-    pub fn persist_provider_added(&self, provider: &NewChatProvider) -> Result<(), ConfigError> {
-        let path = self.ai_path()?;
-        Self::persist_provider_added_to(path, provider)
-    }
-
-    /// Testable variant of [`AppConfig::persist_provider_added`].
-    pub fn persist_provider_added_to(
-        path: &Path,
-        provider: &NewChatProvider,
-    ) -> Result<(), ConfigError> {
-        let contents = read_config_contents(path)?;
-        let mut lines: Vec<String> = contents.lines().map(str::to_owned).collect();
-        while lines.last().is_some_and(|line| line.trim().is_empty()) {
-            lines.pop();
-        }
-        if !lines.is_empty() {
-            lines.push(String::new());
-        }
-        lines.extend(provider_section_lines(provider));
-        let updated = lines.join("\n");
-        validate_providers(&updated, path)?;
-        write_config_file(path, updated)
-    }
-
-    /// Removes a chat provider the shared AI config defines, and any `[defaults]`
-    /// entry naming it.
-    pub fn persist_provider_removed(&self, id: &str) -> Result<(), ConfigError> {
-        let path = self.ai_path()?;
-        Self::persist_provider_removed_to(path, id)
-    }
-
-    /// Testable variant of [`AppConfig::persist_provider_removed`].
-    pub fn persist_provider_removed_to(path: &Path, id: &str) -> Result<(), ConfigError> {
-        let contents = read_config_contents(path)?;
-        let mut lines: Vec<String> = contents.lines().map(str::to_owned).collect();
-        remove_provider_section(&mut lines, id);
-        remove_default_provider(&mut lines, id);
-        let updated = lines.join("\n");
-        validate_providers(&updated, path)?;
-        write_config_file(path, updated)
-    }
-}
-
-/// The `[providers.<id>]` section for a provider being added: one line per
-/// field, with an empty optional field omitted rather than written blank.
-fn provider_section_lines(provider: &NewChatProvider) -> Vec<String> {
-    let mut lines = vec![format!("[providers.{}]", provider.id)];
-    lines.push(format!("kind = {:?}", provider.kind.as_str()));
-    let capabilities = provider
-        .capabilities
-        .iter()
-        .map(|capability| format!("{:?}", capability.as_str()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    lines.push(format!("capabilities = [{capabilities}]"));
-    lines.push(format!("base_url = {:?}", provider.base_url));
-    lines.push(format!("model = {:?}", provider.model));
-    for (key, value) in [
-        ("api_key", &provider.api_key),
-        ("executable", &provider.executable),
-        ("model_path", &provider.model_path),
-    ] {
-        let value = value
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        if let Some(value) = value {
-            lines.push(format!("{key} = {value:?}"));
-        }
-    }
-    lines
-}
-
-/// Removes `[providers.<id>]` and any `[providers.<id>.*]` subsection from a
-/// line-preserving config file.
-fn remove_provider_section(lines: &mut Vec<String>, id: &str) {
-    let header = format!("[providers.{id}]");
-    let prefix = format!("[providers.{id}.");
-    let mut index = 0;
-    while index < lines.len() {
-        let trimmed = lines[index].trim();
-        if trimmed == header || trimmed.starts_with(&prefix) {
-            lines.remove(index);
-            while index < lines.len() && !lines[index].trim_start().starts_with('[') {
-                lines.remove(index);
-            }
-            continue;
-        }
-        index += 1;
-    }
-}
-
-/// Removes every `[defaults] key = "<id>"` entry naming `id`, so removing a
-/// provider does not leave a default pointing at a provider that is gone.
-fn remove_default_provider(lines: &mut Vec<String>, id: &str) {
-    let double = format!("{id:?}");
-    let single = format!("'{id}'");
-    let mut in_defaults = false;
-    let mut index = 0;
-    while index < lines.len() {
-        let trimmed = lines[index].trim();
-        if trimmed.starts_with('[') {
-            in_defaults = trimmed == "[defaults]";
-            index += 1;
-            continue;
-        }
-        if in_defaults {
-            if let Some((_, value)) = trimmed.split_once('=') {
-                if value.trim() == double || value.trim() == single {
-                    lines.remove(index);
-                    continue;
-                }
-            }
-        }
-        index += 1;
-    }
-}
-
-/// Parses a candidate shared AI config and resolves its provider registry, so a
-/// broken provider is rejected before it is written.
-fn validate_providers(contents: &str, path: &Path) -> Result<(), ConfigError> {
-    let value = if contents.trim().is_empty() {
-        toml::Value::Table(toml::Table::new())
-    } else {
-        toml::from_str(contents).map_err(|source| ConfigError::Parse {
-            path: path.to_path_buf(),
-            source,
-        })?
-    };
-    providers_from_value(&value, provider_base(path)).map(|_| ())
 }
 
 /// Missing settings contribute nothing; other read failures remain actionable.
@@ -1246,7 +845,7 @@ fn merge_toml(base: &mut toml::Value, overlay: toml::Value) {
 }
 
 /// Extract inference sections from general settings; the shared registry owns
-/// validation. Inject the host's storage default before resolving deployments.
+/// validation and path resolution.
 /// Relative paths in the file resolve against `base` — the file's own directory.
 fn providers_from_value(value: &toml::Value, base: &Path) -> Result<Providers, ConfigError> {
     let mut registry = toml::Table::new();
@@ -1255,74 +854,27 @@ fn providers_from_value(value: &toml::Value, base: &Path) -> Result<Providers, C
             registry.insert(key.into(), section.clone());
         }
     }
-    let empty = match registry.get("providers") {
-        None => true,
-        Some(toml::Value::Table(providers)) => providers.is_empty(),
-        Some(_) => false,
-    };
-    if empty {
-        let built_in = format!(
-            "[defaults]\n\
-             t2i = 'qwen-image'\n\
-             edit = 'qwen-image'\n\
-             [providers.qwen-image]\n\
-             kind = 'sdcpp'\n\
-             architecture = '{}'\n\
-             capabilities = ['t2i', 'edit']\n\
-             base_url = '{}'\n",
-            sd::qwen_image_2_1().id,
-            sd::DEFAULT_BASE_URL,
-        );
-        let mut built_in = toml::from_str(&built_in).expect("built-in provider configuration");
-        merge_toml(&mut built_in, toml::Value::Table(registry));
-        registry = built_in
-            .as_table()
-            .expect("built-in settings table")
-            .clone();
-    }
-    // A provider that names no model directory gets OS-local Storyfella storage;
-    // the shared file normally carries an absolute one (see `seed_shared_config`).
-    let mut default_model_dir: Option<String> = None;
-    if let Some(providers) = registry
-        .get_mut("providers")
-        .and_then(toml::Value::as_table_mut)
-    {
-        for provider in providers
-            .iter_mut()
-            .filter_map(|(_, value)| value.as_table_mut())
-        {
-            if matches!(
-                provider.get("kind").and_then(toml::Value::as_str),
-                Some("sdcpp" | "llamacpp")
-            ) && !provider.contains_key("model_dir")
-            {
-                let models = match &default_model_dir {
-                    Some(models) => models.clone(),
-                    None => {
-                        let models = paths::model_dir()
-                            .ok_or(ConfigError::PlatformDirectories)?
-                            .to_string_lossy()
-                            .into_owned();
-                        default_model_dir = Some(models.clone());
-                        models
-                    }
-                };
-                provider.insert("model_dir".into(), toml::Value::String(models));
-            }
-        }
-    }
     let contents =
         toml::to_string(&registry).map_err(|source| ConfigError::Serialize { source })?;
     Providers::from_toml(&contents, base).map_err(ConfigError::Providers)
 }
 
-/// The deployment the selected provider id resolves to, for re-syncing an
-/// edited provider's active deployment.
-fn active_deployment(providers: &[ChatProvider], id: &Option<String>) -> Option<ChatDeployment> {
+/// The deployment the selected provider id resolves to.
+fn active_deployment(
+    providers: &[ChatProvider],
+    id: &Option<String>,
+    capability: Capability,
+) -> Option<ChatDeployment> {
     let id = id.as_deref()?;
     providers
         .iter()
-        .find(|provider| provider.id == id)
+        .find(|provider| {
+            provider.id == id
+                && provider
+                    .capabilities
+                    .iter()
+                    .any(|item| item == capability.as_str())
+        })
         .map(|provider| provider.deployment.clone())
 }
 
@@ -1337,8 +889,13 @@ fn chat_providers(providers: &Providers) -> Vec<ChatProvider> {
             matches!(provider.kind, ProviderKind::Openai | ProviderKind::LlamaCpp)
         })
         .filter_map(|(id, provider)| {
+            let capability = if provider.capabilities.contains(&Capability::Text) {
+                Capability::Text
+            } else {
+                Capability::Vision
+            };
             providers
-                .chat_deployment_for(id, Capability::Text)
+                .chat_deployment_for(id, capability)
                 .ok()
                 .map(|deployment| ChatProvider {
                     id: id.to_owned(),
@@ -1352,15 +909,6 @@ fn chat_providers(providers: &Providers) -> Vec<ChatProvider> {
                 })
         })
         .collect()
-}
-
-/// The provider ids a shared AI config value defines.
-fn provider_ids(value: &toml::Value) -> Vec<String> {
-    value
-        .get("providers")
-        .and_then(toml::Value::as_table)
-        .map(|providers| providers.keys().cloned().collect())
-        .unwrap_or_default()
 }
 
 /// The directory a shared AI config's relative paths resolve against.
@@ -1481,7 +1029,7 @@ fn seed_app_config(path: &Path) -> Result<(), ConfigError> {
     let header = "\
 # Storyfella Studio's app settings. The machine's shared inference configuration\n\
 # — the provider registry — lives separately in clipforge.toml at the platform\n\
-# config directory, created on first run and shared with Atelier and Clipforge.\n\
+# config directory and managed in Clipforge.\n\
 #\n\
 # Qwen-Image-2.1 has no few-step turbo path: it is sampled with CFG at ~25\n\
 # steps, and portrait characters use the full portrait canvas.\n";
@@ -1489,71 +1037,6 @@ fn seed_app_config(path: &Path) -> Result<(), ConfigError> {
     let body =
         toml::to_string_pretty(&defaults).map_err(|source| ConfigError::Serialize { source })?;
     write_new_config(path, &format!("{header}{body}"))
-}
-
-/// Prepares the shared AI config at `path`: brings a legacy `providers.toml` at
-/// the same location to its current name first, so a machine that configured
-/// Clipforge before the rename is *migrated* rather than shadowed by a freshly
-/// seeded `clipforge.toml`, then creates the file with Storyfella's defaults when
-/// it is still absent.
-fn prepare_shared_config(path: &Path) -> Result<(), ConfigError> {
-    crate::ai_config::migrate_legacy_config_at(path);
-    seed_shared_config(path)
-}
-
-/// Writes the shared AI configuration with Storyfella's defaults the first time
-/// it is needed, so a machine with no `clipforge.toml` still gets the image
-/// engine, planner and vision endpoints. An existing file is never touched, and
-/// an explicit `model_dir` in it always wins.
-fn seed_shared_config(path: &Path) -> Result<(), ConfigError> {
-    if path.exists() {
-        return Ok(());
-    }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|source| ConfigError::Write {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
-    let model_dir = paths::model_dir()
-        .map(|dir| dir.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let model_dir_line = if model_dir.is_empty() {
-        String::new()
-    } else {
-        format!("model_dir = {}\n", toml::Value::String(model_dir))
-    };
-    let seed = format!(
-        "\
-# The machine's shared AI configuration — read by Storyfella Studio, Atelier\n\
-# and Clipforge. Created with Storyfella's defaults; every field is editable,\n\
-# and a relative path resolves against this file's directory.\n\
-[defaults]\n\
-t2i = \"qwen-image\"\n\
-edit = \"qwen-image\"\n\
-text = \"local\"\n\
-vision = \"vision\"\n\
-\n\
-[providers.qwen-image]\n\
-kind = \"sdcpp\"\n\
-architecture = \"qwen-image-2.1\"\n\
-capabilities = [\"t2i\", \"edit\"]\n\
-base_url = \"http://127.0.0.1:7861\"\n\
-{model_dir_line}\
-\
-[providers.local]\n\
-kind = \"openai\"\n\
-capabilities = [\"text\"]\n\
-base_url = \"http://localhost:8080/v1\"\n\
-model = \"prism-ml/bonsai-27b\"\n\
-\n\
-[providers.vision]\n\
-kind = \"openai\"\n\
-capabilities = [\"vision\"]\n\
-base_url = \"http://localhost:8080/v1\"\n\
-model = \"google/gemma-4-e4b\"\n",
-    );
-    atomic_write_config(path, &seed, true)
 }
 
 /// Writes a config file, creating its directory first — the user config lives
@@ -1788,20 +1271,13 @@ mod tests {
             let reloaded = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
             assert_eq!(reloaded.theme, theme);
             assert!(!reloaded.separate_vision);
-            assert_eq!(reloaded.vision, reloaded.text);
-            let moved = reloaded
-                .with_text_provider("deepseek")
-                .unwrap()
-                .with_chat_endpoint("deepseek", ChatEndpointField::Model, "updated-model")
-                .unwrap()
-                .with_chat_endpoint("deepseek", ChatEndpointField::ApiKey, "test-session-key")
+            assert!(reloaded.vision.is_none());
+            reloaded
+                .persist_provider_selection(ChatCapability::Text, "deepseek")
                 .unwrap();
-            assert_eq!(moved.vision, moved.text);
-            assert_eq!(moved.vision_provider_id.as_deref(), Some("deepseek"));
-            let restored = moved.with_separate_vision(true);
-            assert_eq!(restored.vision_provider_id, config.vision_provider_id);
-            assert_eq!(restored.vision, config.vision);
-            assert_ne!(restored.vision, restored.text);
+            let selected = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+            assert!(selected.vision.is_none());
+            assert_eq!(selected.vision_provider_id.as_deref(), Some("deepseek"));
         }
         config.persist_separate_vision(true).unwrap();
         let restored = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
@@ -1810,7 +1286,6 @@ mod tests {
         let saved = fs::read_to_string(&app).unwrap();
         assert!(saved.contains("# keep app settings"));
         assert!(saved.contains("cache_dir = 'cache'"));
-        assert!(!saved.contains("test-session-key"));
         assert_eq!(saved.matches("theme =").count(), 1);
         assert_eq!(saved.matches("separate_vision =").count(), 1);
         let blocked = directory.path().join("missing-parent").join("parent-file");
@@ -1833,7 +1308,7 @@ mod tests {
         config.persist_separate_vision(false).unwrap();
         let linked = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
         assert!(!linked.separate_vision);
-        assert_eq!(linked.vision, linked.text);
+        assert!(linked.vision.is_none());
         fs::write(&app, "[models]\nseparate_vision = true\n").unwrap();
         let separate = AppConfig::load_split(Some(app.clone()), Some(ai)).unwrap();
         assert!(separate.separate_vision);
@@ -1843,6 +1318,34 @@ mod tests {
             AppConfig::load_from(app),
             Err(ConfigError::Parse { .. })
         ));
+    }
+
+    #[test]
+    fn linked_vision_requires_the_selected_text_provider_capability() {
+        let scratch = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
+        fs::create_dir_all(&scratch).unwrap();
+        let directory = tempfile::tempdir_in(scratch).unwrap();
+        let app = directory.path().join("studio.toml");
+        let ai = directory.path().join("clipforge.toml");
+        fs::write(&app, "[models]\nseparate_vision = false\n").unwrap();
+        let shared = TWO_TEXT_PROVIDERS.replace(
+            "capabilities = [\"text\"]",
+            "capabilities = [\"text\", \"vision\"]",
+        );
+        fs::write(&ai, &shared).unwrap();
+        let config = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+        assert_eq!(config.vision, config.text);
+        assert!(config
+            .persist_provider_selection(ChatCapability::Text, "vision")
+            .is_err());
+        let text_only = shared.replace(
+            "capabilities = [\"text\", \"vision\"]",
+            "capabilities = [\"text\"]",
+        );
+        fs::write(&ai, text_only).unwrap();
+        let reloaded = AppConfig::load_split(Some(app), Some(ai)).unwrap();
+        assert!(reloaded.text.is_some());
+        assert!(reloaded.vision.is_none());
     }
 
     /// A registry with two `text` providers and one `vision` provider, so a
@@ -1873,81 +1376,85 @@ mod tests {
          model = \"google/gemma-4-e4b\"\n";
 
     #[test]
-    fn studio_model_selections_do_not_modify_shared_providers() {
-        let directory = tempfile::tempdir().unwrap();
-        let app = directory.path().join("studio.toml");
-        let ai = directory.path().join("clipforge.toml");
-        fs::write(&ai, TWO_TEXT_PROVIDERS).unwrap();
-        let config = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
-        config
-            .persist_model_selection(ChatCapability::Text, "deepseek", Some("chosen-model"))
-            .unwrap();
-        let selected = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
-        assert_eq!(selected.text_provider_id.as_deref(), Some("deepseek"));
-        assert_eq!(selected.text.as_ref().unwrap().model, "chosen-model");
-        assert_eq!(fs::read_to_string(&ai).unwrap(), TWO_TEXT_PROVIDERS);
-        selected
-            .persist_model_selection(ChatCapability::Vision, "deepseek", Some("vision-model"))
-            .unwrap();
-        selected.persist_separate_vision(true).unwrap();
-        let separate = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
-        assert_eq!(separate.text.as_ref().unwrap().model, "chosen-model");
-        assert_eq!(separate.vision.as_ref().unwrap().model, "vision-model");
-        separate.persist_separate_vision(false).unwrap();
-        let linked = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
-        assert_eq!(linked.vision, linked.text);
-        linked.persist_separate_vision(true).unwrap();
-        let restored = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
-        assert_eq!(restored.vision.as_ref().unwrap().model, "vision-model");
-        let updated_registry = TWO_TEXT_PROVIDERS
-            .replace("text = \"local\"", "text = \"vision\"")
-            .replace(
-                "capabilities = [\"vision\"]",
-                "capabilities = [\"vision\", \"text\"]",
-            )
-            .replace("https://api.deepseek.com/v1", "https://new.example/v1");
-        fs::write(&ai, updated_registry).unwrap();
-        let refreshed = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
-        assert_eq!(refreshed.text_provider_id.as_deref(), Some("deepseek"));
-        assert_eq!(refreshed.text.as_ref().unwrap().model, "chosen-model");
-        assert_eq!(
-            refreshed.text.as_ref().unwrap().base_url,
-            "https://new.example/v1"
-        );
-        selected
-            .persist_model_selection(ChatCapability::Text, "local", None)
-            .unwrap();
-        let changed = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
-        assert_eq!(changed.text.as_ref().unwrap().model, "prism-ml/bonsai-27b");
-        changed
-            .persist_model_selection(ChatCapability::Text, "missing", None)
-            .unwrap();
-        let missing = AppConfig::load_split(Some(app), Some(ai)).unwrap();
-        assert_eq!(missing.text_provider_id.as_deref(), Some("missing"));
-        assert!(missing.text.is_none());
-    }
-
-    #[test]
-    fn distinct_models_on_one_provider_remain_separate_without_a_toggle_preference() {
+    fn studio_selection_uses_the_configured_provider_model() {
         let scratch = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
         fs::create_dir_all(&scratch).unwrap();
         let directory = tempfile::tempdir_in(scratch).unwrap();
         let app = directory.path().join("studio.toml");
         let ai = directory.path().join("clipforge.toml");
+        fs::write(&app, "[models]\ntext_model = 'unconfigured'\n").unwrap();
         fs::write(&ai, TWO_TEXT_PROVIDERS).unwrap();
         let config = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
         config
-            .persist_model_selection(ChatCapability::Text, "deepseek", Some("text-model"))
+            .persist_provider_selection(ChatCapability::Text, "deepseek")
             .unwrap();
         config
-            .persist_model_selection(ChatCapability::Vision, "deepseek", Some("vision-model"))
+            .persist_provider_selection(ChatCapability::Vision, "vision")
             .unwrap();
-        let reloaded = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
-        assert!(reloaded.separate_vision);
-        assert_eq!(reloaded.vision.as_ref().unwrap().model, "vision-model");
-        reloaded.persist_separate_vision(false).unwrap();
-        let linked = AppConfig::load_split(Some(app), Some(ai)).unwrap();
-        assert_eq!(linked.vision, linked.text);
+        assert!(config
+            .persist_provider_selection(ChatCapability::Vision, "deepseek")
+            .is_err());
+        assert!(config
+            .persist_provider_selection(ChatCapability::Text, "missing")
+            .is_err());
+        let selected = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+        assert_eq!(selected.text.as_ref().unwrap().model, "deepseek-chat");
+        let updated = TWO_TEXT_PROVIDERS.replace("deepseek-chat", "new-model");
+        fs::write(&ai, updated).unwrap();
+        let refreshed = AppConfig::load_split(Some(app), Some(ai)).unwrap();
+        assert_eq!(refreshed.text.as_ref().unwrap().model, "new-model");
+    }
+
+    #[test]
+    fn clipforge_edits_refresh_selected_text_and_vision_without_studio_writing_the_registry() {
+        use agentkit_ai::deployments::NewChatConfig;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
+        fs::create_dir_all(&root).unwrap();
+        let directory = tempfile::tempdir_in(root).unwrap();
+        let app = directory.path().join("studio.toml");
+        let shared = directory.path().join("clipforge.toml");
+        let original = "[defaults]\ntext='local'\nvision='local'\n[providers.local]\nkind='llamacpp'\ncapabilities=['text','vision']\nbase_url='http://127.0.0.1:8080/v1'\nmodel='first'\nmodel_path='/models/first.gguf'\nmmproj='/models/first-projector.gguf'\n";
+        fs::write(&shared, original).unwrap();
+        let config = AppConfig::load_split(Some(app.clone()), Some(shared.clone())).unwrap();
+        config
+            .persist_provider_selection(ChatCapability::Text, "local")
+            .unwrap();
+        config
+            .persist_provider_selection(ChatCapability::Vision, "local")
+            .unwrap();
+        assert_eq!(fs::read_to_string(&shared).unwrap(), original);
+
+        let registry = Providers::load(&shared).unwrap();
+        registry
+            .update_chat_provider(
+                &shared,
+                &NewChatConfig {
+                    id: "local".into(),
+                    base_url: "http://127.0.0.1:8080/v1".into(),
+                    model: "second".into(),
+                    vision: true,
+                    model_path: Some("/models/second.gguf".into()),
+                    mmproj: Some("/models/second-projector.gguf".into()),
+                    executable: None,
+                    api_key_env: None,
+                    api_key: None,
+                },
+            )
+            .unwrap();
+        let updated = AppConfig::load_split(Some(app), Some(shared)).unwrap();
+        for deployment in [
+            updated.text.as_ref().unwrap(),
+            updated.vision.as_ref().unwrap(),
+        ] {
+            assert_eq!(deployment.model, "second");
+            let server = deployment.server.as_ref().unwrap();
+            assert_eq!(server.model_path, PathBuf::from("/models/second.gguf"));
+            assert_eq!(
+                server.mmproj.as_deref(),
+                Some(Path::new("/models/second-projector.gguf"))
+            );
+        }
+        assert_eq!(config.text.as_ref().unwrap().model, "first");
     }
 
     #[test]
@@ -2003,7 +1510,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("svs-seed-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir should create");
         let ai = dir.join("clipforge.toml");
-        seed_shared_config(&ai).expect("the shared AI config seeds");
+        std::fs::write(&ai, TWO_TEXT_PROVIDERS).unwrap();
         let config = AppConfig::load_from(&ai).expect("seeded config loads");
 
         assert_eq!(config.text_provider_id.as_deref(), Some("local"));
@@ -2030,15 +1537,108 @@ mod tests {
     }
 
     #[test]
-    fn default_model_storage_is_os_local_even_without_a_config_file() {
-        let path = std::env::temp_dir().join(format!("absent-{}.toml", uuid::Uuid::new_v4()));
-        let config = AppConfig::load_from(&path).unwrap();
-        let image = config.native_image().unwrap();
-        assert_eq!(image.model_dir, paths::model_dir().unwrap());
-        assert!(image.executable.starts_with(&image.model_dir));
-        assert!(image.lora_dir.starts_with(&image.model_dir));
-        assert!(config.text.is_none());
-        assert!(!path.exists());
+    fn studio_selects_only_configured_local_image_providers_and_refreshes_paths() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
+        std::fs::create_dir_all(&root).unwrap();
+        let directory = tempfile::tempdir_in(root).unwrap();
+        let app = directory.path().join("studio.toml");
+        let ai = directory.path().join("clipforge.toml");
+        std::fs::write(&app, "").unwrap();
+        std::fs::write(&ai, "[defaults]\nt2i='first'\n[providers.first]\nkind='sdcpp'\ncapabilities=['t2i']\nbase_url='http://127.0.0.1:7860'\narchitecture='qwen-image-2.1'\n[providers.second]\nkind='sdcpp'\ncapabilities=['t2i']\nbase_url='http://127.0.0.1:7860'\narchitecture='krea2-turbo'\n").unwrap();
+        let config = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+        assert_eq!(config.image_providers.len(), 2);
+        assert_eq!(config.image_provider_id.as_deref(), Some("first"));
+        let shared_before = std::fs::read(&ai).unwrap();
+        let registry = Providers::load(&ai).unwrap();
+        assert_eq!(
+            config.image.as_ref(),
+            Some(
+                &registry
+                    .image_deployment_for("first", Capability::T2i)
+                    .unwrap()
+            )
+        );
+        assert_eq!(
+            config.image.as_ref().unwrap().model_dir,
+            directory.path().join("models")
+        );
+        assert!(config
+            .persist_image_provider_selection(Capability::T2i, "missing")
+            .is_err());
+        config
+            .persist_image_provider_selection(Capability::T2i, "second")
+            .unwrap();
+        assert_eq!(std::fs::read(&ai).unwrap(), shared_before);
+        let selected = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+        assert_eq!(selected.image_provider_id.as_deref(), Some("second"));
+        assert_eq!(
+            selected.image.as_ref(),
+            Some(
+                &registry
+                    .image_deployment_for("second", Capability::T2i)
+                    .unwrap()
+            )
+        );
+        std::fs::write(&ai, "[defaults]\nt2i='first'\n[providers.first]\nkind='sdcpp'\ncapabilities=['t2i']\nbase_url='http://127.0.0.1:7860'\narchitecture='qwen-image-2.1'\n").unwrap();
+        let removed = AppConfig::load_split(Some(app), Some(ai)).unwrap();
+        assert_eq!(removed.image_provider_id.as_deref(), Some("second"));
+        assert!(removed.image.is_none());
+    }
+
+    #[test]
+    fn studio_resolves_distinct_cloud_generation_and_edit_routes() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
+        std::fs::create_dir_all(&root).unwrap();
+        let directory = tempfile::tempdir_in(root).unwrap();
+        let app = directory.path().join("studio.toml");
+        let ai = directory.path().join("clipforge.toml");
+        std::fs::write(&app, "").unwrap();
+        std::fs::write(&ai, "[defaults]\nt2i='create'\nedit='edit'\n[providers.create]\nkind='fal'\ncapabilities=['t2i']\nbase_url='https://queue.fal.run'\nmodel='fal-ai/qwen-image-2512'\n[providers.edit]\nkind='fal'\ncapabilities=['edit']\nbase_url='https://queue.fal.run'\nmodel='fal-ai/qwen-image-edit-2511'\n").unwrap();
+        let config = AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+        assert_eq!(config.image_provider_id.as_deref(), Some("create"));
+        assert_eq!(config.image_edit_provider_id.as_deref(), Some("edit"));
+        assert_eq!(config.image_providers.len(), 2);
+        assert!(config
+            .persist_image_provider_selection(Capability::Edit, "create")
+            .is_err());
+        config
+            .persist_image_provider_selection(Capability::Edit, "edit")
+            .unwrap();
+        let reloaded = AppConfig::load_split(Some(app), Some(ai)).unwrap();
+        assert_eq!(reloaded.image_edit_provider_id.as_deref(), Some("edit"));
+    }
+
+    #[test]
+    fn shared_edit_default_wins_even_when_generation_provider_also_edits() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
+        std::fs::create_dir_all(&root).unwrap();
+        let directory = tempfile::tempdir_in(root).unwrap();
+        let path = directory.path().join("providers.toml");
+        std::fs::write(&path, "[defaults]\nt2i='local'\nedit='cloud'\n[providers.local]\nkind='sdcpp'\ncapabilities=['t2i','edit']\narchitecture='qwen-image-2.1'\nbase_url='http://127.0.0.1:7860'\n[providers.cloud]\nkind='fal'\ncapabilities=['edit']\nbase_url='https://queue.fal.run'\nmodel='fal-ai/qwen-image-edit-2511'\n").unwrap();
+        let config = AppConfig::load_from(path).unwrap();
+        assert_eq!(config.image_provider_id.as_deref(), Some("local"));
+        assert_eq!(config.image_edit_provider_id.as_deref(), Some("cloud"));
+    }
+
+    #[test]
+    fn missing_or_empty_shared_registry_has_no_invented_providers() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
+        fs::create_dir_all(&root).unwrap();
+        let directory = tempfile::tempdir_in(root).unwrap();
+        let app = directory.path().join("studio.toml");
+        let shared = directory.path().join("clipforge.toml");
+        for contents in [None, Some(""), Some("[providers]\n")] {
+            if let Some(contents) = contents {
+                fs::write(&shared, contents).unwrap();
+            }
+            let config = AppConfig::load_at(Some(app.clone()), Some(shared.clone())).unwrap();
+            assert!(config.chat_providers.is_empty());
+            assert!(config.image_providers.is_empty());
+            assert!(config.text.is_none() && config.vision.is_none() && config.image.is_none());
+            if contents.is_none() {
+                assert!(!shared.exists());
+            }
+        }
     }
 
     #[tokio::test]
@@ -2065,7 +1665,15 @@ api_key = 'test-kept-key'
             std::fs::write(&app, "[runtime]\nprewarm=true\n").unwrap();
             let config = AppConfig::load_split(Some(app), Some(ai.clone())).unwrap();
             assert!(config.image.is_none());
-            assert!(config.image_provider_id.is_none());
+            assert_eq!(
+                config.image_provider_id.as_deref(),
+                if image_config.is_empty() {
+                    None
+                } else {
+                    Some("replicate")
+                }
+            );
+            assert!(!format!("{config:?}").contains("test-kept-key"));
             assert_eq!(config.planner_config().unwrap().model, "writer-test");
             assert!(image_artifacts(&config).is_empty());
             assert!(matches!(
@@ -2076,12 +1684,8 @@ api_key = 'test-kept-key'
                 config.native_image().unwrap_err().code(),
                 ErrorCode::ConfigNativeImageUnavailable
             );
-            assert!(config.persist_image_residency("lowvram").is_err());
-            assert!(config
-                .persist_model_dir(&directory.path().join("models"))
-                .is_err());
             let runtime = CreativeRuntime::new(&config);
-            assert!(runtime.client().is_err());
+            assert!(runtime.acquire_image().await.is_err());
             assert!(runtime.ensure_ready().await.is_err());
             assert!(runtime.stop_generation_runtime().await.is_err());
             assert!(!runtime.is_running().await);
@@ -2113,28 +1717,16 @@ api_key = 'test-kept-key'
         std::fs::create_dir_all(&directory).unwrap();
         let base = directory.join("base.toml");
         let user = directory.join("storyfella.toml");
-        seed_shared_config(&base).unwrap();
-        std::fs::write(
-            &user,
-            "# retain this comment\n[generation]\nsteps = 7\n[runtime]\nprewarm = true\n[providers.local]\napi_key_env = 'TEST_LOCAL_KEY'\n",
-        )
-        .unwrap();
-        AppConfig::persist_chat_endpoint_to(
-            &user,
-            "local",
-            ChatEndpointField::Model,
-            "chosen-model",
-        )
-        .unwrap();
+        std::fs::write(&base, TWO_TEXT_PROVIDERS).unwrap();
         let model_dir = directory.join("existing models");
-        AppConfig::persist_model_dir_to(&user, "qwen-image", &model_dir).unwrap();
+        let encoded = toml::Value::String(model_dir.to_string_lossy().into_owned()).to_string();
+        std::fs::write(&user, format!("# retain this comment\n[generation]\nsteps = 7\n[runtime]\nprewarm = true\n[providers.local]\napi_key_env = 'TEST_LOCAL_KEY'\nmodel = 'chosen-model'\n[providers.qwen-image]\nmodel_dir = {encoded}\nresidency = 'lowvram'\n")).unwrap();
         let config = AppConfig::load_layered(base.clone(), Some(user.clone())).unwrap();
         let image_path = config.native_image().unwrap().artifact_plan()[0]
             .path
             .clone();
         std::fs::create_dir_all(image_path.parent().unwrap()).unwrap();
         std::fs::write(&image_path, b"existing bytes stay in place").unwrap();
-        AppConfig::persist_image_residency_to(&user, "qwen-image", "lowvram").unwrap();
         let config = AppConfig::load_layered(base, Some(user.clone())).unwrap();
         assert_eq!(config.native_image().unwrap().model_dir, model_dir);
         assert_eq!(config.text.as_ref().unwrap().model, "chosen-model");
@@ -2254,7 +1846,7 @@ api_key = 'test-kept-key'
     }
 
     #[test]
-    fn a_legacy_shared_config_is_migrated_before_the_seed() {
+    fn a_legacy_shared_config_is_migrated_without_replacement() {
         let directory =
             std::env::temp_dir().join(format!("svs-shared-migrate-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&directory).unwrap();
@@ -2265,39 +1857,11 @@ api_key = 'test-kept-key'
         std::fs::write(&legacy, contents).unwrap();
         let ai = directory.join("clipforge.toml");
 
-        prepare_shared_config(&ai).expect("prepares");
+        crate::ai_config::migrate_legacy_config_at(&ai);
 
-        // The legacy registry is migrated, not shadowed by a fresh seed.
+        // The legacy registry is migrated without replacement.
         assert!(!legacy.exists(), "the legacy file was renamed");
         assert_eq!(std::fs::read_to_string(&ai).unwrap(), contents);
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn the_shared_seed_is_absolute_and_never_overwrites_an_existing_file() {
-        let directory = std::env::temp_dir().join(format!("svs-seed-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&directory).unwrap();
-        let ai = directory.join("clipforge.toml");
-
-        seed_shared_config(&ai).expect("seed writes");
-        let config = AppConfig::load_split(Some(directory.join("studio.toml")), Some(ai.clone()))
-            .expect("seed loads");
-        assert_eq!(config.image_provider_id.as_deref(), Some("qwen-image"));
-        assert!(config.native_image().unwrap().model_dir.is_absolute());
-        assert_eq!(config.text_provider_id.as_deref(), Some("local"));
-        assert_eq!(config.vision_provider_id.as_deref(), Some("vision"));
-        assert!(
-            config.user_providers.contains(&"qwen-image".to_owned())
-                && config.user_providers.contains(&"local".to_owned())
-                && config.user_providers.contains(&"vision".to_owned()),
-            "{:?}",
-            config.user_providers
-        );
-
-        // A hand-edited file is never replaced.
-        std::fs::write(&ai, "# mine\n").unwrap();
-        seed_shared_config(&ai).expect("seed is a no-op when the file exists");
-        assert_eq!(std::fs::read_to_string(&ai).unwrap(), "# mine\n");
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -2314,8 +1878,10 @@ api_key = 'test-kept-key'
         assert_eq!(config.generation_defaults.steps, 4);
         assert_eq!(config.text_provider_id.as_deref(), Some("local"));
         assert_eq!(config.ai_config_path.as_deref(), Some(ai.as_path()));
-        // Every provider in the shared file is user-owned, so Settings can edit it.
-        assert!(config.user_providers.contains(&"deepseek".to_owned()));
+        assert!(config
+            .chat_providers
+            .iter()
+            .any(|provider| provider.id == "deepseek"));
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -2416,283 +1982,6 @@ api_key = 'test-kept-key'
     }
 
     #[test]
-    fn selecting_a_provider_repoints_the_deployment_in_memory() {
-        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("temp dir should create");
-        let path = dir.join("storyfella.toml");
-        std::fs::write(&path, TWO_TEXT_PROVIDERS).expect("fixture should write");
-
-        let config = AppConfig::load_from(&path).expect("config loads");
-        assert_eq!(config.text.as_ref().unwrap().model, "prism-ml/bonsai-27b");
-
-        let switched = config
-            .with_text_provider("deepseek")
-            .expect("deepseek serves text");
-        assert_eq!(switched.text_provider_id.as_deref(), Some("deepseek"));
-        let text = switched.text.as_ref().expect("text deployment");
-        assert_eq!(text.model, "deepseek-chat");
-        assert_eq!(text.base_url, "https://api.deepseek.com/v1");
-        // The original is untouched. Assigning a provider to a capability it
-        // did not declare records the capability on it.
-        assert_eq!(config.text_provider_id.as_deref(), Some("local"));
-        let repointed = config
-            .with_text_provider("vision")
-            .expect("every chat provider can be assigned");
-        assert_eq!(repointed.text_provider_id.as_deref(), Some("vision"));
-        let vision = repointed
-            .chat_providers
-            .iter()
-            .find(|provider| provider.id == "vision")
-            .unwrap();
-        assert!(vision.capabilities.contains(&"text".to_owned()));
-        assert!(config.with_text_provider("nope").is_none());
-    }
-
-    #[test]
-    fn editing_a_chat_endpoint_field_updates_the_provider_and_the_active_deployment() {
-        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("temp dir should create");
-        let path = dir.join("storyfella.toml");
-        std::fs::write(&path, TWO_TEXT_PROVIDERS).expect("fixture should write");
-        let config = AppConfig::load_from(&path).expect("config loads");
-
-        // `local` is the active `text` provider; editing it re-syncs the
-        // resolved deployment as well as the provider list entry.
-        let moved = config
-            .with_chat_endpoint(
-                "local",
-                ChatEndpointField::BaseUrl,
-                "http://127.0.0.1:9999/v1",
-            )
-            .expect("local is a chat provider");
-        assert_eq!(
-            moved.text.as_ref().unwrap().base_url,
-            "http://127.0.0.1:9999/v1"
-        );
-        assert_eq!(
-            moved
-                .chat_providers
-                .iter()
-                .find(|provider| provider.id == "local")
-                .unwrap()
-                .deployment
-                .base_url,
-            "http://127.0.0.1:9999/v1"
-        );
-
-        // Editing an inactive provider changes it without activating it.
-        let renamed = moved
-            .with_chat_endpoint("deepseek", ChatEndpointField::Model, "deepseek-reasoner")
-            .expect("deepseek is a chat provider");
-        assert_eq!(renamed.text.as_ref().unwrap().model, "prism-ml/bonsai-27b");
-        assert_eq!(
-            renamed
-                .chat_providers
-                .iter()
-                .find(|provider| provider.id == "deepseek")
-                .unwrap()
-                .deployment
-                .model,
-            "deepseek-reasoner"
-        );
-
-        // An unknown id changes nothing; an empty base URL or model is rejected.
-        assert!(config
-            .with_chat_endpoint("nope", ChatEndpointField::Model, "x")
-            .is_none());
-        assert!(config
-            .with_chat_endpoint("local", ChatEndpointField::BaseUrl, "   ")
-            .is_none());
-    }
-
-    #[test]
-    fn clearing_an_api_key_removes_the_key_so_api_key_env_can_apply() {
-        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("temp dir should create");
-        let path = dir.join("providers.toml");
-        std::fs::write(
-            &path,
-            "[providers.local]\nbase_url = \"http://localhost:8080/v1\"\n\
-             api_key = \"sk-old\"\napi_key_env = \"LOCAL_KEY\"\n",
-        )
-        .expect("fixture should write");
-
-        AppConfig::persist_chat_endpoint_to(&path, "local", ChatEndpointField::ApiKey, "")
-            .expect("persist should write");
-        let contents = std::fs::read_to_string(&path).expect("file should read");
-        assert!(!contents.contains("sk-old"), "{contents}");
-        assert!(!contents.contains("api_key ="), "{contents}");
-        assert!(
-            contents.contains("api_key_env = \"LOCAL_KEY\""),
-            "the env fallback survives: {contents}"
-        );
-        assert!(
-            contents.contains("base_url"),
-            "unrelated keys survive: {contents}"
-        );
-    }
-
-    #[test]
-    fn a_managed_provider_reports_its_launch_and_an_external_one_does_not() {
-        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("temp dir should create");
-        let path = dir.join("storyfella.toml");
-        std::fs::write(
-            &path,
-            "[defaults]\n\
-             t2i = \"qwen-image\"\n\
-             text = \"remote\"\n\
-             vision = \"managed\"\n\
-             [providers.qwen-image]\n\
-             kind = \"sdcpp\"\n\
-             architecture = \"qwen-image-2.1\"\n\
-             capabilities = [\"t2i\"]\n\
-             base_url = \"http://127.0.0.1:7861\"\n\
-             [providers.remote]\n\
-             kind = \"openai\"\n\
-             capabilities = [\"text\"]\n\
-             base_url = \"https://api.deepseek.com/v1\"\n\
-             model = \"deepseek-chat\"\n\
-             [providers.managed]\n\
-             kind = \"llamacpp\"\n\
-             capabilities = [\"vision\"]\n\
-             base_url = \"http://127.0.0.1:8081/v1\"\n\
-             model = \"gemma-4-e4b\"\n\
-             executable = \"/opt/llama-server\"\n\
-             model_path = \"/models/gemma.gguf\"\n\
-             mmproj = \"/models/mmproj.gguf\"\n",
-        )
-        .expect("fixture should write");
-        let config = AppConfig::load_from(&path).expect("config loads");
-
-        // An external endpoint has no launch the app owns.
-        let remote = config
-            .chat_providers
-            .iter()
-            .find(|provider| provider.id == "remote")
-            .expect("remote listed");
-        assert!(remote.is_external());
-        assert!(remote.managed_launch().is_none());
-
-        // A managed server reports what the app launches.
-        let managed = config
-            .chat_providers
-            .iter()
-            .find(|provider| provider.id == "managed")
-            .expect("managed listed");
-        assert!(!managed.is_external());
-        let launch = managed.managed_launch().expect("managed launch");
-        assert_eq!(launch.executable, "/opt/llama-server");
-        assert_eq!(launch.model_path, "/models/gemma.gguf");
-        assert_eq!(launch.mmproj.as_deref(), Some("/models/mmproj.gguf"));
-    }
-
-    #[test]
-    fn editing_a_managed_provider_base_url_moves_the_server_it_launches() {
-        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("temp dir should create");
-        let path = dir.join("storyfella.toml");
-        std::fs::write(
-            &path,
-            "[defaults]\n\
-             t2i = \"qwen-image\"\n\
-             vision = \"managed\"\n\
-             [providers.qwen-image]\n\
-             kind = \"sdcpp\"\n\
-             architecture = \"qwen-image-2.1\"\n\
-             capabilities = [\"t2i\"]\n\
-             base_url = \"http://127.0.0.1:7861\"\n\
-             [providers.managed]\n\
-             kind = \"llamacpp\"\n\
-             capabilities = [\"vision\"]\n\
-             base_url = \"http://127.0.0.1:8081/v1\"\n\
-             model = \"gemma-4-e4b\"\n\
-             executable = \"/opt/llama-server\"\n\
-             model_path = \"/models/gemma.gguf\"\n",
-        )
-        .expect("fixture should write");
-        let config = AppConfig::load_from(&path).expect("config loads");
-        let before = config
-            .vision
-            .as_ref()
-            .and_then(|deployment| deployment.server.as_ref())
-            .expect("managed vision server");
-        assert_eq!((before.host.as_str(), before.port), ("127.0.0.1", 8081));
-
-        let moved = config
-            .with_chat_endpoint(
-                "managed",
-                ChatEndpointField::BaseUrl,
-                "http://127.0.0.1:9090/v1",
-            )
-            .expect("base URL edit applies");
-        let vision = moved.vision.as_ref().expect("vision deployment");
-        assert_eq!(vision.base_url, "http://127.0.0.1:9090/v1");
-        let server = vision.server.as_ref().expect("managed server");
-        assert_eq!(
-            (server.host.as_str(), server.port),
-            ("127.0.0.1", 9090),
-            "the launch address follows the client URL"
-        );
-
-        // An unparseable base URL is rejected rather than desyncing the two.
-        assert!(config
-            .with_chat_endpoint("managed", ChatEndpointField::BaseUrl, "not a url")
-            .is_none());
-    }
-
-    #[test]
-    fn switching_the_default_provider_persists_and_takes_effect() {
-        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("temp dir should create");
-        let base = dir.join("base.toml");
-        let user = dir.join("storyfella.toml");
-        std::fs::write(&base, TWO_TEXT_PROVIDERS).expect("base fixture should write");
-
-        // The checked-in default is the local endpoint...
-        let config = AppConfig::load_layered(base.clone(), Some(user.clone())).unwrap();
-        assert_eq!(config.text_provider_id.as_deref(), Some("local"));
-        assert_eq!(config.text.as_ref().unwrap().model, "prism-ml/bonsai-27b");
-
-        // ...until the picker switches to deepseek, which is written under
-        // `[defaults]` in the user overlay and wins on the next load.
-        AppConfig::persist_default_provider_to(&user, Capability::Text, "deepseek")
-            .expect("persist should write");
-        let config = AppConfig::load_layered(base, Some(user.clone())).unwrap();
-        assert_eq!(config.text_provider_id.as_deref(), Some("deepseek"));
-        let text = config.text.as_ref().expect("text deployment");
-        assert_eq!(text.model, "deepseek-chat");
-        assert_eq!(text.base_url, "https://api.deepseek.com/v1");
-        let saved = std::fs::read_to_string(&user).unwrap();
-        assert!(saved.contains("text = \"deepseek\""), "{saved}");
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn persist_default_provider_rewrites_only_the_defaults_line() {
-        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("temp dir should create");
-        let path = dir.join("storyfella.toml");
-        std::fs::write(
-            &path,
-            "# keep me\n[defaults]\ntext = \"local\"\nvision = \"vision\"\n\n\
-             [providers.local]\nmodel = \"prism-ml/bonsai-27b\"\n",
-        )
-        .expect("fixture should write");
-
-        AppConfig::persist_default_provider_to(&path, Capability::Text, "deepseek")
-            .expect("persist should write");
-        let contents = std::fs::read_to_string(&path).expect("file should read");
-        assert!(contents.contains("# keep me"), "{contents}");
-        assert!(contents.contains("text = \"deepseek\""), "{contents}");
-        assert!(contents.contains("vision = \"vision\""), "{contents}");
-        assert!(
-            contents.contains("model = \"prism-ml/bonsai-27b\""),
-            "{contents}"
-        );
-    }
-
-    #[test]
     fn existing_nested_lora_bindings_remain_available_to_cli_generation() {
         let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir should create");
@@ -2714,163 +2003,6 @@ api_key = 'test-kept-key'
             Some("characters/mia-v2.safetensors"),
             "a nested (symlinked-folder) binding must survive a reload"
         );
-    }
-
-    #[test]
-    fn persist_chat_endpoint_writes_under_the_provider_section_line_preservingly() {
-        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("temp dir should create");
-        let path = dir.join("providers.toml");
-        std::fs::write(
-            &path,
-            "# keep me\n[providers.local]\nkind = \"openai\"\nmodel = \"old-model\"\n\n\
-             [providers.vision]\nmodel = \"google/gemma-4-e4b\"\n",
-        )
-        .expect("fixture should write");
-
-        AppConfig::persist_chat_endpoint_to(
-            &path,
-            "local",
-            ChatEndpointField::Model,
-            "deepseek-chat",
-        )
-        .expect("persist should write");
-        let contents = std::fs::read_to_string(&path).expect("file should read");
-        assert!(!contents.contains("old-model"), "{contents}");
-        assert!(contents.contains("model = \"deepseek-chat\""), "{contents}");
-        assert!(
-            contents.contains("kind = \"openai\""),
-            "unrelated keys must survive: {contents}"
-        );
-        assert!(
-            contents.contains("model = \"google/gemma-4-e4b\""),
-            "a sibling provider must be untouched: {contents}"
-        );
-        assert!(
-            contents.contains("# keep me"),
-            "comments must survive: {contents}"
-        );
-        assert!(
-            contents.find("[providers.local]") < contents.find("[providers.vision]"),
-            "section order must survive: {contents}"
-        );
-    }
-
-    #[test]
-    fn persist_chat_endpoint_adds_the_provider_section_when_missing() {
-        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("temp dir should create");
-        let path = dir.join("providers.toml");
-        std::fs::write(&path, "[defaults]\ntext = \"local\"\n").expect("fixture should write");
-
-        AppConfig::persist_chat_endpoint_to(&path, "local", ChatEndpointField::Model, "new-model")
-            .expect("persist should write");
-        let contents = std::fs::read_to_string(&path).expect("file should read");
-        assert!(contents.contains("[providers.local]"), "{contents}");
-        assert!(contents.contains("model = \"new-model\""), "{contents}");
-        assert!(
-            contents.contains("text = \"local\""),
-            "defaults must survive: {contents}"
-        );
-    }
-
-    #[test]
-    fn adding_a_provider_persists_it_and_marks_it_user_owned() {
-        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("temp dir should create");
-        let base = dir.join("base.toml");
-        let user = dir.join("user.toml");
-        std::fs::write(&base, TWO_TEXT_PROVIDERS).expect("base fixture should write");
-        std::fs::write(&user, "# my settings\n").expect("user fixture should write");
-
-        let provider = NewChatProvider {
-            id: "lmstudio".to_owned(),
-            kind: NewChatProviderKind::External,
-            capabilities: vec![ChatCapability::Text],
-            base_url: "http://localhost:1234/v1".to_owned(),
-            model: "qwen2.5-7b-instruct".to_owned(),
-            api_key: None,
-            executable: None,
-            model_path: None,
-        };
-        AppConfig::persist_provider_added_to(&user, &provider).expect("persist should write");
-
-        let contents = std::fs::read_to_string(&user).expect("file should read");
-        assert!(contents.contains("[providers.lmstudio]"), "{contents}");
-        assert!(
-            contents.contains("# my settings"),
-            "comments survive: {contents}"
-        );
-
-        let config = AppConfig::load_layered(base, Some(user)).expect("layered config should load");
-        assert_eq!(config.user_providers, vec!["lmstudio".to_owned()]);
-        assert!(
-            config
-                .chat_providers
-                .iter()
-                .any(|provider| provider.id == "lmstudio"),
-            "the new provider is selectable"
-        );
-    }
-
-    #[test]
-    fn a_broken_provider_is_rejected_before_it_is_written() {
-        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("temp dir should create");
-        let base = dir.join("base.toml");
-        let user = dir.join("user.toml");
-        std::fs::write(&base, TWO_TEXT_PROVIDERS).expect("base fixture should write");
-        std::fs::write(&user, "").expect("user fixture should write");
-
-        // A managed provider needs a model file; validation must refuse it.
-        let provider = NewChatProvider {
-            id: "broken".to_owned(),
-            kind: NewChatProviderKind::Managed,
-            capabilities: vec![ChatCapability::Text],
-            base_url: "http://127.0.0.1:8090".to_owned(),
-            model: "local".to_owned(),
-            api_key: None,
-            executable: None,
-            model_path: None,
-        };
-        assert!(
-            AppConfig::persist_provider_added_to(&user, &provider).is_err(),
-            "a managed provider without a model file must be rejected"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&user).expect("file should read"),
-            "",
-            "a rejected provider leaves the file untouched"
-        );
-    }
-
-    #[test]
-    fn removing_a_user_provider_drops_it_and_its_default() {
-        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("temp dir should create");
-        let base = dir.join("base.toml");
-        let user = dir.join("user.toml");
-        std::fs::write(&base, TWO_TEXT_PROVIDERS).expect("base fixture should write");
-        std::fs::write(
-            &user,
-            "[defaults]\ntext = \"mine\"\n\n\
-             [providers.mine]\nkind = \"openai\"\ncapabilities = [\"text\"]\n\
-             base_url = \"http://localhost:1234/v1\"\nmodel = \"local-model\"\n",
-        )
-        .expect("user fixture should write");
-
-        // The provider is a default before removal; it must not be left dangling.
-        let before =
-            AppConfig::load_layered(base.clone(), Some(user.clone())).expect("config should load");
-        assert_eq!(before.text_provider_id.as_deref(), Some("mine"));
-
-        AppConfig::persist_provider_removed_to(&user, "mine").expect("persist should write");
-        let contents = std::fs::read_to_string(&user).expect("file should read");
-        assert!(!contents.contains("[providers.mine]"), "{contents}");
-        assert!(!contents.contains("text = \"mine\""), "{contents}");
-
-        let after = AppConfig::load_layered(base, Some(user)).expect("config should still load");
-        assert_eq!(after.text_provider_id.as_deref(), Some("local"));
     }
 
     #[test]
@@ -2949,42 +2081,5 @@ api_key = 'test-kept-key'
         let config = AppConfig::load_layered(base, Some(dir.join("absent.toml")))
             .expect("a missing user config is fine");
         assert_eq!(config.generation_defaults.steps, 10);
-    }
-
-    #[test]
-    fn persisting_creates_the_user_config_directory() {
-        let dir = std::env::temp_dir().join(format!("svs-config-{}", uuid::Uuid::new_v4()));
-        let path = dir.join("nested").join("providers.toml");
-
-        AppConfig::persist_chat_endpoint_to(
-            &path,
-            "local",
-            ChatEndpointField::Model,
-            "deepseek-chat",
-        )
-        .expect("persist should create the directory and write");
-        let contents = std::fs::read_to_string(&path).expect("file should read");
-        assert!(contents.contains("[providers.local]"), "{contents}");
-        assert!(contents.contains("model = \"deepseek-chat\""), "{contents}");
-    }
-
-    #[test]
-    fn image_residency_persists_under_the_provider_section() {
-        let dir = std::env::temp_dir().join(format!("svs-residency-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        let path = dir.join("providers.toml");
-        std::fs::write(&path, "[providers.qwen-image]\nkind = \"sdcpp\"\n").expect("seed");
-
-        AppConfig::persist_image_residency_to(&path, "qwen-image", "lowvram").expect("persist");
-        let contents = std::fs::read_to_string(&path).expect("read");
-        assert!(contents.contains("residency = \"lowvram\""), "{contents}");
-        assert!(contents.contains("kind = \"sdcpp\""), "{contents}");
-
-        // Re-persisting replaces rather than duplicates the key.
-        AppConfig::persist_image_residency_to(&path, "qwen-image", "resident").expect("persist");
-        let contents = std::fs::read_to_string(&path).expect("read");
-        assert_eq!(contents.matches("residency =").count(), 1, "{contents}");
-        assert!(contents.contains("residency = \"resident\""), "{contents}");
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

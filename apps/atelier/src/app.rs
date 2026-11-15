@@ -29,6 +29,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+fn provider_config_stamp() -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let contents = std::fs::read(storyfella_studio_core::ai_config::default_config_path()?).ok()?;
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    contents.hash(&mut hash);
+    Some(hash.finish())
+}
+
 pub enum Picker {
     Artwork,
     Original,
@@ -284,6 +292,8 @@ pub struct DrawingApp {
     pub catalog_conflict: Option<storyfella_studio_core::catalog::EditConflict>,
     catalog_refresh_pending: Option<(u64, PathBuf)>,
     catalog_refresh_at: Instant,
+    provider_refresh_at: Instant,
+    provider_config_stamp: Option<u64>,
     pub catalog_name: Entity<InputState>,
     pub catalog_description: Entity<TextareaState>,
     pub project_tabs: Vec<crate::project_tabs::ProjectTab>,
@@ -383,7 +393,6 @@ pub struct DrawingApp {
     pub layer_selection_anchor: Option<usize>,
     pub show_layer_arrange: bool,
     pub align_each_confirmation: Option<(bool, u64, u32, u64, Vec<usize>)>,
-    pub show_advanced_provider: bool,
     pub show_reference_tools: bool,
     pub grid: bool,
     pub guides: bool,
@@ -564,20 +573,46 @@ impl DrawingApp {
             .max()
             .unwrap_or(1)
             .max(unused_epoch);
-        let settings: Settings = std::fs::read(data_dir.join("settings.json"))
+        let mut settings: Settings = std::fs::read(data_dir.join("settings.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
         let input = |value: String, window: &mut Window, cx: &mut Context<Self>| {
             cx.new(|cx| InputState::new(window, cx).default_value(value))
         };
-        let choices = providers::Provider::ALL
-            .into_iter()
-            .map(|p| p.name().to_owned())
-            .collect::<Vec<_>>();
-        let selected = providers::Provider::ALL
+        let registry = storyfella_studio_core::ai_config::shared_registry().ok();
+        let shared = registry
+            .as_ref()
+            .map(providers::shared_choices)
+            .unwrap_or_default();
+        if settings.provider_id.is_none() && settings.provider != providers::Provider::Comfy {
+            if let Some(choice) = registry
+                .as_ref()
+                .and_then(|p| p.default_provider(agentkit_ai::deployments::Capability::T2i))
+                .and_then(|id| shared.iter().find(|choice| choice.id == id))
+            {
+                settings.select_shared(choice);
+            }
+        } else if let Some(choice) = settings
+            .provider_id
+            .as_ref()
+            .and_then(|id| shared.iter().find(|choice| &choice.id == id))
+        {
+            settings.select_shared(choice);
+        }
+        let mut choices = shared
             .iter()
-            .position(|p| *p == settings.provider)
+            .map(|choice| choice.label.clone())
+            .collect::<Vec<_>>();
+        choices.push(providers::Provider::Comfy.name().to_owned());
+        let selected = settings
+            .provider_id
+            .as_ref()
+            .and_then(|id| shared.iter().position(|choice| &choice.id == id))
+            .or_else(|| {
+                (settings.provider == providers::Provider::Comfy && settings.provider_id.is_none())
+                    .then_some(shared.len())
+            })
             .map(IndexPath::new);
         let generation_provider_select =
             cx.new(|cx| SelectState::new(choices.clone(), selected, window, cx));
@@ -739,6 +774,8 @@ impl DrawingApp {
             catalog_conflict: None,
             catalog_refresh_pending: None,
             catalog_refresh_at: Instant::now(),
+            provider_refresh_at: Instant::now(),
+            provider_config_stamp: provider_config_stamp(),
             catalog_name: input(String::new(), window, cx),
             catalog_description: cx
                 .new(|cx| TextareaState::new(window, cx).placeholder("Story-facing description")),
@@ -876,7 +913,6 @@ impl DrawingApp {
             layer_selection_anchor,
             show_layer_arrange: false,
             align_each_confirmation: None,
-            show_advanced_provider: false,
             show_reference_tools: false,
             grid: false,
             guides: false,
@@ -1066,12 +1102,23 @@ impl DrawingApp {
                 window,
                 |this, _, event: &SelectEvent<Vec<String>>, window, cx| {
                     if let SelectEvent::Confirm(Some(value)) = event {
-                        if let Some(provider) = providers::Provider::ALL
-                            .into_iter()
-                            .find(|p| p.name() == value)
+                        if value == providers::Provider::Comfy.name() {
+                            if this.settings.provider != providers::Provider::Comfy
+                                || this.settings.provider_id.is_some()
+                            {
+                                this.select_provider(providers::Provider::Comfy, window, cx);
+                            }
+                        } else if let Ok(registry) =
+                            storyfella_studio_core::ai_config::shared_registry()
                         {
-                            if this.settings.provider != provider {
-                                this.select_provider(provider, window, cx);
+                            if let Some(choice) = providers::shared_choices(&registry)
+                                .into_iter()
+                                .find(|choice| choice.label == *value)
+                            {
+                                if this.settings.provider_id.as_deref() != Some(choice.id.as_str())
+                                {
+                                    this.select_shared_provider(choice, window, cx);
+                                }
                             }
                         }
                     }
@@ -4921,18 +4968,86 @@ impl DrawingApp {
     }
 
     pub fn reload_clipforge(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Ok(registry) = storyfella_studio_core::ai_config::user_or_built_in() {
-            if let Some(endpoint) = providers::shared_endpoint(self.settings.provider, &registry) {
-                self.settings.endpoint = endpoint.clone();
-                self.endpoint
-                    .update(cx, |s, cx| s.set_value(endpoint, window, cx));
+        if let Ok(registry) = storyfella_studio_core::ai_config::shared_registry() {
+            let choices = providers::shared_choices(&registry);
+            let selected = self
+                .settings
+                .provider_id
+                .as_ref()
+                .and_then(|id| choices.iter().position(|choice| &choice.id == id));
+            let mut labels = choices
+                .iter()
+                .map(|choice| choice.label.clone())
+                .collect::<Vec<_>>();
+            labels.push(providers::Provider::Comfy.name().to_owned());
+            let index = selected.or_else(|| {
+                (self.settings.provider == providers::Provider::Comfy
+                    && self.settings.provider_id.is_none())
+                .then_some(choices.len())
+            });
+            for select in [
+                &self.generation_provider_select,
+                &self.settings_provider_select,
+            ] {
+                select.update(cx, |state, cx| {
+                    state.set_items(labels.clone(), window, cx);
+                    state.set_selected_index(index.map(IndexPath::new), window, cx);
+                });
             }
+            if let Some(choice) = selected.and_then(|i| choices.get(i)) {
+                self.settings.select_shared(choice);
+                if !choice.supports_edit {
+                    self.editing_image = false;
+                }
+                self.model
+                    .update(cx, |s, cx| s.set_value(choice.model.clone(), window, cx));
+                self.edit_model
+                    .update(cx, |s, cx| s.set_value(choice.model.clone(), window, cx));
+                self.endpoint
+                    .update(cx, |s, cx| s.set_value(choice.endpoint.clone(), window, cx));
+            }
+        } else {
+            self.message("Could not read Clipforge's provider configuration. Fix it in Clipforge, then reload providers.", true);
         }
         self.refresh_lora_select(window, cx);
         self.refresh_server_status();
         self.prompt_validation = None;
         cx.notify();
     }
+    fn select_shared_provider(
+        &mut self,
+        choice: providers::SharedChoice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings_from_inputs(cx);
+        self.settings.remember_provider();
+        self.settings.select_shared(&choice);
+        if !choice.supports_edit {
+            self.editing_image = false;
+        }
+        self.prompt_validation = None;
+        for select in [
+            &self.generation_provider_select,
+            &self.settings_provider_select,
+        ] {
+            select.update(cx, |state, cx| {
+                state.set_selected_value(&choice.label, window, cx);
+                cx.notify();
+            });
+        }
+        self.model
+            .update(cx, |s, cx| s.set_value(choice.model.clone(), window, cx));
+        self.edit_model
+            .update(cx, |s, cx| s.set_value(choice.model.clone(), window, cx));
+        self.endpoint
+            .update(cx, |s, cx| s.set_value(choice.endpoint.clone(), window, cx));
+        self.refresh_lora_select(window, cx);
+        self.refresh_server_status();
+        self.save_settings(cx);
+        cx.notify();
+    }
+
     pub fn select_provider(
         &mut self,
         provider: providers::Provider,
@@ -4965,23 +5080,6 @@ impl DrawingApp {
         }
         self.refresh_lora_select(window, cx);
         self.refresh_server_status();
-        self.save_settings(cx);
-        cx.notify();
-    }
-    pub fn select_image_preset(
-        &mut self,
-        model: &str,
-        edit_model: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.model
-            .update(cx, |s, cx| s.set_value(model, window, cx));
-        self.edit_model
-            .update(cx, |s, cx| s.set_value(edit_model, window, cx));
-        if edit_model.is_empty() {
-            self.editing_image = false;
-        }
         self.save_settings(cx);
         cx.notify();
     }
@@ -5127,7 +5225,7 @@ impl DrawingApp {
         self.restore_prompt(window, cx);
         self.settings_from_inputs(cx);
         let source = if self.editing_image {
-            if !self.settings.provider.supports_edit() {
+            if !self.settings.supports_edit() {
                 self.prompt_issue("Choose a hosted provider to edit an image");
                 return;
             }
@@ -5172,6 +5270,11 @@ impl DrawingApp {
             self.prompt_issue(error.to_string());
             return;
         }
+        let mut queued_settings = self.settings.clone();
+        if let Err(error) = queued_settings.capture_provider() {
+            self.prompt_issue(error.to_string());
+            return;
+        }
         let prompt = self.prompt.read(cx).value().to_string();
         if prompt.trim().is_empty() {
             self.prompt_issue(if self.editing_image {
@@ -5185,7 +5288,7 @@ impl DrawingApp {
 
         let queued = self.queue.enqueue(
             QueuedRequest {
-                settings: self.settings.clone(),
+                settings: queued_settings,
                 prompt,
                 source,
                 references,
@@ -5230,7 +5333,7 @@ impl DrawingApp {
         self.job_id = id;
         self.job_epoch = epoch;
         worker::generate(
-            request.into_provider_request(self.workers.native.clone(), cancel.clone()),
+            request.into_provider_request(cancel.clone()),
             id,
             self.workers.sender.clone(),
             self.data_dir.clone(),
@@ -5462,7 +5565,7 @@ impl DrawingApp {
         match self.page {
             Page::Draw => self.open_from_drawing(window, cx),
             Page::Artboards => self.toggle_artboards_composer(window, cx),
-            Page::Image if self.settings.provider.supports_edit() => {
+            Page::Image if self.settings.supports_edit() => {
                 self.show_edit_composer = !self.show_edit_composer;
                 if self.show_edit_composer {
                     self.edit_opened_image(window, cx);
@@ -5539,8 +5642,9 @@ impl DrawingApp {
                 let source = input.first().cloned();
                 let references = input.into_iter().skip(1).collect::<Vec<_>>();
                 let editing = source.is_some();
-                let settings = self.settings.clone();
+                let mut settings = self.settings.clone();
                 crate::providers::validate_inputs(&settings, editing, references.len(), false)?;
+                settings.capture_provider()?;
                 return Ok(QueuedRequest {
                     settings,
                     prompt: prompt.clone(),
@@ -5573,6 +5677,7 @@ impl DrawingApp {
                 settings.height = self.doc.height;
             }
             crate::providers::validate_inputs(&settings, true, references.len(), false)?;
+            settings.capture_provider()?;
             let rect = region.unwrap_or((0, 0, self.doc.width, self.doc.height));
             // Keep the accepted source embedded for durable parent/version resolution.
             let extra = if self.doc.references.iter().any(|r| r.image == source.image) {
@@ -6654,7 +6759,7 @@ impl DrawingApp {
                             }
                             self.message(
                                 if native {
-                                    "Request aborted · native GPU work may finish on the server"
+                                    "Request aborted · releasing the local worker"
                                 } else {
                                     "Request aborted · provider charges may still apply"
                                 },
@@ -6799,6 +6904,14 @@ impl DrawingApp {
             }
         }
         self.poll_story_context(window, cx);
+        if self.provider_refresh_at.elapsed() >= Duration::from_secs(2) {
+            self.provider_refresh_at = Instant::now();
+            let stamp = provider_config_stamp();
+            if stamp != self.provider_config_stamp {
+                self.provider_config_stamp = stamp;
+                self.reload_clipforge(window, cx);
+            }
+        }
         if self.catalog_refresh_pending.is_none()
             && !self.catalog_busy
             && self.catalog_refresh_at.elapsed() >= Duration::from_secs(2)

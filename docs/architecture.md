@@ -103,18 +103,14 @@ HTTP.
 └───────────────────────────────┘
 ```
 
-The generation server is started by the shared lifecycle owner
-(`agentkit_ai::native::control`) with `--listen-ip 127.0.0.1 --listen-port 7861`
-and serves only on loopback; the image provider's `base_url` in the shared
-`clipforge.toml` names both the address the client calls and the port the
-runtime binds. It is started detached and recorded in the machine's shared
-state directory, so Studio, Atelier and the Clipforge apps reuse one server.
-Server lifecycle is described below.
+Studio, Atelier and Clipforge share one local inference service. It queues
+text, vision, generation and editing work and assigns loopback ports to its
+native workers. Hosted requests use the provider endpoints in Clipforge's
+shared registry.
 
 ### The shared inference runtime
 
-Native profiles, weight provisioning, HTTP clients, shared server markers and
-controls live in `agentkit_ai::native`. Provider resolution lives in
+Native profiles, weight provisioning, HTTP clients and the inference service live in `agentkit_ai::native`. Provider resolution lives in
 `agentkit_ai::deployments`, which accepts an application-supplied TOML path.
 The workspace consumes `../../zerune_labs/agentkit/crates/agentkit-ai` with
 `native-inference` enabled. No Clipforge crate or installed app is required.
@@ -316,8 +312,9 @@ projects, artwork, recent links and writing-session recovery. See
 **AI config** is the machine's shared `clipforge.toml`
 (`paths::clipforge_config_path()`, via
 `storyfella_studio_core::ai_config::default_config_path()`), shared with Atelier and
-Clipforge and created with Storyfella's defaults on first load; relative paths in
-it resolve against its own directory. The **shared native-server state
+Clipforge. Clipforge manages provider entries; Studio reads them and persists its
+own selections separately. A missing or empty registry offers no providers.
+Relative paths in the shared file resolve against its own directory. The **shared native-server state
 directory** (`paths::state_dir()`, via
 `storyfella_studio_core::ai_config::default_state_dir()`, `$SVS_STATE_DIR` override)
 holds the process markers and detached-server logs every front end shares, so a
@@ -325,8 +322,8 @@ server one app started is reused rather than duplicated. The image deployment �
 the `sd-server` executable, model tree, LoRA root, endpoint, and weights — is
 resolved from the AI config; the optional `AppConfig::image` is what the
 runtime, the health probe, `model_setup`, and Settings read. Model storage
-defaults to the OS-local Storyfella data folder in both development and release
-builds; Settings can save an absolute override. A hosted or absent t2i default
+is configured in Clipforge; an omitted local image model directory resolves to
+`models` under the shared config directory. A hosted or absent t2i default
 leaves the native deployment unset: Writer, playback and text-provider settings
 remain available. Studio never prewarms image services on project open;
 native-only callers report
@@ -353,31 +350,23 @@ defaults remain unchanged for Atelier. See
 
 See the [README roadmap](../README.md#roadmap) for the ordered backlog.
 
-## Shared native server lifecycle
+## Shared local inference service
 
-Agentkit owns native sd model provisioning, process supervision and HTTP wire
-details, cross-process markers and controls. Storyfella supplies configuration
-and state paths. SF-PLAN-27 in [the roadmap](ROADMAP.md) records validation.
+Agentkit owns admission, model loading, worker supervision and inference HTTP
+contracts. Storyfella supplies configuration and state paths. Idle workers can
+be offloaded as memory fills, and active requests hold a lease on their model.
+A worker's temporary port is independent of the configured provider address.
 
-`control::start` starts a detached process and records its PID in the shared
-state directory. Other front ends reuse it. `control::load` ensures the configured
-model is resident, replacing an owned server with a different model as needed;
-a foreign server is reported rather than silently terminated. `control::stop`
-stops the recorded process. Closing Studio does not stop this shared server.
-Settings → Services and `svs runtime stop` provide explicit control; `--force`
-also handles foreign servers matched by executable and listening port.
+Clipforge manages providers and the resource policy. Studio's Models page
+exposes its selections and health. The CLI's runtime commands can load or
+offload the selected image model. `CreativeRuntime` uses a service lease
+while an image job runs and handles generated asset storage. `ModelStore`
+provisions checksum-verified artifacts and respects explicit weight overrides.
+The provider profile defines residency mode and VAE tiling.
 
-`CreativeRuntime` adapts the shared owner, client, deployment and generated-asset
-directory. Readiness checks the capabilities endpoint and loaded profile before
-submission; job waiting reports failures instead of treating HTTP readiness as
-model readiness. `ModelStore` provisions resumable, checksum-verified artifacts;
-explicit weight overrides are respected. Profile residency and VAE tiling belong
-to the provider. Model memory requirements constrain whether image and chat
-servers can share hardware; they are not universal process restrictions.
-
-`paths::state_dir` and `paths::clipforge_config_path` resolve shared state and
-provider configuration. Plan runs isolate configuration, projects and state
-under `.svs-e2e/`; see [development](development.md).
+`paths::state_dir` and `paths::clipforge_config_path` resolve shared service
+state and provider configuration. Plan runs isolate these paths under
+`.svs-e2e/`. See [development](development.md).
 
 ## Registry operations and pipelines
 

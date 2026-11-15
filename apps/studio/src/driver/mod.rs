@@ -570,10 +570,10 @@ impl PlanLaunch {
     /// Points a `--plan` run at scratch config files and a scratch native-server
     /// state directory under `.svs-e2e/hermetic/`, so the driver never reads or
     /// writes the developer's real machine-local settings — neither this app's,
-    /// the shared inference configuration, nor the shared server markers/logs.
+    /// the shared inference configuration, nor the shared inference service state.
     ///
     /// The files need not exist: a missing app overlay contributes nothing, and a
-    /// missing `clipforge.toml` is seeded with defaults, so the run is
+    /// missing `clipforge.toml` represents an empty registry, so the run is
     /// self-contained. An explicit `$SVS_USER_CONFIG`/`$SVS_AI_CONFIG`/
     /// `$SVS_STATE_DIR` already in the environment wins, so a run can still be
     /// aimed at a specific config.
@@ -1172,18 +1172,9 @@ async fn execute_step(
                     reason: "no `vision` provider is configured in clipforge.toml".to_owned(),
                 };
             };
-            if vision.is_none() {
-                match vision::VisionSession::start(deployment).await {
-                    Ok(started) => *vision = Some(started),
-                    Err(error) => {
-                        let report = error.report().log();
-                        return StepStatus::Failed {
-                            reason: format!("{} — {}", report.code.code(), report.details),
-                        };
-                    }
-                }
-            }
-            let session = vision.as_ref().expect("the session was just started");
+            let session = vision.get_or_insert_with(|| {
+                vision::VisionSession::new(deployment, &ctx.config.state_dir)
+            });
 
             // The image currently shown for the artifact (its active revision).
             let path = {

@@ -43,7 +43,7 @@ impl DrawingApp {
             )
             .child(
                 tool_button("open-edit-composer", "sparkle", "Edit image · ⌘P")
-                    .disabled(!self.settings.provider.supports_edit())
+                    .disabled(!self.settings.supports_edit())
                     .atelier_selected(self.show_edit_composer, cx)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.show_edit_composer = !this.show_edit_composer;

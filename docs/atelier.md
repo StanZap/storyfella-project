@@ -161,9 +161,10 @@ from earlier development builds remain in their original locations.
 
 The composer's ellipsis opens a menu with **Image options** and **Provider
 settings**. Provider setup and credentials belong in **Clipforge**, reached from
-Settings through **Manage providers in Clipforge**. Return to Settings and use
-**Reload providers** after changes. Atelier retains per-request model presets,
-size, steps, adapters and ComfyUI workflow mappings. The composer has no provider
+Settings through **Manage providers in Clipforge**. Atelier refreshes its provider
+list after configuration changes; **Reload providers** also refreshes it manually.
+Atelier selects a specific configured provider and retains per-request size,
+steps, adapters and ComfyUI workflow mappings. The composer has no provider
 setup row or routine setup subtext; blocked submissions show validation beside
 the prompt.
 
@@ -337,13 +338,10 @@ cargo run -p clipforge -- models --provider qwen ensure
 cargo run -p clipforge -- models --provider krea ensure
 ```
 
-In Atelier select a local provider. Generate starts the machine's shared server
-on demand — started detached and owned through its marker, so another front end
-(Studio, the Clipforge apps) reuses the same process instead of starting a second
-one. Qwen generation and subsequent edits reuse the resident model; switching
-deployments releases the previously owned server before loading the next model.
-The app does not download weights or compile the server on submission. Missing
-setup reports an error while keeping the source and prompt draft.
+Select a local provider configured in Clipforge. The shared Agentkit service
+loads it on demand and keeps the model resident while its policy allows.
+Other models can run concurrently when resources permit. Missing local
+files are reported without losing the source or prompt draft.
 
 The new-image generation panel carries the prompt, the aspect presets (**1:1 / 3:2 / 2:3**)
 and **Add to queue**, and reports whether the machine's shared `sd-server` is
@@ -356,31 +354,29 @@ in the rail opens the **Image
 settings** window with the sampling **steps** (blank uses the model's default —
 25 for Qwen, 8 for Krea), the output **width**/**height**, and the **LoRA
 adapters** added from a searchable picker (each applied adapter carries its own
-weight, default 1.0), all as per-request controls. **Settings** keeps request
-model presets and ComfyUI workflow mappings; Clipforge manages connections and credentials. The sampling options ride the shared
-image request's native fields (`clipforge_inference::images::Request`); hosted
+weight, default 1.0), all as per-request controls. **Settings** keeps ComfyUI
+workflow mappings; Clipforge manages model routes, connections and credentials. The sampling options ride the shared
+image request's native fields (`agentkit_ai::images::Request`); hosted
 providers ignore them and use the preset aspect sizes.
 
-**Generation is queued.** **Add to queue** captures the request — provider,
-model, prompt, width, height, steps and the applied LoRA adapters with their
+**Generation is queued.** **Add to queue** captures the request — provider ID,
+prompt, width, height, steps and the applied LoRA adapters with their
 weights — and runs it after the requests already waiting, so several images can
-be prepared before any finishes. Exactly one request runs at a time, on the same
-shared server. **Pause** holds dispatch (a running image always finishes).
+be prepared before any finishes. If its provider's routing or model configuration
+changes while it waits, the job fails with a request to review and resubmit it;
+credentials are resolved when it runs and are never stored in the queue. Atelier dispatches one request at a time. Other apps can use the shared service concurrently. **Pause** holds dispatch (a running image always finishes).
 Each queued or running row has **Abort**, which targets that request alone.
 Queued requests become **Aborted** without being submitted; running requests
 show **Aborting** until their worker acknowledges cancellation and their result
-is discarded. Other requests and the pause state are preserved. The native
-server cannot interrupt GPU sampling already in progress, so its computation
-may finish after Atelier stops waiting. Hosted cancellation depends on the
+is discarded. Other requests and the pause state are preserved. If an image job has no confirmed terminal result when the client disconnects,
+the service stops its worker. Hosted cancellation depends on the
 provider and charges may still apply.
 
 Open app-wide Settings through **Atelier → Settings…** or **⌘,** (Ctrl+, on
 other platforms), including from Projects. **Generation → Request time limit
 (minutes)** saves a global default of 30 minutes, configurable from 1 minute to
 24 hours. New requests capture this limit; changing it does not affect requests
-already queued or running. Waiting in Atelier's queue does not count. Native
-server startup has its own readiness limit, and a native timeout stops waiting
-without guaranteeing remote cancellation.
+already queued or running. Waiting in Atelier's queue does not count. Native worker startup has its own readiness limit.
 
 **Clear completed** drops completed or dismissed history, preserving unresolved
 failures. Each queue entry keeps the values it
@@ -451,13 +447,12 @@ project persistence, and never calls an inference provider. The review and
 write worker stay bound to the project selected when import began.
 
 The two apps still have different project models. This exchange is an explicit
-approval handoff, not a live synchronization layer. Studio's generation runtime
-still uses its native `sd` deployment adapter; hosted-provider selection and an
-Atelier text/vision assistant are separate future work.
+approval handoff, not a live synchronization layer. Studio and Atelier both read
+image providers from Clipforge. An Atelier text/vision assistant remains future work.
 
 ## Execution and limits
 
-`clipforge_inference::images::Client::generate(Request)` owns managed/native and
+`agentkit_ai::images::Client::generate(Request)` owns managed/native and
 hosted image execution, route capabilities, masks/reference wire formats, polling,
 cancellation and bounded downloads. The GPUI worker owns its Tokio runtime;
 Atelier owns files, document history and ComfyUI. Hosted provider keys are saved

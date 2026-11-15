@@ -1,18 +1,10 @@
-//! The shared AI configuration: where any front end finds the providers file and
-//! the native-server state directory.
-//!
-//! `clipforge.toml` is the machine's AI configuration — the provider registry
-//! ([`Providers`]) that every front end resolves from, so Storyfella Studio,
-//! Atelier and the Clipforge apps reach the *same* server address for each
-//! capability instead of each keeping its own file. It lives in the platform
-//! application config directory (Linux `~/.config/clipforge/clipforge.toml`),
-//! never a working-directory path.
-//!
-//! [`default_state_dir`] is the matching data directory. Native servers are
-//! started *detached* with a marker under it ([`agentkit_ai::native::servers`]), so a server one
-//! front end started is found and reused by the others ([`agentkit_ai::native::control`]).
+//! Shared provider registry and inference service state paths.
+//! All participating apps use these platform locations or the same explicit
+//! overrides. The service stores worker logs, estimates and policy separately
+//! from provider configuration.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use directories::ProjectDirs;
 
@@ -37,23 +29,69 @@ pub fn default_config_path() -> Option<PathBuf> {
         .map(|dirs| dirs.config_dir().join(DEFAULT_CONFIG_FILE))
 }
 
-/// The data directory transient server state lives under — process markers and
-/// detached-server logs ([`agentkit_ai::native::servers`]). On Linux `~/.local/share/clipforge`.
-/// `None` when the platform has none.
+/// Shared inference policy, worker logs and resource observations.
 pub fn default_state_dir() -> Option<PathBuf> {
     ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION)
         .map(|dirs| dirs.data_dir().to_path_buf())
 }
 
-/// The shared registry: the user's `clipforge.toml` when it exists, the built-in
-/// provider otherwise (and when the platform has no config directory).
-pub fn user_or_built_in() -> Result<Providers, ProviderError> {
+/// Open Clipforge directly to provider management.
+pub fn open_provider_manager() -> std::io::Result<()> {
+    let executable = if cfg!(windows) {
+        "clipforge-desktop.exe"
+    } else {
+        "clipforge-desktop"
+    };
+    match Command::new(executable).arg("--manage-providers").spawn() {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            return Ok(());
+        }
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+        Err(_) => {}
+    }
+    #[cfg(target_os = "macos")]
+    if Command::new("/usr/bin/open")
+        .args([
+            "-n",
+            "-b",
+            "com.clipforge.desktop",
+            "--args",
+            "--manage-providers",
+        ])
+        .status()?
+        .success()
+    {
+        return Ok(());
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "Could not find Clipforge. Install its desktop app or make clipforge-desktop available on PATH.",
+    ))
+}
+
+/// The configured shared registry. An absent file contains no providers.
+pub fn shared_registry() -> Result<Providers, ProviderError> {
     match crate::paths::clipforge_config_path() {
         Some(path) => {
             migrate_legacy_config_at(&path);
-            Providers::load_or_built_in(&path)
+            shared_registry_at(&path)
         }
-        None => Ok(Providers::built_in()),
+        None => Providers::from_toml("", Path::new(".")),
+    }
+}
+
+/// Read a shared registry at a known path without inventing provider entries.
+pub fn shared_registry_at(path: &Path) -> Result<Providers, ProviderError> {
+    match Providers::load(path) {
+        Err(ProviderError::Read { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Providers::from_toml("", path.parent().unwrap_or(Path::new(".")))
+        }
+        result => result,
     }
 }
 
@@ -91,6 +129,18 @@ fn rename_legacy(config_path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_shared_registry_is_empty_and_a_malformed_one_is_reported() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
+        std::fs::create_dir_all(&root).unwrap();
+        let directory = tempfile::tempdir_in(root).unwrap();
+        let path = directory.path().join("clipforge.toml");
+        assert_eq!(shared_registry_at(&path).unwrap().list().count(), 0);
+        assert!(!path.exists());
+        std::fs::write(&path, "[providers\n").unwrap();
+        assert!(shared_registry_at(&path).is_err());
+    }
 
     #[test]
     fn the_config_file_lives_in_the_platform_config_directory() {

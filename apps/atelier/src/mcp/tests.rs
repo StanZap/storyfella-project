@@ -621,7 +621,6 @@ fn retained_variant_recovers_after_restart_and_approval_publishes_only_its_artbo
         Arc::new(
             fixture_provider(Request {
                 settings: settings.clone(),
-                native: Arc::default(),
                 prompt: "Draw the vault in cool light".into(),
                 source: None,
                 references: vec![],

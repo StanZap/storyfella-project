@@ -2,7 +2,7 @@ use std::{fmt::Display, future::Future, time::Duration};
 
 use agentkit_ai::deployments::chat::Client as ChatClient;
 use agentkit_ai::deployments::ChatDeployment;
-use agentkit_ai::native::sd::{model_matches, qwen_image_2_1};
+use agentkit_ai::native::{control::Managed, service};
 
 use crate::config::AppConfig;
 
@@ -48,7 +48,7 @@ impl ServiceId {
         match self {
             Self::Llm => "LLM endpoint",
             Self::Vision => "Vision endpoint",
-            Self::ImageGeneration => "Image generation (Qwen-Image-2.1)",
+            Self::ImageGeneration => "Image generation",
         }
     }
 }
@@ -96,14 +96,16 @@ pub async fn check_all(config: &AppConfig, runtime: &CreativeRuntime) -> Vec<Ser
 
 async fn check_llm(config: &AppConfig) -> ServiceHealth {
     match &config.text {
-        Some(deployment) => check_chat(ServiceId::Llm, deployment.clone()).await,
+        Some(deployment) => check_chat(ServiceId::Llm, deployment.clone(), &config.state_dir).await,
         None => unconfigured(ServiceId::Llm, "text"),
     }
 }
 
 async fn check_vision(config: &AppConfig) -> ServiceHealth {
     match &config.vision {
-        Some(deployment) => check_chat(ServiceId::Vision, deployment.clone()).await,
+        Some(deployment) => {
+            check_chat(ServiceId::Vision, deployment.clone(), &config.state_dir).await
+        }
         None => unconfigured(ServiceId::Vision, "vision"),
     }
 }
@@ -122,9 +124,15 @@ fn unconfigured(id: ServiceId, capability: &str) -> ServiceHealth {
 /// configured model is among the ones it serves. `managed` marks a provider
 /// whose `llama-server` the app starts on demand: an unstarted one is `Idle`,
 /// not a failure, so it reads the same as the image engine before a generation.
-async fn check_chat(id: ServiceId, mut deployment: ChatDeployment) -> ServiceHealth {
+async fn check_chat(
+    id: ServiceId,
+    mut deployment: ChatDeployment,
+    state_dir: &std::path::Path,
+) -> ServiceHealth {
     let configured = deployment.model.clone();
-    let managed = deployment.server.is_some();
+    if let Some(server) = deployment.server.as_ref() {
+        return check_native(id, &Managed::Chat(server.clone()), state_dir).await;
+    }
     deployment.timeout = Duration::from_secs(CHECK_TIMEOUT_SECONDS);
     let client = ChatClient::new(deployment);
     match with_timeout(client.list_models(), CHECK_TIMEOUT_SECONDS + 5).await {
@@ -146,11 +154,6 @@ async fn check_chat(id: ServiceId, mut deployment: ChatDeployment) -> ServiceHea
                 )
             }
         }
-        Err(_) if managed => ServiceHealth::new(
-            id,
-            HealthStatus::Idle,
-            "not started · starts on demand".to_owned(),
-        ),
         Err(error) => ServiceHealth::new(
             id,
             HealthStatus::Offline,
@@ -161,8 +164,31 @@ async fn check_chat(id: ServiceId, mut deployment: ChatDeployment) -> ServiceHea
 
 async fn check_generation(config: &AppConfig, runtime: &CreativeRuntime) -> ServiceHealth {
     let Some(image) = &config.image else {
-        return ServiceHealth::new(ServiceId::ImageGeneration, HealthStatus::Idle,
-            "Studio's native image engine is not selected. Writing and playback are available; use Atelier for hosted images.");
+        if let Some(provider) = config
+            .image_provider_id
+            .as_ref()
+            .and_then(|id| {
+                config
+                    .image_providers
+                    .iter()
+                    .find(|provider| &provider.id == id)
+            })
+            .filter(|provider| provider.hosted.is_some())
+        {
+            return ServiceHealth::new(
+                ServiceId::ImageGeneration,
+                HealthStatus::Idle,
+                format!(
+                    "{} configured · connectivity is checked when a request runs",
+                    provider.model
+                ),
+            );
+        }
+        return ServiceHealth::new(
+            ServiceId::ImageGeneration,
+            HealthStatus::Idle,
+            "No image provider is selected. Writing and playback remain available.",
+        );
     };
     let executable = &image.executable;
     if !executable.is_file() {
@@ -182,44 +208,41 @@ async fn check_generation(config: &AppConfig, runtime: &CreativeRuntime) -> Serv
         )
         .with_recovery(ServiceRecovery::ConfigureImageFiles);
     }
-    // One capabilities probe answers both questions: whether a server is
-    // answering, and whether the profile's model is the one resident. Nothing
-    // answering is the on-demand state; a mismatched resident is a conflict.
-    let (client, expected) = match (runtime.client(), runtime.expected_model()) {
-        (Ok(client), Ok(expected)) => (client, expected),
-        _ => {
-            return ServiceHealth::new(
-                ServiceId::ImageGeneration,
-                HealthStatus::Idle,
-                "Native image engine is not selected",
-            )
+    check_native(
+        ServiceId::ImageGeneration,
+        &Managed::Image(image.clone()),
+        &config.state_dir,
+    )
+    .await
+}
+
+async fn check_native(
+    id: ServiceId,
+    model: &Managed,
+    state_dir: &std::path::Path,
+) -> ServiceHealth {
+    let status = service::Client::new(state_dir).status().await;
+    match (service::model_id(model), status) {
+        (Ok(model_id), Ok(status)) => {
+            if status.resident.iter().any(|worker| worker.id == model_id) {
+                return ServiceHealth::new(
+                    id,
+                    HealthStatus::Online,
+                    format!("{} is resident", model.model()),
+                );
+            }
+            if let Some(failure) = status
+                .failures
+                .iter()
+                .find(|failure| failure.model.id == model_id)
+            {
+                return ServiceHealth::new(id, HealthStatus::Degraded, truncate(&failure.message));
+            }
+            ServiceHealth::new(id, HealthStatus::Idle, "Loads on demand")
         }
-    };
-    match with_timeout(client.capabilities(), CHECK_TIMEOUT_SECONDS).await {
-        Ok(capabilities) if !model_matches(&capabilities.model, &expected) => {
-            ServiceHealth::new(
-                ServiceId::ImageGeneration,
-                HealthStatus::Degraded,
-                format!(
-                    "{} is resident on the port · Start replaces a server the shared owner started; stop a foreign one with `svs runtime stop --force`",
-                    capabilities.model.name
-                ),
-            )
+        (Err(error), _) | (_, Err(error)) => {
+            ServiceHealth::new(id, HealthStatus::Offline, truncate(&error.to_string()))
         }
-        Ok(capabilities) => ServiceHealth::new(
-            ServiceId::ImageGeneration,
-            HealthStatus::Online,
-            format!(
-                "{} ready · {} resident",
-                qwen_image_2_1().id,
-                capabilities.model.name
-            ),
-        ),
-        Err(_) => ServiceHealth::new(
-            ServiceId::ImageGeneration,
-            HealthStatus::Idle,
-            "not started · starts on demand".to_owned(),
-        ),
     }
 }
 
@@ -267,8 +290,9 @@ mod tests {
     async fn missing_image_files_offer_setup_before_any_server_action() {
         let directory = std::env::temp_dir().join(format!("svs-health-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&directory).unwrap();
-        let mut config =
-            crate::config::AppConfig::load_from(directory.join("absent.toml")).unwrap();
+        let path = directory.join("providers.toml");
+        std::fs::write(&path, "[defaults]\nt2i='local'\n[providers.local]\nkind='sdcpp'\ncapabilities=['t2i']\narchitecture='qwen-image-2.1'\nbase_url='http://127.0.0.1:7860'\n").unwrap();
+        let mut config = crate::config::AppConfig::load_from(path).unwrap();
         let image = config.image.as_mut().unwrap();
         image.model_dir = directory.join("models");
         image.executable = directory.join("sd-server");
@@ -298,10 +322,7 @@ mod tests {
     fn service_ids_have_display_labels() {
         assert_eq!(ServiceId::Llm.label(), "LLM endpoint");
         assert_eq!(ServiceId::Vision.label(), "Vision endpoint");
-        assert_eq!(
-            ServiceId::ImageGeneration.label(),
-            "Image generation (Qwen-Image-2.1)"
-        );
+        assert_eq!(ServiceId::ImageGeneration.label(), "Image generation");
     }
 
     #[test]

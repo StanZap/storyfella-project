@@ -349,18 +349,22 @@ Two inputs are still missing before a bundle is more than an empty shell (see
 
 ## Run the generation backend
 
-An op starts its own `sd-server` when none is running, and that server dies when
-the process exits (cold start per command). For a longer session, keep the
-resident server in one terminal and let ops in other terminals reuse it:
+Local requests in Studio, Atelier and Clipforge use the same inference
+service and start it on demand. Manage providers and resource policy in
+Clipforge's **Servers** page. The `svs runtime` commands load, inspect or
+offload the configured image model through that service:
 
 ```bash
-cargo run -p svs-cli --bin svs -- runtime serve --force   # Ctrl-C to stop
+cargo run -p svs-cli --bin svs -- runtime start
+cargo run -p svs-cli --bin svs -- runtime status
+cargo run -p svs-cli --bin svs -- runtime stop
 ```
 
-`--force` kills stale `sd-server` processes from interrupted sessions that hold
-the configured port (7861 by default in the shared `clipforge.toml`). Only the
-`qwen-image-2.1` profile is served. See
-[`architecture.md`](architecture.md).
+For opt-in native tests using the shared image client, build `svs` and set
+`AGENTKIT_INFERENCE_HOST` to its absolute path. A test executable does not
+handle the headless service entry point. Set `SVS_AI_CONFIG` and
+`SVS_STATE_DIR` in all three apps to exercise an isolated shared registry
+and supervisor.
 
 ## Tests
 
@@ -480,9 +484,8 @@ managed `llamacpp` provider serves `model_path`.
 | `cargo run -p svs-cli --example generate_vlm_fixtures` | Regenerate the deterministic probe fixtures |
 | `cargo run -p svs-cli --bin svs -- --help` | Operation CLI (typed ops, stacks, runtime serve, log, eval) — see [`development.md`](development.md) for the command reference and the light/LLM/generation session split |
 
-`model_setup` provisions into the image provider's model tree: the OS-local
-Storyfella models folder by default, or the explicit `model_dir` override
-in `clipforge.toml`.
+`model_setup` provisions into the model tree configured for the selected image
+provider in `clipforge.toml`.
 The `svs` CLI needs no provisioned models for the model-only and
 LLM-assisted tiers; only the visual ops (`create`/`variant`/`regenerate`/`modify`)
 touch the generation backend.
@@ -534,13 +537,21 @@ to be run from the repository root. The platform `studio.toml` is created with
 
 ### App config
 
+Studio's Models settings reload the shared provider file when it changes and
+update the writing backend and configuration used by newly started plans.
+Plans already running retain their starting configuration. Manage providers opens the installed Clipforge app;
+on macOS it also tries `clipforge-desktop` on `PATH` when no app is registered.
+Studio selects configured providers and uses their configured model IDs; add or
+change a model in Clipforge rather than selecting an unconfigured endpoint model.
+
 The appearance and Vision-mode preferences belong to `studio.toml`; provider
 URLs, models, credentials and the separate Vision selection remain in the shared
 `clipforge.toml`. Turning separate Vision off does not rewrite those provider
 settings. Studio-core's effective `AppConfig::vision` follows Text while linked,
 including text-provider/model/key changes; `svs eval` and guide vision checks
-consume that same effective deployment. The selected Text model must accept
-images in this mode. Re-enabling separate Vision restores its saved selection.
+consume that same effective deployment. The Text provider must declare Vision
+support in this mode; otherwise Vision remains unavailable. Re-enabling separate
+Vision restores its saved selection.
 
 The app config is one platform-local file, `studio.toml`, in the platform
 application config directory resolved by `directories::ProjectDirs`
@@ -596,9 +607,9 @@ The **shared AI config** — the `[defaults]` capability map and the
 `storyfella_studio_core::ai_config::default_config_path()`; Linux
 `~/.config/clipforge/clipforge.toml`), overridable with `$SVS_AI_CONFIG`. It is the
 machine's single provider registry, shared verbatim by Storyfella Studio, Atelier
-and Clipforge, so a provider edit is visible to every front end. When the file is
-absent, `AppConfig::load()` creates it with Storyfella's defaults and never
-overwrites an existing one. `crates/studio-core/src/config.rs` validates it
+and Clipforge, so a provider edit is visible to every front end. Clipforge owns
+provider setup. When the file is absent or empty, Studio offers no providers;
+it does not create example endpoints. `crates/studio-core/src/config.rs` validates it
 through the shared `agentkit_ai::deployments::Providers` registry: the image backend —
 the `sd-server` executable, model tree, LoRA root, endpoint, and weights — is
 resolved to a provider and kept on `AppConfig::image`, and `text`/`vision` resolve
@@ -608,7 +619,6 @@ to `AppConfig::text`/`vision`. The CLI's LoRA root is the provider's
 ```toml
 # ~/.config/clipforge/clipforge.toml
 [defaults]                       # capability → provider id
-# The seed also sets text = "local" and vision = "vision".
 t2i = "qwen-image"
 edit = "qwen-image"
 
@@ -617,7 +627,7 @@ kind = "sdcpp"                   # the native sd.cpp server
 architecture = "qwen-image-2.1"  # must be a profile the app serves
 capabilities = ["t2i", "edit"]
 base_url = "http://127.0.0.1:7861"
-model_dir = "/abs/path/to/models"  # the seed writes this absolute
+model_dir = "/abs/path/to/models"
 # lora_dir / executable default beneath model_dir.
 
 # Override any artifact with a local file instead of downloading it.
@@ -629,33 +639,17 @@ diffusion = "/abs/path/to/qwen-image-2.1-UC-int8_convrot.safetensors"
 change *where* a model comes from, not *which* model it is, and any other value
 is rejected at load. Relative paths in `clipforge.toml` (`model_dir`, `lora_dir`,
 `executable`, and the `weights` entries) resolve against that file's own
-directory, not the project root; the seed writes `model_dir` absolute under the
-OS-local models folder. When no shared config is available (the platform exposes
-no config directory), the app falls back to the built-in image provider (the
-standard Qwen-Image-2.1 tree under the OS-native models directory). The `text`
-and `vision` capabilities have no built-in default: when no provider serves one,
+directory, not the project root. An omitted image `model_dir` resolves to the
+`models` directory next to the shared configuration file. When no provider serves
+a capability,
 `AppConfig` leaves it `None` and the app **degrades** rather than failing to
 start — the planner falls back to manual slash commands and `svs eval` reports
 that no `vision` provider is configured. `model_setup` provisions through this
 same deployment: it downloads the artifacts whose `needs_download()` is true and
 prints the local override it skips for the rest.
 
-Large model data uses `directories::BaseDirs::data_local_dir()` and the Storyfella
-application folder, with the same policy in development and release builds:
-
-| OS | Default model directory |
-| --- | --- |
-| macOS | `~/Library/Application Support/Storyfella/models` |
-| Windows | `%LOCALAPPDATA%\Storyfella\models` |
-| Linux | `$XDG_DATA_HOME/storyfella/models`, normally `~/.local/share/storyfella/models` |
-
-Settings → Services → Model files offers **Change location…** and
-**Open folder**. A selected folder is saved before the success message appears;
-restart applies it consistently to downloads and the runtime. Downloads are
-paused until that restart. Existing model files are not moved or deleted: choose
-their model-tree folder to reuse them. An explicit executable, LoRA root or weight
-override remains independent of the model folder. CLI provisioning reads the
-same configuration as Studio. Configuration writes are staged atomically.
+Configure model locations, executables, LoRA roots and weight overrides in
+Clipforge. Studio and CLI provisioning read the same provider configuration.
 
 The same registry routes the LLM capabilities. `text` (the planner) and
 `vision` (`svs eval`, future vision steps) each name a provider:
@@ -681,10 +675,7 @@ model = "google/gemma-4-e4b"
 Two provider kinds serve chat: `openai` is an external OpenAI-compatible service
 the app never starts (the default); `llamacpp` is a managed native `llama-server`
 the app starts on demand from `executable` + `model_path` (plus `mmproj` for a
-vision model). The kind is an internal detail — Studio presents text and vision
-as the same card (provider, base URL, model, API key), and editing a managed
-provider's base URL moves the server it launches. A managed server's
-**Start/Stop/Restart** live on Settings → Services. Because text and vision are
+vision model). Configure providers and manage servers in Clipforge. Because text and vision are
 separate capabilities, the planner can point at a remote, text-only model — for
 example DeepSeek — while vision keeps a local multimodal endpoint. `api_key` is
 an inline secret; prefer `api_key_env`, which reads it from the named environment
@@ -705,12 +696,12 @@ base_url = "https://api.deepseek.com/v1"
 model = "deepseek-chat"
 api_key_env = "DEEPSEEK_API_KEY"
 ```
-This keeps the key out of the repository. The Settings **Models** page shows
-the resolved endpoints and lets each chat capability's provider, base URL, model
-and API key be edited in place, persisting to `[providers.<id>]` (or `[defaults]
-text`/`vision` for a provider switch) in this file. Its **Providers** section
-can also add a provider (validated as part of the registry before it is
-written) or remove one the shared file defines.
+This keeps the key out of the repository. Studio's **Settings → Models** page
+selects configured text, vision, image-generation and image-editing providers; provider
+details and credentials are managed in Clipforge. Studio stores its selections
+in its own settings and reloads the shared registry when Clipforge changes it.
+Existing jobs retain the configuration with which they started. Hosted image
+routes use their own sampling defaults; unsupported custom controls fail explicitly.
 
 ## Common issues
 

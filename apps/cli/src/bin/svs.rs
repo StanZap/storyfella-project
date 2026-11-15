@@ -17,8 +17,7 @@ use std::{
 
 use agentkit_ai::capabilities::images::LoraSelection;
 use agentkit_ai::deployments::chat::ChatImage;
-use agentkit_ai::native::control::{self, Managed, ServerState, StopOutcome};
-use agentkit_ai::native::servers::kill_servers;
+use agentkit_ai::native::{control::Managed, service};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use uuid::Uuid;
@@ -428,6 +427,7 @@ fn random_seed() -> u64 {
 }
 
 fn main() -> Result<()> {
+    agentkit_ai::native::service::run_if_requested();
     let cli = Cli::parse();
     // Errors surface through `CodedError::report`, which logs with the
     // error code; without a subscriber those lines would be dropped.
@@ -518,57 +518,28 @@ async fn run(cli: Cli) -> Result<()> {
             match runtime {
                 RuntimeCommand::Serve { model, force } => {
                     if force {
-                        kill_foreign_generation_servers(&config)?;
+                        stop_generation_server(&config, true).await?;
                     }
-                    // The address the provider declares is the one both the
-                    // runtime and the client use.
-                    let image = config.native_image()?;
-                    let runtime = image.runtime();
-                    runtime
-                        .ensure_ready(&image.host, image.port)
-                        .await
-                        .map_err(|error| anyhow!(error.report().log()))?;
-                    println!("generation runtime ready with {model}; Ctrl-C to stop");
+                    warm_generation(&config).await?;
+                    println!("generation runtime ready with {model}; Ctrl-C to offload");
                     let _ = tokio::signal::ctrl_c().await;
-                    runtime
-                        .stop()
-                        .await
-                        .map_err(|error| anyhow!(error.report().log()))?;
-                    println!("generation runtime stopped");
-                    Ok(())
+                    // Another caller may already have work queued. Respect the
+                    // same idle-only offload rule as the desktop.
+                    stop_generation_server(&config, false).await
                 }
                 RuntimeCommand::Start { model, force } => {
                     if force {
-                        stop_generation_server(&config, true)?;
+                        stop_generation_server(&config, true).await?;
                     }
-                    let pid = control::start(
-                        &Managed::Image(config.native_image()?.clone()),
-                        &config.state_dir,
-                    )
-                    .await
-                    .map_err(|error| anyhow!(error.report().log()))?;
-                    match pid {
-                        Some(pid) => println!(
-                            "generation runtime started with {model} (pid {pid}); `svs runtime stop` stops it"
-                        ),
-                        None => println!(
-                            "generation runtime already resident with {model}; `svs runtime stop` stops it"
-                        ),
-                    }
+                    warm_generation(&config).await?;
+                    println!("generation runtime ready with {model}");
                     Ok(())
                 }
-                RuntimeCommand::Stop { force } => stop_generation_server(&config, force),
+                RuntimeCommand::Stop { force } => stop_generation_server(&config, force).await,
                 RuntimeCommand::Restart { model, force } => {
-                    if force {
-                        kill_foreign_generation_servers(&config)?;
-                    }
-                    control::restart(
-                        &Managed::Image(config.native_image()?.clone()),
-                        &config.state_dir,
-                    )
-                    .await
-                    .map_err(|error| anyhow!(error.report().log()))?;
-                    println!("generation runtime restarted with {model}");
+                    stop_generation_server(&config, force).await?;
+                    warm_generation(&config).await?;
+                    println!("generation runtime reloaded with {model}");
                     Ok(())
                 }
                 RuntimeCommand::Status => generation_status(&config).await,
@@ -590,12 +561,9 @@ async fn run_eval(eval: EvalArgs) -> Result<()> {
     if let Some(model) = &eval.model {
         deployment.model = model.clone();
     }
-    // A managed (`llamacpp`) vision provider is started on demand and the
-    // session holds it for the whole evaluation; an `openai` provider has no
-    // server and is called as-is.
-    let session = vision::VisionSession::start(deployment)
-        .await
-        .map_err(|error| anyhow!(error.report().log()))?;
+    // A managed (`llamacpp`) vision provider uses the shared detached server;
+    // an `openai` provider has no local server and is called as-is.
+    let session = vision::VisionSession::new(deployment, &config.state_dir);
 
     // Read every image up front so a missing file fails before any model round
     // trips. `image_for_chat` downscales each to a fixed maximum edge.
@@ -634,62 +602,45 @@ async fn run_eval(eval: EvalArgs) -> Result<()> {
     Ok(())
 }
 
-/// Stops the generation server on the provider's port. A server the shared
-/// owner started is found by its recorded marker; `force` also stops one it did
-/// not start, identified precisely by the served executable and listen port.
-fn stop_generation_server(config: &AppConfig, force: bool) -> Result<()> {
-    let port = config.native_image()?.port;
-    match control::stop(&config.state_dir, port).map_err(|error| anyhow!(error.report().log()))? {
-        StopOutcome::Stopped(pid) => {
-            println!("stopped the generation server on :{port} (pid {pid})");
-            return Ok(());
-        }
-        // A marker whose process is gone: cleared so nothing keeps pointing at a
-        // dead pid, and fall through to the force/kill path.
-        StopOutcome::ClearedStale(pid) => {
-            println!("cleared a stale marker for :{port} (pid {pid} is gone)");
-        }
-        StopOutcome::NotFound => {}
-    }
+async fn warm_generation(config: &AppConfig) -> Result<()> {
+    let image = config.native_image()?;
+    service::Client::new(&config.state_dir)
+        .warm(&Managed::Image(image.clone()))
+        .await?;
+    Ok(())
+}
+
+async fn stop_generation_server(config: &AppConfig, force: bool) -> Result<()> {
+    let image = config.native_image()?;
+    service::Client::new(&config.state_dir)
+        .unload(&Managed::Image(image.clone()))
+        .await?;
     if force {
-        kill_foreign_generation_servers(config)?;
-    } else {
-        println!(
-            "no generation server recorded on :{port} — a server the shared owner did not start needs `--force`"
-        );
+        Managed::Image(image.clone()).stop_standalone()?;
     }
+    println!("{} is offloaded", image.architecture);
     Ok(())
 }
 
-/// Reports whether the generation server is up, and whether the shared owner
-/// manages it.
 async fn generation_status(config: &AppConfig) -> Result<()> {
-    let image = config.native_image()?;
-    let port = image.port;
-    match control::status(&Managed::Image(image.clone()), &config.state_dir).await {
-        ServerState::Up { owned: Some(pid) } => {
-            println!(":{port} up · managed by the shared owner (pid {pid})")
-        }
-        ServerState::Up { owned: None } => println!(
-            ":{port} up · not managed by the shared owner — `svs runtime stop --force` stops it"
-        ),
-        ServerState::Down => println!(":{port} down"),
-    }
-    Ok(())
-}
-
-/// Stops every server holding the provider's port, including one this app did
-/// not start. Identified by the served executable and listen port — not a
-/// `pkill` pattern, so another model's server is left alone.
-fn kill_foreign_generation_servers(config: &AppConfig) -> Result<()> {
-    let image = config.native_image()?;
-    let port = image.port;
-    let killed =
-        kill_servers(&image.executable, port).map_err(|error| anyhow!(error.to_string()))?;
-    if killed.is_empty() {
-        println!("no generation server is running on :{port}");
+    let model = Managed::Image(config.native_image()?.clone());
+    let id = service::model_id(&model)?;
+    let status = service::Client::new(&config.state_dir).status().await?;
+    if let Some(worker) = status.resident.iter().find(|worker| worker.id == id) {
+        println!(
+            "{} resident · PID {} · {} active",
+            worker.model, worker.pid, worker.active
+        );
+    } else if status.loading.is_some_and(|model| model.id == id) {
+        println!("{} is loading", model.model());
+    } else if let Some(failure) = status
+        .failures
+        .iter()
+        .find(|failure| failure.model.id == id)
+    {
+        println!("{} failed: {}", model.model(), failure.message);
     } else {
-        println!("stopped the generation server on :{port} (pid {killed:?})");
+        println!("{} is offloaded", model.model());
     }
     Ok(())
 }
