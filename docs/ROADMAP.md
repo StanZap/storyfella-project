@@ -666,7 +666,7 @@ The following checklist describes the shared-project workstream.
   Evidence (2026-11-01): [Open in Atelier](shared-project.md#open-in-atelier)
   saves the current buffer/definitions, carries project/item UUIDs, descriptions
   and relevant scene text, and opens a running or cold Atelier without requiring
-  installation in `/Applications`. The shared action appears in Canvas details,
+  installation in `/Applications`. The shared action appears in Assets details,
   Writer references and the current scene toolbar. Atelier reuses its tab and
   linked artboard, embeds saved artwork on first attachment, preserves existing
   edits/prompts and shows Story context. Completion replies expose failures in
@@ -1246,7 +1246,7 @@ The broader product and UX assessments still need the review tracked below.
     destination protection. Custom config overrides bypass default migration.
     See [migration behavior](development.md#app-config). Native startup acceptance
     remains assigned to the user.
-  - [x] Project navigation availability (2026-11-01): hide Story, Canvas and
+  - [x] Project navigation availability (2026-11-01): hide Story, Assets and
     Preview until a project is open; palette destinations and keyboard shortcuts
     obey the same prerequisite. Global navigation remains available. Regression
     coverage checks palette destinations before/after opening a project;
@@ -1729,8 +1729,8 @@ Three surfaces share one artifact registry:
 
 | Surface | Role |
 | --- | --- |
-| Story Writer | Edits `.sf` with syntax highlighting; asset references resolve to live chips (name, thumbnail) as you type; click a chip to jump to canvas |
-| Canvas | Creates/edits the artifacts the `.sf` references |
+| Story Writer | Edits `.sf` with syntax highlighting; asset references resolve to live chips (name, thumbnail) as you type; click a chip to open it in Assets |
+| Atelier | Creates/edits the artwork the `.sf` references |
 | Studio | Sequence/timeline view, *derived* from `.sf` structure (scenes in order, choices as branches) |
 
 Decisions:
@@ -2139,7 +2139,7 @@ collection images together. See [Atelier](../../storyfella-canvas/docs/atelier.m
     init a tracing subscriber so reports actually log). — **✅ implemented**
 8. **Studio integration:** scenes group the timeline; re-sync flows per
    mode (compose beats in the canvas, story sequencing). — **🔧 active**
-   Writer/Canvas reconciliation is implemented: valid source order maps authored
+   Writer/Assets reconciliation is implemented: valid source order maps authored
    scene/beat keys to persisted UUIDs; invalid drafts retain the last association;
    removals detach artwork. Joint source/registry undo, pending catalog creation,
    source origins and backlinks are connected. Writer keyboard completion,

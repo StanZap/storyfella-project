@@ -158,8 +158,8 @@ follow Text without rewriting the saved separate selection or credentials.
 Preserve existing Vision routing, including an unconfigured capability, when
 the toggle preference is absent.
 The `ui/theme.rs` host follows OS changes and CSS semantic colors theme editors
-without replacing their document state. The former Studio Canvas is Assets;
-use `ui/assets.rs`, `go_assets` in guides and `g a` navigation.
+without replacing their document state. Assets lives in `ui/assets.rs`;
+guides use `go_assets` and navigation uses `g a`.
 
 - **Central planning tracker.** Read `docs/ROADMAP.md` §0 before planning changes. Keep new TODOs, priorities and completion status there; link supporting specifications and acceptance evidence instead of adding separate backlogs. §12 retains existing feature status, with remaining work to reconcile through the §0 checklist.
 - **Keep MCP tools current.** When adding or changing a feature, update the affected MCP tools, schemas, documentation, and tests in the same change. Use the same application operations and validation for MCP and the desktop UI.

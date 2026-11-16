@@ -49,7 +49,7 @@ fn save_and_reopen(name: &str, bytes: &[u8]) -> Result {
 }
 
 #[tokio::test]
-#[ignore = "requires a real configured native image server; see docs/atelier.md"]
+#[ignore = "requires a real configured native image server; see ../storyfella-canvas/docs/atelier.md"]
 async fn native_generation_reuse_abort_and_saved_output() -> Result {
     let providers = providers()?;
     let deployment = providers.image_deployment(Capability::T2i)?;
@@ -106,7 +106,7 @@ async fn native_generation_reuse_abort_and_saved_output() -> Result {
 }
 
 #[tokio::test]
-#[ignore = "loads real Qwen and Krea weights on an isolated port; see docs/atelier.md"]
+#[ignore = "loads real Qwen and Krea weights on an isolated port; see ../storyfella-canvas/docs/atelier.md"]
 async fn native_model_switching_and_reuse() -> Result {
     let providers = providers()?;
     let qwen = providers.image_deployment_for("acceptance-qwen", Capability::T2i)?;

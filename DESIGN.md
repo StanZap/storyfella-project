@@ -189,9 +189,7 @@ shared catalog and rechecks availability and model lists.
 The refresh action shares the Models heading row. Vision's heading stays visible
 with its separate-model switch on the right; its fields appear when enabled.
 
-The former Canvas screen is **Assets**, including navigation, palette, tooltips,
-guide steps and the `g a` shortcut. Atelier still owns editable canvases. Earlier
-dated records below retain their original Canvas terminology. Automated evidence
+Atelier owns editable canvases. Automated evidence
 covers preference persistence, linked/separate Vision routing and System-mode
 changes; native visual verification remains with the user.
 
@@ -206,8 +204,8 @@ silently overwrite a displayed value changed by another edit. Description drafts
 retain normal Save/quit/conflict behavior; per-field confirmation leaves unrelated
 drafts untouched. Components are documented in [the catalog](docs/ui-components.md).
 
-Canvas, gallery, saved image history and Writer thumbnails use a light paper
-preview background so dark strokes on transparent PNGs remain visible. The Canvas
+Assets, saved image history and Writer thumbnails use a light paper
+preview background so dark strokes on transparent PNGs remain visible. The Assets
 Background selector offers Light, Dark and Checkerboard, shared for the Studio
 session. This is a viewing preference: source pixels, alpha, revisions and
 playback compositing are unchanged. Native visual acceptance is assigned to the
@@ -239,7 +237,7 @@ recovery. Native error presentation still needs a live check.
 
 ### Open in Atelier · 2026-11-01
 
-The shared Open in Atelier action appears in Canvas details, resolved Writer
+The shared Open in Atelier action appears in Assets details, resolved Writer
 references and the current scene toolbar. Its tooltip states that it saves
 first; standalone projects expose their shared-folder prerequisite. Busy state
 lasts through the receiving app's reply. Save/open failures retain work and
@@ -393,9 +391,9 @@ See [storage contract](docs/shared-project.md) and SF-PLAN-02.
 
 ### Project navigation availability · 2026-11-01
 
-Story, Canvas and Preview appear in the left navigation only while a project is
+Story, Assets and Preview appear in the left navigation only while a project is
 open. Projects, Plans and Settings remain available. The command palette and
-Story/Canvas shortcuts obey the same prerequisite. Visiting Projects retains the
+Story/Assets shortcuts obey the same prerequisite. Visiting Projects retains the
 open story; the Projects home now hides workspace navigation as described above.
 Selecting an artifact is not required. Existing
 mounted task owners and drafts retain their lifetimes across navigation.
@@ -1163,7 +1161,7 @@ assets; use aspect-aware previews and accessible names.
 
 ### Studio visual-production cutover · 2026-11-02
 
-SF-PLAN-07 leaves Studio's Canvas focused on catalog definitions, saved previews,
+SF-PLAN-07 leaves Studio's Assets page focused on catalog definitions, saved previews,
 read-only image history and story references. Names/descriptions and explicit
 variation definitions remain authoring actions. The shared Open in Atelier
 action owns visual creation/editing; ordinary linked Save refreshes Studio.
@@ -1186,13 +1184,13 @@ of this simplified UI is pending; automated evidence belongs to SF-PLAN-07 in
 
 Audit date: **2026-10-07**. Source baseline: **189d745**, with the pre-existing
 local documentation edits retained. Reviewed Studio's app bootstrap, shell,
-Projects, Writer, Canvas/gallery/detail/Inspector/composer/palette, all five
+Projects, Writer, Assets (gallery, detail and Inspector), the palette, all five
 Settings sections, Plans/guide, shared Preview controls, command execution,
 persistence entry points, shortcuts and styling.
 
 Live inspection used the running macOS Studio with the existing **Playback
 fixture** project and its isolated `.svs-e2e/` configuration. Visited Projects,
-Writer, Canvas, artifact detail, Preview, Plans, and every Settings section.
+Writer, Assets, artifact detail, Preview, Plans, and every Settings section.
 Opened the existing error report and tested Escape, `g s`, and Storage Reveal.
 The supplied screenshots and source independently establish the two-step
 Details chain. Returned the app to Settings → Status. No story or settings were
@@ -1221,23 +1219,12 @@ the complete report in one activation and creates no redundant toast.
 ### SF-UX-02 · P1 · Dialogs do not enforce modal keyboard behavior
 
 **Live + source.** Escape left the error dialog open and its initial focus
-remained on the page. `ErrorDetailsModal`, `StackProposalModal` and `Palette` in
-[components.rs](apps/studio/src/ui/components.rs),
-[canvas.rs](apps/studio/src/ui/canvas.rs) and
+remained on the page. `ErrorDetailsModal` and `Palette` in
+[components.rs](apps/studio/src/ui/components.rs) and
 [palette.rs](apps/studio/src/ui/palette.rs) lack the shared focus/inert/dialog
 contract. Replace independent backdrops with the common primitive.
 **Acceptance:** keyboard opening, focus containment, Escape, focus return, and
 blocked background shortcuts work for every dialog.
-
-### SF-UX-03 · P1 · Command entry traps Tab even without completion
-
-**Source.** `CommandBar`'s `onkeydown` in
-[cmdbar.rs](apps/studio/src/ui/cmdbar.rs) always prevents Tab; it only conditionally
-inserts a suggestion. Thus no suggestions still means no forward focus movement,
-and Shift+Tab is also caught. Claim completion keys only for a valid visible
-suggestion and preserve backward traversal. **Acceptance:** Tab reaches Run
-when completion is unavailable; Shift+Tab exits the field; valid completion
-still works and does not submit.
 
 ### SF-UX-04 · P1 · Dirty work lacks a close/Quit protection flow
 
@@ -1258,30 +1245,21 @@ state with retry or rollback; refresh health after deployment changes.
 **Acceptance:** an unwritable config file or failed restart gives visible feedback
 and the UI accurately distinguishes the live value from the saved value.
 
-### SF-UX-06 · P1 · Failed commands erase the editable request
-
-**Source.** `Canvas::submit` in [canvas.rs](apps/studio/src/ui/canvas.rs) clears
-the composer before slash parsing/validation or planner success. A typo or
-unavailable planner forces reconstruction from a report. Preserve failed input
-and its target; clear only on accepted submission and keep recoverable request
-history for asynchronous failures. **Acceptance:** invalid commands and planner
-failure retain the exact text and allow correction without opening diagnostics.
-
 ### SF-UX-07 · P2 · Advertised shortcuts never reach their handlers
 
-**Live + source.** `g s` did not switch Canvas to Story.
+**Live + source.** `g s` did not switch to Story.
 [keys.rs](apps/studio/src/ui/keys.rs)'s `NAV` excludes `s`, `c`, `[`, `]`, `v`,
-`r`, `m`, `e`, `f`, `p` and `t`, although the shell/Canvas handlers and
+`r`, `m`, `e`, `f`, `p` and `t`, although the shell handlers and
 [shortcuts.rs](apps/studio/src/ui/shortcuts.rs) advertise several of them. Add
 all working bindings through one verified dispatch path; remove unavailable
 bindings. **Acceptance:** exercise every advertised shortcut through the live
 event bridge, including text-field focus and dialog precedence.
 
-### SF-UX-08 · P2 · The global palette is mounted only on Canvas
+### SF-UX-08 · P2 · The global palette is mounted on only one screen
 
 **Source; Settings shortcut attempt showed no palette.**
 [ui/mod.rs](apps/studio/src/ui/mod.rs) advertises/toggles palette state globally,
-but [canvas.rs](apps/studio/src/ui/canvas.rs) is its only rendering host. There
+but only one screen rendered it. There
 is no visible palette button in the shell; OS-global registration can also fail.
 Mount the palette at workspace level, add a visible entry and use focused-window
 shortcuts. **Acceptance:** pointer and keyboard can open it on every advertised
@@ -1291,8 +1269,7 @@ screen, and actions route to the correct editor/context.
 
 **Live + source.** Storage's Reveal click did nothing: `PathRow` has no handler.
 General's Background generation is `Toggle { enabled: true }` with a default
-no-op callback; Appearance offers only Dark. Canvas shows three unimplemented
-tools (the former `ui/tools.rs` module was removed in the 2026-10-10 pass).
+no-op callback; Appearance offers only Dark.
 See [settings.rs](apps/studio/src/ui/settings.rs). Implement real controls or present
 readonly information; remove planned tools from the production rail.
 **Acceptance:** every enabled control produces its labeled result, and disabled
@@ -1346,7 +1323,7 @@ without memorizing slash syntax.
 
 **Source.** Inspector description lives in a local `draft` signal and is reset
 when `artifact.description` changes in
-[inspector.rs](apps/studio/src/ui/inspector.rs); leaving Canvas unmounts it.
+[inspector.rs](apps/studio/src/ui/inspector.rs); leaving Assets unmounts it.
 Neither navigation nor the shell's saved state accounts for that buffer. Keep
 per-artifact drafts or protect departure with Save/Discard/Cancel.
 **Acceptance:** type a description, switch artifacts/screens and return; the
@@ -1371,15 +1348,6 @@ therefore has no dedicated message or Clear filter action. Preserve the filter
 and show a result count with explicit recovery. **Acceptance:** a nonmatching
 query shows No matching artifacts and Clear filter; an empty project still
 shows its creation guidance.
-
-### SF-UX-17 · P2 · Promote is discoverable only by hover
-
-**Source.** Revision Promote in [canvas.rs](apps/studio/src/ui/canvas.rs) starts
-at `opacity-0` and appears only on `group-hover`. A keyboard user can reach an
-invisible action. Keep the action visible in context or reveal it on keyboard
-focus as well, and explain that it changes canonical description.
-**Acceptance:** every experiment's Promote action is discoverable and readable
-without a pointer; its resulting canon change is clear and undoable.
 
 ### SF-UX-18 · P2 · Runtime failures send users to developer setup
 
@@ -1485,11 +1453,11 @@ These are risks to test, not additional confirmed defects:
 
 ## 8. Delivery order and verification
 
-1. **Protect work and keyboard access:** SF-UX-02–06, 10, 14, 22. Include
+1. **Protect work and keyboard access:** SF-UX-02, 04–05, 10, 14, 22. Include
    window close/Quit, failed disk writes, focus traversal and missing overrides.
 2. **Make feedback/navigation coherent:** SF-UX-01, 07–09, 18–19, 23–24.
    Share report/dialog primitives and remove all enabled no-op controls.
-3. **Clarify editing and discovery:** SF-UX-12–13, 15–17, 20–21, 25. Address task
+3. **Clarify editing and discovery:** SF-UX-12–13, 15–16, 20–21, 25. Address task
    lifetime risks before implying that background work survives navigation.
 4. **Apply the visual standard throughout:** SF-UX-11, with rendered contrast,
    target-size, resize, focus and text-scaling verification on each screen.
@@ -1524,13 +1492,11 @@ checkout. Keep the original acceptance criteria as regression checks.
 | --- | --- | --- |
 | SF-UX-01 | Local Details opens the shared full report directly; no duplicate toast. | [components](apps/studio/src/ui/components.rs); live Settings discovery failure. |
 | SF-UX-02 | Native modal dialog provides initial focus, background inertness, Escape, containment and focus restoration. | [dialog](apps/studio/src/ui/dialog.rs); live report and palette keyboard checks. |
-| SF-UX-03 | Tab accepts a valid completion only; other Tab/Shift+Tab traverse normally. | [composer](apps/studio/src/ui/cmdbar.rs); live invalid-command Tab reaches Run. |
 | SF-UX-04 | Window close and native Quit share Save/Discard/Cancel protection for dirty projects, descriptions, unsent requests and active operations. New drafts save to the exact chosen destination; failures keep the window open. | [close guard](apps/studio/src/ui/close.rs), [commands](apps/studio/src/commands.rs); live native window close/Cancel, Cancel/Discard Quit, persistence tests. |
 | SF-UX-05 | Model, prewarm and residency settings persist before application; defaults roll back on write failure. Restart failures are visible and health refreshes. | [settings](apps/studio/src/ui/settings.rs); source review, disk/restart failure injection remains manual. |
-| SF-UX-06 | Invalid commands and failed planning retain text and target; accepted requests have recoverable history. | [Canvas](apps/studio/src/ui/canvas.rs); live invalid command retains exact text. |
 | SF-UX-07 | Navigation dispatch includes implemented bindings and a timed `g` prefix; unavailable bindings are removed. Native field undo keeps precedence. | [keyboard bridge](apps/studio/src/ui/keys.rs), [shortcuts](apps/studio/src/ui/shortcuts.rs); live `g s`, Cmd+K and field Tab. |
 | SF-UX-08 | Workspace owns the palette, with a visible Commands button and focused-window shortcut on every screen. | [workspace](apps/studio/src/ui/mod.rs), [palette](apps/studio/src/ui/palette.rs); live Settings Cmd+K. |
-| SF-UX-09 | Reveal opens the path and reports failure; theme/background behavior is readonly information. The remaining Pointer button and its unused driver/shortcut model were removed on 2026-10-10 because selecting it performed no editing action. | [settings](apps/studio/src/ui/settings.rs), [canvas](apps/studio/src/ui/canvas.rs), [components](apps/studio/src/ui/components.rs). |
+| SF-UX-09 | Reveal opens the path and reports failure; theme/background behavior is readonly information. | [settings](apps/studio/src/ui/settings.rs), [components](apps/studio/src/ui/components.rs). |
 | SF-UX-10 | Fields/switches have names, Settings descriptions are associated, combobox/listbox state is exposed, notices announce state, and decorative highlights are hidden from accessibility. | [components](apps/studio/src/ui/components.rs), [Writer](apps/studio/src/ui/writer.rs), [palette](apps/studio/src/ui/palette.rs); live accessibility tree shows named editors and inert dialog background. |
 | SF-UX-11 | Small metadata has a 12px floor, muted colors are brighter, enabled targets have a 24px floor, focus is visible, reduced motion is respected and narrow layouts adapt. | [styles](apps/studio/tailwind.css), [workspace](apps/studio/src/ui/mod.rs); rendered macOS inspection. Full contrast/zoom coverage remains below. |
 | SF-UX-12 | Each size field keeps its own invalid draft and error; Scene and Beat have separate defaults. | [settings](apps/studio/src/ui/settings.rs); source review. |
@@ -1538,7 +1504,6 @@ checkout. Keep the original acceptance criteria as regression checks.
 | SF-UX-14 | AppState owns per-artifact descriptions; navigation retains them, explicit Save applies them and autosave preserves editable drafts. Drafts count as unsaved work. | [state](apps/studio/src/state/mod.rs), [Inspector](apps/studio/src/ui/inspector.rs); live screen navigation and Quit protection, draft tests. |
 | SF-UX-15 | Successful opens are recorded in order, including external paths. Recent shows location; scan/read/write failures are visible with Refresh. | [Projects](apps/studio/src/ui/projects.rs); recent-order test and live external fixture first in Recent. |
 | SF-UX-16 | Filtered results have a count and distinct No matching artifacts / Clear filter recovery. Cursor clamps to available results. | [Gallery](apps/studio/src/ui/gallery.rs); live no-match query, Clear restores all seven fixture artifacts and clears the field. |
-| SF-UX-17 | Promote remains visible with a tooltip explaining the canonical description change. | [Canvas](apps/studio/src/ui/canvas.rs); source review. |
 | SF-UX-18 | Missing-model reports lead to Image generation setup. Actions depend on actual health — Start/Stop only, hidden when files are missing. Footer reports working/saved/unsaved state. | [settings](apps/studio/src/ui/settings.rs), [health](crates/studio-core/src/runtime/health.rs); live missing-file state, action tests. |
 | SF-UX-19 | Notifications sit below the upper-right header; Guide remains lower-right. Report modal has higher native priority. | [components](apps/studio/src/ui/components.rs), [Guide](apps/studio/src/ui/guide.rs); live Guide plus command error. |
 | SF-UX-20 | Failed compilation retains the previous playback session/bookmark. Successful replacement explicitly restarts with the new snapshot. | [playback model](crates/playback-ui/src/lib.rs), [panel](crates/playback-ui/src/panel.rs); procedural playback recovery test. |
@@ -1673,18 +1638,6 @@ the managed/external split and the planner-client rebuild;
 -p storyfella-studio -p storyfella-studio-core --all-targets -- -D warnings` and
 `cargo fmt --all -- --check` pass. Live field and action interaction remains a
 manual check.
-
-### Command bar: every prefill focuses the field · 2026-10-08
-
-A prefill that does not focus the command field is a trap: the description is
-typed into nothing, and the skeleton command is then submitted unchanged —
-`SVS-APP-103` with the detail "create needs a description". Only the `v`/`r`/`m`
-and `/` shortcuts focused the bar; the `n` key, the canvas/layout buttons, the
-inspector's adapter button, the Writer's mention "Render…" and the palette did
-not. `cmdbar::prefill` is now the one way a prefilled command reaches the bar: it
-sets the text, retries focus across frames until the bar is visible (a Writer or
-palette handoff switches to the canvas first) and puts the caret after the text;
-`cmdbar::focus_field` is the `/` shortcut's focus-only variant.
 
 ### Atelier image workspace and approved Studio artwork · 2026-10-09
 

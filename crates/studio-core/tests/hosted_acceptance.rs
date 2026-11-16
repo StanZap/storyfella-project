@@ -48,7 +48,7 @@ fn save_and_reopen(name: &str, bytes: &[u8]) -> Result {
 }
 
 #[tokio::test]
-#[ignore = "submits real billed Replicate requests; see docs/atelier.md"]
+#[ignore = "submits real billed Replicate requests; see ../storyfella-canvas/docs/atelier.md"]
 async fn hosted_replicate_abort_deadline_and_recovery() -> Result {
     let path = storyfella_studio_core::paths::clipforge_config_path()
         .ok_or("No shared provider configuration path")?;

@@ -256,8 +256,8 @@ pub fn project(asset_dir: &Path) -> (ArtifactRegistry, String) {
             }
         }
 
-        // Experiment: a delta against the description, which is what the
-        // canon/experiment badges and Promote exist to distinguish.
+        // Experiment: a delta against the description, kept apart from the
+        // canonical revision.
         if slot == 0 {
             let experiment = registry
                 .start_revision(
