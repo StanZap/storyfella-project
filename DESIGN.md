@@ -145,7 +145,7 @@ inspector. Selection and the paint target are independent; group opacity and
 candidate review remain distinct from layer properties. Alignment distinguishes
 positioning a selection as a unit from aligning each item to the artboard.
 The proposed interaction and acceptance criteria are in
-[the sidebar specification](docs/atelier-layers-sidebar-spec.md). Native review
+[the sidebar specification](../storyfella-canvas/docs/atelier-layers-sidebar-spec.md). Native review
 has covered a paint layer, exact position entry, and importing an image while
 keeping the Sketch layer selected and targeted for paint. Selecting the imported
 image kept Sketch as the target. Setting the image as the target and pressing
@@ -605,7 +605,7 @@ Offline queue-contract tests cover accepted and rejected combinations. Real
 Metal runs verified RGBA generation/editing and the shared client's three-input
 path; all three outputs survived Atelier result attachment and project reopen
 with encoded bytes and provenance intact. See the
-[capability probes](docs/atelier.md#native-image-capability-probes). Live UI
+[capability probes](../storyfella-canvas/docs/atelier.md#native-image-capability-probes). Live UI
 interaction with multiple references and visual edit fidelity remain unverified.
 
 Qwen's optional native mask now anchors protected source latents. The existing
@@ -615,7 +615,7 @@ Controlled black/white/half-mask checks and a shared-client run with two RGBA
 references verified the mechanism on Metal. All four PNGs survived Atelier result
 attachment and project reopening. The far-protected region matched the all-black
 reconstruction but differed from the source, confirming that native masking does
-not promise exact protection. See [mask acceptance](docs/atelier.md#native-mask-acceptance).
+not promise exact protection. See [mask acceptance](../storyfella-canvas/docs/atelier.md#native-mask-acceptance).
 Tooltip interaction and artistic edit quality have not been visually accepted.
 
 ### Atelier side panels · 2026-10-25 (current)
@@ -814,7 +814,7 @@ readiness, request model choices and ComfyUI mappings. Direct setup navigation
 awaits a Clipforge deep-link contract. Tab closing/reordering now follows the
 project-tab behavior above.
 
-The [Atelier reference](docs/atelier.md) documents the
+The [Atelier reference](../storyfella-canvas/docs/atelier.md) documents the
 version-2 upgrade, reused behavior, captured queue destinations and remaining
 native/provider coverage. Source migration, geometry, candidate export exclusion,
 history, multi-project recovery and preflight regressions pass. The workspace
@@ -865,7 +865,7 @@ The image editor keeps artwork primary, opens its variation composer only on
 request, and returns submitted work to the project artboard sequence. Artboard
 activity is a short contextual event list with a direct
 full-details action. This is source-level acceptance; live visual and keyboard
-checks remain pending. See [Atelier](docs/atelier.md) for the workflow and
+checks remain pending. See [Atelier](../storyfella-canvas/docs/atelier.md) for the workflow and
 verification status.
 
 Verification: `cargo test -p storyfella-atelier` (48 passed, 11 ignored),
@@ -920,7 +920,7 @@ Requirements are ongoing review criteria, not a claim of accessibility certifica
 [ROADMAP §0](docs/ROADMAP.md#0-current-direction-and-actionable-backlog) owns planned delivery
 status. This document owns interaction and presentation rules.
 [Development](docs/development.md) documents the executable authoring scenarios,
-and [Atelier](docs/atelier.md) documents canvas behavior. Use this standard for
+and [Atelier](../storyfella-canvas/docs/atelier.md) documents canvas behavior. Use this standard for
 interaction requirements and keep planned changes in the roadmap.
 
 ## 1. Product principles
@@ -1732,7 +1732,7 @@ pixels, failed draft-write retry, approved packages, and Studio import persisten
 Ten physical Metal tests include paint/erase image-layer pixels and approved
 canvas export. Clipforge mock HTTP tests verify ordered inputs, mask pixels,
 provider field names, and rejection before submission. Paid-provider output and
-Linux/Windows native UX were not exercised in this pass. See `docs/atelier.md`
+Linux/Windows native UX were not exercised in this pass. See `../storyfella-canvas/docs/atelier.md`
 for the bounded image/project/library limits and remaining scope.
 
 Repository checks passed: workspace all-target check and tests, strict Clippy

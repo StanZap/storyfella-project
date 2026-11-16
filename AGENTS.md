@@ -33,7 +33,7 @@ preserve its existing CLI/config resolution and standalone database behavior.
 
 # Layout
 
-A Cargo workspace: eleven packages.
+A Cargo workspace: ten packages.
 
 | Path | Package | Owns |
 | :--- | :--- | :--- |
@@ -43,7 +43,6 @@ A Cargo workspace: eleven packages.
 | `crates/lsp` | `storyfella-lsp` | stdio LSP transport over the shared language analysis |
 | `crates/runtime` | `storyfella-runtime` | deterministic story execution, events and verified save/restore; no GUI/inference |
 | `apps/studio` | `storyfella-studio` | the Dioxus app — `ui/`, `state/`, `commands.rs`, `driver/`, `app/`, plus `Dioxus.toml`, `tailwind.css`, `assets/`, `package.json` |
-| `apps/atelier` | `storyfella-atelier` | independent GPUI drawing/image app, binary `atelier`; `.atelier` projects and Atelier data identity; hosted images through Agentkit |
 | `apps/cli` | `svs-cli` | `svs`, `model_setup`, `vlm_probe`, the VLM fixture example and its fixtures |
 | `apps/player` | `storyfella-player` | standalone Dioxus visual Player; same runtime/resources/controls as Studio preview |
 | `crates/playback-ui` | `storyfella-playback-ui` | shared Dioxus presentation and playback controls; independent of Studio state |
@@ -71,38 +70,16 @@ codes and databases stable during this move. Studio's platform data/config
 namespace is now `dev.storyfella.studio`; `identity.rs` migrates existing data
 once without overwriting a destination or removing originals.
 
-Atelier is a separate GPUI executable, not a Dioxus module. Use
-`cargo xtask atelier` (separate from Studio's `cargo xtask run` and the `svs`
-CLI) and `cargo xtask atelier bundle` (macOS and Linux packages in
-`dist/atelier/`). Preserve its Atelier data directory,
-`com.storyfella.atelier` bundle identity. The vendored
-`gpui-pre-apple` patch enables its shared BGRA Metal surfaces. The existing
-FineWineTTS review app still uses GPUI, so that repository retains its patch.
-Atelier's hosted API wire code and model presets live in
-`agentkit_ai::images`. The GPUI worker owns a Tokio runtime and adapts
-raw output bytes to artboard layers/candidates or references; Clipforge owns
-provider setup and hosted keys in the shared `clipforge.toml`, while
-ComfyUI workflow execution stays app-owned. Studio's creative backend uses the native
-`sd` API for local routes and Agentkit's image client for hosted routes. See `docs/atelier.md`.
-Atelier's shared library stores immutable full-resolution originals plus global
-metadata and mask drafts under `data_dir/library`; `.atelier` projects embed
-their own references/image layers. `editor.rs`/`editor_ui.rs` own the large-image
-workflow; `edit.rs` owns mask encoding and protected-pixel compositing. The mask
-editor offers paint, erase and a rectangle **box selection** (`Tool::Rect`).
-Atelier's floating **Create / image prompt** composer handles new artboards,
-full-artboard candidate edits, selection blends and separate images. Selection
-blend sends full accepted artwork as context and crops the returned rectangle;
-separate mode sends the selection crop to a new artboard. Request sizes and
-sampling ride the shared `agentkit_ai::images::Request`; Settings retains
-model presets, LoRA request choices and ComfyUI mappings. `workflow.rs` owns
-artboard attachment/schema upgrades, and `project_tabs.rs` owns independent open
-documents and session recovery. Provider
-mask/reference capabilities and wire formats belong only in Agentkit. Approved
-`.sfart` exchange lives in GUI-free `studio-core::artwork`; Atelier retains its
-standalone export. Studio uses shared-project Save/refresh instead of package
-import. Use isolated `.svs-e2e` data for live UI checks. On macOS,
-duplicate old Atelier bundle registrations can misdirect automation by name;
-give disposable test bundles a distinct identity, preserving the shipped one.
+Atelier, the GPUI app for drawing, editing and generating artwork, lives in
+its own repository at `../storyfella-canvas` and uses `storyfella-studio-core` from this
+checkout by path. The shared project folder, catalog, `.sfart` exchange
+(`studio-core::artwork`) and the Studio-to-Atelier inbox (`studio-core::atelier`)
+are contracts between the two repositories: when a change touches them, run
+`cargo test --workspace` in both before committing either. Studio uses
+shared-project Save/refresh rather than package import. Studio's creative
+backend uses the native `sd` API for local routes and Agentkit's image client
+for hosted routes; provider mask/reference capabilities and wire formats belong
+only in Agentkit.
 
 ### Shared inference through Agentkit
 

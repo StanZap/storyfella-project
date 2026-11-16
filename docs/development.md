@@ -56,12 +56,6 @@ gamepad/input-device support arrives, not before.
 Bundling (below) adds no system package: the AppImage is assembled by
 `linuxdeploy`, which the Dioxus CLI downloads on demand.
 
-Atelier's GPUI X11/Wayland and font backends also require
-`libfontconfig1-dev`, `libfreetype6-dev`, `libxcb1-dev`, `libxkbcommon-dev`,
-`libxkbcommon-x11-dev` and `libwayland-dev`. The CI desktop dependency step
-includes these packages now that Atelier is a workspace member. The moved app
-has been validated on macOS; Linux runtime verification remains separate.
-
 ## Workspace layout
 
 The repository is a Cargo workspace. `crates/studio-core` (package `storyfella-studio-core`) holds
@@ -77,14 +71,10 @@ the core tests never compile the toolkit or the WebKit stack. `apps/studio`
 `crates/playback-ui`, the GUI-free host/resource adapter in Studio core and the
 independent `crates/runtime` execution engine. It does not consume Studio state.
 
-`apps/atelier` (package `storyfella-atelier`, binary `atelier`) is the independent
-GPUI drawing and image-generation app. It uses Studio core only for portable
-artwork exchange and has no Dioxus dependency.
-Run it from the workspace root with `cargo xtask atelier`; use
-`-- --data-dir .svs-e2e/atelier-dev` for isolated sessions. Use
-`cargo xtask atelier bundle` to [package Atelier](#atelier-packaging).
-Its Metal surface renderer uses the pinned patch in `vendor/gpui-pre-apple`;
-keep that source and its licenses with the workspace. See [Atelier](atelier.md).
+Atelier, the GPUI drawing and image-generation app, is a separate repository
+(`../storyfella-canvas`) that uses `storyfella-studio-core` by path. Its own
+[development guide](../../storyfella-canvas/docs/development.md) covers running and
+packaging it.
 
 The native-inference runtime is **not** owned by this workspace: it is the
 shared `agentkit-ai` crate at
@@ -124,18 +114,12 @@ any directory:
 ```bash
 cargo xtask build                 # dx build --platform desktop (debug)
 cargo xtask run [-r]              # build, then launch Dioxus Studio
-cargo xtask atelier [-r]          # build, then launch the separate GPUI app
-cargo xtask atelier --restart     # build, then safely restart the same data-directory instance
-cargo xtask atelier -- --data-dir .svs-e2e/atelier-dev
-cargo xtask atelier --restart -- --data-dir .svs-e2e/atelier-dev
-cargo xtask atelier bundle        # macOS .app or Linux AppImage in dist/atelier/
 cargo xtask run -l                # …teeing its output to .svs-e2e/logs/
 cargo xtask plan config/plans/smoke.yaml --mode check
 cargo xtask serve                 # dx serve (hot reload)
 cargo xtask bundle                # release AppImage into dist/
 cargo xtask bundle --package-types appimage deb
 cargo xtask bundle --install      # …and install it for the current user
-cargo xtask atelier bundle --install  # …same for Atelier
 cargo xtask check                 # cargo check --workspace --all-targets
 cargo xtask clippy [--deny]        # cargo clippy …; --deny errors on warnings
 cargo xtask fmt [--check]         # cargo fmt --all
@@ -157,9 +141,9 @@ project-root path resolution finds `config/plans`. `-l`/`--log` tees the
 app's stdout/stderr to `.svs-e2e/logs/app-<unix>.log` for the GUI live-test
 workflow. `bundle` writes to `dist/` (git-ignored) and lists each artifact.
 
-`bundle --install` (and `atelier bundle --install`) copies the artifact the
-bundle just wrote into the current user's bin directory — `$XDG_BIN_HOME`, else
-`~/.local/bin` — as `storyfella-studio` / `atelier`, so the app starts by name
+`bundle --install` copies the artifact the bundle just wrote into the current
+user's bin directory — `$XDG_BIN_HOME`, else `~/.local/bin` — as
+`storyfella-studio`, so the app starts by name
 from a shell; it says so when that directory is not on `PATH`. The artifact
 stays in `dist/` and the installed command is a copy the next `--install`
 replaces, chosen by the product name in its file name. On macOS the `.app` is
@@ -170,36 +154,6 @@ Installing needs the `appimage` package type on Linux (the default); `deb` and
 `cargo xtask <command> --help` documents the flags. The sections below remain
 the reference for the underlying commands, for when you need a flag the task
 runner does not expose.
-
-`atelier` uses `cargo run --package storyfella-atelier --bin atelier`, forwards
-arguments after `--` and supports `-l`/`--log` with
-`.svs-e2e/logs/atelier-<unix>.log`. It does not invoke Studio's Dioxus build or
-the `svs` CLI.
-
-### Atelier packaging
-
-Run `cargo xtask atelier bundle` on the target platform. On macOS it builds
-`dist/atelier/Atelier.app`, signs it ad hoc, and defaults to debug. Pass
-`--release` for an optimized build.
-
-On Linux, install the [desktop build dependencies](#linux-system-packages). The
-task builds the executable with Cargo and packages it with
-[cargo-packager](https://github.com/crabnebula-dev/cargo-packager) `0.11.8`,
-which it installs into `target/tools/cargo-packager` the first time it is needed
-— there is no manual `cargo install` step, and a matching install on `PATH` is
-reused instead. The first AppImage build also downloads the AppImage packaging
-tools, so that run needs network access and later runs reuse both.
-
-```sh
-cargo xtask atelier bundle                               # AppImage
-cargo xtask atelier bundle --package-types appimage deb    # AppImage and Debian package
-```
-
-Linux packages go to `dist/atelier/` and default to release. Pass `--debug`
-for a debug package. `--install` puts the packaged app in the user's bin
-directory (see [the task runner](#task-runner-cargo-xtask)). Use a build host compatible with the intended Linux
-distribution and architecture. Atelier's native inference runtime and weights
-are provisioned separately through the [provider setup](atelier.md#local-qwen-and-krea-on-linux-with-cuda).
 
 ## Build artifact directory
 

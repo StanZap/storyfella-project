@@ -10,7 +10,6 @@
 //! cargo xtask run -r       # …in release
 //! cargo xtask bundle       # release AppImage into dist/
 //! cargo xtask bundle --install  # …and install it for the current user
-//! cargo xtask atelier bundle # package Atelier into dist/atelier/
 //! ```
 //!
 //! Launch tasks default to debug; `-r`/`--release` opts into the release

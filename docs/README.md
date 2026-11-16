@@ -13,7 +13,7 @@ features are not implemented merely because they are agreed.
 | [compiler.md](compiler.md) | Flow lowering, immutable bindings, source maps and readiness. |
 | [playback reference](ROADMAP.md#story-execution-and-playback-reference) | Execution, save/restore, Studio preview and standalone Player. |
 | [data-model.md](data-model.md) | Registry invariants, project files, persistence and source conflict handling. |
-| [atelier.md](atelier.md) | Current canvas, image tools, references, project recovery and model setup. |
+| [atelier.md](../../storyfella-canvas/docs/atelier.md) | Current canvas, image tools, references, project recovery and model setup. |
 
 Read [AGENTS.md](../AGENTS.md) before development and [DESIGN.md](../DESIGN.md)
 before changing UI behavior or styling. Keep plans in the roadmap, current

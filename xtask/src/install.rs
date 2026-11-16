@@ -33,12 +33,6 @@ pub const STUDIO: App = App {
     macos_binary: "storyfella-studio",
 };
 
-pub const ATELIER: App = App {
-    command: "atelier",
-    product: "Atelier",
-    macos_binary: "Atelier",
-};
-
 /// Install the artifact the bundle just wrote into `out_dir`, returning the
 /// path that is now on `PATH`.
 pub fn bundled(out_dir: &Path, app: &App) -> Result<PathBuf> {
@@ -270,17 +264,17 @@ mod tests {
         let out = root.path().join("dist");
         let bin = root.path().join("bin");
         fs::create_dir_all(&out).unwrap();
-        staged(&out, "Atelier_0.1.0_amd64.AppImage", "first");
-        install_appimage(&out, &ATELIER, &bin).unwrap();
-        fs::remove_file(out.join("Atelier_0.1.0_amd64.AppImage")).unwrap();
-        staged(&out, "Atelier_0.2.0_amd64.AppImage", "second");
+        staged(&out, "Storyfella Studio_0.1.0_amd64.AppImage", "first");
+        install_appimage(&out, &STUDIO, &bin).unwrap();
+        fs::remove_file(out.join("Storyfella Studio_0.1.0_amd64.AppImage")).unwrap();
+        staged(&out, "Storyfella Studio_0.2.0_amd64.AppImage", "second");
 
-        let installed = install_appimage(&out, &ATELIER, &bin).unwrap();
+        let installed = install_appimage(&out, &STUDIO, &bin).unwrap();
 
-        assert_eq!(installed, bin.join("atelier"));
+        assert_eq!(installed, bin.join("storyfella-studio"));
         assert_eq!(fs::read_to_string(&installed).unwrap(), "second");
         assert!(
-            !bin.join(".atelier.new").exists(),
+            !bin.join(".storyfella-studio.new").exists(),
             "no staging file is left behind"
         );
     }

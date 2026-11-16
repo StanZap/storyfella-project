@@ -10,7 +10,6 @@ and [central tracker](ROADMAP.md#0-current-direction-and-actionable-backlog) for
 | Component | Responsibility | Dependency boundary |
 | --- | --- | --- |
 | `apps/studio` / `storyfella-studio` | Dioxus authoring UI, project state, creative workflows and snapshot preview | Consumes GUI-free core and shared playback UI/runtime |
-| `apps/atelier` / `storyfella-atelier` | Independent GPUI drawing and image-generation app | Owns sketchbook documents, credentials and ComfyUI workflow; uses Agentkit's hosted image client; no Dioxus dependency |
 | `crates/studio-core` / `storyfella-studio-core` | Artifact registry, operations, persistence, config, creative inference adapters | No GUI dependencies; consumes sibling `agentkit-ai` |
 | `apps/cli` / `svs-cli` | Existing `svs`, `model_setup`, and `vlm_probe` tools | Keeps current commands and behavior; consumes Studio core |
 | `apps/player` / `storyfella-player` | Standalone visual Dioxus desktop playback | Shared core resource adapter, playback UI and runtime; no Studio state dependency |
@@ -43,9 +42,10 @@ the old location; those paths are not silently rewritten by this restructuring.
 
 ## Existing Studio architecture
 
-Atelier lives alongside Studio as a separate GPUI application. Its hosted
+Atelier is a separate GPUI application in its own repository (`../storyfella-canvas`),
+using `storyfella-studio-core` by path. Its hosted
 generation/editing uses `agentkit_ai::images::Client`; ComfyUI workflows
-remain app-local. [Atelier's integration](atelier.md) records the shared
+remain app-local. [Atelier's integration](../../storyfella-canvas/docs/atelier.md) records the shared
 AI boundary and the remaining image-workspace work. The Studio architecture
 below describes the Dioxus application.
 

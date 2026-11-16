@@ -322,7 +322,8 @@ fn launch() -> Result<()> {
             .and_then(Path::parent)
             .map(|path| path.join("Atelier.app"));
         for path in sibling.into_iter().chain([
-            crate::paths::root().join("dist/atelier/Atelier.app"),
+            // The development bundle in the sibling storyfella-canvas checkout.
+            crate::paths::root().join("../storyfella-canvas/dist/atelier/Atelier.app"),
             PathBuf::from("/Applications/Atelier.app"),
         ]) {
             if path.is_dir() {

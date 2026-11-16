@@ -87,7 +87,7 @@ acceptance remains assigned to the user.
 Offline evidence: workspace tests/all-target checks, strict Studio/core/Atelier
 Clippy, formatting and the Studio desktop build pass. Logs are under
 `.svs-e2e/logs/shared-project-*`; executable relocation tests live in
-`crates/studio-core/tests/project_folder.rs` and `apps/atelier/src/tests.rs`.
+`crates/studio-core/tests/project_folder.rs` and Atelier's `apps/atelier/src/tests.rs` (in `../storyfella-canvas`).
 
 ## Shared asset catalog
 
@@ -248,8 +248,9 @@ busy state until the reply, exposes failure Details and times out after 30
 seconds. Retry reuses the item identity. Context is plain text, never executable
 instructions. The transport uses no network or shell interpolation.
 
-macOS launch discovery checks a sibling bundle, the checkout's
-`dist/atelier/Atelier.app`, `/Applications/Atelier.app`, then Launch Services by
+macOS launch discovery checks a sibling bundle, the development bundle in the
+sibling `storyfella-canvas` checkout (`../storyfella-canvas/dist/atelier/Atelier.app`),
+`/Applications/Atelier.app`, then Launch Services by
 bundle ID. Installation in `/Applications` is optional. Other hosts use a sibling
 executable or `atelier` on PATH. `STORYFELLA_ATELIER` selects an explicit
 executable/bundle. Set `STORYFELLA_ATELIER_DATA_DIR` in both apps for isolated

@@ -13,7 +13,6 @@ storyfella/
 ├── apps/studio/       # storyfella-studio (Dioxus)
 ├── apps/cli/          # svs-cli: svs, model_setup, vlm_probe
 ├── apps/player/       # storyfella-player (visual Dioxus desktop host)
-├── apps/atelier/      # storyfella-atelier (independent GPUI art workspace)
 ├── crates/studio-core/ # storyfella-studio-core (no GUI)
 ├── crates/language/    # shared lexer, parser, AST and analysis
 ├── crates/compiler/    # versioned story plans, linking and flow validation
@@ -28,12 +27,10 @@ consumes `../../zerune_labs/agentkit/crates/agentkit-ai` for provider resolution
 native and hosted inference, provisioning and shared server controls
 (`native-inference` feature). Inference requires no Clipforge checkout or app.
 
-Atelier is the separate GPUI drawing and image-generation app, moved from
-FineWineTTS with its existing project storage intact.
-Run `cargo xtask atelier` to launch it. Use `cargo xtask atelier bundle` to
-build a macOS `.app` or Linux AppImage in `dist/atelier/`.
-Its hosted image providers use the shared Clipforge API. See [Atelier](apps/atelier/README.md)
-and [the shared AI boundary](docs/atelier.md).
+Atelier, the GPUI drawing and image-generation app, lives in its own
+repository next to this one (`../storyfella-canvas`) and uses `storyfella-studio-core`
+by path. See [Atelier](../storyfella-canvas/README.md) and
+[the shared AI boundary](../storyfella-canvas/docs/atelier.md).
 
 Check or compile `.sf` stories without loading models or opening a project DB:
 

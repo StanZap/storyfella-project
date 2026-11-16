@@ -125,7 +125,7 @@ built at the time, not the target ownership.
     submitted. Workspace checks/tests/format, strict changed-package Clippy,
     Agentkit native-feature tests/Clippy and its format check pass; the vendored
     GPUI dependency still emits existing Cocoa deprecation warnings.
-    Reproduction: [live native acceptance](atelier.md#repeatable-live-native-acceptance).
+    Reproduction: [live native acceptance](../../storyfella-canvas/docs/atelier.md#repeatable-live-native-acceptance).
     Evidence: `.svs-e2e/native-acceptance/` (logs, images and `.atelier` projects).
     Configured hosted-route cancellation/deadline acceptance is completed below;
     Linux NVIDIA packaging/acceptance remains the separate SF-PLAN-30.
@@ -144,7 +144,7 @@ built at the time, not the target ownership.
     not visual quality or acceptance of unconfigured providers. Workspace tests,
     all-target checks, format and strict changed-package Clippy pass (existing
     vendored GPUI Cocoa deprecation warnings remain).
-    Reproduction: [live hosted acceptance](atelier.md#repeatable-live-hosted-acceptance).
+    Reproduction: [live hosted acceptance](../../storyfella-canvas/docs/atelier.md#repeatable-live-hosted-acceptance).
     Evidence: `.svs-e2e/hosted-acceptance/` (live/validation logs, images, results
     and `hosted-results.atelier`). SF-PLAN-27 is complete for the supported macOS
     native machine and configured hosted route.
@@ -982,7 +982,7 @@ asset-only playback check independently of Atelier and all inference services.
   editable shapes and colored pressure-sensitive brush strokes, clip paint to
   a shape, and keep palettes with editable projects. Reuse the accepted
   composition for optional image-to-image variations. Keep drawing MCP
-  tools in sync. See [Atelier drawing and painting](atelier.md#drawing-and-painting)
+  tools in sync. See [Atelier drawing and painting](../../storyfella-canvas/docs/atelier.md#drawing-and-painting)
   and the [desktop acceptance notes](../DESIGN.md#atelier-drawing-and-painting--2026-11-11).
 
 - [ ] **SF-PLAN-22 — Associate existing canvases with project assets.** Link the
@@ -1030,7 +1030,7 @@ and continuing to use those assets with Atelier closed or uninstalled.
   tokenizer overrides; Atelier exposes MOSS as generation-only. Clipforge's
   updated Metal runtime successfully loaded the downloaded model and tokenizer
   on the M3 Max. Generation benchmarking and model switching with saved artwork
-  remain pending; see [Atelier's MOSS acceptance](atelier.md#moss-image-sft).
+  remain pending; see [Atelier's MOSS acceptance](../../storyfella-canvas/docs/atelier.md#moss-image-sft).
 - [x] **SF-PLAN-25 — Expand the shared image capability interface.** Establish
   Agentkit image contracts during SF-PLAN-27 and represent capabilities and limits
   per model/deployment: generation/editing,
@@ -1065,7 +1065,7 @@ and continuing to use those assets with Atelier closed or uninstalled.
     queue preflight and execution consume this contract; obsolete single-input
     gates are removed. All three PNGs survived Atelier result attachment and
     `.atelier` save/reopen with encoded bytes and provenance intact.
-    Reproduction: [native capability probes](atelier.md#native-image-capability-probes).
+    Reproduction: [native capability probes](../../storyfella-canvas/docs/atelier.md#native-image-capability-probes).
     Evidence: `.svs-e2e/image-capabilities/` (alpha/reference/persistence logs,
     framework regression logs, PNGs and `qwen-alpha-results.atelier`). This verifies
     transport, transparency and persistence; edit fidelity and live picker/queue
@@ -1094,7 +1094,7 @@ and continuing to use those assets with Atelier closed or uninstalled.
     shared mask contract, then passed with exact mask/source/reference bytes,
     strength/sampling controls, invalid geometry and unchanged unmasked wire
     behavior covered. Hosted controls without verified mappings stay unavailable.
-    Reproduction: [native mask acceptance](atelier.md#native-mask-acceptance).
+    Reproduction: [native mask acceptance](../../storyfella-canvas/docs/atelier.md#native-mask-acceptance).
     Evidence: `.svs-e2e/native-mask-acceptance/` (inputs, masks, four outputs,
     metrics, logs and `qwen-mask-results.atelier`). These two-step runs establish
     mechanism and persistence, not artistic quality or live tooltip interaction.
@@ -1121,7 +1121,7 @@ models can expose the same tools when their adapters support the capabilities.
 
 ### Native runtime distribution · 2026-10-29
 
-[`cargo xtask atelier bundle`](development.md#atelier-packaging) packages the
+[`cargo xtask bundle`](../../storyfella-canvas/docs/development.md#packaging) in `storyfella-canvas` packages the
 Atelier application as a macOS `.app` or a Linux AppImage or Debian package.
 SF-PLAN-30 tracks distribution of the managed Linux CUDA runtime.
 
@@ -1290,7 +1290,7 @@ The broader product and UX assessments still need the review tracked below.
     workspace checks and manual UI acceptance against the approved Atelier
     concept images (2026-11-02).
     Layers sidebar design and outstanding acceptance criteria are recorded in
-    [the sidebar specification](atelier-layers-sidebar-spec.md). Selection,
+    [the sidebar specification](../../storyfella-canvas/docs/atelier-layers-sidebar-spec.md). Selection,
     grouping, transforms, cropping and scoped image import have an initial
     implementation. A native check verified image import preserves selection
     and the paint target, and that keyboard Undo restores the paint target.
@@ -1892,6 +1892,10 @@ SF-PLAN-09 tracks reconciliation of remaining work here with the current directi
 **Atelier relocation: implemented.** `apps/atelier` (`storyfella-atelier`, binary
 `atelier`) is the separate GPUI art app, moved from FineWineTTS with its current
 sources, project/data identity and macOS renderer patch. Studio remains Dioxus.
+**Atelier in `storyfella-canvas` (2026-11-16): implemented.** Atelier, its vendored GPUI
+renderer patch and its docs moved with their history to their own repository,
+`../storyfella-canvas`, which uses `storyfella-studio-core` by path. GPUI and Dioxus no
+longer share a workspace, lockfile or toolchain.
 **Atelier navigation and panel refinement (2026-10-25): implemented.** Tabs and
 actions share one header; the logo opens Home, with whole-card project opening
 and Library access. Composer setup actions live in Settings, reached from its
@@ -1914,7 +1918,7 @@ refresh in Atelier; a setup deep link remains a Clipforge dependency. Actual-pro
 selection quality and complete native/first-user
 acceptance remain. Workspace checks/tests/format and strict Atelier Clippy pass;
 partial isolated macOS checks are recorded in
-[creation workflow](atelier.md). This entry supersedes the
+[creation workflow](../../storyfella-canvas/docs/atelier.md). This entry supersedes the
 older Atelier surface descriptions below.
 **Atelier visual refinement (2026-10-24): implemented; partial native acceptance.**
 The drawing dock prioritizes layers with compact contextual controls and disclosed
@@ -1958,7 +1962,7 @@ before/after, editable image layers with placement, durable masks and supported
 multi-reference editing are available in Atelier. Approved originals and painted
 canvases import into Studio's completed revisions through portable `.sfart`
 packages. Studio's hosted-provider selection and a text/vision art assistant
-remain **planned**; see [Atelier](atelier.md) for limits and verification.
+remain **planned**; see [Atelier](../../storyfella-canvas/docs/atelier.md) for limits and verification.
 
 **Compact Atelier workspace and shared provider credentials: implemented.**
 Named icon actions and optional image details follow DESIGN.md. Hosted provider
@@ -1979,7 +1983,7 @@ provider, aspect ratio, resolution, and local sampling steps. Drawn and generate
 artboards appear together with compact per-artboard activity summaries. Local Qwen Image 2.1
 generation/editing and Krea 2 Turbo generation are connected through Clipforge;
 actual Linux CUDA inference requires a run on that machine.
-See [iteration acceptance](atelier.md).
+See [iteration acceptance](../../storyfella-canvas/docs/atelier.md).
 
 **Generation queue: implemented.** The Atelier generation rail queues requests.
 **Add to queue** captures the provider, model, prompt, width, height, sampling
@@ -1993,7 +1997,7 @@ per request in the **Image settings** window, and Settings no longer duplicates
 them. The queue has its own panel, opened from a header badge that counts
 outstanding requests. **Generate from drawing** opens a compact panel that
 auto-switches to a **box select** region when the canvas is dragged, then
-rasterizes the area and queues it. See [Atelier](atelier.md). Live multi-request
+rasterizes the area and queues it. See [Atelier](../../storyfella-canvas/docs/atelier.md). Live multi-request
 validation against native Qwen passed on macOS (2026-10-31; SF-PLAN-27 above);
 hosted-provider queue acceptance remains pending. The queue's ordering, pause, individual
 abort, history-clearing and region-clamping rules are unit-tested. Isolated mock
@@ -2022,7 +2026,7 @@ imports stay in their project, and only an import into the **All projects** tab
 or an explicit **Add to reference library** action adds an image to the
 collection. Project-only images are renamed and favorited locally, and the
 version strip, before/after comparison and draft restore resolve project and
-collection images together. See [Atelier](atelier.md).
+collection images together. See [Atelier](../../storyfella-canvas/docs/atelier.md).
 
 1. **The API:** artifact domain model (artifact kinds, variants, scenes,
    beats — the registry), typed operation set + pipeline builder (closed
