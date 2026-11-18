@@ -1,7 +1,7 @@
 //! What each subcommand actually does.
 //!
 //! Thin wrappers over the documented workflows: build (debug or release),
-//! launch, check, lint, format, test, doctor, clean. The
+//! launch, bundle, check, lint, format, test, doctor, clean. The
 //! only logic worth reading here is path resolution and exit-code propagation —
 //! everything else is a command assembled and handed to [`crate::proc`].
 
@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Result};
 
-use crate::cli::{BuildArgs, Cli, ClippyArgs, Command, FmtArgs, PlanArgs, RunArgs};
+use crate::cli::{BuildArgs, BundleArgs, Cli, ClippyArgs, Command, FmtArgs, PlanArgs, RunArgs};
 use crate::proc;
 use crate::workspace::{Profile, Workspace, APP_PACKAGE};
 
@@ -21,6 +21,7 @@ pub fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Build(args) => build(&ws, args),
         Command::Run(args) => run(&ws, args),
         Command::Plan(args) => plan(&ws, args),
+        Command::Bundle(args) => bundle(&ws, args),
         Command::Check => check(&ws),
         Command::Clippy(args) => clippy(&ws, args),
         Command::Fmt(args) => fmt(&ws, args),
@@ -50,6 +51,27 @@ fn plan(ws: &Workspace, args: PlanArgs) -> Result<ExitCode> {
         args.mode.as_arg().to_string(),
     ];
     launch_app(ws, args.profile.resolve(false), app_args, args.log)
+}
+
+/// Packages Studio with `apps/studio/package-macos.sh`, then optionally
+/// installs it. Linux and Windows have no Studio package yet.
+fn bundle(ws: &Workspace, args: BundleArgs) -> Result<ExitCode> {
+    if !cfg!(target_os = "macos") {
+        bail!("Studio can only be bundled on macOS; elsewhere, run the binary");
+    }
+    let mut cmd = Process::new("sh");
+    cmd.current_dir(ws.root())
+        .arg("apps/studio/package-macos.sh")
+        .env("CARGO_TARGET_DIR", ws.target_dir()?);
+    if args.profile.resolve(true).is_release() {
+        cmd.arg("--release");
+    }
+    proc::require(&mut cmd)?;
+    #[cfg(target_os = "macos")]
+    if args.install {
+        crate::install::bundled(&ws.dist().join("studio"))?;
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn check(ws: &Workspace) -> Result<ExitCode> {

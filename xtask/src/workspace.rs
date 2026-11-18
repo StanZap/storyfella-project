@@ -87,6 +87,11 @@ impl Workspace {
         }
     }
 
+    /// The gitignored directory bundles are written to.
+    pub fn dist(&self) -> PathBuf {
+        self.root.join("dist")
+    }
+
     /// The gitignored home for validation logs (`AGENTS.md` → Validation).
     pub fn e2e_logs(&self) -> PathBuf {
         self.root.join(".svs-e2e/logs")

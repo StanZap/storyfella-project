@@ -24,6 +24,7 @@ use crate::workspace::Profile;
         cargo xtask run -l                       …logging the app to .svs-e2e/logs/\n  \
         cargo xtask plan config/plans/smoke.yaml\n  \
         cargo xtask plan config/plans/ui-tour.yaml --mode guide\n  \
+        cargo xtask bundle --install             package Studio (macOS) and install it\n  \
         cargo xtask test"
 )]
 pub struct Cli {
@@ -39,6 +40,8 @@ pub enum Command {
     Run(RunArgs),
     /// Build, then play a YAML plan through the app (`--plan <file> --mode …`).
     Plan(PlanArgs),
+    /// Package Studio as a macOS `.app` in `dist/studio` (release by default).
+    Bundle(BundleArgs),
     /// Type-check the whole workspace (`cargo check --workspace --all-targets`).
     Check,
     /// Lint the whole workspace (`cargo clippy`); `--deny` turns warnings into errors.
@@ -99,6 +102,16 @@ pub struct RunArgs {
     /// Arguments forwarded to the app binary, after `--`.
     #[arg(last = true, value_name = "APP_ARGS")]
     pub app_args: Vec<String>,
+}
+
+#[derive(Args)]
+pub struct BundleArgs {
+    #[command(flatten)]
+    pub profile: ProfileArgs,
+    /// Install the bundle into `~/Applications` and link `storyfella-studio`
+    /// from `$XDG_BIN_HOME`, else `~/.local/bin`.
+    #[arg(long)]
+    pub install: bool,
 }
 
 #[derive(Args)]

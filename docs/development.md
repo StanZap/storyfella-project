@@ -101,6 +101,7 @@ cargo xtask fmt [--check]         # cargo fmt --all
 cargo xtask test                  # cargo test --workspace
 cargo xtask doctor                # prerequisite tools + provisioned paths
 cargo xtask clean                 # cargo clean
+cargo xtask bundle [--install]    # macOS: dist/studio/Storyfella Studio.app
 ```
 
 Debug is the default; `-r`/`--release` and `-d`/`--debug` override it, and
@@ -110,7 +111,13 @@ exit code, so `cargo xtask plan … --mode check` gates a script.
 `run` and `plan` launch `target/<profile>/storyfella-studio` from the workspace
 root so the app's project-root path resolution finds `config/plans`.
 `-l`/`--log` tees the app's stdout/stderr to `.svs-e2e/logs/app-<unix>.log` for
-the GUI live-test workflow. Studio has no packaged bundle; run the binary.
+the GUI live-test workflow.
+
+`bundle` builds a signed development `.app` at
+`dist/studio/Storyfella Studio.app` (release unless `-d`), using
+`apps/studio/package-macos.sh`. `--install` copies it to `~/Applications` and
+links `storyfella-studio` from `$XDG_BIN_HOME`, else `~/.local/bin`. Studio is
+bundled on macOS only; elsewhere, run the binary.
 
 `cargo xtask <command> --help` documents the flags.
 

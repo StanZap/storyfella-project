@@ -35,3 +35,6 @@ models/*
 
 # Local E2E validation scratch
 .svs-e2e/
+
+# Bundles written by `cargo xtask bundle`.
+/dist/
