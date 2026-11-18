@@ -4,7 +4,20 @@ use agentkit_workflow::{
     DataType, RunError, RunErrorCode, StepDescriptor, StepExecutionContext, StepExecutionRegistry,
     StepFuture, StepInputs, StepOutputs, StepRegistry, Value,
 };
-use writing::{WritingProposal, WritingRequest, WritingScope};
+use writing::{WritingProposal, WritingRequest, WritingResult, WritingScope};
+
+trait Proposed {
+    fn proposal(self) -> WritingProposal;
+}
+
+impl Proposed for WritingResult {
+    fn proposal(self) -> WritingProposal {
+        match self {
+            WritingResult::Proposal(proposal) => proposal,
+            other => panic!("expected an edit, got {other:?}"),
+        }
+    }
+}
 
 #[tokio::test]
 async fn writing_uses_the_bound_provider_and_streaming_http_contract() {
@@ -73,7 +86,8 @@ async fn writing_uses_the_bound_provider_and_streaming_http_contract() {
     )
     .await
     .unwrap()
-    .unwrap();
+    .unwrap()
+    .proposal();
     assert_eq!(proposal.replacement, replacement);
     let state = store.load(&proposal.run_id).unwrap().unwrap();
     assert!(!state.to_json().unwrap().contains("workflow-test-secret"));
@@ -130,10 +144,10 @@ async fn invalid_writing_is_repaired_before_publication_and_keeps_original_snaps
     )
     .await
     .unwrap()
-    .unwrap();
+    .unwrap()
+    .proposal();
     assert_eq!(proposal.request, request);
     assert_eq!(proposal.replacement, replacement);
-    assert!(!proposal.review(&registry).unwrap().has_errors);
     let context = store.context(&proposal.run_id).unwrap().unwrap();
     let parent = context["repair_of"].as_str().unwrap();
     assert_eq!(context["attempt"], 1);
@@ -188,7 +202,7 @@ async fn invalid_writing_exhausts_a_bounded_repair_budget_without_a_proposal() {
     )
     .await
     .unwrap_err();
-    assert!(error.to_string().contains("after 2 repair attempts"));
+    assert!(error.to_string().contains("after 2 attempts"));
     let count: i64 = store
         .0
         .lock()
@@ -212,7 +226,8 @@ async fn cancellation_during_repair_does_not_publish_or_submit_another_model_cal
         &store,
         cancel,
         move |event| {
-            if matches!(event, Feedback::Status(ref text) if text.starts_with("Refining the suggestion (")) {
+            if matches!(event, Feedback::Status(ref text) if text.starts_with("Fixing the edit ("))
+            {
                 signal.store(true, Ordering::Relaxed);
             }
         },
@@ -222,32 +237,88 @@ async fn cancellation_during_repair_does_not_publish_or_submit_another_model_cal
     assert!(result.is_none());
 }
 
-#[tokio::test]
-async fn invalid_existing_source_is_reported_without_calling_the_model() {
+/// Runs `request` against `replies`, returning the result and every line of
+/// detail the run reported.
+async fn run_writing_heard(
+    request: WritingRequest,
+    replies: Vec<Vec<ChatStreamEvent>>,
+) -> (Result<Option<WritingResult>>, Vec<String>) {
     let directory = tempfile::tempdir().unwrap();
     let store = RunStore::open(&directory.path().join("runs.sqlite3")).unwrap();
-    let mut request = request();
-    request.source.push_str("scene\n");
-    let error = writing::run_with_model(
+    let details = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let heard = details.clone();
+    let result = writing::run_with_model(
         request,
-        Arc::new(FakeChatModel::new_streaming([])),
+        Arc::new(FakeChatModel::new_streaming(replies)),
         &crate::registry::ArtifactRegistry::new(),
         &store,
         Arc::new(AtomicBool::new(false)),
-        |_| {},
+        move |event| {
+            if let Feedback::Detail(text) = event {
+                heard.lock().unwrap().push(text);
+            }
+        },
     )
-    .await
-    .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("current draft has source errors"));
-    let count: i64 = store
-        .0
-        .lock()
-        .unwrap()
-        .query_row("SELECT COUNT(*) FROM workflow_runs", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(count, 0);
+    .await;
+    let details = details.lock().unwrap().clone();
+    (result, details)
+}
+
+#[tokio::test]
+async fn a_draft_with_errors_is_still_edited_and_an_edit_may_leave_them() {
+    let mut request = request();
+    request.source.push_str("scene\n");
+    let edit = request.original().replace("quiet", "empty");
+    let (result, details) = run_writing_heard(
+        request,
+        vec![writing_reply(&format!("```storyfella\n{edit}```"))],
+    )
+    .await;
+    assert_eq!(result.unwrap().unwrap().proposal().replacement, edit);
+    assert_eq!(details.last().unwrap(), "No new problems");
+}
+
+#[tokio::test]
+async fn an_edit_that_fixes_a_broken_draft_says_so() {
+    let source = format!("{SOURCE}scene\n");
+    let request = WritingRequest::capture(
+        Path::new("project.db"),
+        Path::new("project.sf"),
+        &source,
+        WritingScope::File,
+        &crate::registry::ArtifactRegistry::new(),
+    )
+    .unwrap();
+    let (result, details) = run_writing_heard(
+        request,
+        vec![writing_reply(&format!("```storyfella\n{SOURCE}```"))],
+    )
+    .await;
+    assert_eq!(result.unwrap().unwrap().proposal().replacement, SOURCE);
+    assert_eq!(details.last().unwrap(), "The story compiles now");
+}
+
+#[tokio::test]
+async fn an_edit_of_a_broken_draft_that_adds_an_error_is_sent_back() {
+    let mut request = request();
+    request.source.push_str("scene\n");
+    let broken = request
+        .original()
+        .replace("narrate: The café is quiet.", "goto nowhere");
+    let fixed = request.original().replace("quiet", "empty");
+    let (result, details) = run_writing_heard(
+        request,
+        vec![
+            writing_reply(&format!("```storyfella\n{broken}```")),
+            writing_reply(&format!("```storyfella\n{fixed}```")),
+        ],
+    )
+    .await;
+    assert_eq!(result.unwrap().unwrap().proposal().replacement, fixed);
+    assert!(
+        details.iter().any(|detail| detail.starts_with("1 problem")),
+        "{details:?}"
+    );
 }
 
 #[tokio::test]
@@ -267,7 +338,7 @@ async fn cancellation_before_publication_discards_a_valid_result() {
         &store,
         cancel,
         move |event| {
-            if matches!(event, Feedback::Status(ref text) if text == "Checking suggestion…") {
+            if matches!(event, Feedback::Status(ref text) if text == "Checking the edit") {
                 signal.store(true, Ordering::Relaxed);
             }
         },
@@ -275,51 +346,6 @@ async fn cancellation_before_publication_discards_a_valid_result() {
     .await
     .unwrap();
     assert!(result.is_none());
-}
-
-#[test]
-fn proposal_review_groups_only_new_notes_and_keeps_source_errors_blocking() {
-    let source = "scene harbor\n  location: harbor_dock\n  cast: mara, tam\n  beat arrival\n    shot: wide, dawn\n    mara: \"You're late.\"\n    tam think: She counts the minutes.\n";
-    let registry = crate::registry::ArtifactRegistry::new();
-    let request = WritingRequest::capture(
-        Path::new("project.db"),
-        Path::new("project.sf"),
-        source,
-        WritingScope::Beat(source.find("mara:").unwrap()),
-        &registry,
-    )
-    .unwrap();
-    let mut proposal = WritingProposal {
-        run_id: "review".into(),
-        replacement: format!("{}    mara: \"The tide won't wait.\"\n", request.original()),
-        request,
-    };
-    let review = proposal.review(&registry).unwrap();
-    assert!(!review.has_errors);
-    assert!(
-        review.diagnostics.is_empty(),
-        "existing artwork/reference warnings must stay in the Writer Problems panel: {:?}",
-        review.diagnostics
-    );
-    proposal
-        .replacement
-        .push_str("    ada: \"Hello.\"\n    ada: \"Still here.\"\n");
-    let review = proposal.review(&registry).unwrap();
-    assert_eq!(
-        review
-            .diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.code == "SF203" && diagnostic.message.contains("ada"))
-            .count(),
-        1
-    );
-    proposal.replacement = "  beat\n".into();
-    let review = proposal.review(&registry).unwrap();
-    assert!(review.has_errors);
-    assert!(review
-        .diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.severity == storyfella_language::Severity::Error));
 }
 
 #[test]
@@ -331,6 +357,7 @@ fn scopes_are_exact_and_proposals_refuse_other_snapshots_or_projects() {
     let proposal = WritingProposal {
         run_id: "test".into(),
         replacement: request.original().replace("quiet", "empty"),
+        note: None,
         request,
     };
     let next = proposal
@@ -408,14 +435,14 @@ async fn entire_file_rewrite_and_expand_cover_all_scenes_and_exact_boundaries() 
         )
         .await
         .unwrap()
-        .unwrap();
+        .unwrap()
+        .proposal();
         let next = proposal
             .apply(Path::new("project.db"), Path::new("project.sf"), source)
             .unwrap();
         assert_eq!(next, replacement);
         assert!(next.starts_with("# Café 🌊\r\n\r\n"));
         assert!(next.ends_with("\r\n\r\n"));
-        assert!(!proposal.review(&registry).unwrap().has_errors);
     }
 }
 
@@ -440,9 +467,9 @@ async fn trimmed_model_output_keeps_block_boundaries_without_a_repair_call() {
     )
     .await
     .unwrap()
-    .unwrap();
+    .unwrap()
+    .proposal();
     assert_eq!(proposal.replacement, expected);
-    assert!(!proposal.review(&registry).unwrap().has_errors);
 }
 
 #[test]
@@ -507,7 +534,8 @@ async fn writing_streams_and_commits_a_reopenable_run_without_model_credentials(
     )
     .await
     .unwrap()
-    .unwrap();
+    .unwrap()
+    .proposal();
     assert_eq!(proposal.replacement, replacement);
     assert_eq!(*deltas.lock().unwrap(), replacement);
     drop(store);
@@ -616,5 +644,123 @@ async fn provider_failure_is_durable_and_never_publishes_a_proposal() {
     assert_eq!(
         store.load(&id).unwrap().unwrap().status,
         WorkflowRunStatus::Failed
+    );
+}
+
+async fn run_writing(
+    request: WritingRequest,
+    replies: Vec<Vec<ChatStreamEvent>>,
+) -> (Result<Option<WritingResult>>, i64) {
+    let directory = tempfile::tempdir().unwrap();
+    let store = RunStore::open(&directory.path().join("runs.sqlite3")).unwrap();
+    let result = writing::run_with_model(
+        request,
+        Arc::new(FakeChatModel::new_streaming(replies)),
+        &crate::registry::ArtifactRegistry::new(),
+        &store,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .await;
+    let runs: i64 = store
+        .0
+        .lock()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM workflow_runs", [], |row| row.get(0))
+        .unwrap();
+    (result, runs)
+}
+
+#[tokio::test]
+async fn a_request_that_is_not_an_edit_is_answered_without_repairs() {
+    let (result, runs) = run_writing(
+        request(),
+        vec![writing_reply(
+            "<think>A greeting, not an edit.</think>Hello! Which beat should change?",
+        )],
+    )
+    .await;
+    match result.unwrap() {
+        Some(WritingResult::Reply { text, .. }) => {
+            assert_eq!(text, "Hello! Which beat should change?")
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(runs, 1, "a message spends no repair attempts");
+}
+
+#[tokio::test]
+async fn a_fenced_edit_keeps_its_note_and_a_whole_file_answer_is_cut_to_the_passage() {
+    let request = request();
+    let passage = request.original().replace("quiet", "empty");
+    let whole = format!(
+        "{}{}{}",
+        &request.source[..request.range.start],
+        passage,
+        &request.source[request.range.end..]
+    );
+    let (result, _) = run_writing(
+        request.clone(),
+        vec![writing_reply(&format!(
+            "The café is empty now.\n\n```storyfella\n{whole}```"
+        ))],
+    )
+    .await;
+    let proposal = result.unwrap().unwrap().proposal();
+    assert_eq!(proposal.replacement, passage);
+    assert_eq!(proposal.note.as_deref(), Some("The café is empty now."));
+}
+
+#[tokio::test]
+async fn an_answer_cut_off_at_the_output_limit_is_refused() {
+    let request = request();
+    let (result, runs) = run_writing(
+        request.clone(),
+        vec![vec![
+            ChatStreamEvent::TextDelta {
+                content: format!("```\n{}", request.original()),
+            },
+            ChatStreamEvent::OutputLimitReached,
+            ChatStreamEvent::Done,
+        ]],
+    )
+    .await;
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("output token limit"), "{error}");
+    assert_eq!(runs, 1, "asking again would hit the same limit");
+}
+
+#[tokio::test]
+#[ignore = "requires an OpenAI-compatible local model server"]
+async fn live_local_model_answers_a_greeting_in_prose() {
+    let model_name = std::env::var("STORYFELLA_LIVE_MODEL").expect("set STORYFELLA_LIVE_MODEL");
+    let endpoint =
+        std::env::var("STORYFELLA_LIVE_URL").unwrap_or_else(|_| "http://127.0.0.1:1234/v1".into());
+    let directory = tempfile::tempdir().unwrap();
+    let store = RunStore::open(&directory.path().join("runs.sqlite3")).unwrap();
+    let mut request = WritingRequest::capture(
+        Path::new("project.db"),
+        Path::new("project.sf"),
+        SOURCE,
+        WritingScope::File,
+        &crate::registry::ArtifactRegistry::new(),
+    )
+    .unwrap();
+    request.instructions = "Hello".into();
+    let model =
+        agentkit_ai::providers::openai::OpenAiCompatibleChatModel::new(endpoint, model_name)
+            .with_timeout(std::time::Duration::from_secs(120));
+    let result = writing::run_with_model(
+        request,
+        Arc::new(model),
+        &crate::registry::ArtifactRegistry::new(),
+        &store,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .await;
+    assert!(
+        matches!(result.unwrap(), Some(WritingResult::Reply { .. })),
+        "a greeting is answered in prose"
     );
 }

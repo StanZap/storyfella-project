@@ -13,14 +13,14 @@ use design_system::{
         CodeEditor, CodeEditorEvent, DiagnosticsList, Problem, ProblemItem, Severity, Suggestion,
         SuggestionKind, Token, TokenKind,
     },
-    ButtonKind, Dialog, Glyph, ListBox, ListRow, TextField, TextFieldEvent, Theme, TypeScale,
-    Typography,
+    ButtonKind, Dialog, Glyph, ListBox, ListRow, SplitSide, SplitState, SplitView, TextField,
+    TextFieldEvent, Theme, TypeScale, Typography,
 };
 use gpui_kit::{prelude::*, *};
 use storyfella_language::{CompletionKind, Position};
 use storyfella_studio_core::errors::ErrorCode;
 
-use super::Studio;
+use super::{assistant::Review, Studio};
 use crate::{
     state::AppState,
     status::{Check, FileDiagnostic},
@@ -56,6 +56,10 @@ pub(super) struct Write {
     problems_open: bool,
     problems_scroll: UniformListScrollHandle,
     files_scroll: UniformListScrollHandle,
+    /// The width of the story files list, as the person dragged it.
+    files_split: SplitState,
+    /// The width of the assistant column, as the person dragged it.
+    assistant_split: SplitState,
     rename: Entity<TextField>,
     /// The symbol being renamed: its file and offset.
     renaming: Option<(String, usize)>,
@@ -116,6 +120,8 @@ impl Write {
             problems_open: false,
             problems_scroll: UniformListScrollHandle::new(),
             files_scroll: UniformListScrollHandle::new(),
+            files_split: SplitState::new(px(200.)).limits(px(140.), px(420.)),
+            assistant_split: SplitState::new(px(360.)).limits(px(300.), px(760.)),
             rename,
             renaming: None,
             caret: None,
@@ -465,8 +471,9 @@ impl Studio {
             .assistant
             .review
             .as_ref()
-            .filter(|review| self.write.file() == Some(review.file.as_str()))
-            .map(|review| review.diff.clone());
+            .map(Review::shown)
+            .filter(|(file, _)| self.write.file() == Some(*file))
+            .map(|(_, diff)| diff.clone());
         div()
             .key_context(CONTEXT)
             .size_full()
@@ -477,22 +484,34 @@ impl Studio {
             )
             .on_action(cx.listener(|studio, _: &FormatFile, _, cx| studio.format_open_file(cx)))
             .on_action(cx.listener(|studio, _: &ToggleProblems, _, cx| studio.toggle_problems(cx)))
-            .child(self.render_files(cx))
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .child(self.render_file_bar(cx))
-                    .children(review.is_some().then(|| self.render_review_bar(cx)))
-                    .child(div().flex_1().min_h_0().child(match review {
-                        Some(diff) => diff.into_any_element(),
-                        None => self.write.editor.clone().into_any_element(),
-                    }))
-                    .children(self.write.problems_open.then(|| self.render_problems(cx))),
+                SplitView::new(
+                    "write-assistant",
+                    self.theme,
+                    &self.write.assistant_split,
+                    SplitView::new(
+                        "write-files",
+                        self.theme,
+                        &self.write.files_split,
+                        self.render_files(cx),
+                        div()
+                            .size_full()
+                            .flex()
+                            .flex_col()
+                            .child(self.render_file_bar(cx))
+                            .children(review.is_some().then(|| self.render_review_bar(cx)))
+                            .child(div().flex_1().min_h_0().child(match review {
+                                Some(diff) => diff.into_any_element(),
+                                None => self.write.editor.clone().into_any_element(),
+                            }))
+                            .children(self.write.problems_open.then(|| self.render_problems(cx))),
+                    )
+                    .sized(SplitSide::Start)
+                    .rest(px(360.)),
+                    self.render_assistant(cx),
+                )
+                .rest(px(560.)),
             )
-            .child(self.render_assistant(cx))
     }
 
     fn render_files(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -515,12 +534,9 @@ impl Studio {
         let rows = files.clone();
         let studio = cx.entity().downgrade();
         div()
-            .w(px(200.))
-            .flex_none()
+            .size_full()
             .flex()
             .flex_col()
-            .border_r_1()
-            .border_color(c.hairline)
             .bg(c.surface)
             .child(
                 div()

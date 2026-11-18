@@ -2,15 +2,16 @@
 //! project's workflow runs so it survives closing Studio.
 //!
 //! A turn records what was asked, the phases the writing workflow went
-//! through, and how it ended. A proposal keeps its full `WritingProposal`,
-//! so a review interrupted by closing Studio can be picked up again.
+//! through, and how it ended. A suggestion keeps its full proposal — one
+//! passage's, or the whole project's — so a review interrupted by closing
+//! Studio can be picked up again.
 use std::path::Path;
 
 use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-use super::{writing::WritingProposal, RunStore};
+use super::{novel::NovelProposal, writing::WritingProposal, RunStore};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Conversation {
@@ -29,6 +30,16 @@ pub struct Asked {
     pub text: String,
     /// The passage, as the person should read it: "Scene harbor in story.sf".
     pub scope: String,
+    /// Where the passage began, to go back to; none for the whole project.
+    pub place: Option<Place>,
+}
+
+/// A position in one of the story's files.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Place {
+    pub file: String,
+    /// A byte offset into the file as it was when the request was sent.
+    pub offset: usize,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +54,9 @@ pub struct Step {
     pub label: String,
     /// How long it took; `None` while it runs.
     pub millis: Option<u64>,
+    /// What the phase found or is waiting on, such as the model loading or
+    /// the problem a check found.
+    pub detail: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +64,8 @@ pub enum Outcome {
     #[default]
     Working,
     Proposed(Box<Proposed>),
+    /// The request was not an edit; the model answered in prose.
+    Replied(String),
     /// The suggestion matched the passage as it stood.
     Unchanged,
     Failed(String),
@@ -58,15 +74,72 @@ pub enum Outcome {
     Interrupted,
 }
 
-/// A suggested edit to one file and what became of it.
+/// A suggested edit and what became of it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Proposed {
-    /// The file, relative to the entry story's folder.
+    pub suggestion: Suggestion,
+    /// The files it changes, in the order they are reviewed.
+    pub files: Vec<FileChange>,
+    pub decision: Decision,
+}
+
+/// What a suggestion was asked of: one passage, or the whole project.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Suggestion {
+    Passage {
+        /// The file, relative to the entry story's folder.
+        file: String,
+        proposal: WritingProposal,
+    },
+    Project(NovelProposal),
+}
+
+/// One file a suggestion changes, and by how many lines.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileChange {
+    /// Relative to the entry story's folder.
     pub file: String,
-    pub proposal: WritingProposal,
     pub added: usize,
     pub removed: usize,
-    pub decision: Decision,
+}
+
+impl Suggestion {
+    /// What the model said about its edit.
+    pub fn note(&self) -> Option<&str> {
+        match self {
+            Self::Passage { proposal, .. } => proposal.note.as_deref(),
+            Self::Project(proposal) => proposal.note.as_deref(),
+        }
+    }
+
+    /// The files it changes, each as it was asked about and as suggested.
+    pub fn texts(&self) -> Vec<(String, String, String)> {
+        match self {
+            Self::Passage { file, proposal } => {
+                let request = &proposal.request;
+                let mut after = request.source.clone();
+                after.replace_range(
+                    request.range.start..request.range.end,
+                    &proposal.replacement,
+                );
+                vec![(file.clone(), request.source.clone(), after)]
+            }
+            Self::Project(proposal) => proposal
+                .files
+                .iter()
+                .map(|(file, after)| {
+                    let before = proposal
+                        .request
+                        .workspace
+                        .files
+                        .get(file)
+                        .cloned()
+                        .unwrap_or_default();
+                    (file.clone(), before, after.clone())
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,11 +223,16 @@ mod tests {
                 Turn::Asked(Asked {
                     text: "Give the reunion more weight".into(),
                     scope: "Scene harbor in story.sf".into(),
+                    place: Some(Place {
+                        file: "story.sf".into(),
+                        offset: 0,
+                    }),
                 }),
                 Turn::Answered(Answer {
                     steps: vec![Step {
-                        label: "Writing a suggestion…".into(),
+                        label: "Writing".into(),
                         millis: None,
+                        detail: Some("1,200 characters".into()),
                     }],
                     outcome: Outcome::Working,
                 }),

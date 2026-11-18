@@ -24,9 +24,13 @@ and visual rules; [ROADMAP](ROADMAP.md) owns planned work.
 | Source text | `kits::code::CodeEditor`, given tokens, problems and suggestions by the host | Write's editor |
 | Problems to jump to | `kits::code::DiagnosticsList` of `ProblemItem`s | Write's problems list |
 | A conversation | `kits::chat::Transcript` over a `TranscriptState`, of `UserMessage`s and `AssistantMessage`s | The assistant column |
-| Steps a reply took | `kits::chat::ToolActivity` of `ToolCall`s | An assistant reply's phases |
-| A reply that failed | `AssistantMessage::error` with the code's label and `on_error_details` | An assistant reply |
-| A prompt with options | `PromptBar` over a `TextArea`, with chips and a send/stop action | The assistant's prompt and scope |
+| Steps a reply took | `kits::chat::Steps` of `Step`s, each with its time and a line of detail | An assistant reply's phases |
+| An answer still arriving | `kits::chat::Draft`, the last lines in the code font | An assistant reply while it writes |
+| A reply that failed | `AssistantMessage::error` with the code's label, `on_retry` and `on_error_details`, drawn as one card | An assistant reply |
+| A reference to open | `Theme::link`, muted until hovered | The passage under a request; file names on a suggestion's card |
+| A prompt with options | `PromptBar` over a `TextArea`, with chips and a send/stop action | The assistant's prompt |
+| One choice of several in a tight row | `MenuButton` around a chip with a chevron, opening a `Menu` of checked items | The assistant's scope |
+| Panes the person resizes | `SplitView` over a `SplitState` the app keeps; double-clicking the divider restores the default | Write's files, editor and assistant columns |
 | Changes to review | `kits::code::DiffView`, read-only, deciding each change | A suggestion under review in Write |
 
 Window-level prompts (quitting with unsaved work, file pickers) use GPUI's

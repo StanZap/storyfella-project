@@ -167,7 +167,9 @@ async fn run() {
         }
     };
     let (result, ()) = tokio::join!(run, check);
-    let proposal = result.unwrap().unwrap();
+    let Some(writing::WritingResult::Proposal(proposal)) = result.unwrap() else {
+        panic!("expected an edit");
+    };
     assert!(proposal.replacement.contains("empty"));
     service.shutdown().await.unwrap();
     println!("managed writing routing and repair lease: passed");

@@ -1,11 +1,13 @@
 //! The assistant column docked at Write's right: the project's saved
-//! conversation, and a prompt that asks the writing workflow for an edit to
-//! a passage. A suggestion arrives as a card; reviewing it turns the editor
-//! into a read-only diff whose changes are kept or reset one by one, and the
-//! story changes only when the review ends.
+//! conversation, and a prompt that asks the writing workflows for an edit to
+//! a passage or to the whole project. A suggestion arrives as a card;
+//! reviewing it turns the editor into a read-only diff of each changed file
+//! in turn, whose changes are kept or reset one by one, and the story changes
+//! only when the review ends — every file at once, as one undoable edit.
 //!
 //! Asking again while a review is open refines it: the changes kept so far
-//! are applied, and the same passage is asked for again with both requests.
+//! are applied, and the same passage — or project — is asked for again with
+//! both requests.
 use std::{
     collections::HashSet,
     path::PathBuf,
@@ -16,27 +18,30 @@ use std::{
 use design_system::{
     kits::{
         chat::{
-            AssistantMessage, ToolActivity, ToolCall, ToolStatus, Transcript, TranscriptState,
+            AssistantMessage, Draft, Step as Phase, Steps, ToolStatus, Transcript, TranscriptState,
             UserMessage,
         },
         code::{Diff, DiffView, DiffViewEvent, HunkState, LineKind},
     },
-    ButtonKind, Glyph, PromptBar, TextArea, TextAreaEvent, Theme, TypeScale, Typography,
+    ButtonKind, Glyph, Menu, MenuButton, MenuItem, PromptBar, TextArea, TextAreaEvent, Theme,
+    TypeScale, Typography,
 };
 use gpui_kit::{prelude::*, *};
 use storyfella_studio_core::{
     errors::{ErrorCode, ReportedError},
     planner::PlannerBackend,
     workflows::{
-        assistant::{Answer, Asked, Conversation, Decision, Outcome, Proposed, Step, Turn},
-        writing::WritingRequest,
-        Cancellation, Feedback, RunStore,
+        assistant::{
+            Answer, Asked, Conversation, Decision, FileChange, Outcome, Proposed, Step, Suggestion,
+            Turn,
+        },
+        writing as core_writing, Cancellation, Feedback, RunStore,
     },
 };
 
 use super::Studio;
 use crate::{
-    assistant::{self, Engine, Scope},
+    assistant::{self, Answered, Engine, Request, Scope},
     host::Place,
     writing,
 };
@@ -48,10 +53,14 @@ pub(super) struct Assistant {
     transcript: TranscriptState,
     pub(super) prompt: Entity<TextArea>,
     pub(super) scope: Scope,
+    /// Whether the scope's menu is open.
+    choosing_scope: bool,
     keep_facts: bool,
     running: Option<Running>,
-    /// The suggestion as it streams in, before it is checked.
+    /// The answer as it streams in, before it is read.
     streamed: String,
+    /// How much reasoning the model has streamed apart from its answer.
+    reasoned: usize,
     pub(super) review: Option<Review>,
     /// Why the last request could not be sent, shown under the prompt.
     pub(super) notice: Option<String>,
@@ -65,15 +74,54 @@ struct Running {
     cancel: Cancellation,
     step_started: Instant,
     _task: Task<()>,
+    /// Redraws every second so the running phase's time moves.
+    _tick: Task<()>,
 }
 
-/// A suggestion under review in the editor's place.
+/// A suggestion under review in the editor's place, one file at a time.
 pub(super) struct Review {
     turn: usize,
-    pub(super) file: String,
-    /// The file as the suggestion was written against.
-    base: String,
-    pub(super) diff: Entity<DiffView>,
+    files: Vec<(String, Entity<DiffView>)>,
+    /// The file shown, as an index into `files`.
+    current: usize,
+    /// The story as the suggestion was written against.
+    base: storyfella_compiler::SourceWorkspace,
+}
+
+impl Review {
+    /// The file shown and its diff.
+    pub(super) fn shown(&self) -> (&str, &Entity<DiffView>) {
+        let (file, diff) = &self.files[self.current];
+        (file, diff)
+    }
+
+    /// Changes decided, and changes in all, across every file.
+    fn decided(&self, cx: &App) -> (usize, usize) {
+        self.files.iter().fold((0, 0), |(decided, of), (_, diff)| {
+            let states = diff.read(cx).states();
+            (
+                decided
+                    + states
+                        .iter()
+                        .filter(|state| **state != HunkState::Pending)
+                        .count(),
+                of + states.len(),
+            )
+        })
+    }
+
+    /// The next file, after the one shown, with a change still undecided.
+    fn next_undecided(&self, cx: &App) -> Option<usize> {
+        (1..self.files.len())
+            .map(|step| (self.current + step) % self.files.len())
+            .find(|&index| {
+                self.files[index]
+                    .1
+                    .read(cx)
+                    .states()
+                    .contains(&HunkState::Pending)
+            })
+    }
 }
 
 impl Assistant {
@@ -102,9 +150,11 @@ impl Assistant {
             transcript: TranscriptState::new(0),
             prompt,
             scope: Scope::default(),
+            choosing_scope: false,
             keep_facts: true,
             running: None,
             streamed: String::new(),
+            reasoned: 0,
             review: None,
             notice: None,
             open_activity: HashSet::new(),
@@ -117,7 +167,9 @@ impl Assistant {
         self.prompt
             .update(cx, |prompt, cx| prompt.set_theme(theme, cx));
         if let Some(review) = &self.review {
-            review.diff.update(cx, |diff, cx| diff.set_theme(theme, cx));
+            for (_, diff) in &review.files {
+                diff.update(cx, |diff, cx| diff.set_theme(theme, cx));
+            }
         }
     }
 
@@ -152,17 +204,6 @@ fn line_counts(diff: &Diff) -> (usize, usize) {
             LineKind::Removed => (added, removed + 1),
             LineKind::Context => (added, removed),
         })
-}
-
-/// The whole file with the suggestion applied.
-fn suggested(proposal: &storyfella_studio_core::workflows::writing::WritingProposal) -> String {
-    let request = &proposal.request;
-    let mut text = request.source.clone();
-    text.replace_range(
-        request.range.start..request.range.end,
-        &proposal.replacement,
-    );
-    text
 }
 
 impl Studio {
@@ -233,10 +274,10 @@ impl Studio {
                     &text,
                     self.assistant.keep_facts,
                 )
-                .map(|request| (file, self.assistant.scope, request))
+                .map(|request| (self.assistant.scope, request))
             }
         };
-        let (file, scope, request) = match captured {
+        let (scope, request) = match captured {
             Ok(captured) => captured,
             Err(message) => return self.refuse(message, cx),
         };
@@ -247,14 +288,31 @@ impl Studio {
         let turns = &mut self.assistant.conversation.turns;
         turns.push(Turn::Asked(Asked {
             text,
-            scope: assistant::describe(scope, &file, &request.source, request.range),
+            scope: request.describe(scope),
+            place: request.place(),
         }));
         turns.push(Turn::Answered(Answer::default()));
         let turn = turns.len() - 1;
         self.assistant.transcript.push(2);
         self.assistant.transcript.scroll_to_end();
         self.assistant.streamed.clear();
-        self.run_request(turn, file, request, engine, cx);
+        self.run_request(turn, request, engine, cx);
+    }
+
+    /// Sends the request of the reply at `turn` again, about what the scope
+    /// names now.
+    pub(super) fn retry(&mut self, turn: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Turn::Asked(asked)) = turn
+            .checked_sub(1)
+            .and_then(|asked| self.assistant.conversation.turns.get(asked))
+        else {
+            return;
+        };
+        let text = asked.text.clone();
+        self.assistant
+            .prompt
+            .update(cx, |prompt, cx| prompt.set_text(&text, window, cx));
+        self.ask(window, cx);
     }
 
     /// Keeps the prompt as typed and says why it was not sent.
@@ -264,13 +322,13 @@ impl Studio {
     }
 
     /// Ends the open review, keeping what was kept, and asks again for the
-    /// same passage with both requests.
+    /// same passage — or the whole project — with both requests.
     fn refinement(
         &mut self,
         turn: usize,
         text: &str,
         cx: &mut Context<Self>,
-    ) -> Result<(String, Scope, WritingRequest), String> {
+    ) -> Result<(Scope, Request), String> {
         let Some(Turn::Answered(Answer {
             outcome: Outcome::Proposed(proposed),
             ..
@@ -278,31 +336,52 @@ impl Studio {
         else {
             return Err("There is no suggestion to refine.".into());
         };
-        let kept_before = writing::source(&self.state, &proposed.file).map(str::len);
-        self.finish_review(None, cx)?;
-        let request = proposed.proposal.request;
-        let grown = writing::source(&self.state, &proposed.file)
-            .map(str::len)
-            .zip(kept_before)
-            .map_or(0, |(now, before)| now as isize - before as isize);
-        let end = (request.range.end as isize + grown).max(request.range.start as isize) as usize;
-        let mut refined = assistant::capture(
-            &self.state,
-            &proposed.file,
-            Scope::Selection,
-            request.range.start..end,
-            &format!("{}\n\nThen: {text}", request.instructions),
-            request.preserve_facts,
-        )?;
-        refined.action = request.action;
-        Ok((proposed.file, Scope::Selection, refined))
+        match proposed.suggestion {
+            Suggestion::Passage { file, proposal } => {
+                let kept_before = writing::source(&self.state, &file).map(str::len);
+                self.finish_review(None, cx)?;
+                let request = proposal.request;
+                let grown = writing::source(&self.state, &file)
+                    .map(str::len)
+                    .zip(kept_before)
+                    .map_or(0, |(now, before)| now as isize - before as isize);
+                let end =
+                    (request.range.end as isize + grown).max(request.range.start as isize) as usize;
+                let mut refined = assistant::capture_passage(
+                    &self.state,
+                    &file,
+                    Scope::Selection,
+                    request.range.start..end,
+                    &format!("{}\n\nThen: {text}", request.instructions),
+                    request.preserve_facts,
+                )?;
+                refined.action = request.action;
+                Ok((
+                    Scope::Selection,
+                    Request::Passage {
+                        file,
+                        request: refined,
+                    },
+                ))
+            }
+            Suggestion::Project(proposal) => {
+                self.finish_review(None, cx)?;
+                let request = proposal.request;
+                let mut refined = assistant::capture_project(
+                    &self.state,
+                    &format!("{}\n\nThen: {text}", request.instructions),
+                    request.preserve_facts,
+                )?;
+                refined.action = request.action;
+                Ok((Scope::Project, Request::Project(refined)))
+            }
+        }
     }
 
     fn run_request(
         &mut self,
         turn: usize,
-        file: String,
-        request: WritingRequest,
+        request: Request,
         engine: Engine,
         cx: &mut Context<Self>,
     ) {
@@ -328,19 +407,33 @@ impl Studio {
                 }
             }
             let result = worker.await;
-            this.update(cx, |studio, cx| studio.answered(turn, file, result, cx))
+            this.update(cx, |studio, cx| studio.answered(turn, result, cx))
                 .ok();
         });
+        let tick = cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut AsyncApp| loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let alive = this.update(cx, |studio, cx| {
+                    studio.assistant.transcript.changed(turn);
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    return;
+                }
+            },
+        );
         self.assistant.running = Some(Running {
             cancel,
             step_started: Instant::now(),
             _task: task,
+            _tick: tick,
         });
         self.save_conversation(cx);
         cx.notify();
     }
 
-    /// Progress from the workflow: a new phase, or more of the suggestion.
+    /// Progress from the workflow: a new phase, what it found, or more of
+    /// the answer.
     fn heard(&mut self, turn: usize, event: Feedback, cx: &mut Context<Self>) {
         let now = Instant::now();
         let started = self
@@ -348,21 +441,34 @@ impl Studio {
             .running
             .as_ref()
             .map_or(now, |running| running.step_started);
+        let streamed = streamed_detail(&self.assistant.streamed, self.assistant.reasoned, false);
         match event {
             Feedback::Status(label) => {
                 if let Some(answer) = self.assistant.answer_mut(turn) {
-                    close_step(answer, now.duration_since(started));
+                    close_step(answer, now.duration_since(started), streamed);
                     answer.steps.push(Step {
                         label: label.trim_end_matches('…').to_owned(),
                         millis: None,
+                        detail: None,
                     });
                 }
                 if let Some(running) = &mut self.assistant.running {
                     running.step_started = now;
                 }
                 self.assistant.streamed.clear();
+                self.assistant.reasoned = 0;
+            }
+            Feedback::Detail(detail) => {
+                if let Some(step) = self
+                    .assistant
+                    .answer_mut(turn)
+                    .and_then(|answer| answer.steps.last_mut())
+                {
+                    step.detail = Some(detail);
+                }
             }
             Feedback::Text(text) => self.assistant.streamed.push_str(&text),
+            Feedback::Reasoning(text) => self.assistant.reasoned += text.chars().count(),
             Feedback::Event(_) => return,
         }
         self.assistant.transcript.changed(turn);
@@ -372,8 +478,7 @@ impl Studio {
     fn answered(
         &mut self,
         turn: usize,
-        file: String,
-        result: anyhow::Result<Option<storyfella_studio_core::workflows::writing::WritingProposal>>,
+        result: anyhow::Result<Option<Answered>>,
         cx: &mut Context<Self>,
     ) {
         let started = self
@@ -382,34 +487,60 @@ impl Studio {
             .take()
             .map(|running| running.step_started);
         let outcome = match result {
-            Ok(Some(proposal)) => {
-                let after = suggested(&proposal);
-                if after == proposal.request.source {
+            Ok(Some(Answered::Edit(suggestion))) => {
+                let files: Vec<FileChange> = suggestion
+                    .texts()
+                    .into_iter()
+                    .filter(|(_, before, after)| before != after)
+                    .map(|(file, before, after)| {
+                        let (added, removed) = line_counts(&Diff::new(&before, &after));
+                        FileChange {
+                            file,
+                            added,
+                            removed,
+                        }
+                    })
+                    .collect();
+                if files.is_empty() {
                     Outcome::Unchanged
                 } else {
-                    let (added, removed) =
-                        line_counts(&Diff::new(&proposal.request.source, &after));
                     Outcome::Proposed(Box::new(Proposed {
-                        file,
-                        proposal,
-                        added,
-                        removed,
+                        suggestion: *suggestion,
+                        files,
                         decision: Decision::Pending,
                     }))
                 }
             }
+            Ok(Some(Answered::Reply(text))) => Outcome::Replied(text),
             Ok(None) => Outcome::Stopped,
             Err(error) => Outcome::Failed(format!("{error:#}")),
         };
+        let streamed = streamed_detail(&self.assistant.streamed, self.assistant.reasoned, false);
         if let Some(answer) = self.assistant.answer_mut(turn) {
             close_step(
                 answer,
                 started.map_or(Duration::ZERO, |started| started.elapsed()),
+                streamed,
             );
             answer.outcome = outcome;
         }
         self.assistant.streamed.clear();
+        self.assistant.reasoned = 0;
         self.assistant.transcript.changed(turn);
+        self.save_conversation(cx);
+        cx.notify();
+    }
+
+    /// Starts over: the project's saved conversation is emptied. The story
+    /// is not touched, and nothing runs or is under review while it clears.
+    pub(super) fn new_conversation(&mut self, cx: &mut Context<Self>) {
+        if self.assistant.running.is_some() || self.assistant.review.is_some() {
+            return;
+        }
+        self.assistant.conversation = Conversation::default();
+        self.assistant.open_activity.clear();
+        self.assistant.notice = None;
+        self.assistant.transcript.reset(0);
         self.save_conversation(cx);
         cx.notify();
     }
@@ -429,7 +560,8 @@ impl Studio {
         }
     }
 
-    /// Opens the suggestion of `turn` for review in the editor's place.
+    /// Opens the suggestion of `turn` for review in the editor's place,
+    /// starting with its first file.
     pub(super) fn start_review(
         &mut self,
         turn: usize,
@@ -443,50 +575,94 @@ impl Studio {
         else {
             return;
         };
-        let base = proposed.proposal.request.source.clone();
-        if writing::source(&self.state, &proposed.file) != Some(base.as_str()) {
-            self.refuse(
-                format!(
-                    "{} changed since this suggestion was written. Ask again for a fresh one.",
-                    proposed.file
-                ),
-                cx,
+        let texts: Vec<_> = proposed
+            .suggestion
+            .texts()
+            .into_iter()
+            .filter(|(file, _, _)| proposed.files.iter().any(|change| change.file == *file))
+            .collect();
+        // Every file the suggestion changes, opened or not, as it is now.
+        let base = match self.state.workspace_snapshot() {
+            Ok(base) => base,
+            Err(message) => return self.refuse(message, cx),
+        };
+        if let Some((file, _, _)) = texts
+            .iter()
+            .find(|(file, before, _)| base.files.get(file) != Some(before))
+        {
+            let message = format!(
+                "{file} changed since this suggestion was written. Ask again for a fresh one."
             );
-            return;
+            return self.refuse(message, cx);
         }
-        let file = proposed.file.clone();
-        let diff = Diff::new(&base, &suggested(&proposed.proposal));
         let theme = self.theme;
-        let view =
-            cx.new(|_| DiffView::new(diff, theme).label(format!("Suggested edit to {file}")));
-        cx.subscribe_in(&view, window, |studio, view, event, _, cx| {
-            let DiffViewEvent::Decided { .. } = event;
-            let decided = view
-                .read(cx)
-                .states()
-                .iter()
-                .all(|state| *state != HunkState::Pending);
-            if decided {
-                if let Err(message) = studio.finish_review(None, cx) {
-                    studio.refuse(message, cx);
-                }
-            }
-            cx.notify();
-        })
-        .detach();
+        let files: Vec<_> = texts
+            .into_iter()
+            .map(|(file, before, after)| {
+                let label = format!("Suggested edit to {file}");
+                let view =
+                    cx.new(|_| DiffView::new(Diff::new(&before, &after), theme).label(label));
+                cx.subscribe_in(&view, window, |studio, _, event, window, cx| {
+                    let DiffViewEvent::Decided { .. } = event;
+                    studio.decided(window, cx);
+                })
+                .detach();
+                (file, view)
+            })
+            .collect();
+        let first = files[0].0.clone();
         self.assistant.review = Some(Review {
             turn,
-            file: file.clone(),
+            files,
+            current: 0,
             base,
-            diff: view,
         });
+        self.open_file(&first, None, cx);
+        self.show(Place::Write, window, cx);
+    }
+
+    /// A change was kept or reset: the review moves to the next file with
+    /// something undecided, and ends once nothing is.
+    pub(super) fn decided(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(review) = &self.assistant.review else {
+            return;
+        };
+        let (decided, of) = review.decided(cx);
+        if decided == of {
+            if let Err(message) = self.finish_review(None, cx) {
+                self.refuse(message, cx);
+            }
+        } else if !review.files[review.current]
+            .1
+            .read(cx)
+            .states()
+            .contains(&HunkState::Pending)
+        {
+            if let Some(next) = review.next_undecided(cx) {
+                self.show_review_file(next, window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Shows the review's file at `index`.
+    fn show_review_file(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(review) = &mut self.assistant.review else {
+            return;
+        };
+        if index >= review.files.len() {
+            return;
+        }
+        review.current = index;
+        let file = review.files[index].0.clone();
         self.open_file(&file, None, cx);
         self.show(Place::Write, window, cx);
     }
 
     /// Ends the open review. `Some(true)` keeps the changes not yet decided,
     /// `Some(false)` discards them, and `None` discards them; a change decided
-    /// one by one keeps its decision. What is kept becomes one undoable edit.
+    /// one by one keeps its decision. What is kept, in every file, becomes
+    /// one undoable edit.
     pub(super) fn finish_review(
         &mut self,
         all: Option<bool>,
@@ -495,44 +671,50 @@ impl Studio {
         let Some(review) = self.assistant.review.take() else {
             return Ok(());
         };
-        let (merged, kept, of) = review.diff.update(cx, |view, cx| {
-            if let Some(all) = all {
-                let state = if all {
-                    HunkState::Accepted
-                } else {
-                    HunkState::Rejected
-                };
-                // Changes already decided one by one keep their decision.
-                let states: Vec<_> = view
+        let mut texts = std::collections::BTreeMap::new();
+        let (mut kept, mut of) = (0, 0);
+        for (file, diff) in &review.files {
+            let (merged, file_kept, file_of) = diff.update(cx, |view, cx| {
+                if let Some(all) = all {
+                    let state = if all {
+                        HunkState::Accepted
+                    } else {
+                        HunkState::Rejected
+                    };
+                    // Changes already decided one by one keep their decision.
+                    let states: Vec<_> = view
+                        .states()
+                        .iter()
+                        .map(|decided| {
+                            if *decided == HunkState::Pending {
+                                state
+                            } else {
+                                *decided
+                            }
+                        })
+                        .collect();
+                    view.set_states(&states, cx);
+                }
+                let kept = view
                     .states()
                     .iter()
-                    .map(|decided| {
-                        if *decided == HunkState::Pending {
-                            state
-                        } else {
-                            *decided
-                        }
-                    })
-                    .collect();
-                view.set_states(&states, cx);
+                    .filter(|state| **state == HunkState::Accepted)
+                    .count();
+                (view.merged(), kept, view.states().len())
+            });
+            kept += file_kept;
+            of += file_of;
+            if file_kept > 0 {
+                texts.insert(file.clone(), merged);
             }
-            let kept = view
-                .states()
-                .iter()
-                .filter(|state| **state == HunkState::Accepted)
-                .count();
-            (view.merged(), kept, view.states().len())
-        });
+        }
         let decision = if kept == 0 {
             Decision::Discarded
         } else {
-            if writing::source(&self.state, &review.file) != Some(review.base.as_str()) {
+            if let Err(message) = self.state.set_sources(&review.base, texts) {
                 self.assistant.review = Some(review);
-                return Err(
-                    "The file changed during the review; its changes were not kept.".into(),
-                );
+                return Err(format!("{message}; its changes were not kept."));
             }
-            writing::set_source(&mut self.state, &review.file, merged)?;
             Decision::Kept { kept, of }
         };
         if let Some(Turn::Answered(Answer {
@@ -570,22 +752,33 @@ impl Studio {
     /// The bar above a suggestion under review.
     pub(super) fn render_review_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let c = self.theme;
-        let (decided, of) = self.assistant.review.as_ref().map_or((0, 0), |review| {
-            let states = review.diff.read(cx).states();
-            (
-                states
-                    .iter()
-                    .filter(|state| **state != HunkState::Pending)
-                    .count(),
-                states.len(),
-            )
-        });
+        let Some(review) = &self.assistant.review else {
+            return div();
+        };
+        let (decided, of) = review.decided(cx);
+        let (shown, _) = review.shown();
+        let count = review.files.len();
+        let current = review.current;
+        let place = if count > 1 {
+            format!("{shown} ({} of {count})", current + 1)
+        } else {
+            shown.to_owned()
+        };
         let finish = |all: bool| {
             cx.listener(move |studio: &mut Studio, _, _, cx| {
                 if let Err(message) = studio.finish_review(Some(all), cx) {
                     studio.refuse(message, cx);
                 }
             })
+        };
+        let step = |id: &'static str, glyph: Glyph, label: &'static str, to: Option<usize>| {
+            c.icon_action(id, glyph, label, ButtonKind::Quiet)
+                .disabled(to.is_none())
+                .on_click(cx.listener(move |studio: &mut Studio, _, window, cx| {
+                    if let Some(to) = to {
+                        studio.show_review_file(to, window, cx);
+                    }
+                }))
         };
         div()
             .h(px(36.))
@@ -605,9 +798,23 @@ impl Studio {
                     .truncate()
                     .type_scale(TypeScale::Small)
                     .child(format!(
-                        "Reviewing a suggestion · {decided} of {of} changes decided · read-only"
+                        "Reviewing {place} · {decided} of {of} changes decided · read-only"
                     )),
             )
+            .when(count > 1, |bar| {
+                bar.child(step(
+                    "review-previous-file",
+                    Glyph::ChevronLeft,
+                    "Previous file",
+                    current.checked_sub(1),
+                ))
+                .child(step(
+                    "review-next-file",
+                    Glyph::ChevronRight,
+                    "Next file",
+                    (current + 1 < count).then_some(current + 1),
+                ))
+            })
             .child(
                 c.button("discard-all", "Discard all", ButtonKind::Secondary)
                     .on_click(finish(false)),
@@ -628,6 +835,12 @@ impl Studio {
             .as_ref()
             .map(|_| turns.len().saturating_sub(1));
         let streamed = self.assistant.streamed.clone();
+        let reasoned = self.assistant.reasoned;
+        let started = self
+            .assistant
+            .running
+            .as_ref()
+            .map(|running| running.step_started);
         let reviewing = self.assistant.review.as_ref().map(|review| review.turn);
         let open = self.assistant.open_activity.clone();
         let item = move |index: usize, _: &mut Window, _: &mut App| -> AnyElement {
@@ -639,19 +852,51 @@ impl Studio {
                     .gap(px(4.))
                     .child(UserMessage::new(("asked", index), c, asked.text.clone()))
                     .child(
-                        div()
-                            .type_scale(TypeScale::Caption)
-                            .text_color(c.text_muted)
-                            .child(asked.scope.clone()),
+                        // A way back to the passage, except while a review
+                        // holds the editor.
+                        match asked.place.clone().filter(|_| reviewing.is_none()) {
+                            Some(place) => {
+                                let studio = studio.clone();
+                                c.link(("asked-place", index), asked.scope.clone())
+                                    .max_w_full()
+                                    .type_scale(TypeScale::Caption)
+                                    .on_click(move |_, _, cx| {
+                                        studio
+                                            .update(cx, |studio, cx| {
+                                                studio.open_file(
+                                                    &place.file,
+                                                    Some(place.offset),
+                                                    cx,
+                                                )
+                                            })
+                                            .ok();
+                                    })
+                                    .into_any_element()
+                            }
+                            None => div()
+                                .type_scale(TypeScale::Caption)
+                                .text_color(c.text_muted)
+                                .child(asked.scope.clone())
+                                .into_any_element(),
+                        },
                     )
                     .into_any_element(),
                 Turn::Answered(answer) => render_answer(
                     index,
                     answer,
                     c,
-                    running_turn == Some(index),
-                    &streamed,
-                    reviewing == Some(index),
+                    started
+                        .filter(|_| running_turn == Some(index))
+                        .map(|step_started| Live {
+                            streamed: &streamed,
+                            reasoned,
+                            step_started,
+                        })
+                        .as_ref(),
+                    Shown {
+                        reviewing: reviewing == Some(index),
+                        browsing: reviewing.is_none(),
+                    },
                     open.contains(&index),
                     studio.clone(),
                 ),
@@ -664,30 +909,65 @@ impl Studio {
             c.icon_action("assistant-stop", Glyph::Stop, "Stop", ButtonKind::Secondary)
                 .on_click(cx.listener(|studio, _, _, cx| studio.stop_assistant(cx)))
         } else {
+            // Send takes the accent only when there is something to send.
+            let ready = !empty && configured;
             c.icon_action(
                 "assistant-send",
                 Glyph::ArrowUp,
                 "Send (⌘Return)",
-                ButtonKind::Primary,
+                if ready {
+                    ButtonKind::Primary
+                } else {
+                    ButtonKind::Secondary
+                },
             )
-            .disabled(empty || !configured)
+            .disabled(!ready)
             .on_click(cx.listener(|studio, _, window, cx| studio.ask(window, cx)))
         };
         let mut bar = PromptBar::new("assistant-prompt", c, self.assistant.prompt.clone());
         if reviewing.is_none() {
-            for scope in Scope::ALL {
-                bar = bar.option(
-                    c.chip(
-                        ("assistant-scope", scope as usize),
-                        scope.label(),
-                        self.assistant.scope == scope,
-                    )
-                    .on_click(cx.listener(move |studio, _, _, cx| {
-                        studio.assistant.scope = scope;
+            let entity = cx.entity();
+            let menu = self.assistant.choosing_scope.then(|| {
+                Scope::ALL.into_iter().fold(
+                    Menu::new("assistant-scopes", c).width(px(160.)),
+                    |menu, scope| {
+                        let entity = entity.clone();
+                        menu.item(
+                            MenuItem::new(scope.label())
+                                .checked(self.assistant.scope == scope)
+                                .on_click(move |_, cx| {
+                                    entity.update(cx, |studio, cx| {
+                                        studio.assistant.scope = scope;
+                                        studio.assistant.choosing_scope = false;
+                                        cx.notify();
+                                    });
+                                }),
+                        )
+                    },
+                )
+            });
+            let dismiss = entity.clone();
+            bar = bar.option(
+                MenuButton::new(
+                    "assistant-scope",
+                    c.chip("assistant-scope-chip", self.assistant.scope.label(), false)
+                        .aria_label("What the request is about")
+                        .aria_expanded(self.assistant.choosing_scope)
+                        .child(Glyph::ChevronDown.render(c.text_muted, px(12.)))
+                        .on_click(cx.listener(|studio, _, _, cx| {
+                            studio.assistant.choosing_scope = !studio.assistant.choosing_scope;
+                            cx.notify();
+                        })),
+                )
+                .above()
+                .menu(menu)
+                .on_dismiss(move |_, cx| {
+                    dismiss.update(cx, |studio, cx| {
+                        studio.assistant.choosing_scope = false;
                         cx.notify();
-                    })),
-                );
-            }
+                    });
+                }),
+            );
         } else {
             bar = bar.option(c.chip("assistant-refining", "Refining the suggestion", true));
         }
@@ -698,12 +978,9 @@ impl Studio {
             bar = bar.message(notice.clone());
         }
         div()
-            .w(px(340.))
-            .flex_none()
+            .size_full()
             .flex()
             .flex_col()
-            .border_l_1()
-            .border_color(c.hairline)
             .bg(c.surface)
             .child(
                 div()
@@ -720,6 +997,20 @@ impl Studio {
                             .type_scale(TypeScale::Caption)
                             .text_color(c.text_muted)
                             .child("Assistant"),
+                    )
+                    .child(
+                        c.icon_action(
+                            "assistant-new",
+                            Glyph::Plus,
+                            "New conversation",
+                            ButtonKind::Quiet,
+                        )
+                        .disabled(
+                            running
+                                || reviewing.is_some()
+                                || self.assistant.conversation.turns.is_empty(),
+                        )
+                        .on_click(cx.listener(|studio, _, _, cx| studio.new_conversation(cx))),
                     )
                     .child(
                         c.switch("keep-facts", "Keep facts", self.assistant.keep_facts)
@@ -759,8 +1050,9 @@ impl Studio {
     }
 }
 
-/// Ends the running step, if any, with how long it took.
-fn close_step(answer: &mut Answer, took: Duration) {
+/// Ends the running step, if any, with how long it took. A phase that
+/// streamed an answer and said nothing else keeps how much arrived.
+fn close_step(answer: &mut Answer, took: Duration, streamed: Option<String>) {
     if let Some(step) = answer
         .steps
         .iter_mut()
@@ -768,48 +1060,96 @@ fn close_step(answer: &mut Answer, took: Duration) {
         .find(|step| step.millis.is_none())
     {
         step.millis = Some(took.as_millis() as u64);
+        if step.detail.is_none() {
+            step.detail = streamed;
+        }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// `n` with thousands separated, as the column counts characters.
+fn grouped(n: usize) -> String {
+    let digits = n.to_string();
+    let mut grouped = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
+/// How much of an answer has arrived, for the phase receiving it: in the
+/// present while it is `arriving`, and as a record once the phase ends.
+fn streamed_detail(streamed: &str, reasoned: usize, arriving: bool) -> Option<String> {
+    let (written, reasoned) = (grouped(streamed.chars().count()), grouped(reasoned));
+    match (streamed.is_empty(), reasoned.as_str(), arriving) {
+        (true, "0", _) => None,
+        (true, _, true) => Some(format!("Thinking · {reasoned} characters")),
+        (true, _, false) => Some(format!("Thought for {reasoned} characters")),
+        (false, "0", true) => Some(format!("Writing · {written} characters")),
+        (false, "0", false) => Some(format!("Wrote {written} characters")),
+        (false, _, true) => Some(format!(
+            "Writing · {written} characters after {reasoned} of thinking"
+        )),
+        (false, _, false) => Some(format!(
+            "Wrote {written} characters after {reasoned} of thinking"
+        )),
+    }
+}
+
+/// The view of a run the column draws from: what is streaming now and when
+/// the running phase began.
+struct Live<'a> {
+    streamed: &'a str,
+    reasoned: usize,
+    step_started: Instant,
+}
+
 fn render_answer(
     index: usize,
     answer: &Answer,
     c: Theme,
-    running: bool,
-    streamed: &str,
-    reviewing: bool,
+    live: Option<&Live>,
+    Shown {
+        reviewing,
+        browsing,
+    }: Shown,
     open: bool,
     studio: WeakEntity<Studio>,
 ) -> AnyElement {
     let mut message = AssistantMessage::new(("answer", index), c);
     if !answer.steps.is_empty() {
-        let mut activity = ToolActivity::new(("activity", index), c).expanded(open);
-        let mut total = Duration::ZERO;
-        for (step, phase) in answer.steps.iter().enumerate() {
-            let status = match (phase.millis, &answer.outcome) {
-                (None, Outcome::Working) => ToolStatus::Running,
-                (None, _) | (Some(_), Outcome::Stopped) if step + 1 == answer.steps.len() => {
-                    ToolStatus::Cancelled
-                }
+        let last = answer.steps.len() - 1;
+        let mut steps = Steps::new(("steps", index), c).expanded(open || live.is_some());
+        for (number, phase) in answer.steps.iter().enumerate() {
+            let status = match (&answer.outcome, number == last) {
+                (Outcome::Working, true) if phase.millis.is_none() => ToolStatus::Running,
+                // The message's error card says what failed.
+                (Outcome::Failed(_), true) => ToolStatus::Failed("".into()),
+                (Outcome::Stopped | Outcome::Interrupted, true) => ToolStatus::Cancelled,
                 _ => ToolStatus::Done,
             };
-            let mut call = ToolCall::new(
-                ("step", index * 100 + step),
-                c,
-                "Studio",
-                phase.label.clone(),
-                status,
-            );
-            if let Some(millis) = phase.millis {
-                let took = Duration::from_millis(millis);
-                total += took;
-                call = call.elapsed(took);
+            let mut step = Phase::new(phase.label.clone(), status.clone());
+            match (phase.millis, live) {
+                (Some(millis), _) => step = step.elapsed(Duration::from_millis(millis)),
+                (None, Some(live)) => step = step.elapsed(live.step_started.elapsed()),
+                (None, None) => {}
             }
-            activity = activity.call(call);
+            let detail = match (&status, live) {
+                (ToolStatus::Running, Some(live)) => phase
+                    .detail
+                    .clone()
+                    .or_else(|| streamed_detail(live.streamed, live.reasoned, true)),
+                _ => phase.detail.clone(),
+            };
+            if let Some(detail) = detail {
+                step = step.detail(detail);
+            }
+            steps = steps.step(step);
         }
         let toggle = studio.clone();
-        message = message.block(activity.elapsed(total).on_toggle(move |_, cx| {
+        message = message.block(steps.on_toggle(move |_, cx| {
             toggle
                 .update(cx, |studio, cx| {
                     let open = &mut studio.assistant.open_activity;
@@ -824,26 +1164,36 @@ fn render_answer(
     }
     match &answer.outcome {
         Outcome::Working => {
-            let preview = if streamed.is_empty() {
-                "Working on it…".to_owned()
-            } else {
-                let tail: String = streamed
-                    .chars()
-                    .rev()
-                    .take(600)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect();
-                format!("```\n{tail}\n```")
-            };
-            message = message.markdown(preview).streaming(running);
+            if let Some(live) = live {
+                let preview = core_writing::preview(live.streamed);
+                if !preview.text.trim().is_empty() {
+                    message = message.block(
+                        Draft::new(("draft", index), c, preview.text.clone())
+                            .caption(format!(
+                                "Draft · {} characters",
+                                grouped(preview.text.chars().count())
+                            ))
+                            .lines(8),
+                    );
+                }
+            }
         }
         Outcome::Proposed(proposed) => {
-            message = message
-                .markdown(format!("Suggested an edit to **{}**.", proposed.file))
-                .block(proposal_card(index, proposed, c, reviewing, studio));
+            if let Some(note) = proposed.suggestion.note() {
+                message = message.markdown(note.to_owned());
+            }
+            message = message.block(proposal_card(
+                index,
+                proposed,
+                c,
+                Shown {
+                    reviewing,
+                    browsing,
+                },
+                studio,
+            ));
         }
+        Outcome::Replied(text) => message = message.markdown(text.clone()),
         Outcome::Unchanged => {
             message = message.markdown(
                 "The suggestion matched the passage as it stands, so there is nothing to \
@@ -853,8 +1203,14 @@ fn render_answer(
         Outcome::Failed(details) => {
             let code = ErrorCode::WritingProposalFailed;
             let details = details.clone();
+            let retry = studio.clone();
             message = message
                 .error(code.message())
+                .on_retry(move |_, window, cx| {
+                    retry
+                        .update(cx, |studio, cx| studio.retry(index, window, cx))
+                        .ok();
+                })
                 .on_error_details(move |_, _, cx| {
                     studio
                         .update(cx, |studio, cx| {
@@ -865,27 +1221,87 @@ fn render_answer(
         }
         Outcome::Stopped => message = message.stopped(true),
         Outcome::Interrupted => {
-            message = message.error("Studio closed before this reply finished. Ask again to retry.")
+            message = message
+                .error("Studio closed before this reply finished.")
+                .on_retry(move |_, window, cx| {
+                    studio
+                        .update(cx, |studio, cx| studio.retry(index, window, cx))
+                        .ok();
+                });
         }
     }
     message.into_any_element()
+}
+
+/// How a reply stands toward the review: whether its own suggestion is under
+/// review, and whether no review holds the editor, so files can be opened.
+#[derive(Clone, Copy)]
+struct Shown {
+    reviewing: bool,
+    browsing: bool,
 }
 
 fn proposal_card(
     index: usize,
     proposed: &Proposed,
     c: Theme,
-    reviewing: bool,
+    Shown {
+        reviewing,
+        browsing,
+    }: Shown,
     studio: WeakEntity<Studio>,
 ) -> impl IntoElement {
     let (status, pending) = match proposed.decision {
         Decision::Pending if reviewing => ("Reviewing".to_owned(), false),
-        Decision::Pending => ("Makes changes".to_owned(), true),
+        Decision::Pending => ("Ready to review".to_owned(), true),
         Decision::Kept { kept, of } if kept == of => ("Kept".to_owned(), false),
         Decision::Kept { kept, of } => (format!("Kept {kept} of {of}"), false),
         Decision::Discarded => ("Discarded".to_owned(), false),
     };
     let review = studio.clone();
+    let counts = |change: &FileChange| {
+        div()
+            .flex_none()
+            .flex()
+            .gap(px(4.))
+            .type_scale(TypeScale::Caption)
+            .code_text()
+            .child(
+                div()
+                    .text_color(c.success)
+                    .child(format!("+{}", change.added)),
+            )
+            .child(
+                div()
+                    .text_color(c.error)
+                    .child(format!("−{}", change.removed)),
+            )
+    };
+    // A file opens in the editor from its name, while no review holds it.
+    let name = |file: &str| {
+        if !browsing {
+            return div()
+                .min_w_0()
+                .truncate()
+                .child(file.to_owned())
+                .into_any_element();
+        }
+        let (open, file) = (studio.clone(), file.to_owned());
+        c.link(
+            SharedString::from(format!("open-{index}-{file}")),
+            file.clone(),
+        )
+        .text_color(c.text)
+        .on_click(move |_, _, cx| {
+            open.update(cx, |studio, cx| studio.open_file(&file, None, cx))
+                .ok();
+        })
+        .into_any_element()
+    };
+    let single = match proposed.files.as_slice() {
+        [change] => Some(change),
+        _ => None,
+    };
     div()
         .flex()
         .flex_col()
@@ -906,25 +1322,42 @@ fn proposal_card(
                 .gap(px(6.))
                 .child(
                     div()
-                        .flex_1()
                         .min_w_0()
-                        .truncate()
                         .font_weight(FontWeight::MEDIUM)
-                        .child(format!("Edit {}", proposed.file)),
+                        .child(match single {
+                            Some(change) => name(&change.file),
+                            None => format!("{} files", proposed.files.len()).into_any_element(),
+                        }),
                 )
+                .children(single.map(counts))
+                .child(div().flex_1())
                 .child(
                     div()
+                        .flex_none()
                         .type_scale(TypeScale::Caption)
                         .text_color(if pending { c.accent } else { c.text_muted })
                         .child(status),
                 ),
         )
-        .child(
-            div()
-                .type_scale(TypeScale::Small)
-                .text_color(c.text_muted)
-                .child(format!("+{} −{} lines", proposed.added, proposed.removed)),
-        )
+        .when(single.is_none(), |card| {
+            card.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .type_scale(TypeScale::Small)
+                    .text_color(c.text_muted)
+                    .children(proposed.files.iter().map(|change| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(name(&change.file))
+                            .child(div().flex_1())
+                            .child(counts(change))
+                    })),
+            )
+        })
         .when(pending, |card| {
             card.child(
                 div()

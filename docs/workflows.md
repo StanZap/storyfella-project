@@ -27,20 +27,41 @@ in SF-PLAN-28.
 
 ### The assistant
 
-Write docks the assistant on its right. A project has one conversation, kept
-in the story's `workflows.sqlite3` beside `story.db` and reloaded when the
-story opens. A turn is a request and its reply; a reply lists the steps the
-workflow took, with their times, and ends in one outcome: a suggestion, no
+Write docks the assistant on its right; dragging the dividers resizes it
+and the file list, for as long as Studio runs, and double-clicking one
+restores its width. A project has one conversation, kept in the story's
+`workflows.sqlite3` beside `story.db` and reloaded when the story opens. New
+conversation, in the column's header, clears it; it is unavailable while a
+reply runs or a suggestion is under review. A turn is a request and its reply; a reply lists the steps the
+workflow took and ends in one outcome: a suggestion, an answer in prose, no
 change, stopped, failed, or interrupted (Studio closed while it ran).
 
-A request names its passage with the scope chips: Selection, the Beat or Scene
-around the caret, or the whole File. The passage, the instructions and Keep
+While a reply runs, its steps stay open: Starting the text model (with the
+model and its address, or "Loading … on this computer" for a managed one),
+Writing, Checking the edit, and Fixing the edit (1 of 2) when a check fails.
+The running step's time counts up each second, and its line says what is
+arriving — "Thinking · 1,419 characters" while a reasoning model reasons,
+"Writing · 201 characters" once the answer starts — with the answer's
+readable part shown as a draft underneath. A finished step keeps a record of
+what it found: "Wrote 201 characters after 3,198 of thinking", "The story
+still compiles", or the first of its problems. When the reply ends, the steps
+fold to "Worked for 12.7s · 3 steps" — "Ran for 12.7s" when it failed — which
+opens them again.
+
+A request names its reach with the scope chip beside Send, which opens a
+menu of Selection, the Beat or Scene around the caret, the whole File, or the
+Project — every story file. The passage, the instructions and Keep
 facts (on by default) are captured when the request is sent; editing
-afterwards does not change it. An empty file, or Selection with nothing
-selected, is refused under the prompt, and the prompt keeps its text. Without a
+afterwards does not change it. The caption under the request names the
+passage, and opens it in the editor while no review is open. An empty file,
+or Selection with nothing selected, is refused under the prompt, and the
+prompt keeps its text. Without a
 text provider in Settings, the prompt says so and Send is disabled.
 
-A suggestion arrives as a card with its line counts. Review replaces the
+A request that is not an edit — a greeting, a question about the story — is
+answered in prose, and nothing is checked or changed. A suggestion arrives
+with what the model said about it, if anything, and a card naming the file
+and the lines it adds and removes. Review replaces the
 editor with a read-only diff of the file; each change is kept or reset, and
 Keep all / Discard all decide the rest. The story changes once, when the
 review ends, as one undoable edit of the kept changes. Reviewing is refused if
@@ -49,9 +70,22 @@ is open refines it: the kept changes are applied, and the same passage is
 asked for again with both instructions. The card records what was decided —
 Kept, Kept 2 of 3, Discarded.
 
-A failed reply shows the code's label ("Could not create a writing
-suggestion") with Details, which opens the shared details dialog (DESIGN.md
-§2).
+A Project request runs the project workflow below. Its steps are Planning
+(with the files it will change), Writing each of those files — "Writing
+chapter.sf (part 2 of 3)" for a long one — and Checking the story. Its card
+lists every changed file with its line counts. Review opens the first file's
+diff; deciding a file's last change moves on to the next file with changes
+left, and the review bar steps between files. Nothing is written until the
+review ends, when every file's kept changes become one undoable edit. A
+review is refused if any of its files changed since the suggestion was
+written, whether or not that file is open.
+
+A failed reply says so once, in a card under its steps: the code's label
+("Could not create a writing suggestion"), Try again, which sends the same
+words about what the scope names now, and Details, which opens the shared
+details dialog (DESIGN.md §2). Expanding the steps marks the one that
+failed. A reply interrupted by Studio closing offers Try again too. A file
+name on a suggestion's card opens that file while no review is open.
 
 ### The writing workflow
 
@@ -67,10 +101,24 @@ assets; the complete source supplies validation context for surrounding
 structure and cross-scene links. File scope captures the complete source,
 including comments and boundary whitespace. Responses regain captured
 indentation, line endings and terminal blank lines that a provider may have
-trimmed; a partial-line selection is not reindented. Before review, the
-replacement is inserted into the captured document and compiled. Invalid or
-empty output triggers up to two repair attempts using the original request,
-the rejected replacement and compiler diagnostics; repair runs link to their
+trimmed; a partial-line selection is not reindented. The model answers in one of two forms: the replacement in a fenced block,
+with an optional sentence about it, or prose with no block when the request
+is not an edit. `writing::interpret` reads either, and also an unfenced
+replacement — taken as source when most of its lines are statements, or when
+the passage is part of one line — and drops `<think>` reasoning, including a
+closing tag whose opening tag the server stripped. A prose answer to the
+first attempt becomes the reply and skips the repairs; prose during a repair
+counts as an empty replacement. A whole-file answer to a smaller passage is
+cut back to the passage when the text around it is unchanged. An answer cut
+off at the provider's output limit fails the run rather than being checked.
+A draft that already has errors is worked on like any other: the model is
+given them as `existing_problems`, so asking to fix them works, and an edit is
+held only to adding none — errors are matched by code and message, as many
+times as the draft has each. The check's line says "The story compiles now",
+"Fixes 1 of 2 problems" or "No new problems". Before review, the
+replacement is inserted into the captured document and compiled. Empty output,
+or output that adds errors, triggers up to two repair attempts using the
+original request, the rejected replacement and compiler diagnostics; repair runs link to their
 preceding attempt in the run store. Only a valid result becomes a suggestion,
 so compilation guarantees structural validity, not narrative quality or
 instruction fidelity. Stop cancels drafting and repair; a provider may
@@ -78,6 +126,25 @@ continue remote compute after local cancellation.
 
 Each request stores its exact source, byte range, project and source paths. A
 suggestion applies only to that same source.
+
+### The project workflow
+
+`storyfella_studio_core::workflows::novel` runs a request about the whole
+story. It plans first: the model reads the instructions against every file's
+text when the story is under 24 KiB, or each file's path, scenes and size
+when it is larger, and answers either in prose — the reply, after one call —
+or with a JSON plan naming the files to change and a note on what it will
+do. A plan naming a file the story does not have is sent back, up to twice.
+Each planned file is rewritten in fragments of at most 2 KiB, split between
+lines, each answered as one fenced block; an answer in prose is sent back.
+The changed files are then compiled together with the rest of the project.
+As in the writing workflow, a story that already has errors is worked on: the
+plan and each file's fragments are given them, and the result is held to
+adding none. A file with new errors is sent back whole, with its errors, up to
+twice; a file
+too long to send back whole fails the run with the errors listed by file and
+line. Every model call after the first is a run linked to the first in the
+run store. The same workflow serves live MCP's novel tools.
 
 ## Atelier
 

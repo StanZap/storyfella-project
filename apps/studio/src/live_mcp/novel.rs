@@ -15,7 +15,7 @@ use storyfella_studio_core::{
     desktop_bridge::{Failure, NovelCommand, Reply, Request},
     planner::PlannerBackend,
     workflows::{
-        novel::{self, NovelProposal, NovelRequest},
+        novel::{self, NovelRequest, NovelResult},
         writing::WritingAction,
         RunStore,
     },
@@ -33,7 +33,7 @@ struct Job {
     session: Uuid,
     epoch: Uuid,
     cancel: Arc<AtomicBool>,
-    result: Option<Result<Option<NovelProposal>, String>>,
+    result: Option<Result<Option<NovelResult>, String>>,
 }
 
 impl Jobs {
@@ -118,7 +118,8 @@ impl Jobs {
                     let job = jobs.get(&job).filter(|job| job.session == session && job.epoch == current).ok_or_else(|| Failure::new("unknown_job", "Start a novel-writing job on this connection."))?;
                     Ok(match &job.result {
                         None => json!({"status":"running"}),
-                        Some(Ok(Some(proposal))) => json!({"status":"ready", "files":proposal.files, "run_id":proposal.run_id}),
+                        Some(Ok(Some(NovelResult::Proposal(proposal)))) => json!({"status":"ready", "files":proposal.files, "note":proposal.note, "run_id":proposal.run_id}),
+                        Some(Ok(Some(NovelResult::Reply { text, run_id }))) => json!({"status":"answered", "message":text, "run_id":run_id}),
                         Some(Ok(None)) => json!({"status":"cancelled"}),
                         Some(Err(error)) => json!({"status":"failed", "message":error}),
                     })
@@ -135,7 +136,7 @@ impl Jobs {
                     let proposal = {
                         let jobs = self.jobs.borrow();
                         let job = jobs.get(&job).filter(|job| job.session == session && job.epoch == current).ok_or_else(|| Failure::new("unknown_job", "Start a novel-writing job on this connection."))?;
-                        match &job.result { Some(Ok(Some(proposal))) => proposal.clone(), _ => return Err(Failure::new("job_not_ready", "Wait for a completed suggestion.")) }
+                        match &job.result { Some(Ok(Some(NovelResult::Proposal(proposal)))) => proposal.clone(), _ => return Err(Failure::new("job_not_ready", "Wait for a completed suggestion.")) }
                     };
                     let applied = proposal.clone();
                     owned(state, move |app| app.apply_novel_proposal(&applied).map_err(|error| Failure::new("stale_or_invalid", &error))).await?;
@@ -194,13 +195,14 @@ mod tests {
                 preserve_facts: true,
                 catalog_digest: novel::catalog_digest(&state.borrow().registry).unwrap(),
             };
-            let proposal = NovelProposal {
+            let proposal = storyfella_studio_core::workflows::novel::NovelProposal {
                 run_id: "fixture".into(),
                 request,
                 files: std::collections::BTreeMap::from([(
                     "chapter.sf".into(),
                     "scene harbor\n  narrate: new\n  end\n".into(),
                 )]),
+                note: None,
             };
             let id = Uuid::new_v4();
             let mut jobs = Jobs::default();
@@ -210,7 +212,7 @@ mod tests {
                     session,
                     epoch,
                     cancel: Arc::new(AtomicBool::new(false)),
-                    result: Some(Ok(Some(proposal))),
+                    result: Some(Ok(Some(NovelResult::Proposal(proposal)))),
                 },
             );
             let request = |command| Request {
@@ -268,14 +270,18 @@ mod tests {
                 };
                 let session = Uuid::new_v4();
                 let epoch = state.borrow().authoring_lease.as_ref().unwrap().epoch();
-                let model = agentkit_ai::providers::fake::FakeChatModel::new_streaming([vec![
-                    agentkit_ai::ChatStreamEvent::TextDelta {
-                        content:
-                            r#"{"files":{"story.sf":"scene harbor\n  narrate: new\n  end\n"}}"#
-                                .into(),
-                    },
-                    agentkit_ai::ChatStreamEvent::Done,
-                ]]);
+                let reply = |content: &str| {
+                    vec![
+                        agentkit_ai::ChatStreamEvent::TextDelta {
+                            content: content.into(),
+                        },
+                        agentkit_ai::ChatStreamEvent::Done,
+                    ]
+                };
+                let model = agentkit_ai::providers::fake::FakeChatModel::new_streaming([
+                    reply(r#"{"files":["story.sf"],"note":"Renew it."}"#),
+                    reply("```storyfella\nscene harbor\n  narrate: new\n  end\n```"),
+                ]);
                 let mut jobs = Jobs {
                     model: Some(Arc::new(model)),
                     ..Default::default()

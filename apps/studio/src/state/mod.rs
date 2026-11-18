@@ -508,38 +508,57 @@ impl AppState {
         &mut self,
         proposal: &storyfella_studio_core::workflows::novel::NovelProposal,
     ) -> Result<(), String> {
+        let project = self.project_path.as_deref().ok_or("Open a project first")?;
+        let current = self.workspace_snapshot()?;
+        let proposed = proposal
+            .validate(project, &current, &self.registry)
+            .map_err(|error| error.to_string())?;
+        let texts = proposal
+            .files
+            .keys()
+            .map(|file| (file.clone(), proposed.files[file].clone()))
+            .collect();
+        self.set_sources(&current, texts)
+    }
+
+    /// Replaces what several files say as one undoable draft change. Each
+    /// file must still say what it said in `base`.
+    pub(crate) fn set_sources(
+        &mut self,
+        base: &storyfella_compiler::SourceWorkspace,
+        texts: std::collections::BTreeMap<String, String>,
+    ) -> Result<(), String> {
         if self.operation_in_progress || self.catalog_conflict.is_some() {
             return Err(
                 "Finish the current operation or resolve the catalog conflict first.".into(),
             );
         }
-        let project = self.project_path.as_deref().ok_or("Open a project first")?;
         let entry_path = self.story.path().ok_or("Open a story first")?.to_owned();
         let current = self.workspace_snapshot()?;
-        let proposed = proposal
-            .validate(project, &current, &self.registry)
-            .map_err(|error| error.to_string())?;
+        for file in texts.keys() {
+            if current.files.get(file) != base.files.get(file) {
+                return Err(format!("{file} changed while preparing the suggestion"));
+            }
+        }
         let mut before = match &self.additional_sources {
             Some(sources) => sources.clone(),
             None => AdditionalSources::new(&entry_path).map_err(|error| error.to_string())?,
         };
-        for file in proposal.files.keys().filter(|file| *file != &current.entry) {
-            let document = before.open(file).map_err(|error| error.to_string())?;
-            if Some(document.source()) != current.files.get(file).map(String::as_str) {
-                return Err(format!("{file} changed while preparing the suggestion"));
-            }
+        for file in texts.keys().filter(|file| *file != &current.entry) {
+            before.open(file).map_err(|error| error.to_string())?;
         }
         let mut after = before.clone();
-        for file in proposal.files.keys().filter(|file| *file != &current.entry) {
+        for (file, text) in texts.iter().filter(|(file, _)| *file != &current.entry) {
             after
-                .set_source(file, proposed.files[file].clone())
+                .set_source(file, text.clone())
                 .map_err(|error| error.to_string())?;
         }
         self.additional_sources = Some(before);
         self.snapshot_for_undo();
         self.additional_sources = Some(after);
-        self.story
-            .set_source(proposed.files[&current.entry].clone());
+        if let Some(entry) = texts.get(&current.entry) {
+            self.story.set_source(entry.clone());
+        }
         self.reconcile_story();
         self.has_unsaved_changes = true;
         Ok(())
@@ -1175,6 +1194,7 @@ mod tests {
                     "scene harbor\n  narrate: new\n  end\n".into(),
                 ),
             ]),
+            note: None,
         };
         state.apply_novel_proposal(&proposal).unwrap();
         assert!(state.story.source().starts_with("# revised"));
@@ -1664,6 +1684,7 @@ mod tests {
             run_id: "test".into(),
             replacement: request.original().replace("quiet", "restless"),
             request,
+            note: None,
         };
         let registry = state.registry.clone();
         state.apply_writing_proposal(&proposal).unwrap();

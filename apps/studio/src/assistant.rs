@@ -1,5 +1,6 @@
-//! What the assistant column asks of the writing workflow: which passage a
-//! request is about, and running it off the UI thread. Nothing here draws.
+//! What the assistant column asks of the writing workflows: which passage —
+//! or the whole project — a request is about, and running it off the UI
+//! thread. Nothing here draws.
 use std::{ops::Range, path::PathBuf};
 
 use storyfella_language::{Source, Span};
@@ -7,15 +8,17 @@ use storyfella_studio_core::{
     planner::PlannerBackend,
     registry::ArtifactRegistry,
     workflows::{
+        assistant::{Place, Suggestion},
         framework::SharedStreamingModel,
-        writing::{self, WritingAction, WritingProposal, WritingRequest, WritingScope},
+        novel::{self, NovelRequest, NovelResult},
+        writing::{self, WritingAction, WritingRequest, WritingResult, WritingScope},
         Cancellation, Feedback, RunStore,
     },
 };
 
 use crate::{state::AppState, writing as files};
 
-/// The passage a request is about.
+/// What a request is about: a passage of the open file, or every file.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Scope {
     Selection,
@@ -23,10 +26,17 @@ pub enum Scope {
     Beat,
     Scene,
     File,
+    Project,
 }
 
 impl Scope {
-    pub const ALL: [Self; 4] = [Self::Selection, Self::Beat, Self::Scene, Self::File];
+    pub const ALL: [Self; 5] = [
+        Self::Selection,
+        Self::Beat,
+        Self::Scene,
+        Self::File,
+        Self::Project,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -34,8 +44,53 @@ impl Scope {
             Self::Beat => "Beat",
             Self::Scene => "Scene",
             Self::File => "File",
+            Self::Project => "Project",
         }
     }
+}
+
+/// A request as sent: one passage of a file, or the whole project.
+#[derive(Clone, Debug)]
+pub enum Request {
+    Passage {
+        file: String,
+        request: WritingRequest,
+    },
+    Project(NovelRequest),
+}
+
+impl Request {
+    /// How the request's reach reads under it, such as "Beat · lines 4–9 of
+    /// chapter.sf" or "Project · 3 files".
+    pub fn describe(&self, scope: Scope) -> String {
+        match self {
+            Self::Passage { file, request } => {
+                describe(scope, file, &request.source, request.range)
+            }
+            Self::Project(request) => match request.workspace.files.len() {
+                1 => "Project · 1 file".into(),
+                count => format!("Project · {count} files"),
+            },
+        }
+    }
+
+    /// Where the passage begins; none for the whole project.
+    pub fn place(&self) -> Option<Place> {
+        match self {
+            Self::Passage { file, request } => Some(Place {
+                file: file.clone(),
+                offset: request.range.start,
+            }),
+            Self::Project(_) => None,
+        }
+    }
+}
+
+/// How a request was answered.
+#[derive(Clone, Debug)]
+pub enum Answered {
+    Edit(Box<Suggestion>),
+    Reply(String),
 }
 
 /// Where the story's workflow runs and conversation are kept.
@@ -60,9 +115,48 @@ pub fn describe(scope: Scope, file: &str, source: &str, range: Span) -> String {
     }
 }
 
-/// A rewrite of the passage of `file` that `scope` names around the caret,
-/// following `instructions`.
+/// A request about what `scope` names: the passage of `file` around the
+/// caret, or the whole project, following `instructions`.
 pub fn capture(
+    state: &AppState,
+    file: &str,
+    scope: Scope,
+    selection: Range<usize>,
+    instructions: &str,
+    keep_facts: bool,
+) -> Result<Request, String> {
+    if scope == Scope::Project {
+        return capture_project(state, instructions, keep_facts).map(Request::Project);
+    }
+    capture_passage(state, file, scope, selection, instructions, keep_facts).map(|request| {
+        Request::Passage {
+            file: file.to_owned(),
+            request,
+        }
+    })
+}
+
+/// Every file of the story as it stands in the editor, drafts included.
+pub fn capture_project(
+    state: &AppState,
+    instructions: &str,
+    keep_facts: bool,
+) -> Result<NovelRequest, String> {
+    let project = state.project_path.clone().ok_or("Open a story first.")?;
+    let workspace = state.workspace_snapshot()?;
+    Ok(NovelRequest {
+        project,
+        workspace,
+        action: WritingAction::Rewrite,
+        instructions: instructions.trim().to_owned(),
+        preserve_facts: keep_facts,
+        catalog_digest: novel::catalog_digest(&state.registry)
+            .map_err(|error| error.to_string())?,
+    })
+}
+
+/// A rewrite of the passage of `file` that `scope` names around the caret.
+pub fn capture_passage(
     state: &AppState,
     file: &str,
     scope: Scope,
@@ -90,7 +184,7 @@ pub fn capture(
         Scope::Selection => WritingScope::Selection(Span::new(selection.start, selection.end)),
         Scope::Beat => WritingScope::Beat(selection.start),
         Scope::Scene => WritingScope::Scene(selection.start),
-        Scope::File => WritingScope::File,
+        Scope::File | Scope::Project => WritingScope::File,
     };
     let mut request =
         WritingRequest::capture(project, &folder.join(file), source, scope, &state.registry)
@@ -109,30 +203,63 @@ pub enum Engine {
     Model(SharedStreamingModel),
 }
 
-/// Runs `request` to a proposal on its own runtime; meant for a worker
-/// thread. `Ok(None)` means it was cancelled.
+/// Runs `request` to a suggestion or a reply on its own runtime; meant for a
+/// worker thread. `Ok(None)` means it was cancelled.
 pub fn suggest(
-    request: WritingRequest,
+    request: Request,
     engine: Engine,
     registry: ArtifactRegistry,
     store: PathBuf,
     cancel: Cancellation,
     feedback: impl Fn(Feedback) + Send + Sync + 'static,
-) -> anyhow::Result<Option<WritingProposal>> {
+) -> anyhow::Result<Option<Answered>> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async move {
         let store = RunStore::open(&store)?;
-        match engine {
-            Engine::Provider(backend) => {
-                writing::run_with_backend(request, &backend, &registry, &store, cancel, feedback)
-                    .await
+        Ok(match request {
+            Request::Passage { file, request } => {
+                let result = match engine {
+                    Engine::Provider(backend) => {
+                        writing::run_with_backend(
+                            request, &backend, &registry, &store, cancel, feedback,
+                        )
+                        .await?
+                    }
+                    Engine::Model(model) => {
+                        writing::run_with_model(request, model, &registry, &store, cancel, feedback)
+                            .await?
+                    }
+                };
+                result.map(|result| match result {
+                    WritingResult::Proposal(proposal) => {
+                        Answered::Edit(Box::new(Suggestion::Passage { file, proposal }))
+                    }
+                    WritingResult::Reply { text, .. } => Answered::Reply(text),
+                })
             }
-            Engine::Model(model) => {
-                writing::run_with_model(request, model, &registry, &store, cancel, feedback).await
+            Request::Project(request) => {
+                let result = match engine {
+                    Engine::Provider(backend) => {
+                        novel::run_with_backend(
+                            request, &backend, &registry, &store, cancel, feedback,
+                        )
+                        .await?
+                    }
+                    Engine::Model(model) => {
+                        novel::run_with_model(request, model, &registry, &store, cancel, feedback)
+                            .await?
+                    }
+                };
+                result.map(|result| match result {
+                    NovelResult::Proposal(proposal) => {
+                        Answered::Edit(Box::new(Suggestion::Project(proposal)))
+                    }
+                    NovelResult::Reply { text, .. } => Answered::Reply(text),
+                })
             }
-        }
+        })
     })
 }
 

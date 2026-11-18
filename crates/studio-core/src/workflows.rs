@@ -31,6 +31,11 @@ pub enum Feedback {
     Text(String),
     /// A new writing phase; discard provisional text from the previous phase.
     Status(String),
+    /// More about the current phase, such as which model is loading or what
+    /// a check found. It replaces the phase's previous detail.
+    Detail(String),
+    /// The model's reasoning, streamed apart from its answer.
+    Reasoning(String),
 }
 
 /// One database beside the owning project (or under the app's own data root).
@@ -202,10 +207,14 @@ pub async fn execute(
     let feedback = Arc::new(feedback);
     let stream = feedback.clone();
     let mut controller = WorkflowRunController::new(runner, state, store).with_delta_observer(
-        Arc::new(move |_, delta| {
-            if let agentkit_ai::ChatStreamEvent::TextDelta { content } = delta {
-                stream(Feedback::Text(content.clone()));
+        Arc::new(move |_, delta| match delta {
+            agentkit_ai::ChatStreamEvent::TextDelta { content } => {
+                stream(Feedback::Text(content.clone()))
             }
+            agentkit_ai::ChatStreamEvent::ReasoningDelta { content } => {
+                stream(Feedback::Reasoning(content.clone()))
+            }
+            _ => {}
         }),
     );
     let mut polling = tokio::time::interval(Duration::from_millis(25));
@@ -252,12 +261,11 @@ pub async fn execute(
     match state.status {
         WorkflowRunStatus::Completed | WorkflowRunStatus::Cancelled => Ok(state),
         WorkflowRunStatus::Failed => match &state.outcome {
-            Some(WorkflowRunOutcome::Failed(error)) => bail!(
-                "{}: {} {}",
-                error.code.title(),
-                error.detail,
-                error.code.hint()
-            ),
+            // The code's hint is written for the framework's own hosts; the
+            // detail says what happened, and Studio's catalog says what to do.
+            Some(WorkflowRunOutcome::Failed(error)) => {
+                bail!("{}: {}", error.code.title(), error.detail)
+            }
             _ => bail!("The workflow failed without saying why."),
         },
         _ => bail!("Workflow paused without an application handler"),

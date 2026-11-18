@@ -38,6 +38,17 @@ impl PlannerBackend {
         self.deployment.is_some()
     }
 
+    /// The model a request will reach, and whether Studio starts it: what
+    /// the person waits on before any text arrives.
+    pub fn describe(&self) -> Option<String> {
+        let deployment = self.deployment.as_ref()?;
+        Some(if deployment.server.is_some() {
+            format!("Loading {} on this computer", deployment.model)
+        } else {
+            format!("{} at {}", deployment.model, deployment.base_url)
+        })
+    }
+
     pub fn set_config(&mut self, config: &AppConfig) {
         *self = Self::new(config);
     }

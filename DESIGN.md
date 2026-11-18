@@ -484,11 +484,11 @@ area uses the available panel height, with Suggestion/Original comparison and
 fixed Accept suggestion/Discard actions. Source text has one scroll container;
 normal review contains no filesystem paths. Closing returns focus to the source.
 
-Review groups new compiler notes and suppresses warnings already present in the
-captured draft. Generation validates the complete proposed document and repairs
+Generation validates the complete proposed document and repairs
 invalid output automatically, with at most two repair attempts. Only valid
 results reach review; exhaustion becomes a contextual recovery notice. A draft
-with existing source errors is rejected before model submission. Live registry
+with existing source errors is still worked on; the model is told about them,
+and a result is held only to adding none. Live registry
 changes can still invalidate a retained suggestion, so acceptance rechecks the
 current compiler state. Operational
 failures appear once in the panel with retry, settings and Details, preserving
@@ -500,8 +500,8 @@ An isolated macOS release build with a local streaming fixture verified a long
 suggestion, scrolling with actions pinned, Original comparison, acceptance and
 one toolbar Undo, a single HTTP-failure notice and its details dialog. A malformed
 scratch config verified the startup recovery layout. No real provider call was
-made in these UI checks. Regression coverage verifies grouped new notes,
-suppressed existing warnings and blocking source errors. Workspace checks/tests
+made in these UI checks. Regression coverage verifies that a draft with
+errors is still edited and that an edit adding errors is repaired. Workspace checks/tests
 and strict Studio/core Clippy pass. Other-platform and assistive-technology
 acceptance remain open.
 

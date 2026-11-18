@@ -23,9 +23,12 @@ meets its acceptance criteria.
     were removed.
   - [x] Failures are an indication plus one Details dialog (DESIGN.md §2), in
     the status bar, the assistant and Settings.
+  - [x] Project scope in the assistant: the novel-wide request plans which
+    files change, rewrites only those, compiles the project and repairs the
+    files that break it; the review steps through each file and keeps the
+    result as one undoable edit.
   - [ ] Assistant tools: Studio's story tools always, Atelier's while it
-    runs, every edit reviewed; then plans as assistant workflows and the
-    novel-wide request (now reachable only over live MCP).
+    runs, every edit reviewed; then plans as assistant workflows.
   - [ ] Play split beside the source, with the line on stage highlighted.
   - [ ] Find references in Write (the language reports them; nothing lists
     them yet).
@@ -43,7 +46,7 @@ meets its acceptance criteria.
   - [ ] Capture the project source inventory and draft baselines, including
     files outside the entry's current include graph. Define explicit create,
     replace and delete changes and validate the resulting include graph.
-  - [ ] Split model work into bounded tasks coordinated by a shared plan. Keep
+  - [x] Split model work into bounded tasks coordinated by a shared plan. Keep
     context, task results and cancellation in the workflow run; validate the
     combined result before offering it for review.
   - [ ] Extend draft state and undo to represent file existence as well as text.
@@ -52,6 +55,7 @@ meets its acceptance criteria.
     unrelated files or deleting newer data.
   - [ ] Render every proposed file change in the Writer, including additions and
     removals, and expose the same proposal and apply behavior through live MCP.
+    Replacements of existing files are reviewed file by file in Write today.
     Test real workflow execution with varied responses, stale snapshots,
     cancellation and interrupted publication.
 
