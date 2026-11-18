@@ -980,6 +980,7 @@ impl Render for Studio {
                     .child(self.palette.clone())
             }))
             .child(self.render_rename(cx))
+            .child(self.render_trouble(cx))
             .child(self.render_error(cx))
     }
 }

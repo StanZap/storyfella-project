@@ -260,3 +260,34 @@ fn write_shows_the_problems_of_the_open_file_and_renames_a_scene(cx: &mut TestAp
     );
     assert_eq!(trial.editor_text(), "scene dock\n  goto dock\n");
 }
+
+#[gpui::test]
+fn a_story_that_cannot_open_is_a_row_whose_details_open_on_request(cx: &mut TestAppContext) {
+    let mut trial = Trial::new(cx);
+    let projects = trial.read(|studio| studio.config.project_dir.clone());
+    let gone = projects.join("gone/story.db");
+    std::fs::create_dir_all(&projects).unwrap();
+    std::fs::write(
+        projects.join("recent-projects.json"),
+        serde_json::to_vec(&[&gone]).unwrap(),
+    )
+    .unwrap();
+    trial.act(|studio, window, cx| studio.show(Place::Home, window, cx));
+    let listed = trial.read(|studio| studio.home.recents.clone());
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0]
+        .trouble
+        .as_ref()
+        .is_some_and(|trouble| trouble.missing));
+    assert!(
+        trial.read(|studio| studio.home.trouble.is_none()),
+        "details wait to be asked for"
+    );
+
+    // Activating the row, or its warning, opens the details.
+    trial.act(|studio, _, cx| studio.show_trouble(listed[0].clone(), cx));
+    assert!(trial.read(|studio| studio.home.trouble.is_some()));
+    trial.act(|studio, _, cx| studio.forget(&gone, cx));
+    assert!(trial.read(|studio| studio.home.trouble.is_none()));
+    assert!(trial.read(|studio| studio.home.recents.is_empty()));
+}

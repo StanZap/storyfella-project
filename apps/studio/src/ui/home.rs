@@ -2,7 +2,8 @@
 use std::time::SystemTime;
 
 use design_system::{
-    ButtonKind, Glyph, ListBox, ListRow, TextField, TextFieldEvent, Theme, TypeScale, Typography,
+    ButtonKind, Dialog, Glyph, ListBox, ListRow, TextField, TextFieldEvent, Theme, TypeScale,
+    Typography,
 };
 use gpui_kit::{prelude::*, *};
 use storyfella_studio_core::config::AppConfig;
@@ -20,6 +21,8 @@ pub struct Home {
     notices: Vec<String>,
     scanned: bool,
     highlighted: Option<usize>,
+    /// The unreadable project whose details are open.
+    pub(super) trouble: Option<RecentProject>,
     scroll: UniformListScrollHandle,
     list_focus: FocusHandle,
     scanning: Option<Task<()>>,
@@ -50,6 +53,7 @@ impl Home {
             notices: Vec::new(),
             scanned: false,
             highlighted: None,
+            trouble: None,
             scroll: UniformListScrollHandle::new(),
             list_focus: cx.focus_handle(),
             scanning: None,
@@ -216,9 +220,10 @@ impl Studio {
                 .collect();
             let len = rows.len();
             let theme = c;
-            let opened = rows.iter().map(|row| row.path.clone()).collect::<Vec<_>>();
+            let opened = rows.clone();
             let studio = cx.entity().downgrade();
             let highlight = studio.clone();
+            let details = studio.clone();
             ListBox::new(
                 "recents",
                 "Recent stories",
@@ -227,6 +232,33 @@ impl Studio {
                 len,
                 move |index, _, _| {
                     let project = &rows[index];
+                    if let Some(trouble) = &project.trouble {
+                        let details = details.clone();
+                        let shown = rows[index].clone();
+                        return ListRow::new(project.name.clone())
+                            .glyph(Glyph::Folder)
+                            .detail(if trouble.missing {
+                                "Not found"
+                            } else {
+                                "Cannot open"
+                            })
+                            .trailing(
+                                theme
+                                    .icon_action(
+                                        ("trouble", index),
+                                        Glyph::Warning,
+                                        "Why this story cannot open",
+                                        ButtonKind::Quiet,
+                                    )
+                                    .on_click(move |_, _, cx| {
+                                        cx.stop_propagation();
+                                        let shown = shown.clone();
+                                        details
+                                            .update(cx, |studio, cx| studio.show_trouble(shown, cx))
+                                            .ok();
+                                    }),
+                            );
+                    }
                     let (status, color) = match &project.problems {
                         Ok(problems) if problems.errors > 0 => (problems.summary(), theme.error),
                         Ok(problems) if problems.warnings > 0 => {
@@ -257,9 +289,15 @@ impl Studio {
                     .ok();
             })
             .on_activate(move |index, _, cx| {
-                let path = opened[index].clone();
+                let project = opened[index].clone();
                 studio
-                    .update(cx, |studio, cx| studio.open_project(&path, cx))
+                    .update(cx, |studio, cx| {
+                        if project.trouble.is_some() {
+                            studio.show_trouble(project, cx);
+                        } else {
+                            studio.open_project(&project.path, cx);
+                        }
+                    })
                     .ok();
             })
             .into_any_element()
@@ -267,17 +305,17 @@ impl Studio {
         div()
             .id("home")
             .size_full()
-            .overflow_y_scroll()
             .flex()
             .flex_col()
             .items_center()
             .child(
                 div()
                     .w_full()
+                    .h_full()
                     .max_w(px(720.))
                     .px(px(24.))
                     .pt(px(88.))
-                    .pb(px(48.))
+                    .pb(px(32.))
                     .flex()
                     .flex_col()
                     .gap(px(28.))
@@ -296,6 +334,8 @@ impl Studio {
                     .child(start)
                     .child(
                         div()
+                            .flex_1()
+                            .min_h_0()
                             .flex()
                             .flex_col()
                             .gap(c.metrics.space * 2.)
@@ -308,7 +348,8 @@ impl Studio {
                             .child(home.search.clone())
                             .child(
                                 div()
-                                    .h(px(360.))
+                                    .flex_1()
+                                    .min_h_0()
                                     .rounded(c.radius_panel)
                                     .border_1()
                                     .border_color(c.hairline)
@@ -324,10 +365,124 @@ impl Studio {
                                     .type_scale(TypeScale::Small)
                                     .text_color(c.warning)
                                     .child(Glyph::Warning.render(c.warning, c.metrics.icon))
-                                    .child(notice.clone())
+                                    .child(div().truncate().child(notice.clone()))
                             })),
                     ),
             )
+    }
+
+    pub(super) fn show_trouble(&mut self, project: RecentProject, cx: &mut Context<Self>) {
+        self.home.trouble = Some(project);
+        cx.notify();
+    }
+
+    pub(super) fn forget(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        match crate::recents::forget_project(&self.config.project_dir, path) {
+            Ok(()) => {
+                self.home.trouble = None;
+                self.home.highlighted = None;
+                self.home.rescan(&self.config, cx);
+            }
+            Err(message) => self.report_message(message, cx),
+        }
+        cx.notify();
+    }
+
+    /// Why a listed story cannot open, drawn over the window.
+    pub(super) fn render_trouble(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let c = self.theme;
+        let studio = cx.entity().downgrade();
+        let close = studio.clone();
+        let dismiss = studio.clone();
+        let project = self.home.trouble.clone();
+        let title = project.as_ref().map_or_else(String::new, |project| {
+            format!("{} cannot open", project.name)
+        });
+        let mut dialog = Dialog::new("story-trouble", title, c)
+            .open(project.is_some())
+            .width(px(560.));
+        if let Some((project, trouble)) = project.and_then(|project| {
+            let trouble = project.trouble.clone()?;
+            Some((project, trouble))
+        }) {
+            let path = project.path.clone();
+            dialog = dialog.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .child(if trouble.missing {
+                        "Nothing is at this path any more. It may have been moved or deleted."
+                    } else {
+                        "Studio could not read this story. It may have been saved by an older version of Studio."
+                    })
+                    .child(
+                        div()
+                            .type_scale(TypeScale::Small)
+                            .text_color(c.text_muted)
+                            .child(path.display().to_string()),
+                    )
+                    .when(!trouble.missing, |body| {
+                        body.child(
+                            div()
+                                .id("trouble-message")
+                                .max_h(px(220.))
+                                .overflow_y_scroll()
+                                .p(px(10.))
+                                .rounded(c.radius_control)
+                                .bg(c.surface_deep)
+                                .code_text()
+                                .type_scale(TypeScale::Small)
+                                .whitespace_normal()
+                                .children(
+                                    trouble
+                                        .message
+                                        .lines()
+                                        .map(|line| div().child(line.to_owned()))
+                                        .collect::<Vec<_>>(),
+                                ),
+                        )
+                    }),
+            );
+            if trouble.remembered {
+                let forget = studio.clone();
+                let path = path.clone();
+                dialog = dialog.action(
+                    c.button("forget-story", "Remove from list", ButtonKind::Secondary)
+                        .on_click(move |_, _, cx| {
+                            forget
+                                .update(cx, |studio, cx| studio.forget(&path, cx))
+                                .ok();
+                        }),
+                );
+            }
+            if !trouble.missing {
+                dialog = dialog.action(
+                    c.button("reveal-story", "Show in Finder", ButtonKind::Secondary)
+                        .on_click(move |_, _, cx| cx.reveal_path(&path)),
+                );
+            }
+        }
+        dialog
+            .action(
+                c.button("close-trouble", "Close", ButtonKind::Primary)
+                    .on_click(move |_, _, cx| {
+                        close
+                            .update(cx, |studio, cx| {
+                                studio.home.trouble = None;
+                                cx.notify();
+                            })
+                            .ok();
+                    }),
+            )
+            .on_dismiss(move |_, cx| {
+                dismiss
+                    .update(cx, |studio, cx| {
+                        studio.home.trouble = None;
+                        cx.notify();
+                    })
+                    .ok();
+            })
     }
 }
 

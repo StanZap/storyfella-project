@@ -21,10 +21,47 @@ pub struct RecentProject {
     pub edited: Option<SystemTime>,
     /// Whether the saved story compiles; an error when it cannot be read.
     pub problems: Result<Problems, String>,
+    /// Why the project could not be opened at all, when it cannot.
+    pub trouble: Option<Trouble>,
     search_text: String,
 }
 
+/// A listed project Home cannot open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Trouble {
+    pub message: String,
+    /// Nothing is at the path any more.
+    pub missing: bool,
+    /// The path comes from the recent-projects index, so it can be forgotten.
+    pub remembered: bool,
+}
+
 impl RecentProject {
+    fn unreadable(path: PathBuf, message: String, remembered: bool) -> Self {
+        let name = path
+            .file_stem()
+            .filter(|_| !path.ends_with("story.db"))
+            .or_else(|| path.parent().and_then(Path::file_name))
+            .map_or_else(
+                || path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+        let search_text = format!("{name}\n{}", path.display()).to_lowercase();
+        Self {
+            trouble: Some(Trouble {
+                missing: !path.exists(),
+                message,
+                remembered,
+            }),
+            problems: Ok(Problems::default()),
+            assets: 0,
+            edited: None,
+            name,
+            path,
+            search_text,
+        }
+    }
+
     fn from_stored(path: PathBuf, stored: StoredProject) -> Self {
         let source = stored.story.path().map(Path::to_path_buf);
         let edited = [Some(path.as_path()), source.as_deref()]
@@ -58,6 +95,7 @@ impl RecentProject {
             assets: stored.registry.artifacts.len(),
             edited,
             problems,
+            trouble: None,
             search_text: search_text.to_lowercase(),
         }
     }
@@ -87,24 +125,54 @@ pub fn remember_project(project_dir: &Path, path: &Path) -> Result<(), String> {
     paths.retain(|old| old != &path);
     paths.insert(0, path);
     paths.truncate(30);
+    write_index(project_dir, &paths)
+}
+
+fn write_index(project_dir: &Path, paths: &[PathBuf]) -> Result<(), String> {
     std::fs::create_dir_all(project_dir).map_err(|error| error.to_string())?;
     let index = project_dir.join("recent-projects.json");
     let temporary = project_dir.join("recent-projects.json.tmp");
     std::fs::write(
         &temporary,
-        serde_json::to_vec_pretty(&paths).map_err(|error| error.to_string())?,
+        serde_json::to_vec_pretty(paths).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
     std::fs::rename(temporary, index)
-        .map_err(|error| format!("Could not remember the opened project: {error}"))
+        .map_err(|error| format!("Could not update the recent projects: {error}"))
 }
 
+/// Drops `path` from the recent-projects index. Nothing on disk is touched.
+pub fn forget_project(project_dir: &Path, path: &Path) -> Result<(), String> {
+    let mut paths = recent_paths(project_dir)?;
+    paths.retain(|old| old != path);
+    write_index(project_dir, &paths)
+}
+
+/// The project a path belongs to: a project folder for its database,
+/// otherwise the path itself. Two paths with one root are one project.
+fn project_root(path: &Path) -> &Path {
+    match path.parent() {
+        Some(folder)
+            if path.ends_with("story.db")
+                && folder
+                    .join(storyfella_studio_core::project::MANIFEST)
+                    .exists() =>
+        {
+            folder
+        }
+        _ => path,
+    }
+}
+
+/// Every listed project, readable or not, and any failure to read the
+/// listing itself.
 pub fn scan_projects(project_dir: &Path) -> (Vec<RecentProject>, Vec<String>) {
     let mut errors = Vec::new();
     let mut paths = recent_paths(project_dir).unwrap_or_else(|error| {
         errors.push(error);
         Vec::new()
     });
+    let remembered = paths.clone();
     match std::fs::read_dir(project_dir) {
         Ok(entries) => {
             let mut discovered = Vec::new();
@@ -122,8 +190,8 @@ pub fn scan_projects(project_dir: &Path) -> (Vec<RecentProject>, Vec<String>) {
                         match ProjectFolder::locate_for_authoring(&entry.path()) {
                             Ok(Some(folder)) => discovered.push(folder.database()),
                             Ok(None) => {}
-                            Err(error) => errors
-                                .push(format!("Cannot load {}: {error:#}", entry.path().display())),
+                            // Listed as unreadable when inspected below.
+                            Err(_) => discovered.push(entry.path()),
                         }
                     }
                     Ok(_) => {}
@@ -143,13 +211,20 @@ pub fn scan_projects(project_dir: &Path) -> (Vec<RecentProject>, Vec<String>) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => errors.push(format!("Cannot read {}: {error}", project_dir.display())),
     }
+    let mut seen = Vec::new();
     let projects = paths
         .into_iter()
-        .filter_map(|path| match inspect_project(&path) {
-            Ok(stored) => Some(RecentProject::from_stored(path, stored)),
+        .filter(|path| {
+            let root = project_root(path).to_path_buf();
+            let fresh = !seen.contains(&root);
+            seen.push(root);
+            fresh
+        })
+        .map(|path| match inspect_project(&path) {
+            Ok(stored) => RecentProject::from_stored(path, stored),
             Err(error) => {
-                errors.push(format!("Cannot load {}: {error}", path.display()));
-                None
+                let listed = remembered.contains(&path);
+                RecentProject::unreadable(path, format!("{error:#}"), listed)
             }
         })
         .collect();
@@ -287,5 +362,44 @@ mod tests {
         assert!(remember_project(&index_dir, &first).is_err());
         assert_eq!(std::fs::read_to_string(index).unwrap(), "broken index");
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn unreadable_and_missing_projects_are_listed_once_and_can_be_forgotten() {
+        let directory = tempfile::tempdir().unwrap();
+        let projects = directory.path().join("projects");
+        // A folder whose manifest is from an older format, known both by its
+        // folder and by its database.
+        let broken = projects.join("old-format");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(
+            broken.join(storyfella_studio_core::project::MANIFEST),
+            "project_id = \"3d57d310-b51a-483a-953c-6aa815b4b327\"\n",
+        )
+        .unwrap();
+        std::fs::write(broken.join("story.db"), "").unwrap();
+        let gone = directory.path().join("gone/story.db");
+        write_index(
+            &projects,
+            &[
+                gone.clone(),
+                broken.join("story.db").canonicalize().unwrap(),
+            ],
+        )
+        .unwrap();
+
+        let (listed, errors) = scan_projects(&projects);
+        assert!(errors.is_empty(), "{errors:?}");
+        let names: Vec<_> = listed.iter().map(|project| project.name.as_str()).collect();
+        assert_eq!(names, ["gone", "old-format"]);
+        let missing = listed[0].trouble.as_ref().unwrap();
+        assert!(missing.missing && missing.remembered);
+        let old = listed[1].trouble.as_ref().unwrap();
+        assert!(!old.missing);
+        assert!(old.message.contains("version"), "{}", old.message);
+
+        forget_project(&projects, &gone).unwrap();
+        let (listed, _) = scan_projects(&projects);
+        assert_eq!(listed.len(), 1);
     }
 }
