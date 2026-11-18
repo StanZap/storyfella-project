@@ -19,7 +19,6 @@
 //! - A revision carries its generation seed and model so golden runs can be
 //!   replayed identically.
 
-pub mod backend;
 pub mod ops;
 pub mod pipeline;
 pub mod slash;

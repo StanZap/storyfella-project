@@ -111,7 +111,7 @@ pub enum StepVerb {
     /// Non-hermetic and slow (a vision round trip, and a managed server may
     /// have to start), so it belongs in plans that already need the vision
     /// endpoint. `expect`/`expect_not` are case-insensitive substring gates,
-    /// as in `svs eval`.
+    /// for the selected vision provider.
     ExpectVision {
         image: String,
         question: String,

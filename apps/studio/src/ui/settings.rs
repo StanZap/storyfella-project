@@ -1,14 +1,13 @@
 use std::time::Duration;
 
-use agentkit_ai::deployments::Capability;
 use dioxus::prelude::*;
 use uuid::Uuid;
 
 use storyfella_studio_core::config::{AppConfig, ChatCapability, ChatProvider, ThemePreference};
 use storyfella_studio_core::errors::{CodedError, ReportedError};
-use storyfella_studio_core::registry::backend::CreativeBackend;
+use storyfella_studio_core::planner::PlannerBackend;
 use storyfella_studio_core::runtime::{
-    check_all as check_services, CreativeRuntime, HealthStatus, ServiceHealth, ServiceId,
+    check_all as check_services, HealthStatus, ServiceHealth, ServiceId,
 };
 
 use super::{
@@ -25,7 +24,7 @@ enum SettingsSection {
 }
 
 #[component]
-pub fn Settings(config: Signal<AppConfig>, backend: Signal<CreativeBackend>) -> Element {
+pub fn Settings(config: Signal<AppConfig>, backend: Signal<PlannerBackend>) -> Element {
     let mut section = use_signal(|| SettingsSection::Models);
     let health = use_signal(Vec::<ServiceHealth>::new);
     let checking = use_signal(|| None::<Uuid>);
@@ -94,10 +93,10 @@ pub fn Settings(config: Signal<AppConfig>, backend: Signal<CreativeBackend>) -> 
             Err(error) => error_report.set(Some(error.report().log())),
         }
     };
-    let on_select_image = move |(capability, provider): (Capability, String)| {
+    let on_select_model = move |(capability, model): (ChatCapability, String)| {
         let result = config
             .read()
-            .persist_image_provider_selection(capability, &provider)
+            .persist_model_selection(capability, &model)
             .and_then(|_| AppConfig::load());
         match result {
             Ok(next) => apply_config(next, targets),
@@ -117,7 +116,7 @@ pub fn Settings(config: Signal<AppConfig>, backend: Signal<CreativeBackend>) -> 
             div { class: "min-h-0 overflow-y-auto px-10 py-9",
                 div { class: "mx-auto max-w-3xl",
                     div { hidden: section() != SettingsSection::General, GeneralSettings { config } }
-                    div { hidden: section() != SettingsSection::Models, ModelsSettings { config: config(), health, checking, checked_at, on_refresh, on_select, on_separate_vision, on_select_image } }
+                    div { hidden: section() != SettingsSection::Models, ModelsSettings { config: config(), health, checking, checked_at, on_refresh, on_select, on_select_model, on_separate_vision } }
                     div { hidden: section() != SettingsSection::Storage, StorageSettings { config: config() } }
                 }
             }
@@ -134,7 +133,6 @@ fn shared_config_stamp(path: Option<&std::path::Path>) -> Option<u64> {
 }
 
 fn run_checks(
-    runtime: CreativeRuntime,
     config: AppConfig,
     mut health: Signal<Vec<ServiceHealth>>,
     mut checking: Signal<Option<Uuid>>,
@@ -143,7 +141,7 @@ fn run_checks(
     let request = Uuid::new_v4();
     checking.set(Some(request));
     spawn(async move {
-        let services = check_services(&config, &runtime).await;
+        let services = check_services(&config).await;
         if *checking.peek() != Some(request) {
             return;
         }
@@ -158,7 +156,7 @@ fn run_checks(
 #[derive(Clone, Copy)]
 struct ConfigTargets {
     config: Signal<AppConfig>,
-    backend: Signal<CreativeBackend>,
+    backend: Signal<PlannerBackend>,
     health: Signal<Vec<ServiceHealth>>,
     checking: Signal<Option<Uuid>>,
     checked_at: Signal<Option<String>>,
@@ -169,9 +167,7 @@ struct ConfigTargets {
 fn apply_config(next: AppConfig, mut targets: ConfigTargets) {
     *targets.config.write() = next.clone();
     targets.backend.write().set_config(&next);
-    let runtime = targets.backend.read().runtime();
     run_checks(
-        runtime,
         next.clone(),
         targets.health,
         targets.checking,
@@ -312,45 +308,12 @@ fn ModelsSettings(
     checked_at: Signal<Option<String>>,
     on_refresh: EventHandler<MouseEvent>,
     on_select: EventHandler<(ChatCapability, String)>,
+    on_select_model: EventHandler<(ChatCapability, String)>,
     on_separate_vision: EventHandler<bool>,
-    on_select_image: EventHandler<(Capability, String)>,
 ) -> Element {
     let services = health.read().clone();
     let (text_status, text_detail) = service_of(&services, ServiceId::Llm);
     let (vision_status, vision_detail) = service_of(&services, ServiceId::Vision);
-    let (image_status, image_detail) = service_of(&services, ServiceId::ImageGeneration);
-    let image_providers = config
-        .image_providers
-        .iter()
-        .filter(|p| p.capabilities.contains(&Capability::T2i))
-        .map(|p| SelectOption {
-            value: p.id.clone(),
-            label: format!("{} · {}", p.id, p.model),
-        })
-        .collect::<Vec<_>>();
-    let image_provider = config.image_provider_id.clone().unwrap_or_default();
-    let edit_providers = config
-        .image_providers
-        .iter()
-        .filter(|p| p.capabilities.contains(&Capability::Edit))
-        .map(|p| SelectOption {
-            value: p.id.clone(),
-            label: format!("{} · {}", p.id, p.model),
-        })
-        .collect::<Vec<_>>();
-    let edit_provider = config.image_edit_provider_id.clone().unwrap_or_default();
-    let edit_model = config
-        .image_providers
-        .iter()
-        .find(|p| Some(p.id.as_str()) == config.image_edit_provider_id.as_deref())
-        .map(|p| p.model.clone())
-        .unwrap_or_default();
-    let image_model = config
-        .image_providers
-        .iter()
-        .find(|p| Some(p.id.as_str()) == config.image_provider_id.as_deref())
-        .map(|p| p.model.clone())
-        .unwrap_or_default();
     let text_providers = provider_options(&config.chat_providers, ChatCapability::Text);
     let vision_providers = provider_options(&config.chat_providers, ChatCapability::Vision);
     let text_provider = config.text_provider_id.clone().unwrap_or_default();
@@ -365,6 +328,19 @@ fn ModelsSettings(
         .as_ref()
         .map(|d| d.model.clone())
         .unwrap_or_default();
+    let text_known = config.chat_providers.iter().any(|p| p.id == text_provider);
+    let vision_known = config
+        .chat_providers
+        .iter()
+        .any(|p| p.id == vision_provider);
+    let models_for = |id| {
+        services
+            .iter()
+            .find(|service| service.id == id)
+            .and_then(|service| service.models.clone())
+    };
+    let text_models = models_for(ServiceId::Llm);
+    let vision_models = models_for(ServiceId::Vision);
     let mut error_report = use_context::<Signal<Option<ReportedError>>>();
     let vision_warning = "The selected Text provider does not support Vision. Choose a Vision-capable Text provider or use a separate Vision provider.";
     rsx! {
@@ -375,14 +351,18 @@ fn ModelsSettings(
         ChatEndpointGroup {
             title: "Text (LLM)".to_owned(),
             providers: text_providers, provider_id: text_provider, model: text_model,
+            provider_known: text_known, models: text_models, checking_models: checking().is_some(),
             status: text_status, detail: text_detail,
             on_select_provider: move |id| on_select.call((ChatCapability::Text, id)),
+            on_select_model: move |id| on_select_model.call((ChatCapability::Text, id)),
         }
         ChatEndpointGroup {
             title: "Vision (LLM)".to_owned(), show_fields: config.separate_vision,
             providers: vision_providers, provider_id: vision_provider, model: vision_model,
+            provider_known: vision_known, models: vision_models, checking_models: checking().is_some(),
             status: vision_status, detail: vision_detail,
             on_select_provider: move |id| on_select.call((ChatCapability::Vision, id)),
+            on_select_model: move |id| on_select_model.call((ChatCapability::Vision, id)),
             control: rsx! {
                 div { class: "flex shrink-0 items-center gap-3",
                     span { class: "text-xs text-zinc-400", "Use a separate Vision LLM" }
@@ -396,16 +376,6 @@ fn ModelsSettings(
         }
         if !config.separate_vision && config.text.is_some() && config.vision.is_none() {
             p { class: "mb-6 text-xs text-amber-300", role: "status", "{vision_warning}" }
-        }
-        ChatEndpointGroup {
-            title: "Image generation".to_owned(),
-            providers: image_providers, provider_id: image_provider, model: image_model,
-            status: image_status, detail: image_detail.clone(),
-            on_select_provider: move |id| on_select_image.call((Capability::T2i, id)),
-        }
-        ChatEndpointGroup { title: "Image editing".to_owned(), providers: edit_providers, provider_id: edit_provider, model: edit_model, status: HealthStatus::Idle, detail: "Checked when an editing request runs".to_owned(), on_select_provider: move |id| on_select_image.call((Capability::Edit, id)) }
-        if [&config.image_provider_id, &config.image_edit_provider_id].iter().any(|selected| selected.as_ref().and_then(|id| config.image_providers.iter().find(|p| &p.id == id)).is_some_and(|p| p.hosted.is_some())) {
-            p { class: "mb-6 text-xs text-zinc-400", "Cloud image providers use their own sampling defaults. Custom CFG or sampling methods are unavailable; unsupported steps, seeds and LoRAs are reported when a request runs." }
         }
         button {
             class: "mt-3 rounded bg-white/10 px-3 py-2 text-xs",
@@ -453,12 +423,33 @@ fn ChatEndpointGroup(
     providers: Vec<SelectOption>,
     provider_id: String,
     model: String,
+    provider_known: bool,
+    models: Option<Vec<String>>,
+    checking_models: bool,
     status: HealthStatus,
     detail: String,
     on_select_provider: EventHandler<String>,
+    on_select_model: EventHandler<String>,
 ) -> Element {
     let provider_label = format!("{title} provider");
     let provider_available = providers.iter().any(|option| option.value == provider_id);
+    let has_providers = !providers.is_empty();
+    let model_label = format!("{title} model");
+    let model_available = models
+        .as_ref()
+        .is_some_and(|models| models.contains(&model));
+    let model_options = models
+        .as_ref()
+        .map(|models| {
+            models
+                .iter()
+                .map(|model| SelectOption {
+                    value: model.clone(),
+                    label: model.clone(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     rsx! {
         div { class: "flex flex-wrap items-center justify-between gap-3",
             div { class: "flex min-w-0 items-center gap-3",
@@ -477,12 +468,18 @@ fn ChatEndpointGroup(
                 p { class: "py-4 text-xs text-zinc-400", "Set up a provider in Clipforge, then refresh." }
             } else if !provider_available {
                 p { class: "py-4 text-xs text-amber-300", role: "status",
-                    "Saved provider \"{provider_id}\" is unavailable. Choose another provider or restore it in Clipforge, then refresh."
+                    if provider_known { "The saved {title} provider \"{provider_id}\" does not declare this capability in Clipforge." }
+                    else { "The saved {title} provider \"{provider_id}\" is missing from Clipforge." }
+                    if has_providers { " Choose an available provider above." } else { " Configure a provider for this capability in Clipforge, then refresh." }
                 }
             } else {
-                SettingRow { title: "Model".to_owned(), description: String::new(), last: true,
-                    span { class: "text-xs text-zinc-300", "{model}" }
+                SettingRow { title: "Model".to_owned(), description: "Models reported by this provider; check the model supports this capability.".to_owned(), last: true,
+                    if checking_models { span { class: "text-xs text-zinc-400", "Checking models…" } }
+                    else if models.is_none() { span { class: "text-xs text-zinc-400", "Model list unavailable. Refresh providers." } }
+                    else if model_options.is_empty() { span { class: "text-xs text-zinc-400", "No models reported by this provider." } }
+                    else { SearchSelect { label: model_label, options: model_options, value: model.clone(), placeholder: "Select an available model".to_owned(), on_select: on_select_model } }
                 }
+                if !checking_models && models.is_some() && !model.is_empty() && !model_available { p { class: "pb-3 text-xs text-amber-300", role: "status", "Saved {title} model \"{model}\" was not reported by this provider." } }
             }
         } }
         div { class: "h-8" }
@@ -532,13 +529,9 @@ fn StorageSettings(config: AppConfig) -> Element {
         SectionHeading {
             eyebrow: "Files",
             title: "Storage",
-            description: "Platform-appropriate directories keep generated assets, model weights, and disposable cache data separate."
+            description: "Application data and provider settings."
         }
         div { class: "border-y border-white/[0.06]",
-            if let Some(image) = &config.image {
-                PathRow { title: "Models", description: "The image engine's weight tree.", path: image.model_dir.display().to_string() }
-            }
-            PathRow { title: "Generated assets", description: "Imported generations.", path: config.asset_dir.display().to_string() }
             PathRow { title: "Projects", description: "Where new project databases are created.", path: config.project_dir.display().to_string() }
             PathRow { title: "Cache", description: "Disposable data; safe to clear.", path: config.cache_dir.display().to_string() }
             PathRow { title: "Inference state", description: "Server markers and logs, shared by Studio, Atelier and Clipforge.", path: config.state_dir.display().to_string() }
@@ -621,12 +614,48 @@ mod tests {
     }
 
     #[component]
+    fn ModelPickerProbe() -> Element {
+        rsx! { ChatEndpointGroup {
+            title: "Text (LLM)".to_owned(),
+            providers: vec![SelectOption { value: "local".into(), label: "Local".into() }],
+            provider_id: "local".to_owned(), provider_known: true,
+            model: "model-b".to_owned(), models: Some(vec!["model-a".into(), "model-b".into()]),
+            checking_models: false, status: HealthStatus::Online, detail: "online".to_owned(),
+            on_select_provider: |_| {}, on_select_model: |_| {},
+        } }
+    }
+
+    #[component]
+    fn VisionCapabilityWarningProbe() -> Element {
+        rsx! { ChatEndpointGroup {
+            title: "Vision (LLM)".to_owned(), providers: Vec::new(),
+            provider_id: "lmstudio".to_owned(), provider_known: true,
+            model: String::new(), models: None, checking_models: false,
+            status: HealthStatus::Idle, detail: "not configured".to_owned(),
+            on_select_provider: |_| {}, on_select_model: |_| {},
+        } }
+    }
+
+    #[test]
+    fn model_picker_shows_selected_model_and_vision_warning_names_capability() {
+        let mut models = VirtualDom::new(ModelPickerProbe);
+        let rendered = format!("{:?}", models.rebuild_to_vec());
+        assert!(rendered.contains("model-b"));
+        assert!(rendered.contains("Text (LLM) model"));
+        let mut vision = VirtualDom::new(VisionCapabilityWarningProbe);
+        let rendered = format!("{:?}", vision.rebuild_to_vec());
+        assert!(rendered.contains("Vision (LLM)"));
+        assert!(rendered.contains("does not declare this capability"));
+        assert!(rendered.contains("lmstudio"));
+    }
+
+    #[component]
     fn SettingsProbe(config: AppConfig) -> Element {
         use_context_provider(|| Signal::new(config.preview));
         use_context_provider(|| Signal::new(None::<ReportedError>));
         use_context_provider(|| Signal::new(AutosaveMode::OnChange));
         use_context_provider(|| Signal::new(ThemePreference::System));
-        let backend = use_signal(|| CreativeBackend::new(&config));
+        let backend = use_signal(|| PlannerBackend::new(&config));
         let config = use_signal(|| config);
         rsx! { Settings { config, backend } }
     }
@@ -643,22 +672,22 @@ mod tests {
         let mut dom = VirtualDom::new_with_props(SettingsProbe, SettingsProbeProps { config });
         let rendered = format!("{:?}", dom.rebuild_to_vec());
         assert!(rendered.contains("removed-provider"));
-        assert!(rendered.contains("restore it in Clipforge, then refresh"));
+        assert!(rendered.contains("is missing from Clipforge"));
     }
 
     #[test]
-    fn removed_image_provider_shows_its_saved_id_and_recovery() {
-        let mut config = AppConfig::load_from(
+    fn settings_only_offer_studio_model_capabilities() {
+        let config = AppConfig::load_from(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../config/studio-startup-test-missing.toml"),
         )
         .unwrap();
-        config.image_provider_id = Some("removed-image".into());
-        config.image = None;
         let mut dom = VirtualDom::new_with_props(SettingsProbe, SettingsProbeProps { config });
         let rendered = format!("{:?}", dom.rebuild_to_vec());
-        assert!(rendered.contains("removed-image"));
-        assert!(rendered.contains("restore it in Clipforge, then refresh"));
+        assert!(rendered.contains("Text (LLM)"));
+        assert!(rendered.contains("Vision (LLM)"));
+        assert!(!rendered.contains("Image generation"));
+        assert!(!rendered.contains("Image editing"));
     }
 
     #[test]

@@ -1,18 +1,5 @@
-//! The runtime adapter over the shared native-inference crate.
-//!
-//! The served profile, the resident `sd-server` process, the model store, and
-//! the `sdcpp` HTTP client live in `agentkit_ai::native`. Shared provider
-//! resolution and controls also live in Agentkit. This module is the storyfella-specific
-//! layer over them: [`CreativeRuntime`] binds the shared runtime and client to
-//! the app's [`AppConfig`](crate::config::AppConfig) and hides the job
-//! bookkeeping (submitting, waiting, and storing the resulting PNG in the
-//! asset directory), and the `health` module probes the services the app
-//! depends on.
+//! Provider health for Studio.
 
-mod creative_runtime;
 mod health;
-mod provision;
 
-pub use creative_runtime::{CreativeRuntime, CreativeRuntimeError};
-pub use health::{check_all, HealthStatus, ServiceHealth, ServiceId, ServiceRecovery};
-pub use provision::{image_artifacts, provision_image_model, ModelArtifactStatus};
+pub use health::{check_all, HealthStatus, ServiceHealth, ServiceId};

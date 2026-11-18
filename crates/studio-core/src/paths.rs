@@ -11,7 +11,7 @@
 //!
 //! Explicit relative app paths — the plan directory and the `paths.*`
 //! directories the config points at — are anchored to one **project root**
-//! rather than the process working directory, so the GUI, the `svs` CLI, the
+//! rather than the process working directory, so the GUI, the CLI, the
 //! plan driver and the packaged bundle agree on where they are.
 //!
 //! The root is, in order of preference:

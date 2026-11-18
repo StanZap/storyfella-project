@@ -24,6 +24,7 @@ mod identity;
 pub mod llm;
 pub mod paths;
 pub mod persistence;
+pub mod planner;
 pub mod playback;
 pub mod project;
 pub mod registry;

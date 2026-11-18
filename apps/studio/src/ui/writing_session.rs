@@ -11,6 +11,7 @@ use std::{
 };
 use storyfella_studio_core::errors::ReportedError;
 use storyfella_studio_core::workflows::{
+    novel::NovelProposal,
     writing::{WritingAction, WritingRequest},
     writing_session::WritingSession,
     RunStore,
@@ -23,6 +24,7 @@ pub struct SessionFields {
     pub instructions: Signal<String>,
     pub preserve: Signal<bool>,
     pub request: Signal<Option<WritingRequest>>,
+    pub novel_proposal: Signal<Option<NovelProposal>>,
     pub request_open: Signal<bool>,
     pub streamed: Signal<String>,
     pub phase: Signal<String>,
@@ -45,6 +47,8 @@ impl SessionFields {
             .set(session.map_or_else(String::new, |s| s.instructions.clone()));
         self.preserve.set(session.is_none_or(|s| s.preserve_facts));
         self.request.set(session.and_then(|s| s.request.clone()));
+        self.novel_proposal
+            .set(session.and_then(|s| s.novel_proposal.clone()));
         self.request_open
             .set(session.is_none_or(|s| s.request_open));
         self.streamed
@@ -128,6 +132,7 @@ pub fn use_writing_session(
                 if let Some(session) = session {
                     if session.request.is_some()
                         || session.review.is_some()
+                        || session.novel_proposal.is_some()
                         || session.generating
                         || !session.instructions.is_empty()
                     {
@@ -178,6 +183,7 @@ pub fn use_writing_session(
             request: (fields.request)(),
             request_open: (fields.request_open)(),
             review: (controller.review)(),
+            novel_proposal: (fields.novel_proposal)(),
             generating: (controller.busy)() || (fields.interrupted)(),
             streamed: (fields.streamed)(),
             phase: (fields.phase)(),

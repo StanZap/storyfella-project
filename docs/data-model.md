@@ -99,7 +99,6 @@ models they carried, and the `masks` table (schema v8) was dropped with the
 mask edit path). Schema v9 exports `projects.story_source` to `.sf` before
 dropping the column. Schema v10 adds ordered scene/beat name-to-UUID associations
 in `projects.story_scenes_json`; `.sf` is the authoritative source.
-The `svs` CLI persists artwork to `.svs-project.db`.
 Schema v11 adds the independent illustration kind and a registry version for
 checked GUI writes. The artifact-table rebuild retains existing graph rows and
 checks foreign keys before commit. A loaded `StoredProject` carries that version;
@@ -127,33 +126,6 @@ Open… picker. The picker also opens `.sf` with a companion `.db` beside it.
 last disk snapshot. Source-file migration and external-edit conflict handling are described below. The workspace autosaves per the General settings select — after
 every change, every minute, or off — and `Cmd/Ctrl+S` saves manually; saving
 clears `has_unsaved_changes`.
-
-## The generation request
-
-A generation request is `GenerateRequest`
-(`clipforge_inference::sd::GenerateRequest`, the request type of the shared
-native-inference crate) — the shape `CreativeBackend::generate`
-(`crates/studio-core/src/registry/backend.rs`) builds and the shared `sd::Client` maps
-onto the `sd-server` wire body (see [`architecture.md`](architecture.md)):
-
-| Field | Meaning |
-| --- | --- |
-| `prompt` | the (grounded) instruction or description |
-| `reference_image_path` | the image being edited as in-context reference tokens; `None` is a plain text-to-image render |
-| `width`, `height` | output size (multiples of 32 within 256–2048) |
-| `steps` | sampling steps (1–50) |
-| `cfg_scale` | text-guidance scale |
-| `sample_method` | sampler (`euler` by default) |
-| `seed` | `None` lets the server pick a random seed |
-| `loras: Vec<LoraSelection>` | adapters as `{ path, multiplier }`, `path` being the server-registered name |
-
-There is no mask, init-image, or reference-strength field: an edit is the
-reference image plus the instruction. The request carries no `model`/`device`
-either — the profile is implied by the resident server. The pipeline's own
-`GenerationParams` (`crates/studio-core/src/registry/pipeline.rs`) keeps the profile id
-(`DEFAULT_MODEL`) and records it on the revision for provenance; the pipeline's
-`GenerateResponse` (also `registry/pipeline.rs`) is what the backend returns.
-
 
 ## Story source files in Studio
 

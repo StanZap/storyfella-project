@@ -141,7 +141,7 @@ pub struct AppConfig {
     /// no provider serves `text`: the planner is a soft dependency, so the app
     /// still runs and its LLM steps degrade to manual input.
     pub text: Option<ChatDeployment>,
-    /// Effective Vision deployment for `svs eval` and guide vision steps.
+    /// Effective Vision deployment for guide vision steps.
     /// Resolves from the shared Vision selection in separate mode, or follows
     /// Text otherwise. None when that selected deployment is unconfigured.
     pub vision: Option<ChatDeployment>,
@@ -228,6 +228,8 @@ pub enum ConfigError {
     Providers(#[from] ProviderError),
     #[error("A local image provider is not selected. Configure one in Clipforge and select it in Studio Settings.")]
     NativeImageUnavailable,
+    #[error("invalid model selection: {0}")]
+    InvalidModelSelection(String),
 }
 
 impl CodedError for ConfigError {
@@ -242,6 +244,7 @@ impl CodedError for ConfigError {
             Self::Serialize { .. } => ErrorCode::ConfigSerialize,
             Self::Providers(_) => ErrorCode::ConfigProviders,
             Self::NativeImageUnavailable => ErrorCode::ConfigNativeImageUnavailable,
+            Self::InvalidModelSelection(_) => ErrorCode::ConfigProviders,
         }
     }
 }
@@ -314,6 +317,10 @@ struct ModelsConfig {
     separate_vision: Option<bool>,
     text_provider: Option<String>,
     vision_provider: Option<String>,
+    text_model_provider: Option<String>,
+    text_model: Option<String>,
+    vision_model_provider: Option<String>,
+    vision_model: Option<String>,
     image_provider: Option<String>,
     image_edit_provider: Option<String>,
 }
@@ -589,8 +596,8 @@ impl AppConfig {
                 .default_provider(Capability::Vision)
                 .map(str::to_owned)
         });
-        let text = active_deployment(&chat_providers, &text_provider_id, Capability::Text);
-        let configured_vision = active_deployment(
+        let mut text = active_deployment(&chat_providers, &text_provider_id, Capability::Text);
+        let mut configured_vision = active_deployment(
             &chat_providers,
             &configured_vision_provider_id,
             Capability::Vision,
@@ -599,11 +606,32 @@ impl AppConfig {
             && configured_vision_provider_id == text_provider_id
             && configured_vision == text;
         let separate_vision = file.models.separate_vision.unwrap_or(!same_model);
+        if file.models.text_model_provider == text_provider_id {
+            if let (Some(deployment), Some(model)) = (&mut text, &file.models.text_model) {
+                if deployment.server.is_none() && !model.trim().is_empty() {
+                    deployment.model.clone_from(model);
+                }
+            }
+        }
+        if file.models.vision_model_provider == configured_vision_provider_id {
+            if let (Some(deployment), Some(model)) =
+                (&mut configured_vision, &file.models.vision_model)
+            {
+                if deployment.server.is_none() && !model.trim().is_empty() {
+                    deployment.model.clone_from(model);
+                }
+            }
+        }
         let (vision, vision_provider_id) = if separate_vision {
             (configured_vision, configured_vision_provider_id.clone())
         } else {
             (
-                active_deployment(&chat_providers, &text_provider_id, Capability::Vision),
+                text.as_ref()
+                    .filter(|_| {
+                        active_deployment(&chat_providers, &text_provider_id, Capability::Vision)
+                            .is_some()
+                    })
+                    .cloned(),
                 text_provider_id.clone(),
             )
         };
@@ -797,6 +825,60 @@ impl AppConfig {
             "models",
             provider_key,
             Some(toml::Value::String(provider.to_owned()).to_string()),
+        );
+        write_config_file(path, lines.join("\n"))
+    }
+
+    /// Keep each capability's selected model in Studio's own configuration.
+    pub fn persist_model_selection(
+        &self,
+        capability: ChatCapability,
+        model: &str,
+    ) -> Result<(), ConfigError> {
+        let (provider_id, deployment, provider_key, model_key) = match capability {
+            ChatCapability::Text => (
+                &self.text_provider_id,
+                &self.text,
+                "text_model_provider",
+                "text_model",
+            ),
+            ChatCapability::Vision => (
+                &self.vision_provider_id,
+                &self.vision,
+                "vision_model_provider",
+                "vision_model",
+            ),
+        };
+        let provider = provider_id
+            .as_deref()
+            .ok_or_else(|| ConfigError::InvalidModelSelection("Select a provider first".into()))?;
+        let deployment = deployment.as_ref().ok_or_else(|| {
+            ConfigError::InvalidModelSelection(
+                "The selected provider does not serve this capability".into(),
+            )
+        })?;
+        if model.trim().is_empty() || (deployment.server.is_some() && model != deployment.model) {
+            return Err(ConfigError::InvalidModelSelection(
+                "Select an available model for this provider".into(),
+            ));
+        }
+        let path = self
+            .app_config_path
+            .as_deref()
+            .ok_or(ConfigError::PlatformDirectories)?;
+        let contents = read_config_contents(path)?;
+        let mut lines: Vec<_> = contents.lines().map(str::to_owned).collect();
+        write_key(
+            &mut lines,
+            "models",
+            provider_key,
+            Some(toml::Value::String(provider.to_owned()).to_string()),
+        );
+        write_key(
+            &mut lines,
+            "models",
+            model_key,
+            Some(toml::Value::String(model.to_owned()).to_string()),
         );
         write_config_file(path, lines.join("\n"))
     }
@@ -1406,6 +1488,52 @@ mod tests {
     }
 
     #[test]
+    fn studio_model_choices_are_per_capability_and_bound_to_their_provider() {
+        let scratch = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
+        fs::create_dir_all(&scratch).unwrap();
+        let directory = tempfile::tempdir_in(scratch).unwrap();
+        let app = directory.path().join("studio.toml");
+        let ai = directory.path().join("clipforge.toml");
+        fs::write(&ai, TWO_TEXT_PROVIDERS).unwrap();
+        let load = || AppConfig::load_split(Some(app.clone()), Some(ai.clone())).unwrap();
+        load()
+            .persist_model_selection(ChatCapability::Text, "new-text-model")
+            .unwrap();
+        load()
+            .persist_model_selection(ChatCapability::Vision, "new-vision-model")
+            .unwrap();
+        let config = load();
+        assert_eq!(config.text.as_ref().unwrap().model, "new-text-model");
+        assert_eq!(config.vision.as_ref().unwrap().model, "new-vision-model");
+        assert_eq!(fs::read_to_string(&ai).unwrap(), TWO_TEXT_PROVIDERS);
+        config
+            .persist_provider_selection(ChatCapability::Text, "deepseek")
+            .unwrap();
+        let other = load();
+        assert_eq!(other.text.as_ref().unwrap().model, "deepseek-chat");
+        assert_eq!(other.vision.as_ref().unwrap().model, "new-vision-model");
+        other
+            .persist_provider_selection(ChatCapability::Text, "local")
+            .unwrap();
+        assert_eq!(load().text.unwrap().model, "new-text-model");
+        assert!(load()
+            .persist_model_selection(ChatCapability::Text, " ")
+            .is_err());
+        let supports_both = TWO_TEXT_PROVIDERS.replacen(
+            "capabilities = [\"text\"]",
+            "capabilities = [\"text\", \"vision\"]",
+            1,
+        );
+        fs::write(&ai, supports_both).unwrap();
+        load().persist_separate_vision(false).unwrap();
+        let linked = load();
+        assert_eq!(linked.text.as_ref().unwrap().model, "new-text-model");
+        assert_eq!(linked.vision.as_ref().unwrap().model, "new-text-model");
+        linked.persist_separate_vision(true).unwrap();
+        assert_eq!(load().vision.unwrap().model, "new-vision-model");
+    }
+
+    #[test]
     fn clipforge_edits_refresh_selected_text_and_vision_without_studio_writing_the_registry() {
         use agentkit_ai::deployments::NewChatConfig;
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
@@ -1643,8 +1771,7 @@ mod tests {
 
     #[tokio::test]
     async fn hosted_or_text_only_settings_keep_authoring_available_without_native_images() {
-        use crate::registry::backend::CreativeBackend;
-        use crate::runtime::{image_artifacts, provision_image_model, CreativeRuntime};
+        use crate::planner::PlannerBackend;
         let hosted = r#"
 t2i = 'replicate'
 edit = 'replicate'
@@ -1675,7 +1802,6 @@ api_key = 'test-kept-key'
             );
             assert!(!format!("{config:?}").contains("test-kept-key"));
             assert_eq!(config.planner_config().unwrap().model, "writer-test");
-            assert!(image_artifacts(&config).is_empty());
             assert!(matches!(
                 config.native_image(),
                 Err(ConfigError::NativeImageUnavailable)
@@ -1684,17 +1810,7 @@ api_key = 'test-kept-key'
                 config.native_image().unwrap_err().code(),
                 ErrorCode::ConfigNativeImageUnavailable
             );
-            let runtime = CreativeRuntime::new(&config);
-            assert!(runtime.acquire_image().await.is_err());
-            assert!(runtime.ensure_ready().await.is_err());
-            assert!(runtime.stop_generation_runtime().await.is_err());
-            assert!(!runtime.is_running().await);
-            assert!(
-                provision_image_model(&config, |_| panic!("must not download"))
-                    .await
-                    .is_err()
-            );
-            let backend = CreativeBackend::new(&config);
+            let backend = PlannerBackend::new(&config);
             let allocation = backend
                 .planner_allocation()
                 .await
@@ -1741,7 +1857,6 @@ api_key = 'test-kept-key'
         assert_eq!(config.native_image().unwrap().model_dir, model_dir);
         assert_eq!(config.text.as_ref().unwrap().model, "chosen-model");
         assert_eq!(config.generation_defaults.steps, 7);
-        assert!(crate::runtime::image_artifacts(&config)[0].is_present());
         assert_eq!(
             std::fs::read(&image_path).unwrap(),
             b"existing bytes stay in place"

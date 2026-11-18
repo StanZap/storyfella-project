@@ -20,7 +20,7 @@ const EDIT: &str = "storyfella_story_edit";
 const PLAYTEST: &str = "storyfella_story_playtest";
 
 fn command(folder: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_svs"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sf-cli"));
     command
         .args(["mcp", "--folder"])
         .arg(folder)

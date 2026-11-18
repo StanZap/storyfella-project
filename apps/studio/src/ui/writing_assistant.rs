@@ -8,7 +8,7 @@ use dioxus::prelude::*;
 use storyfella_language::{Position, Span};
 use storyfella_studio_core::{
     errors::{ErrorCode, ReportedError},
-    registry::backend::CreativeBackend,
+    planner::PlannerBackend,
     workflows::{
         writing::{self, ProposalReview, WritingAction, WritingRequest, WritingScope},
         writing_review::WritingReview,
@@ -86,8 +86,9 @@ async fn capture_request(
 #[component]
 pub fn WritingAssistant(
     mut app_state: Signal<AppState>,
-    backend: Signal<CreativeBackend>,
+    backend: Signal<PlannerBackend>,
     open: Signal<bool>,
+    novel_proposal: Signal<Option<storyfella_studio_core::workflows::novel::NovelProposal>>,
     onclose: EventHandler<()>,
 ) -> Element {
     let mut screen = use_context::<Signal<super::AppScreen>>();
@@ -112,6 +113,7 @@ pub fn WritingAssistant(
         instructions,
         preserve,
         request,
+        novel_proposal,
         request_open,
         streamed,
         phase,
@@ -346,7 +348,7 @@ pub fn WritingAssistant(
                 h2 { class: "text-sm font-semibold", "Writing help" }
                 div { class: "ml-auto flex items-center gap-1",
                     if busy() { IconButton { label: "Cancel writing request", icon: IconName::Close, onclick: move |_| cancellation.read().store(true, Ordering::Relaxed) } }
-                    if request().is_some() && !busy() {
+                    if scope() != "novel" && request().is_some() && !busy() {
                         IconButton { label: if request_open() { "Hide request" } else { "Edit request" }, icon: IconName::Edit, active: request_open(), expanded: request_open(), onclick: move |_| request_open.toggle() }
                         IconButton { label: "Try again", icon: IconName::Refresh, tooltip: if reviewing && review.has_errors { "Correct the proposed source errors before generating another version" } else { "Generate another version using this request" }, disabled: !can_retry, onclick: move |_| {
                             if reviewing { controller.command("retry", "", false, false); }
@@ -380,8 +382,8 @@ pub fn WritingAssistant(
             }
             div { class: "studio-writing-request", hidden: !request_open() || busy(),
                 div { class: "grid grid-cols-2 gap-2",
-                    select { aria_label: "Writing scope", disabled: current.is_some(), value: scope(), oninput: move |event| scope.set(event.value()),
-                        option { value: "selection", "Selection" } option { value: "beat", "Current beat" } option { value: "scene", "Current scene" } option { value: "file", "Entire file" }
+                    select { aria_label: "Writing scope", disabled: current.is_some() || novel_proposal.read().is_some(), value: scope(), oninput: move |event| scope.set(event.value()),
+                        option { value: "selection", "Selection" } option { value: "beat", "Current beat" } option { value: "scene", "Current scene" } option { value: "file", "Entire file" } option { value: "novel", "Entire novel" }
                     }
                     select { aria_label: "Writing action", value: if action() == WritingAction::Expand { "expand" } else { "rewrite" }, oninput: move |event| action.set(if event.value() == "expand" { WritingAction::Expand } else { WritingAction::Rewrite }),
                         option { value: "rewrite", "Rewrite" } option { value: "expand", "Expand" }
@@ -394,17 +396,18 @@ pub fn WritingAssistant(
                         input { r#type: "checkbox", class: "accent-violet-500", checked: !preserve(), onchange: move |_| preserve.toggle() }
                         "Allow new details"
                     }
-                    IconButton { label: if action() == WritingAction::Expand { "Suggest expansion" } else { "Suggest rewrite" }, icon: IconName::Sparkles, show_label: true, primary: true, tooltip: "Generate a suggestion for the chosen passage", disabled: !text_configured || recovery.conflict.read().is_some(), onclick: move |_| start(false) }
+                    if scope() != "novel" { IconButton { label: if action() == WritingAction::Expand { "Suggest expansion" } else { "Suggest rewrite" }, icon: IconName::Sparkles, show_label: true, primary: true, tooltip: "Generate a suggestion for the chosen passage", disabled: !text_configured || recovery.conflict.read().is_some(), onclick: move |_| start(false) } }
                 }
             }
-            if let Some(captured) = request() {
+            div { hidden: scope() != "novel", super::novel_assistant::NovelAssistant { app_state, backend, action, instructions, preserve, busy, proposal: novel_proposal, cancellation } }
+            if let Some(captured) = request().filter(|_| scope() != "novel") {
                 if !captured.instructions.trim().is_empty() {
                     div { class: "studio-writing-brief", hidden: request_open() && !busy(),
                         p { class: "text-sm leading-6 text-zinc-200", "{captured.instructions}" }
                     }
                 }
             }
-            div { class: "studio-writing-reading",
+            div { class: "studio-writing-reading", hidden: scope() == "novel",
                 if interrupted() && !busy() {
                     RecoveryNotice { title: "Writing was interrupted", message: "Your request and the response received so far were restored. Try again when you're ready; no new request has been sent." }
                     if !streamed.read().is_empty() {

@@ -434,7 +434,7 @@ it needs a host operation that persists the catalog name. Writer's explicit Rena
 also updates artwork association keys, retaining UUIDs; source-only editor renames
 follow the documented detach/create behavior.
 
-Export context with `svs story catalog project.db > catalog.json`. Pass its
+Export context with `sf-cli story catalog project.db > catalog.json`. Pass its
 absolute path in `initializationOptions.catalogPath`. Entries contain `id`, `name`,
 `kind` (`Character`, `Location`, `Prop`) and optional `revision`. An absent revision
 means pending artwork (`SF306`); an absent entry means a missing asset (`SF203`).

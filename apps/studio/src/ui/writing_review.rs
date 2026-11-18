@@ -264,6 +264,81 @@ fn config(controller: ReviewController, state: &AppState) -> Option<EditorConfig
     })
 }
 
+/// A project proposal is reviewed as a whole; these editors are read-only so
+/// no individual file can be accepted before the coordinated validation.
+#[component]
+pub fn NovelFileDiff(
+    index: usize,
+    path: String,
+    draft: String,
+    proposed: String,
+    mode: ReviewMode,
+) -> Element {
+    let mut bridge = use_signal(|| None::<document::Eval>);
+    let mut error = use_signal(|| None::<String>);
+    use_drop(move || {
+        if let Some(evaluator) = *bridge.peek() {
+            let _ = evaluator.send(serde_json::json!({"close": true}));
+        }
+    });
+    let id = format!("studio-novel-diff-{index}");
+    let config = EditorConfig {
+        session: id.clone(),
+        sequence: 0,
+        selected: 0,
+        marked: Vec::new(),
+        mode,
+        draft: draft.replace("\r\n", "\n"),
+        proposed: proposed.replace("\r\n", "\n"),
+        disabled: true,
+        draft_tokens: Vec::new(),
+        proposed_tokens: Vec::new(),
+    };
+    rsx! {
+        document::Script { src: asset!("/assets/writing-diff.js") }
+        section { class: "studio-novel-review border-b border-white/10", aria_label: "Changes to {path}",
+            h3 { class: "px-4 py-2 font-mono text-xs text-zinc-300", "{path}" }
+            if mode == ReviewMode::SideBySide {
+                div { class: "studio-diff-headings", span { "Draft" } span { "Suggested" } }
+            }
+            if let Some(message) = error() { p { role: "alert", class: "px-4 text-xs text-rose-300", "{message}" } }
+            div { id: "{id}", class: "studio-diff-host", style: "height: 320px", aria_label: "Diff for {path}",
+                onmounted: move |_| {
+                    let id = serde_json::to_string(&id).unwrap();
+                    let script = format!(r#"
+                        const initial = await dioxus.recv();
+                        let editor;
+                        try {{
+                            const deadline = Date.now() + 8000;
+                            while (!window.StoryfellaDiff) {{
+                                if (Date.now() > deadline) throw new Error("The diff editor could not load.");
+                                await new Promise(resolve => setTimeout(resolve, 25));
+                            }}
+                            editor = window.StoryfellaDiff.mount(document.getElementById({id}), initial, event => dioxus.send(event));
+                            while (true) {{
+                                const update = await dioxus.recv();
+                                if (update.close) break;
+                                editor.update(update);
+                            }}
+                        }} catch (cause) {{
+                            dioxus.send({{kind:"error",session:initial.session,message:String(cause)}});
+                            await dioxus.recv();
+                        }} finally {{ editor?.destroy(); }}
+                    "#);
+                    let mut evaluator = document::eval(&script);
+                    let _ = evaluator.send(config.clone());
+                    bridge.set(Some(evaluator));
+                    spawn(async move {
+                        while let Ok(event) = evaluator.recv::<EditorEvent>().await {
+                            if event.kind == "error" { error.set(Some(event.message)); }
+                        }
+                    });
+                }
+            }
+        }
+    }
+}
+
 #[component]
 pub fn WritingReviewEditor(app_state: Signal<AppState>) -> Element {
     let mut controller = use_context::<ReviewController>();

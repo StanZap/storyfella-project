@@ -33,21 +33,21 @@ pub const STUDIO: App = App {
     macos_binary: "storyfella-studio",
 };
 
-/// Install the artifact the bundle just wrote into `out_dir`, returning the
+/// Install the selected artifact from the current bundle operation, returning the
 /// path that is now on `PATH`.
-pub fn bundled(out_dir: &Path, app: &App) -> Result<PathBuf> {
+pub fn bundled(source: &Path, app: &App) -> Result<PathBuf> {
     let bin = bin_dir()?;
     // Both Unix layouts compile everywhere so the macOS branch is checked on
     // every host, not only where it runs.
     #[cfg(unix)]
     let installed = if cfg!(target_os = "macos") {
-        install_macos_bundle(out_dir, app, &bin)?
+        install_macos_bundle(source, app, &bin, &applications_dir()?)?
     } else {
-        install_appimage(out_dir, app, &bin)?
+        install_appimage(source, app, &bin)?
     };
     #[cfg(not(unix))]
     let installed: PathBuf = {
-        let _ = (out_dir, app, &bin);
+        let _ = (source, app, &bin);
         bail!(
             "`--install` supports macOS and Linux; the Windows installer package \
              adds the app to PATH itself"
@@ -90,120 +90,13 @@ fn search_key(text: &str) -> String {
         .collect()
 }
 
-/// The newest AppImage in `out_dir` whose name carries this app's product name.
-#[cfg(unix)]
-fn newest_appimage(out_dir: &Path, app: &App) -> Result<PathBuf> {
+/// Find exactly one matching artifact from this bundle operation.
+pub fn artifact(out_dir: &Path, app: &App, extension: &str) -> Result<PathBuf> {
     let wanted = search_key(app.product);
     let mut found = Vec::new();
-    let entries =
-        fs::read_dir(out_dir).with_context(|| format!("reading {}", out_dir.display()))?;
-    for entry in entries {
+    for entry in fs::read_dir(out_dir).with_context(|| format!("reading {}", out_dir.display()))? {
         let path = entry?.path();
-        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
-            continue;
-        };
-        if path.extension().is_some_and(|ext| ext == "AppImage")
-            && search_key(stem).contains(&wanted)
-        {
-            found.push(path);
-        }
-    }
-    if found.is_empty() {
-        bail!(
-            "no {} AppImage in {} — build one with `--package-types appimage`",
-            app.product,
-            out_dir.display()
-        );
-    }
-    found.sort_by_key(|path| fs::metadata(path).and_then(|meta| meta.modified()).ok());
-    Ok(found.pop().expect("at least one AppImage was found"))
-}
-
-/// Copy the app's AppImage into `bin` under its command name.
-#[cfg(unix)]
-fn install_appimage(out_dir: &Path, app: &App, bin: &Path) -> Result<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let source = newest_appimage(out_dir, app)?;
-    fs::create_dir_all(bin).with_context(|| format!("creating {}", bin.display()))?;
-    let dest = bin.join(app.command);
-    // Stage beside the destination so the rename replaces an installed copy
-    // atomically; a running app keeps the image it mapped.
-    let staging = bin.join(format!(".{}.new", app.command));
-    fs::copy(&source, &staging)
-        .with_context(|| format!("copying {} into {}", source.display(), bin.display()))?;
-    fs::set_permissions(&staging, fs::Permissions::from_mode(0o755))
-        .with_context(|| format!("making {} executable", staging.display()))?;
-    fs::rename(&staging, &dest).with_context(|| format!("installing {}", dest.display()))?;
-    Ok(dest)
-}
-
-/// Install the `.app` into `~/Applications` and link its executable into `bin`.
-#[cfg(unix)]
-fn install_macos_bundle(out_dir: &Path, app: &App, bin: &Path) -> Result<PathBuf> {
-    use std::os::unix::fs::symlink;
-    use std::process::Command as Process;
-
-    let source = newest_bundle(out_dir, app)?;
-    let home = std::env::var_os("HOME")
-        .filter(|home| !home.is_empty())
-        .context("HOME is not set, so there is no per-user Applications directory")?;
-    let applications = PathBuf::from(home).join("Applications");
-    fs::create_dir_all(&applications)
-        .with_context(|| format!("creating {}", applications.display()))?;
-    let name = source
-        .file_name()
-        .context("the bundle has no file name")?
-        .to_owned();
-    let dest = applications.join(&name);
-
-    // Copy beside the destination first; `cp -R` keeps the packager's layout.
-    let staging = applications.join(format!(".{}.new", name.to_string_lossy()));
-    let _ = fs::remove_dir_all(&staging);
-    let mut copy = Process::new("cp");
-    copy.args(["-R"]).arg(&source).arg(&staging);
-    proc::require(&mut copy)?;
-    let previous = applications.join(format!(".{}.old", name.to_string_lossy()));
-    let _ = fs::remove_dir_all(&previous);
-    if dest.exists() {
-        fs::rename(&dest, &previous).with_context(|| format!("replacing {}", dest.display()))?;
-    }
-    fs::rename(&staging, &dest).with_context(|| format!("installing {}", dest.display()))?;
-    let _ = fs::remove_dir_all(&previous);
-
-    let executable = dest.join("Contents/MacOS").join(app.macos_binary);
-    if !executable.is_file() {
-        bail!(
-            "{} has no Contents/MacOS/{}",
-            dest.display(),
-            app.macos_binary
-        );
-    }
-    fs::create_dir_all(bin).with_context(|| format!("creating {}", bin.display()))?;
-    let link = bin.join(app.command);
-    match fs::remove_file(&link) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(error).with_context(|| format!("replacing {}", link.display()));
-        }
-    }
-    symlink(&executable, &link).with_context(|| format!("linking {}", link.display()))?;
-    Ok(link)
-}
-
-/// The newest `.app` bundle in `out_dir` whose name carries this app's product
-/// name.
-#[cfg(unix)]
-fn newest_bundle(out_dir: &Path, app: &App) -> Result<PathBuf> {
-    let wanted = search_key(app.product);
-    let mut found = Vec::new();
-    let entries =
-        fs::read_dir(out_dir).with_context(|| format!("reading {}", out_dir.display()))?;
-    for entry in entries {
-        let path = entry?.path();
-        if path.is_dir()
-            && path.extension().is_some_and(|ext| ext == "app")
+        if path.extension().is_some_and(|ext| ext == extension)
             && path
                 .file_stem()
                 .and_then(|stem| stem.to_str())
@@ -212,15 +105,113 @@ fn newest_bundle(out_dir: &Path, app: &App) -> Result<PathBuf> {
             found.push(path);
         }
     }
-    if found.is_empty() {
-        bail!(
-            "no {} application bundle in {} — build one with `--package-types macos`",
+    match found.as_slice() {
+        [path] => Ok(path.clone()),
+        [] => bail!(
+            "no {} .{} artifact was produced in {}",
             app.product,
+            extension,
             out_dir.display()
+        ),
+        _ => bail!(
+            "multiple {} .{} artifacts were produced in {}",
+            app.product,
+            extension,
+            out_dir.display()
+        ),
+    }
+}
+
+fn applications_dir() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .context("HOME is not set, so there is no per-user Applications directory")?;
+    Ok(PathBuf::from(home).join("Applications"))
+}
+
+/// Copy the app's AppImage into `bin` under its command name.
+#[cfg(unix)]
+fn install_appimage(source: &Path, app: &App, bin: &Path) -> Result<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::create_dir_all(bin).with_context(|| format!("creating {}", bin.display()))?;
+    let dest = bin.join(app.command);
+    // Stage beside the destination so the rename replaces an installed copy
+    // atomically; a running app keeps the image it mapped.
+    let staging = bin.join(format!(".{}.new", app.command));
+    fs::copy(source, &staging)
+        .with_context(|| format!("copying {} into {}", source.display(), bin.display()))?;
+    fs::set_permissions(&staging, fs::Permissions::from_mode(0o755))
+        .with_context(|| format!("making {} executable", staging.display()))?;
+    fs::rename(&staging, &dest).with_context(|| format!("installing {}", dest.display()))?;
+    Ok(dest)
+}
+
+/// Install the staged bundle only after validating its executable and link.
+#[cfg(unix)]
+fn install_macos_bundle(
+    source: &Path,
+    app: &App,
+    bin: &Path,
+    applications: &Path,
+) -> Result<PathBuf> {
+    use std::os::unix::fs::symlink;
+    use std::process::Command as Process;
+
+    let name = source.file_name().context("the bundle has no file name")?;
+    let dest = applications.join(name);
+    fs::create_dir_all(applications)?;
+    fs::create_dir_all(bin)?;
+    let stage = tempfile::Builder::new()
+        .prefix(".storyfella-install-")
+        .tempdir_in(applications)?;
+    let staged = stage.path().join(name);
+    let mut copy = Process::new("cp");
+    copy.arg("-R").arg(source).arg(&staged);
+    proc::require(&mut copy)?;
+    let relative_executable = Path::new("Contents/MacOS").join(app.macos_binary);
+    if !staged.join(&relative_executable).is_file() {
+        bail!(
+            "{} has no {}",
+            source.display(),
+            relative_executable.display()
         );
     }
-    found.sort_by_key(|path| fs::metadata(path).and_then(|meta| meta.modified()).ok());
-    Ok(found.pop().expect("at least one bundle was found"))
+    let link_stage = tempfile::Builder::new()
+        .prefix(".storyfella-link-")
+        .tempdir_in(bin)?;
+    let staged_link = link_stage.path().join(app.command);
+    symlink(dest.join(&relative_executable), &staged_link)?;
+    let previous = stage.path().join("previous.app");
+    let had_previous = dest.exists();
+    if had_previous {
+        fs::rename(&dest, &previous).with_context(|| format!("replacing {}", dest.display()))?;
+    }
+    if let Err(error) = fs::rename(&staged, &dest) {
+        if had_previous {
+            if let Err(restore) = fs::rename(&previous, &dest) {
+                let saved = stage.keep().join("previous.app");
+                bail!("installing {} failed: {error}; restoring the previous app failed: {restore}; it remains at {}", dest.display(), saved.display());
+            }
+        }
+        return Err(error).with_context(|| format!("installing {}", dest.display()));
+    }
+    let link = bin.join(app.command);
+    if let Err(error) = fs::rename(&staged_link, &link) {
+        let restore = fs::remove_dir_all(&dest).and_then(|()| {
+            if had_previous {
+                fs::rename(&previous, &dest)
+            } else {
+                Ok(())
+            }
+        });
+        if let Err(restore) = restore {
+            let saved = stage.keep().join("previous.app");
+            bail!("linking {} failed: {error}; restoring the previous app failed: {restore}; any previous app remains at {}", link.display(), saved.display());
+        }
+        return Err(error).with_context(|| format!("linking {}", link.display()));
+    }
+    Ok(link)
 }
 
 #[cfg(all(test, unix))]
@@ -242,7 +233,8 @@ mod tests {
         staged(&out, "Some-Other_App_0.1.0_amd64.AppImage", "other");
         staged(&out, "Storyfella Studio_0.1.0_amd64.AppImage", "studio");
 
-        let installed = install_appimage(&out, &STUDIO, &bin).unwrap();
+        let installed =
+            install_appimage(&artifact(&out, &STUDIO, "AppImage").unwrap(), &STUDIO, &bin).unwrap();
 
         assert_eq!(installed, bin.join("storyfella-studio"));
         assert_eq!(fs::read_to_string(&installed).unwrap(), "studio");
@@ -265,11 +257,12 @@ mod tests {
         let bin = root.path().join("bin");
         fs::create_dir_all(&out).unwrap();
         staged(&out, "Storyfella Studio_0.1.0_amd64.AppImage", "first");
-        install_appimage(&out, &STUDIO, &bin).unwrap();
+        install_appimage(&artifact(&out, &STUDIO, "AppImage").unwrap(), &STUDIO, &bin).unwrap();
         fs::remove_file(out.join("Storyfella Studio_0.1.0_amd64.AppImage")).unwrap();
         staged(&out, "Storyfella Studio_0.2.0_amd64.AppImage", "second");
 
-        let installed = install_appimage(&out, &STUDIO, &bin).unwrap();
+        let installed =
+            install_appimage(&artifact(&out, &STUDIO, "AppImage").unwrap(), &STUDIO, &bin).unwrap();
 
         assert_eq!(installed, bin.join("storyfella-studio"));
         assert_eq!(fs::read_to_string(&installed).unwrap(), "second");
@@ -287,11 +280,9 @@ mod tests {
         fs::create_dir_all(&out).unwrap();
         staged(&out, "Storyfella-Studio_0.1.0_amd64.deb", "package");
 
-        let error = install_appimage(&out, &STUDIO, &bin)
-            .unwrap_err()
-            .to_string();
+        let error = artifact(&out, &STUDIO, "AppImage").unwrap_err().to_string();
 
-        assert!(error.contains("--package-types appimage"), "{error}");
+        assert!(error.contains("no Storyfella Studio .AppImage"), "{error}");
         assert!(!bin.exists(), "nothing is installed without an artifact");
     }
 
@@ -306,5 +297,81 @@ mod tests {
         );
         assert!(!search_key("smart-visual-sequencer_0.1.0_x86_64")
             .contains(&search_key("Storyfella Studio")));
+    }
+
+    #[test]
+    fn bundle_selection_ignores_old_artifacts_outside_the_current_staging_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let current = root.path().join("current");
+        fs::create_dir_all(&current).unwrap();
+        staged(root.path(), "Storyfella Studio_old.AppImage", "old");
+        staged(&current, "Storyfella Studio_new.deb", "new");
+        assert!(artifact(&current, &STUDIO, "AppImage").is_err());
+    }
+
+    #[test]
+    fn malformed_macos_bundle_leaves_the_previous_app_and_link_intact() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source/Storyfella Studio.app");
+        let applications = root.path().join("Applications");
+        let bin = root.path().join("bin");
+        let previous = applications.join("Storyfella Studio.app/Contents/MacOS");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&previous).unwrap();
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(previous.join("storyfella-studio"), "old").unwrap();
+        std::os::unix::fs::symlink(previous.join("storyfella-studio"), bin.join(STUDIO.command))
+            .unwrap();
+
+        assert!(install_macos_bundle(&source, &STUDIO, &bin, &applications).is_err());
+        assert_eq!(fs::read_to_string(bin.join(STUDIO.command)).unwrap(), "old");
+    }
+
+    #[test]
+    fn link_failure_restores_the_previous_macos_app() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root
+            .path()
+            .join("source/Storyfella Studio.app/Contents/MacOS");
+        let applications = root.path().join("Applications");
+        let bin = root.path().join("bin");
+        let previous = applications.join("Storyfella Studio.app/Contents/MacOS");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&previous).unwrap();
+        fs::create_dir_all(bin.join(STUDIO.command)).unwrap();
+        fs::write(source.join("storyfella-studio"), "new").unwrap();
+        fs::write(previous.join("storyfella-studio"), "old").unwrap();
+
+        assert!(install_macos_bundle(
+            &root.path().join("source/Storyfella Studio.app"),
+            &STUDIO,
+            &bin,
+            &applications
+        )
+        .is_err());
+        assert_eq!(
+            fs::read_to_string(previous.join("storyfella-studio")).unwrap(),
+            "old"
+        );
+    }
+
+    #[test]
+    fn valid_macos_bundle_replaces_the_app_and_command() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source/Storyfella Studio.app");
+        let applications = root.path().join("Applications");
+        let bin = root.path().join("bin");
+        let staged_executable = source.join("Contents/MacOS/storyfella-studio");
+        let old_executable =
+            applications.join("Storyfella Studio.app/Contents/MacOS/storyfella-studio");
+        fs::create_dir_all(staged_executable.parent().unwrap()).unwrap();
+        fs::create_dir_all(old_executable.parent().unwrap()).unwrap();
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(staged_executable, "new").unwrap();
+        fs::write(old_executable, "old").unwrap();
+        fs::write(bin.join(STUDIO.command), "old command").unwrap();
+
+        let link = install_macos_bundle(&source, &STUDIO, &bin, &applications).unwrap();
+        assert_eq!(fs::read_to_string(link).unwrap(), "new");
     }
 }

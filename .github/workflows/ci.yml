@@ -47,8 +47,8 @@ jobs:
       - name: CLI and Player
         working-directory: storyfella
         run: |
-          cargo build -p svs-cli -p storyfella-player --locked
-          cargo run -p svs-cli --bin svs --locked -- --help
+          cargo build -p sf-cli -p storyfella-player --locked
+          cargo run -p sf-cli --locked -- --help
           cargo run -p storyfella-player --locked
       - name: Studio build and smoke plan
         working-directory: storyfella

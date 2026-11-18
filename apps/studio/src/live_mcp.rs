@@ -82,6 +82,7 @@ async fn run(
     let serve = desktop_bridge::serve(&grant.directory, sender);
     let dispatch = async {
         let mut previews = preview::Previews::default();
+        let mut novels = novel::Jobs::default();
         while let Some(call) = receiver.recv().await {
             let Call {
                 request,
@@ -113,6 +114,17 @@ async fn run(
                             )
                             .await,
                     ),
+                    Command::Novel(command) => novels.dispatch(
+                        state,
+                        &grant,
+                        Request {
+                            schema,
+                            project,
+                            command,
+                        },
+                        session,
+                        epoch,
+                    ),
                     Command::Writer(command) => {
                         dispatch_call(
                             state,
@@ -137,6 +149,7 @@ async fn run(
     tokio::select! { result = serve => result, result = dispatch => result }
 }
 
+mod novel;
 #[path = "live_mcp/preview.rs"]
 mod preview;
 

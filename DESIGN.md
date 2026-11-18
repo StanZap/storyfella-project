@@ -1,19 +1,17 @@
 # Storyfella Studio design standard and UX audit
 
-### Atelier drawing and painting · 2026-11-11
+This is the central UI and UX reference for Studio, including the shared playback
+surface used by Preview. Read it before changing a user-facing flow or component.
+It defines required behavior, the visual vocabulary, and the findings from
+the 2026-10-07 sweep. The remediation record in §9 describes the implementation
+and its verification through 2026-10-10; the original observations remain in §7.
+Requirements are ongoing review criteria, not a claim of accessibility certification.
 
-The drawing rail opens the Shapes and Brushes panels. Both use the same color
-picker, canvas sampling and project swatches. Shape edits apply to one item
-inside its layer. A closed shape can create a clipped paint target above it.
-The drawing composer previews the accepted canvas source and can place a
-variation on a new artboard.
-
-In an isolated macOS build, a rectangle was drawn, recolored, and used to
-clip a soft brush stroke dragged across both edges. The composer displayed
-that composition in New artboard variation mode. Automated checks exercise
-editable save and reopen, shape transforms and undo, Metal and CPU clipping
-across tile boundaries, Studio publication, and generation with a provider
-fixture.
+[ROADMAP §0](docs/ROADMAP.md#0-current-direction-and-actionable-backlog) owns planned delivery
+status. This document owns interaction and presentation rules.
+[Development](docs/development.md) documents the executable authoring scenarios,
+and [Atelier](../storyfella-canvas/docs/atelier.md) documents canvas behavior. Use this standard for
+interaction requirements and keep planned changes in the roadmap.
 
 ### Focus treatment and explorer rename
 
@@ -70,14 +68,12 @@ backdrop. The deterministic Atelier MCP fixture checks the published pixels,
 and a native Studio Preview run verified the exact published revision UUID.
 Evidence is recorded in `.svs-e2e/logs/atelier-mcp-studio-preview.log`.
 
-### Isolated Preview capture and Atelier blend masks
+### Isolated Preview capture
 
 Studio can render an MCP playtest through the same playback panel in a
 separate macOS WebKit view. The acceptance run captured both branches at
 wide and near-square sizes, checked staged portrait pixels, and showed
-the placeholder for Ivo's pending expression. Atelier saves a single drawing
-target per artboard, including the rectangle for Blend into artboard, and
-includes it in normal undo.
+the placeholder for Ivo's pending expression.
 Evidence is recorded in `.svs-e2e/coord/live-edits-preview.md`.
 
 ### Story project explorer · 2026-11-08
@@ -137,22 +133,6 @@ approximate positions; a visible notice identifies the approximation. Preview
 also reports unsupported visual directions that it skips. Named character
 instances render in groups with scale, depth and optional precise positioning;
 native visual acceptance remains tracked by SF-PLAN-18–19.
-
-### Atelier Layers sidebar · 2026-11-03
-
-The Layers sidebar has a compact, left-aligned layer list above a contextual
-inspector. Selection and the paint target are independent; group opacity and
-candidate review remain distinct from layer properties. Alignment distinguishes
-positioning a selection as a unit from aligning each item to the artboard.
-The proposed interaction and acceptance criteria are in
-[the sidebar specification](../storyfella-canvas/docs/atelier-layers-sidebar-spec.md). Native review
-has covered a paint layer, exact position entry, and importing an image while
-keeping the Sketch layer selected and targeted for paint. Selecting the imported
-image kept Sketch as the target. Setting the image as the target and pressing
-⌘Z restored Sketch as the target while the image stayed selected.
-An automated regression covers undoing and recreating a destination artboard
-while image work still refers to the original. Group, candidate, broader
-keyboard, accessibility and constrained-window acceptance remain open.
 
 ### In-scope artwork links · 2026-11-02
 
@@ -590,336 +570,6 @@ running Cancel with retained instructions, delayed reply after source edits
 desktop query-lifetime failure before acceptance. No real model request was
 submitted. Other-platform, smaller-window and assistive-technology acceptance
 remain open; see [workflow contracts](docs/workflows.md) and SF-PLAN-28.
-
-### Atelier native reference capabilities · 2026-10-31
-
-The existing reference picker and queue preflight read Agentkit's profile
-capabilities. Qwen accepts a source plus two ordered references and retains PNG
-alpha; Krea remains generation-only. Excess inputs and unsupported combinations
-fail before startup. Settings describes reference editing without an obsolete
-single-source claim. These changes use the existing controls and feedback.
-
-Offline queue-contract tests cover accepted and rejected combinations. Real
-Metal runs verified RGBA generation/editing and the shared client's three-input
-path; all three outputs survived Atelier result attachment and project reopen
-with encoded bytes and provenance intact. See the
-[capability probes](../storyfella-canvas/docs/atelier.md#native-image-capability-probes). Live UI
-interaction with multiple references and visual edit fidelity remain unverified.
-
-Qwen's optional native mask now anchors protected source latents. The existing
-Use mask tooltip explains that unmasked areas may change slightly. Native source,
-mask and output dimensions must match; validation runs before server startup.
-Controlled black/white/half-mask checks and a shared-client run with two RGBA
-references verified the mechanism on Metal. All four PNGs survived Atelier result
-attachment and project reopening. The far-protected region matched the all-black
-reconstruction but differed from the source, confirming that native masking does
-not promise exact protection. See [mask acceptance](../storyfella-canvas/docs/atelier.md#native-mask-acceptance).
-Tooltip interaction and artistic edit quality have not been visually accepted.
-
-### Atelier side panels · 2026-10-25 (current)
-
-Activity, Settings, Brushes, Canvas & project, Practice, References and the
-Layers/References inspector share one panel frame: 360px wide, docked at the
-right edge, white background, left divider, 16px padding, a fixed title/close
-header and a scrolling body. No floating offsets, rounded cards or drop shadows.
-Settings alone adds its pinned Save footer. Reference-picker thumbnails fit two
-columns within the shared width. Auxiliary panels replace the drawing inspector
-and restore its visibility preference when closed. Close returns focus to the
-workspace; Escape also closes a panel from its controls.
-
-App-wide Settings is available from the Atelier application menu and ⌘,
-(Ctrl+, elsewhere), including on Projects. Generation contains a numeric
-**Request time limit (minutes)** field, default 30, bounded to 1–1440 minutes.
-The limit is saved globally and captured by new queued requests; the panel
-explains that queue waiting does not count. Existing requests keep their limit.
-
-Isolated native checks verified Settings, Activity, References, Brushes, Practice
-and the drawing inspector in the shared slot, including replacement and closing.
-Workspace checks/tests/format, strict Atelier Clippy and packaging pass.
-
-### Atelier Activity and failure feedback · 2026-10-25 (current)
-
-Operational failures live in Activity, reached from a single header control on
-every page. The workspace shows short contextual hints, not provider responses
-or diagnostic paragraphs. Generation hints belong to their project and prompt
-source/mode. A failed save retains a Not saved hint beside the project tabs.
-Prompt validation remains beside the composer input. The footer stays quiet.
-
-Activity reuses the image queue and its captured requests. A report shows one
-short explanation, an applicable recovery action, Details and dismissal. Details
-opens selectable, read-only diagnostics in a bounded field with verified Copy
-report. No timestamps, filters, routine-save feed, stacked cards or intermediate
-toasts. In drawing, Activity temporarily replaces Layers/References; closing it
-restores that inspector preference. Escape closes Activity from its report field.
-
-Report titles use a compact, left-aligned semibold heading with a small status
-icon. Project ownership and attempt counts are secondary metadata. Recovery,
-Details and Copy share one wrapping action row. Expanded diagnostics use a short,
-neutral read-only surface without repeated report headings or project labels;
-Copy report retains the complete report. Clipforge launch failures are app-scoped
-with a specific title and Try again action, and resolve after a successful launch.
-Native checks verified the missing-app report, Details, copy and repeated launch
-attempts. Workspace checks/tests/format, strict Clippy and packaging pass (64
-Atelier tests passed; 14 device/fixture tests ignored).
-
-Reports retain operation/project ownership through navigation. Exact repeats and
-retried attempts group; unrelated successes do not clear failures. Dismissing a
-notification does not claim unsaved work is saved. Retry uses captured inputs,
-and a successful attempt resolves its report. Do not invent retry countdowns or
-automatically resubmit paid requests. Reports and queue history are session-only;
-documents, prompt drafts and originals keep their existing persistence.
-
-Each queued or running request exposes its own **Abort** action. A queued abort
-stays in history as **Aborted**; a running abort stays **Aborting** with its
-action disabled until the worker acknowledges cancellation. Pause remains a
-queue-wide dispatch control. Aborting does not change other requests or pause
-state. Native sampling may finish remotely after waiting stops; the result is
-discarded. Isolated mock UI checks verified both actions without real inference
-(2026-10-30), alongside queue regression tests and strict Atelier Clippy.
-
-Native fixture checks verified long mocked 429 diagnostics, quiet footers,
-details/copy/read-only/Escape, separate save failures, project isolation, grouped
-retries and successful recovery using the originating request. The final layout
-was checked with the drawing workspace and a narrower window. Workspace
-checks/tests/format, strict Atelier Clippy and packaging pass (63 tests passed,
-14 device/fixture tests ignored). Real-provider, VoiceOver and other-platform
-acceptance remain open; the mock establishes no artistic quality.
-
-### Atelier project tabs · 2026-10-25 (current)
-
-Project cards on Home are single actions: clicking the preview, title or padding
-opens the document. Each card is one keyboard-focusable button named for its
-project, with hover feedback and a focus ring. There is no nested Open project
-button.
-Native verification confirmed card activation opens the document and the gallery
-renders without the redundant button. Workspace checks/tests/format, strict
-Atelier Clippy and packaging pass; keyboard behavior uses the shared Button.
-
-The logo, project tabs and icon actions share one compact header row. Clicking
-Atelier returns to the Projects home page, where Library is available; separate
-Projects/Library header links and the repeated project title are removed. Each
-tab gives its title, edited dot and close icon one shared surface; close hover
-changes the icon color without a button background. Tabs scroll when space is
-limited. Workspace checks/tests/format and strict Atelier Clippy pass. An isolated
-native build rendered the combined header and home-page Library action; automated
-interaction checks were limited by intermittent native-window access. Close-hover
-and navigation acceptance remain pending.
-
-Project tabs keep their chosen order when activated. A compact close icon saves
-the project before removing its tab; save failure or a newer edit keeps it open.
-Drag a tab to reorder it, or use Ctrl+Shift+Page Up/Down. Cmd/Ctrl+W saves and
-closes the active tab. These actions also have named File menu entries. Keep
-the strip quiet: no permanent reorder arrows or document-management panel.
-Closing the last tab returns to Projects. Library remains independent, with
-shared-image status, a compact Favorites filter beside search and no drawing
-rail or project title/save/export controls. Save errors remain visible from
-Projects and Library as well as the artboard workspace.
-
-Recovery stores display order separately from active identity, upgrades earlier
-sessions and preserves the empty session after all projects close. Native checks
-in uniquely identified Project Tabs builds verified drag/keyboard reordering,
-active/inactive close, failed-save retention, draft reopening, last-tab close,
-ordered restart recovery and Library access without a project. Workspace
-checks/tests/format, strict Atelier Clippy and macOS packaging checks pass
-(Atelier: 60 passed, 13 device/fixture tests ignored). Real-provider, full
-accessibility and other-platform acceptance remain open.
-
-### Atelier composer sizing · 2026-10-25 (current)
-
-The prompt and wine Create action lead the composer. Keep provider and aspect
-choices readable in the main row; put resolution and sampling in Image options.
-Expanded options align fixed-width pixel inputs, presets and sampling in one
-wrapping row. Numeric fields must not stretch to consume
-unused space. Secondary actions fit their content; creation briefs form a quiet
-Start with row. The ellipsis opens a dropdown with Image options and Provider
-settings. Image options toggles request controls; Provider settings opens the
-settings panel. Clipforge management and Reload providers live only in Settings.
-The composer has no setup action row, readiness footer or repeated setup-required
-callout. Submission validation remains beside the prompt. Image options appears
-only when the current mode/provider has request controls to show.
-
-Isolated native checks verified the dropdown, its Settings destination and the
-drawing composer without setup rows. Workspace checks/tests/format, strict Atelier
-Clippy and packaging pass. No provider requests were submitted.
-
-The uniquely identified Atelier Composer Final build was checked with hosted
-and local provider selections, expanded options and editable dimensions/prompt.
-No generation request was submitted. Workspace checks/tests/format, strict
-Atelier Clippy and macOS packaging checks pass. Smaller-window and accessibility
-acceptance remain open.
-
-### Atelier visual refinement · 2026-10-24 (current)
-
-Atelier's UI should be modern and minimal, with composition and hierarchy decided
-before adding controls. Keep artwork primary, use the shared spacing and control
-vocabulary, and disclose secondary tools at the point of use. A working feature
-is not visually accepted merely because its controls fit somewhere.
-
-The drawing inspector now uses one neutral surface with Layers first and a
-separate References section. Layer selection exposes compact Move and opacity
-controls. Layer properties discloses precise offsets, relative scale, opacity,
-ordering, deletion and image/version actions. Candidate review retains a clear
-Accept action and named reference, hide/show and discard alternatives. Reference
-tools disclose beside their preview; hiding references collapses the preview.
-An empty reference section offers one Add reference action without reserved
-image space or disabled removal controls. Study controls live in Practice,
-reached from the timer/help rail, with remaining time visible while running.
-
-The shared prompt keeps source/destination and dimensions together, followed by
-compact request controls and one primary submission action. Image options
-discloses exact sizes, sampling and briefs. Provider setup lives in Settings,
-reached from the ellipsis menu. Chosen references are ordered compact chips.
-Missing provider setup appears as validation when a request is submitted.
-The composer itself blocks canvas input; its surrounding stage
-remains usable. Avoid parallel Settings/Options control stacks and repeated
-explanatory paragraphs in the default workspace.
-
-Native checks in the uniquely identified **Atelier Minimal UI** fixture build
-verified the compact inspector, reference collapse, candidate hide/show,
-accept/undo, precise opacity application/undo and prompt/options disclosure.
-These checks used solid-color fixtures without a provider request. Workspace
-check/test/format, strict Atelier Clippy and native packaging pass; Atelier has
-57 passing tests and 12 ignored device/fixture tests. Smaller-window, keyboard-only,
-VoiceOver and first-time-user acceptance remain open.
-
-### Atelier creation workflow · 2026-10-24 (current)
-
-Projects contain real artboards with artwork layers and separate reference
-associations. New compositions create image-backed artboards. Full-artboard edits
-and selection blends arrive as pending layers with Accept, Hide/Show, Save as
-reference and Discard controls. Pending candidates and references are excluded
-from artwork exports. Layer movement, scaling, opacity and visibility remain
-undoable; Move layer reveals an outline and corner handle, with precise numeric
-values in the layer dock. B/E/H and bounds/scale canvas resizing are preserved.
-
-The existing floating prompt is now one implementation for new compositions,
-full-artboard edits, selection blends, separate images and inspected-image
-variations. The mode states the destination before submission. Selection blend
-sends the full accepted artwork as context and crops only the chosen rectangle
-into a candidate; separate-image mode sends the crop and exposes output size.
-This does not establish seam quality or identity fidelity. Unsent drafts retain
-their project, artboard/source, coordinates and mode through saves and recovery.
-Options disclose precise output size and creation briefs; routine controls stay
-compact. Missing provider setup remains actionable; the Clipforge handoff lives
-in Settings.
-
-Library is app-wide. A separate picker combines project references with shared
-originals and supports import-and-select. Reference visibility and associations
-belong to their artboard. Project tabs retain independent documents, history,
-drafts and dirty state; session recovery restores open documents. Clipforge owns
-provider connections and secrets; Atelier offers Open Clipforge and Refresh
-readiness, request model choices and ComfyUI mappings. Direct setup navigation
-awaits a Clipforge deep-link contract. Tab closing/reordering now follows the
-project-tab behavior above.
-
-The [Atelier reference](../storyfella-canvas/docs/atelier.md) documents the
-version-2 upgrade, reused behavior, captured queue destinations and remaining
-native/provider coverage. Source migration, geometry, candidate export exclusion,
-history, multi-project recovery and preflight regressions pass. The workspace
-check/test/format gates and strict Atelier Clippy pass (Atelier: 57 passed,
-12 device/fixture tests ignored). Native macOS packaging and its packaging checks
-also pass. Existing vendored GPUI
-deprecation warnings remain unchanged.
-
-Live macOS checks in a uniquely identified isolated bundle verified project
-creation, draft restoration across tabs and quit/restart, drawing composer access,
-a local stroke and gizmo display. This is partial acceptance: real-provider
-selection requests, candidate review and reference import through the native UI,
-failure injection, first-time-user, VoiceOver and Linux/Windows passes remain.
-Older Atelier entries below describe implementation history and are superseded
-where the workflow changed.
-
-### Atelier project-first handoff · 2026-10-16
-
-Atelier opens to Projects. New projects open to Artboards with a centered blank
-canvas on a quiet tinted stage and a compact image prompt visible by default.
-The blank canvas is an empty-state entry point: the first generated artboard
-replaces it in the sequence. A canvas with actual drawing remains an artboard.
-Sparse artboard sequences are centered, with artwork large enough to lead the
-screen and contextual activity beside the selected artboard.
-Artboards use one light neutral workspace surface from title through composer.
-The artboard retains its native aspect ratio and takes the available visual
-attention; the composer is a compact floating control with settings tags below
-the input. Routine save state belongs in the header, without a second footer.
-When artwork exists, a faint plus artboard follows the real artboards. It adds
-a blank drawing canvas to Artboards, preserving existing canvas artboards. It is
-excluded from the artboard count and from centered artboard layout, so it never
-shifts the artwork.
-The prompt keeps its dropdown controls together below the input for provider,
-aspect ratio, resolution, and local sampling steps. Draw is an editing state
-reached by opening the canvas artboard. Drawing controls belong in its left tool rail;
-the canvas has no separate bottom brush bar. Keep the drawing rail narrow:
-show a centered vertical stack of brush presets, size step actions around a
-compact size tag, opacity, and smoothing. Omit the brush-name caption. Keep the
-rail and the optional side dock slim, and place tool popovers beside their rail
-triggers. Draw reuses the Artboards prompt composer at the bottom of the canvas:
-the same input, provider, aspect, resolution, optional steps, and submit layout.
-Only the submission action changes to use the drawing as its source. Keep its
-top edge free of extra icon and close rows. The drawing composer adds a compact
-Full/Area control alongside the shared settings, with a visible marquee after
-a canvas drag. ⌘P toggles the prompt in each workspace; Artboards shows it by
-default.
-The image editor keeps artwork primary, opens its variation composer only on
-request, and returns submitted work to the project artboard sequence. Artboard
-activity is a short contextual event list with a direct
-full-details action. This is source-level acceptance; live visual and keyboard
-checks remain pending. See [Atelier](../storyfella-canvas/docs/atelier.md) for the workflow and
-verification status.
-
-Verification: `cargo test -p storyfella-atelier` (48 passed, 11 ignored),
-`cargo clippy -p storyfella-atelier --all-targets -- -D warnings`, and
-`cargo fmt --package storyfella-atelier -- --check` pass.
-
-### Atelier game-art creation briefs · 2026-10-16
-
-The new-image composer offers editable starting briefs for **Character**,
-**Object**, **Background**, and **Illustration** work. Each brief chooses a
-portrait, square, or landscape canvas that fits the asset and seeds the existing
-per-project prompt draft, so users can move from a game-art intent to the normal
-generation queue without introducing a second generation path. Choosing a brief
-while editing returns the composer to new-image mode; the user can then refine
-the prompt before queueing it. The Settings credential field remains masked and
-uses Clipforge's shared provider config; environment-only keys are resolved for
-requests without being copied into the stored-key field.
-
-Verification: `cargo test -p storyfella-atelier` (48 passed, 11 ignored),
-`cargo clippy -p storyfella-atelier --all-targets -- -D warnings`,
-`cargo fmt --all -- --check`, and `git diff --check` pass. The four brief
-buttons have not yet been exercised in a live UI session.
-
-Atelier acceptance · 2026-10-10: the image workspace uses named icon actions for
-export, canvas placement, edit mode, comparison and masking. Details and provenance
-are disclosed on demand; the prompt has more space and the version strip is compact.
-Isolated macOS checks exercised those controls and resizing to about 1058 × 732
-logical pixels. A live Replicate forest-bookshop generation and evening edit were
-saved as a portable project, original PNGs and approved artwork.
-Hosted provider keys save in the shared `clipforge.toml` through Clipforge's
-atomic, owner-only writer; Studio and Atelier read that shared provider config.
-Linux/Windows native interaction and assistive-technology checks remain unverified.
-
-Follow-up iteration acceptance completed two further real Replicate edits, including a branch from the original,
-comparison, naming, full-resolution export and a four-reference saved project.
-The follow-up fixes bind unsent prompts to each source and New image, save them
-in project/recovery files, and restore the active source after restart. Saved
-version names replace positional numbers, parent tooltips explain lineage, and
-a named icon reuses the inspected prompt. Live macOS navigation and restart
-checks pass; native Open was repeated successfully. The actual-size control
-says 100%. First-time-user and cross-platform acceptance remain outstanding.
-Local Qwen Image 2.1 generation/editing and Krea 2 Turbo generation now use
-Clipforge's managed image client; Linux CUDA inference remains unverified here.
-
-This is the central UI and UX reference for Studio, including the shared playback
-surface used by Preview. Read it before changing a user-facing flow or component.
-It defines required behavior, the visual vocabulary, and the findings from
-the 2026-10-07 sweep. The remediation record in §9 describes the implementation
-and its verification through 2026-10-10; the original observations remain in §7.
-Requirements are ongoing review criteria, not a claim of accessibility certification.
-
-[ROADMAP §0](docs/ROADMAP.md#0-current-direction-and-actionable-backlog) owns planned delivery
-status. This document owns interaction and presentation rules.
-[Development](docs/development.md) documents the executable authoring scenarios,
-and [Atelier](../storyfella-canvas/docs/atelier.md) documents canvas behavior. Use this standard for
-interaction requirements and keep planned changes in the roadmap.
 
 ## 1. Product principles
 
@@ -1639,60 +1289,6 @@ the managed/external split and the planner-client rebuild;
 `cargo fmt --all -- --check` pass. Live field and action interaction remains a
 manual check.
 
-### Atelier image workspace and approved Studio artwork · 2026-10-09
-
-Atelier preserves original image bytes and exposes a large fitted/100% workspace
-with zoom/pan, immutable edited versions, branching and parent comparison. Its
-shared library has searchable names/tags, favorites, original import, and explicit
-Open / Reference / Use actions. Use embeds a project copy and its preview; global
-library access remains available after switching studies. Image-backed layers
-support paint, erasing, undo/redo, placement, scaling and normal canvas export.
-Mask drafts have independent stroke undo/redo and durable saves. A failed mask
-write retains the draft, exposes Retry, and blocks image/project replacement and
-Quit until saving succeeds. Model presets have unique control IDs even when
-their generation routes match. Settings uses provider dropdowns and a full-height
-scrolling body with a pinned Save action; successful save closes the panel.
-
-Clipforge owns ordered-reference/mask capability checks and provider payloads.
-Unsupported combinations fail before submission. Masked output preserves source
-dimensions and original pixels outside the painted area. Capabilities differ by
-route; this does not imply every provider/model supports masks or multiple inputs.
-
-Studio's new Import Atelier artwork action previews an approved `.sfart` package,
-lets the person choose its name and Character/Environment/Object role, and adds
-a completed revision through AppState. It performs no inference. Errors remain
-in the shared dialog; successful import closes it. Project identity is checked
-across background work. Normal undo/redo and project persistence own the result.
-Both original image versions and painted canvases can produce approved packages.
-This is the implemented Studio handoff UX; its hosted-provider controls and a
-full Studio art-editing workspace remain separate future work.
-
-Verification used isolated `.svs-e2e/atelier-workflow` data and a disposable macOS
-test bundle. Native interactions exercised full-image fit/100%/pan, parent
-comparison, mask paint/erase/undo/reopen, focused prompt and model typing,
-searchable saved tags, favorites, new-study library reuse, image-layer painting,
-erasing/moving/scaling, provider presets and settings save/close. A read-only test
-library verified visible save failure, retained mask, blocked study switch/Quit,
-and successful Retry after restoring access. At about 1,010 logical pixels wide,
-toolbars wrapped, contained library thumbnails remained accurate, and settings
-kept its footer visible while scrolling. Studio's runnable Dioxus build displayed
-the approved preview, imported an Environment, and removed/restored it with
-undo/redo. Workspace persistence tests cover reopening the saved import.
-
-Automated coverage includes original resolution/alpha, library and project
-round trips, lineage, image-layer transforms/erasing, mask polarity/protected
-pixels, failed draft-write retry, approved packages, and Studio import persistence.
-Ten physical Metal tests include paint/erase image-layer pixels and approved
-canvas export. Clipforge mock HTTP tests verify ordered inputs, mask pixels,
-provider field names, and rejection before submission. Paid-provider output and
-Linux/Windows native UX were not exercised in this pass. See `../storyfella-canvas/docs/atelier.md`
-for the bounded image/project/library limits and remaining scope.
-
-Repository checks passed: workspace all-target check and tests, strict Clippy
-for Atelier/Studio/Studio core, formatting, the runnable Studio build through
-xtask, and the signed Atelier macOS bundle. Clipforge's `xtask check`, `xtask ci`
-(including MCP smoke), formatting and strict inference-crate Clippy also passed.
-
 ### Studio workspace and visual actions · 2026-10-10
 
 The workspace now has stable icon-and-label navigation, a project switcher and
@@ -1847,64 +1443,3 @@ Verification: `cargo check --workspace --all-targets`, `cargo test --workspace`,
 --all-targets -- -D warnings` and `cargo fmt --all -- --check` pass. Live
 multi-front-end reuse and the Settings Start/Stop/residency interactions remain a
 manual check.
-
-### Atelier generation queue · 2026-10-12
-
-The Atelier generation rail now queues requests instead of running one at a time.
-**Add to queue** validates and captures the request — provider, model, prompt,
-width, height, sampling steps and the applied LoRA adapters with their weights —
-and runs it after those already waiting, so several images can be prepared before
-any finishes. Exactly one request runs at a time on the shared server. **Pause**
-holds dispatch without interrupting the running image, **Stop** cancels it, a
-queued request can be removed, and **Clear finished** drops completed history.
-Each entry keeps the values it was created with, so later control edits never
-change work already queued. The list labels every state in text (Queued, Running
-with its progress, Done, Failed, Cancelled) and pairs each with a colour, never
-colour alone.
-
-Size, steps and LoRA adapters are per-request controls in a floating **Image
-settings** window (a gear in the rail);
-Settings keeps the provider, model, endpoint and credentials. This is a
-state-only change: `queue.rs` owns the request snapshots,
-ordering, pause and states, and the app dispatches one item at a time through the
-unchanged `worker::generate`, so no second execution path was added and the
-single-GPU constraint holds.
-
-The queue now lives in its own panel — opened from a header badge that counts
-outstanding requests (queued + running) and from the rail's summary — with
-Pause/Resume, Stop and Clear finished, and one card per request showing its state,
-prompt and settings. The generation rail keeps only the composer and the summary.
-**Generate from drawing** now uses the bottom floating composer shared with
-Artboards. Its Full/Area control switches between the full canvas and area
-selection; a drag shows the selected region. Submission rasterizes the area
-(cropped to the region), opens it as the edit source and queues it. Rails and the header were
-narrowed, and explanatory copy was removed to keep the workspace out of the way.
-
-Verification: `cargo test -p storyfella-atelier` (49 tests; seven new — six
-covering queue ordering/pause/history/removal/masked-edit size, one covering
-region clamping) and `cargo clippy -p storyfella-atelier --all-targets -- -D
-warnings` pass. The queue panel, header badge and drawing composer
-have not been exercised in a live UI run.
-
-### Atelier shared reference library scoping · 2026-10-12
-
-The Atelier reference library is now the **shared collection**, not a record of
-every image ever made. Generated images, edits and project imports stay in their
-project; only an import into the **All projects** tab or an explicit **Add to
-reference library** action puts an image in the collection. Renaming or favoriting
-a project-only image is a project-local change and a no-op in the library, and the
-image workspace now persists a rename/re-tag to the project's own record and its
-cached preview label, so a project-only image keeps its details across reopen.
-The image workspace's version strip, before/after comparison and draft restore now
-resolve images from the project and the collection together (deduplicated by
-content), so project-only variants appear in their family and remain comparable.
-Existing images already in the collection are left untouched — no destructive
-migration.
-
-Verification: `cargo test -p storyfella-atelier` (48 tests; 2 new covering that a
-project-only image is not shared until promoted, and that the library loads
-without collecting project images) and `cargo clippy -p storyfella-atelier
---all-targets -- -D warnings` pass. The promote action's live UI behaviour is not
-yet exercised. The test helper now resets its pid-keyed temporary directory so a
-run cannot inherit a fixture left by an earlier one (the pid is reused and TMPDIR
-persists).

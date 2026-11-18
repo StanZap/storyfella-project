@@ -66,13 +66,13 @@ start generation servers or modify source.
 
 ```sh
 # Source/compiler validity; missing art remains informational pending work.
-cargo run -p svs-cli --bin svs -- story check examples/harbor.sf
+cargo run -p sf-cli -- story check examples/harbor.sf
 
 # A plan retains all pending assets and unsupported directions.
-cargo run -p svs-cli --bin svs -- story compile examples/harbor.sf
+cargo run -p sf-cli -- story compile examples/harbor.sf
 
 # Require all represented binding/direction requirements to be satisfied.
-cargo run -p svs-cli --bin svs -- story check story.sf --assets bindings.json --require-ready
+cargo run -p sf-cli -- story check story.sf --assets bindings.json --require-ready
 ```
 
 The catalog file is a JSON array (revision is optional for pending artwork):
@@ -91,7 +91,7 @@ unsuccessfully. Missing assets alone do not fail either command unless
 
 Writer, CLI and LSP expose the same compiler diagnostics and readiness. Export
 Studio metadata and exact completed active revisions with
-`svs story catalog project.db`. This opens an existing database (including schema
+`sf-cli story catalog project.db`. This opens an existing database (including schema
 upgrade if needed), without loading model configuration or starting inference.
 Missing paths are rejected. See [editor context](language.md#external-editors).
 

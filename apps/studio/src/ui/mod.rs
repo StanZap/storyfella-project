@@ -13,6 +13,7 @@ mod icons;
 mod inputs;
 mod inspector;
 mod keys;
+mod novel_assistant;
 mod palette;
 mod plans;
 pub mod preview;
@@ -39,7 +40,7 @@ use dioxus::prelude::*;
 
 use storyfella_studio_core::config::AppConfig;
 use storyfella_studio_core::errors::ReportedError;
-use storyfella_studio_core::registry::backend::CreativeBackend;
+use storyfella_studio_core::planner::PlannerBackend;
 
 use crate::{
     commands::{self, ExecutionUi},
@@ -248,7 +249,7 @@ pub fn Workspace(
     let backend_config = config.clone();
     // The backend lives in a signal so the Settings model picker can swap
     // the writing model; provider edits rebuild its client.
-    let backend = use_signal(|| CreativeBackend::new(&backend_config));
+    let backend = use_signal(|| PlannerBackend::new(&backend_config));
     // Shared with Settings so new workflows use the latest provider selection.
     let live_config = use_signal(|| config.clone());
     let project_file_preview = use_signal(|| None::<PathBuf>);
@@ -283,15 +284,6 @@ pub fn Workspace(
 
     // Shared operation defaults for authoring guides; no image production UI.
     let defaults = use_signal(|| config.generation_defaults.clone());
-    let image_residency = use_signal(|| {
-        config
-            .image
-            .as_ref()
-            .map(|image| image.residency.as_str().to_owned())
-            .unwrap_or_default()
-    });
-    use_context_provider(|| image_residency);
-
     // The app-wide error surface: every failure is reported here (coded
     // log + banner + details modal), whatever screen is showing.
     let error_report = use_signal(|| None::<ReportedError>);

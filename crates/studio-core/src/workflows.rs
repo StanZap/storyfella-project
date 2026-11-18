@@ -1,5 +1,6 @@
 //! Application-owned workflow persistence and execution. Credentials and model
 //! bindings stay ephemeral; project context and results belong to the host.
+pub mod novel;
 #[cfg(test)]
 mod tests;
 pub mod writing;

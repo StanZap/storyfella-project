@@ -66,7 +66,7 @@ pub fn App() -> Element {
                             .filter(|path| path.exists())
                             .or_else(storyfella_studio_core::paths::config_path)
                     }
-                    ConfigError::PlatformDirectories | ConfigError::Identity(_) => None,
+                    ConfigError::PlatformDirectories | ConfigError::Identity(_) | ConfigError::InvalidModelSelection(_) => None,
                 };
                 rsx! {
                 main { class: "studio-startup",

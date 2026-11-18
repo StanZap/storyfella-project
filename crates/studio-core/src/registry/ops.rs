@@ -405,7 +405,7 @@ pub enum CompileError {
     Ref(#[from] RefError),
     #[error(transparent)]
     Registry(#[from] RegistryError),
-    #[error("op requires a backend (CreativeRuntime) but none was provided")]
+    #[error("op requires a backend but none was provided")]
     BackendRequired,
     #[error("create requires a non-empty description")]
     EmptyDescription,

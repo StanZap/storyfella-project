@@ -25,7 +25,7 @@ impl Fixture {
         std::fs::write(self.dir.join(name), text).unwrap();
     }
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_svs"))
+        Command::new(env!("CARGO_BIN_EXE_sf-cli"))
             .args(args)
             .current_dir(&self.dir)
             .env("SVS_HOME", self.dir.join("missing-config-root"))
@@ -47,6 +47,19 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         std::fs::remove_dir_all(&self.dir).unwrap();
     }
+}
+
+#[test]
+fn cli_exposes_story_and_mcp_without_legacy_image_commands() {
+    let fixture = Fixture::new();
+    let output = fixture.run(&["--help"]);
+    assert!(output.status.success());
+    let help = String::from_utf8(output.stdout).unwrap();
+    assert!(help.contains("story"));
+    assert!(help.contains("mcp"));
+    assert!(!help.contains("runtime"));
+    assert!(!help.contains("stack"));
+    assert!(!help.contains("eval"));
 }
 
 #[test]

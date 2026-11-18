@@ -6,8 +6,6 @@ use agentkit_ai::native::{control::Managed, service};
 
 use crate::config::AppConfig;
 
-use super::CreativeRuntime;
-
 const CHECK_TIMEOUT_SECONDS: u64 = 5;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,10 +35,8 @@ impl HealthStatus {
 pub enum ServiceId {
     /// The OpenAI-compatible text/planner endpoint (llama.cpp, LM Studio, …).
     Llm,
-    /// The OpenAI-compatible vision endpoint (`svs eval`).
+    /// The OpenAI-compatible vision endpoint.
     Vision,
-    /// The native stable-diffusion.cpp generation server.
-    ImageGeneration,
 }
 
 impl ServiceId {
@@ -48,7 +44,6 @@ impl ServiceId {
         match self {
             Self::Llm => "LLM endpoint",
             Self::Vision => "Vision endpoint",
-            Self::ImageGeneration => "Image generation",
         }
     }
 }
@@ -58,13 +53,8 @@ pub struct ServiceHealth {
     pub id: ServiceId,
     pub status: HealthStatus,
     pub detail: String,
-    pub recovery: Option<ServiceRecovery>,
-}
-
-/// A probe's actionable recovery, independent of its human-readable detail.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ServiceRecovery {
-    ConfigureImageFiles,
+    /// Models reported by the endpoint, or the single configured managed model.
+    pub models: Option<Vec<String>>,
 }
 
 impl ServiceHealth {
@@ -73,25 +63,16 @@ impl ServiceHealth {
             id,
             status,
             detail: detail.into(),
-            recovery: None,
+            models: None,
         }
-    }
-
-    fn with_recovery(mut self, recovery: ServiceRecovery) -> Self {
-        self.recovery = Some(recovery);
-        self
     }
 }
 
 /// Probes every service the application depends on. The checks are read-only:
 /// nothing is started, stopped, or downloaded as a side effect.
-pub async fn check_all(config: &AppConfig, runtime: &CreativeRuntime) -> Vec<ServiceHealth> {
-    let (llm, vision, generation) = tokio::join!(
-        check_llm(config),
-        check_vision(config),
-        check_generation(config, runtime),
-    );
-    vec![llm, vision, generation]
+pub async fn check_all(config: &AppConfig) -> Vec<ServiceHealth> {
+    let (llm, vision) = tokio::join!(check_llm(config), check_vision(config));
+    vec![llm, vision]
 }
 
 async fn check_llm(config: &AppConfig) -> ServiceHealth {
@@ -131,13 +112,15 @@ async fn check_chat(
 ) -> ServiceHealth {
     let configured = deployment.model.clone();
     if let Some(server) = deployment.server.as_ref() {
-        return check_native(id, &Managed::Chat(server.clone()), state_dir).await;
+        let mut health = check_native(id, &Managed::Chat(server.clone()), state_dir).await;
+        health.models = Some(vec![configured]);
+        return health;
     }
     deployment.timeout = Duration::from_secs(CHECK_TIMEOUT_SECONDS);
     let client = ChatClient::new(deployment);
     match with_timeout(client.list_models(), CHECK_TIMEOUT_SECONDS + 5).await {
         Ok(models) => {
-            if models.iter().any(|model| model == &configured) {
+            let mut result = if models.iter().any(|model| model == &configured) {
                 ServiceHealth::new(
                     id,
                     HealthStatus::Online,
@@ -152,7 +135,9 @@ async fn check_chat(
                     HealthStatus::Degraded,
                     format!("reachable · model '{configured}' is not loaded"),
                 )
-            }
+            };
+            result.models = Some(models);
+            result
         }
         Err(error) => ServiceHealth::new(
             id,
@@ -160,60 +145,6 @@ async fn check_chat(
             format!("unreachable: {}", truncate(&error)),
         ),
     }
-}
-
-async fn check_generation(config: &AppConfig, runtime: &CreativeRuntime) -> ServiceHealth {
-    let Some(image) = &config.image else {
-        if let Some(provider) = config
-            .image_provider_id
-            .as_ref()
-            .and_then(|id| {
-                config
-                    .image_providers
-                    .iter()
-                    .find(|provider| &provider.id == id)
-            })
-            .filter(|provider| provider.hosted.is_some())
-        {
-            return ServiceHealth::new(
-                ServiceId::ImageGeneration,
-                HealthStatus::Idle,
-                format!(
-                    "{} configured · connectivity is checked when a request runs",
-                    provider.model
-                ),
-            );
-        }
-        return ServiceHealth::new(
-            ServiceId::ImageGeneration,
-            HealthStatus::Idle,
-            "No image provider is selected. Writing and playback remain available.",
-        );
-    };
-    let executable = &image.executable;
-    if !executable.is_file() {
-        return ServiceHealth::new(
-            ServiceId::ImageGeneration,
-            HealthStatus::Offline,
-            format!("sd-server binary not found at {}", executable.display()),
-        )
-        .with_recovery(ServiceRecovery::ConfigureImageFiles);
-    }
-    if !runtime.has_artifacts() {
-        return ServiceHealth::new(
-            ServiceId::ImageGeneration,
-            HealthStatus::Degraded,
-            "Model files are missing. Open Settings → Services → Model files to prepare them."
-                .to_owned(),
-        )
-        .with_recovery(ServiceRecovery::ConfigureImageFiles);
-    }
-    check_native(
-        ServiceId::ImageGeneration,
-        &Managed::Image(image.clone()),
-        &config.state_dir,
-    )
-    .await
 }
 
 async fn check_native(
@@ -273,56 +204,34 @@ mod tests {
     use super::{truncate, HealthStatus, ServiceHealth, ServiceId};
 
     #[tokio::test]
-    async fn unselected_native_images_do_not_request_setup_or_probe_a_server() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut config =
-            crate::config::AppConfig::load_from(directory.path().join("absent.toml")).unwrap();
-        config.image = None;
-        config.image_provider_id = None;
-        let runtime = super::CreativeRuntime::new(&config);
-        let health = super::check_generation(&config, &runtime).await;
-        assert_eq!(health.status, HealthStatus::Idle);
-        assert!(health.recovery.is_none());
-        assert!(health.detail.contains("Writing and playback"));
-    }
-
-    #[tokio::test]
-    async fn missing_image_files_offer_setup_before_any_server_action() {
-        let directory = std::env::temp_dir().join(format!("svs-health-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("providers.toml");
-        std::fs::write(&path, "[defaults]\nt2i='local'\n[providers.local]\nkind='sdcpp'\ncapabilities=['t2i']\narchitecture='qwen-image-2.1'\nbase_url='http://127.0.0.1:7860'\n").unwrap();
-        let mut config = crate::config::AppConfig::load_from(path).unwrap();
-        let image = config.image.as_mut().unwrap();
-        image.model_dir = directory.join("models");
-        image.executable = directory.join("sd-server");
-        image.lora_dir = directory.join("loras");
-        let runtime = super::CreativeRuntime::new(&config);
-        let missing_executable = super::check_generation(&config, &runtime).await;
-        assert_eq!(missing_executable.status, HealthStatus::Offline);
-        assert_eq!(
-            missing_executable.recovery,
-            Some(super::ServiceRecovery::ConfigureImageFiles)
-        );
-        std::fs::write(
-            &config.native_image().unwrap().executable,
-            b"test file; never executed",
-        )
-        .unwrap();
-        let missing_models = super::check_generation(&config, &runtime).await;
-        assert_eq!(missing_models.status, HealthStatus::Degraded);
-        assert_eq!(
-            missing_models.recovery,
-            Some(super::ServiceRecovery::ConfigureImageFiles)
-        );
-        std::fs::remove_dir_all(directory).unwrap();
+    async fn endpoint_check_returns_discovered_models_even_when_selection_is_missing() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            assert!(socket.read(&mut request).unwrap() > 0);
+            let body = r#"{"data":[{"id":"model-a"},{"id":"model-b"}]}"#;
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        let deployment = agentkit_ai::deployments::ChatDeployment {
+            base_url: format!("http://{addr}/v1"),
+            model: "missing".into(),
+            api_key: None,
+            timeout: std::time::Duration::from_secs(5),
+            server: None,
+        };
+        let result = super::check_chat(ServiceId::Llm, deployment, std::path::Path::new(".")).await;
+        server.join().unwrap();
+        assert_eq!(result.status, HealthStatus::Degraded);
+        assert_eq!(result.models.unwrap(), vec!["model-a", "model-b"]);
     }
 
     #[test]
     fn service_ids_have_display_labels() {
         assert_eq!(ServiceId::Llm.label(), "LLM endpoint");
         assert_eq!(ServiceId::Vision.label(), "Vision endpoint");
-        assert_eq!(ServiceId::ImageGeneration.label(), "Image generation");
     }
 
     #[test]
@@ -342,8 +251,8 @@ mod tests {
 
     #[test]
     fn health_entries_carry_their_service_and_detail() {
-        let entry = ServiceHealth::new(ServiceId::ImageGeneration, HealthStatus::Online, "ok");
-        assert_eq!(entry.id, ServiceId::ImageGeneration);
+        let entry = ServiceHealth::new(ServiceId::Vision, HealthStatus::Online, "ok");
+        assert_eq!(entry.id, ServiceId::Vision);
         assert_eq!(entry.status, HealthStatus::Online);
         assert_eq!(entry.detail, "ok");
     }

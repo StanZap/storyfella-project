@@ -1,24 +1,11 @@
 [package]
-name = "svs-cli"
+name = "sf-cli"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 description = "Command-line tools for Storyfella Studio."
 
-[[bin]]
-name = "svs"
-path = "src/bin/svs.rs"
-
-[[bin]]
-name = "model_setup"
-path = "src/bin/model_setup.rs"
-
-[[bin]]
-name = "vlm_probe"
-path = "src/bin/vlm_probe.rs"
-
 [dependencies]
-agentkit-ai.workspace = true
 agentkit-core.workspace = true
 agentkit-mcp.workspace = true
 storyfella-compiler.workspace = true
@@ -26,9 +13,7 @@ storyfella-language.workspace = true
 storyfella-runtime.workspace = true
 storyfella-studio-core = { path = "../../crates/studio-core" }
 anyhow.workspace = true
-base64.workspace = true
 clap.workspace = true
-image.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

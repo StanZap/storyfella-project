@@ -260,22 +260,6 @@ fn accept_additional_completion(
     }
 }
 
-/// The starter document, so the screen explains itself rather than opening
-/// on an empty box.
-pub const STARTER: &str = r#"# Write the story; Assets lists the artwork it needs.
-
-story "Untitled"
-
-scene harbor
-  location: harbor_dock
-  cast: mara, tam
-
-  beat arrival
-    shot: wide, dawn
-    mara: "You're late. Tide's already turning."
-    tam think: She counts the minutes like coins.
-"#;
-
 /// DOM selections use UTF-16; shared Source converts them to UTF-8 spans.
 const CARET_BRIDGE: &str = r#"
     const el = document.getElementById("svs-writer");
@@ -682,7 +666,7 @@ fn explorer_rename_hint() -> &'static str {
 #[component]
 pub fn Writer(
     mut app_state: Signal<AppState>,
-    backend: Signal<storyfella_studio_core::registry::backend::CreativeBackend>,
+    backend: Signal<storyfella_studio_core::planner::PlannerBackend>,
 ) -> Element {
     let mut error_report = use_context::<Signal<Option<ReportedError>>>();
     let sidebar_visible = use_context::<super::SidebarVisibility>().0;
@@ -695,6 +679,9 @@ pub fn Writer(
     let mut create_entry = use_signal(|| None::<(ProjectEntryKind, String)>);
     let mut file_preview = use_context::<super::ProjectFilePreview>().0;
     let mut open_asset = use_signal(|| false);
+    let novel_proposal =
+        use_signal(|| None::<storyfella_studio_core::workflows::novel::NovelProposal>);
+    let showing_novel_review = novel_proposal.read().is_some();
     use_context_provider(|| WriterAssetView(open_asset));
     let mut new_asset = use_signal(|| None::<super::actions::ArtAction>);
     let mut collapsed = use_signal(std::collections::BTreeSet::<String>::new);
@@ -962,14 +949,14 @@ pub fn Writer(
                 }
             }
             div { class: "flex min-w-0 flex-1 flex-col",
-                div { hidden: active.is_some() || open_asset() || file_preview.read().is_some(), class: "min-h-0 flex-1", MainWriter { app_state, backend } }
-                if let Some(path) = active.clone() { div { hidden: open_asset() || file_preview.read().is_some(), class: "min-h-0 flex-1", AdditionalWriter { key: "{path}", path, app_state } } }
-                if let Some(path) = file_preview() { div { class: "flex h-full flex-col", header { class: "border-b border-white/10 p-3 text-sm", "{path.file_name().unwrap_or_default().to_string_lossy()}" }
+                div { hidden: !showing_novel_review && (active.is_some() || open_asset() || file_preview.read().is_some()), class: "min-h-0 flex-1", MainWriter { app_state, backend, novel_proposal } }
+                if let Some(path) = active.clone() { div { hidden: showing_novel_review || open_asset() || file_preview.read().is_some(), class: "min-h-0 flex-1", AdditionalWriter { key: "{path}", path, app_state } } }
+                if let Some(path) = file_preview().filter(|_| !showing_novel_review) { div { class: "flex h-full flex-col", header { class: "border-b border-white/10 p-3 text-sm", "{path.file_name().unwrap_or_default().to_string_lossy()}" }
                     if path.extension().and_then(|s| s.to_str()).is_some_and(|ext| ["png", "jpg", "jpeg", "webp"].iter().any(|supported| ext.eq_ignore_ascii_case(supported))) {
                         if let Some(url) = path.canonicalize().ok().and_then(|path| path.to_str().and_then(generated_asset_url)) { img { class: "min-h-0 flex-1 object-contain p-4", src: url, alt: "Project image" } }
                     } else { p { class: "p-4 text-sm text-zinc-400", "File in project · open with its associated application to edit." } }
                 } }
-                if open_asset() { if let Some(artifact) = app_state.read().selected_artifact().cloned() {
+                if open_asset() && !showing_novel_review { if let Some(artifact) = app_state.read().selected_artifact().cloned() {
                     super::assets::AssetDetail { key: "{artifact.id}", rename_requested: rename_asset() == Some(artifact.id), on_rename_started: move |_| rename_asset.set(None), app_state, artifact, disabled: app_state.read().operation_in_progress(), on_back: move |_| open_asset.set(false), on_new_variant: move |id| new_asset.set(Some(super::actions::ArtAction::Variant(id))) }
                 } }
             }
@@ -1117,7 +1104,7 @@ fn AdditionalWriter(path: String, mut app_state: Signal<AppState>) -> Element {
                 }
               }
               textarea { id: "svs-extra-writer", aria_label: "Story source", spellcheck: "false", autocomplete: "off",
-                class: "absolute inset-x-0 top-0 z-20 min-h-full w-full resize-none overflow-hidden bg-transparent px-4 py-3 font-mono text-[12.5px] leading-[1.75] text-transparent caret-sky-300 outline-none",
+                class: "absolute inset-x-0 top-0 z-20 min-h-full w-full resize-none overflow-hidden bg-transparent px-4 py-3 font-mono text-[12.5px] leading-[1.75] text-transparent caret-sky-300 outline-none placeholder:text-zinc-600",
                 onmounted: { let initial = source.clone(); move |_| {
                     document::eval(&format!("const el = document.getElementById('svs-extra-writer'); el.value = {};", serde_json::to_string(&initial.replace("\r\n", "\n")).unwrap())); mounted.set(true);
                     spawn(async move { let script = CARET_BRIDGE.replace("svs-writer", "svs-extra-writer"); let mut bridge = document::eval(&script); while let Ok(position) = bridge.recv::<storyfella_language::Position>().await { cursor.set(position); writer_position.set(position); } });
@@ -1164,7 +1151,8 @@ fn AdditionalWriter(path: String, mut app_state: Signal<AppState>) -> Element {
 #[component]
 fn MainWriter(
     app_state: Signal<AppState>,
-    backend: Signal<storyfella_studio_core::registry::backend::CreativeBackend>,
+    backend: Signal<storyfella_studio_core::planner::PlannerBackend>,
+    novel_proposal: Signal<Option<storyfella_studio_core::workflows::novel::NovelProposal>>,
 ) -> Element {
     let mut error_report = use_context::<Signal<Option<ReportedError>>>();
     let caret = use_context::<super::WriterCaret>();
@@ -1195,6 +1183,7 @@ fn MainWriter(
     use_context_provider(|| review_controller);
     let mut review_mode = review_controller.mode;
     let reviewing = review_controller.review.read().is_some();
+    let novel_review = novel_proposal();
     let remaining = review_controller.changes.read().len();
     let mut had_review = use_signal(|| false);
     use_effect(move || {
@@ -1419,7 +1408,27 @@ fn MainWriter(
                     }
                 }
 
-                if reviewing {
+                if let Some(proposal) = &novel_review {
+                    div { class: "flex min-h-0 flex-1 flex-col",
+                        div { class: "studio-review-toolbar", aria_label: "Review view",
+                            p { class: "mr-auto text-xs text-zinc-400", "{proposal.files.len()} changed files" }
+                            button { class: if review_mode() == super::writing_review::ReviewMode::Inline { "is-selected" } else { "" }, aria_pressed: review_mode() == super::writing_review::ReviewMode::Inline, onclick: move |_| review_mode.set(super::writing_review::ReviewMode::Inline), "Inline" }
+                            button { class: if review_mode() == super::writing_review::ReviewMode::SideBySide { "is-selected" } else { "" }, aria_pressed: review_mode() == super::writing_review::ReviewMode::SideBySide, onclick: move |_| review_mode.set(super::writing_review::ReviewMode::SideBySide), "Side by side" }
+                        }
+                        div { class: "min-h-0 flex-1 overflow-auto", aria_label: "Changed story files",
+                            for (index, (path, replacement)) in proposal.files.iter().enumerate() {
+                                super::writing_review::NovelFileDiff {
+                                    key: "{proposal.run_id}-{index}-{review_mode() == super::writing_review::ReviewMode::SideBySide}",
+                                    index,
+                                    path: path.clone(),
+                                    draft: proposal.request.workspace.files[path].clone(),
+                                    proposed: replacement.clone(),
+                                    mode: review_mode(),
+                                }
+                            }
+                        }
+                    }
+                } else if reviewing {
                   div { key: "{review_controller.review.read().as_ref().unwrap().proposal.run_id}", class: "flex min-h-0 flex-1 flex-col",
                     div { class: "studio-review-toolbar", aria_label: "Review view",
                         p { class: "mr-auto text-xs text-zinc-400", if remaining == 1 { "1 change remaining" } else { "{remaining} changes remaining" } }
@@ -1429,27 +1438,7 @@ fn MainWriter(
                     super::writing_review::WritingReviewEditor { app_state }
                   }
                 }
-                div { hidden: reviewing, class: "flex min-h-0 flex-1 flex-col",
-                if source.is_empty() {
-                    div { class: "grid flex-1 place-items-center px-6 text-center",
-                        div { class: "grid size-12 place-items-center rounded-2xl bg-white/[0.045] text-zinc-600 ring-1 ring-inset ring-white/[0.06]",
-                            Icon { name: IconName::List, class: "size-5" }
-                        }
-                        p { class: "mt-4 text-[13px] font-semibold text-zinc-200", "No story yet" }
-                        p { class: "mt-1 max-w-sm text-[11px] leading-5 text-zinc-500",
-                            "Write scenes and beats here; the artifacts they name appear on the right, ready to create."
-                        }
-                        button {
-                            class: "mt-4 rounded-lg bg-violet-400/15 px-3 py-1.5 text-[11px] font-semibold text-violet-200 transition hover:bg-violet-400/25",
-                            title: "Start a story",
-                            onclick: move |_| {
-                                let mut state = app_state.write();
-                                state.set_story_source(STARTER.to_owned());
-                            },
-                            "Start a story"
-                        }
-                    }
-                } else {
+                div { hidden: reviewing || novel_review.is_some(), class: "flex min-h-0 flex-1 flex-col",
                     // The rendered layer is the visible text; the textarea
                     // sits over it transparently, exactly as the command bar
                     // does, so highlighting and the caret share metrics.
@@ -1471,6 +1460,7 @@ fn MainWriter(
                         }
                         textarea {
                             aria_label: "Story source",
+                            placeholder: "Write your story…",
                             id: "svs-writer",
                             class: "absolute inset-x-0 top-0 z-20 min-h-full w-full resize-none overflow-hidden bg-transparent px-4 py-3 font-mono text-[12.5px] leading-[1.75] text-transparent caret-sky-300 outline-none",
                             spellcheck: "false",
@@ -1585,7 +1575,6 @@ fn MainWriter(
                         }
                     }
                 }
-                }
             }
 
             if let Some((offset, name)) = rename_target() {
@@ -1594,7 +1583,7 @@ fn MainWriter(
 
             // ------------------------------------------------------- panel
             div { hidden: !writing_help(), class: "studio-writing-rail",
-                super::writing_assistant::WritingAssistant { app_state, backend, open: writing_help, onclose: move |_| { writing_help.set(false); document::eval("document.getElementById('svs-writer')?.focus();"); } }
+                super::writing_assistant::WritingAssistant { app_state, backend, open: writing_help, novel_proposal, onclose: move |_| { writing_help.set(false); document::eval("document.getElementById('svs-writer')?.focus();"); } }
             }
             aside { hidden: writing_help(), class: "flex w-[320px] shrink-0 flex-col bg-zinc-950/35",
                 div { class: "flex items-center gap-2 border-b border-white/[0.05] px-4 py-2.5",
@@ -1832,11 +1821,9 @@ mod tests {
     }
 
     #[test]
-    fn starter_and_sample_are_valid_storyfella() {
-        for source in [STARTER, crate::app::sample::STORY] {
-            let analysis = analyze(source, &[]);
-            assert!(!analysis.has_errors(), "{:?}", analysis.diagnostics);
-        }
+    fn sample_is_valid_storyfella() {
+        let analysis = analyze(crate::app::sample::STORY, &[]);
+        assert!(!analysis.has_errors(), "{:?}", analysis.diagnostics);
     }
 
     #[test]

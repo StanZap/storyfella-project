@@ -28,7 +28,8 @@ use crate::project::ProjectFolder;
 
 const SOCKET: &str = "owner.sock";
 const MAX_REQUEST: usize = 512 * 1024;
-const MAX_REPLY: usize = 4 * 1024 * 1024;
+// A 1 MiB novel can expand sixfold when JSON escapes its source text.
+const MAX_REPLY: usize = 8 * 1024 * 1024;
 pub const MAX_CONNECTIONS: usize = 8;
 const FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 pub const SCHEMA: u32 = 2;
@@ -80,6 +81,30 @@ impl<C> Request<C> {
 pub enum Command {
     Writer(WriterCommand),
     Preview(PreviewCommand),
+    Novel(NovelCommand),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum NovelCommand {
+    Start {
+        session: Uuid,
+        instructions: String,
+        expand: bool,
+        preserve_facts: bool,
+    },
+    Poll {
+        session: Uuid,
+        job: Uuid,
+    },
+    Apply {
+        session: Uuid,
+        job: Uuid,
+    },
+    Cancel {
+        session: Uuid,
+        job: Uuid,
+    },
 }
 
 #[derive(Serialize, Deserialize)]

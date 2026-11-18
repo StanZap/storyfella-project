@@ -15,10 +15,8 @@ use super::{execute, Cancellation, RunStore};
 use crate::{
     authoring::AssetCatalog,
     llm::LlmConfig,
-    registry::{
-        backend::{CreativeBackend, PlannerAllocation},
-        ArtifactRegistry,
-    },
+    planner::{PlannerAllocation, PlannerBackend},
+    registry::ArtifactRegistry,
 };
 
 const MAX_REPAIR_ATTEMPTS: usize = 2;
@@ -354,7 +352,7 @@ impl WritingProposal {
 /// its repair attempts — finishes.
 pub async fn run_with_backend(
     request: WritingRequest,
-    backend: &CreativeBackend,
+    backend: &PlannerBackend,
     registry: &ArtifactRegistry,
     store: &RunStore,
     cancel: Cancellation,
@@ -386,7 +384,7 @@ fn chat_model(config: &LlmConfig) -> agentkit_workflow::SharedStreamingModel {
 /// Start the selected provider and route the request to its worker. A managed
 /// model may take minutes to load, so cancellation applies while waiting.
 async fn wait_for_allocation(
-    backend: &CreativeBackend,
+    backend: &PlannerBackend,
     cancel: &Cancellation,
 ) -> Result<Option<PlannerAllocation>> {
     let allocation = backend.planner_allocation();

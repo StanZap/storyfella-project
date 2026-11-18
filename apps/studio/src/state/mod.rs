@@ -276,19 +276,6 @@ impl AppState {
             .as_mut()
             .ok_or(StoryFileError::Unbound)?
             .create(path)?;
-        let source = self.story.source();
-        let newline = if source.contains("\r\n") {
-            "\r\n"
-        } else {
-            "\n"
-        };
-        let separator = if source.is_empty() || source.ends_with('\n') {
-            ""
-        } else {
-            newline
-        };
-        let updated = format!("{source}{separator}include \"{relative}\"{newline}");
-        self.set_story_source(updated);
         self.active_source = Some(relative);
         Ok(())
     }
@@ -501,7 +488,9 @@ impl AppState {
         self.commit_workspace_edits(workspace, expanded, edits, registry)
     }
 
-    fn workspace_snapshot(&self) -> Result<storyfella_compiler::SourceWorkspace, String> {
+    pub(crate) fn workspace_snapshot(
+        &self,
+    ) -> Result<storyfella_compiler::SourceWorkspace, String> {
         let path = self.story.path().ok_or("Open a story first")?;
         let entry = path
             .file_name()
@@ -514,6 +503,48 @@ impl AppState {
         drafts.insert(entry.to_owned(), self.story.source().to_owned());
         storyfella_studio_core::story::load_source_workspace(path, &drafts)
             .map_err(|error| error.to_string())
+    }
+
+    /// Apply a validated multi-file proposal as one undoable draft change.
+    pub(crate) fn apply_novel_proposal(
+        &mut self,
+        proposal: &storyfella_studio_core::workflows::novel::NovelProposal,
+    ) -> Result<(), String> {
+        if self.operation_in_progress || self.catalog_conflict.is_some() {
+            return Err(
+                "Finish the current operation or resolve the catalog conflict first.".into(),
+            );
+        }
+        let project = self.project_path.as_deref().ok_or("Open a project first")?;
+        let entry_path = self.story.path().ok_or("Open a story first")?.to_owned();
+        let current = self.workspace_snapshot()?;
+        let proposed = proposal
+            .validate(project, &current, &self.registry)
+            .map_err(|error| error.to_string())?;
+        let mut before = match &self.additional_sources {
+            Some(sources) => sources.clone(),
+            None => AdditionalSources::new(&entry_path).map_err(|error| error.to_string())?,
+        };
+        for file in proposal.files.keys().filter(|file| *file != &current.entry) {
+            let document = before.open(file).map_err(|error| error.to_string())?;
+            if Some(document.source()) != current.files.get(file).map(String::as_str) {
+                return Err(format!("{file} changed while preparing the suggestion"));
+            }
+        }
+        let mut after = before.clone();
+        for file in proposal.files.keys().filter(|file| *file != &current.entry) {
+            after
+                .set_source(file, proposed.files[file].clone())
+                .map_err(|error| error.to_string())?;
+        }
+        self.additional_sources = Some(before);
+        self.snapshot_for_undo();
+        self.additional_sources = Some(after);
+        self.story
+            .set_source(proposed.files[&current.entry].clone());
+        self.reconcile_story();
+        self.has_unsaved_changes = true;
+        Ok(())
     }
 
     fn rename_workspace_asset(
@@ -1070,6 +1101,71 @@ mod tests {
     use storyfella_studio_core::registry::{ArtifactKind, ArtifactRegistry, CreateArtifact};
 
     #[test]
+    fn novel_proposal_applies_multiple_files_as_one_undo_and_rejects_stale_drafts() {
+        use storyfella_studio_core::workflows::{
+            novel::{NovelProposal, NovelRequest},
+            writing::WritingAction,
+        };
+        let root =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
+        std::fs::create_dir_all(&root).unwrap();
+        let directory = tempfile::tempdir_in(root).unwrap();
+        let entry = directory.path().join("story.sf");
+        let chapter = directory.path().join("chapter.sf");
+        std::fs::write(&entry, "include \"chapter.sf\"\n").unwrap();
+        std::fs::write(&chapter, "scene harbor\n  narrate: old\n  end\n").unwrap();
+        let mut state = AppState {
+            story: StoryDocument::open(&entry).unwrap(),
+            project_path: Some(directory.path().join("story.db")),
+            ..Default::default()
+        };
+        let baseline = state.workspace_snapshot().unwrap();
+        let request = NovelRequest {
+            project: state.project_path.clone().unwrap(),
+            workspace: baseline.clone(),
+            action: WritingAction::Rewrite,
+            instructions: String::new(),
+            preserve_facts: true,
+            catalog_digest: storyfella_studio_core::workflows::novel::catalog_digest(
+                &state.registry,
+            )
+            .unwrap(),
+        };
+        let proposal = NovelProposal {
+            run_id: "test".into(),
+            request,
+            files: std::collections::BTreeMap::from([
+                (
+                    "story.sf".into(),
+                    "# revised\ninclude \"chapter.sf\"\n".into(),
+                ),
+                (
+                    "chapter.sf".into(),
+                    "scene harbor\n  narrate: new\n  end\n".into(),
+                ),
+            ]),
+        };
+        state.apply_novel_proposal(&proposal).unwrap();
+        assert!(state.story.source().starts_with("# revised"));
+        assert!(state
+            .additional_sources
+            .as_ref()
+            .unwrap()
+            .get("chapter.sf")
+            .unwrap()
+            .source()
+            .contains("new"));
+        assert!(state.undo());
+        assert_eq!(state.workspace_snapshot().unwrap(), baseline);
+        assert!(state.redo());
+        assert!(state.story.source().starts_with("# revised"));
+        assert!(state.undo());
+        state.set_story_source("# user edit\ninclude \"chapter.sf\"\n".into());
+        assert!(state.apply_novel_proposal(&proposal).is_err());
+        assert!(state.story.source().starts_with("# user edit"));
+    }
+
+    #[test]
     fn undo_after_clean_external_refresh_does_not_restore_old_chapter_text() {
         let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../.svs-e2e/tests")
@@ -1282,7 +1378,7 @@ mod tests {
     }
 
     #[test]
-    fn creating_chapter_links_it_without_overwriting_and_preserves_line_endings() {
+    fn creating_chapter_leaves_the_story_unchanged_and_never_overwrites() {
         let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../.svs-e2e/tests")
             .join(format!("studio-create-{}", uuid::Uuid::new_v4()));
@@ -1296,12 +1392,13 @@ mod tests {
         state
             .create_additional_source(&directory.join("chapter.sf"))
             .unwrap();
+        assert_eq!(state.story.source(), "scene first\r\n  end\r\n");
         assert_eq!(
-            state.story.source(),
-            "scene first\r\n  end\r\ninclude \"chapter.sf\"\r\n"
+            std::fs::read_to_string(directory.join("chapter.sf")).unwrap(),
+            ""
         );
         assert_eq!(state.active_source.as_deref(), Some("chapter.sf"));
-        assert!(state.has_unsaved_changes);
+        assert!(!state.has_unsaved_changes);
         assert!(state
             .create_additional_source(&directory.join("chapter.sf"))
             .is_err());

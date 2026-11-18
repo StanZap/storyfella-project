@@ -607,9 +607,7 @@ impl ErrorCode {
                 "SVS-RTE-123",
                 "Generation server has a different model loaded",
                 "Another server holds the generation port with a different model \
-                 loaded. Start the image service in Settings (it replaces a server \
-                 the shared owner started), or stop a foreign one with \
-                 `svs runtime stop --force`, then retry.",
+                 loaded. Check the image service in Clipforge, then retry.",
             ),
             Self::RuntimeServerExited => (
                 "SVS-RTE-126",
@@ -847,7 +845,7 @@ impl std::error::Error for ReportedError {}
 
 /// The shared native-inference crate's errors map onto the same registry as the
 /// runtime adapter's, so a failure is coded identically whether it is wrapped in
-/// [`crate::runtime::CreativeRuntimeError`] or surfaced directly (the CLI's
+/// a runtime error or surfaced directly (the CLI's
 /// `runtime serve` path).
 impl CodedError for agentkit_ai::native::sd::RuntimeError {
     fn code(&self) -> ErrorCode {

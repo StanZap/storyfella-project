@@ -5,7 +5,7 @@
 //! only logic worth reading here is path resolution and exit-code propagation —
 //! everything else is a command assembled and handed to [`crate::proc`].
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command as Process, ExitCode, ExitStatus};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -82,6 +82,28 @@ fn bundle(ws: &Workspace, args: BundleArgs) -> Result<ExitCode> {
         .map(|dir| ws.resolve(dir))
         .unwrap_or_else(|| ws.dist());
     std::fs::create_dir_all(&out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
+    let extension = if cfg!(target_os = "macos") {
+        "app"
+    } else {
+        "AppImage"
+    };
+    if args.install {
+        let required = if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            "appimage"
+        };
+        if !args
+            .package_types
+            .iter()
+            .any(|kind| kind.as_arg() == required)
+        {
+            bail!("--install requires --package-types {required}");
+        }
+    }
+    let staging = tempfile::Builder::new()
+        .prefix(".bundle-")
+        .tempdir_in(&out_dir)?;
 
     let mut cmd = Process::new("dx");
     cmd.current_dir(ws.studio())
@@ -89,26 +111,60 @@ fn bundle(ws: &Workspace, args: BundleArgs) -> Result<ExitCode> {
     for package_type in &args.package_types {
         cmd.args(["--package-types", package_type.as_arg()]);
     }
-    cmd.arg("--out-dir").arg(&out_dir);
+    cmd.arg("--out-dir").arg(staging.path());
     if profile.is_release() {
         cmd.arg("-r");
     }
     proc::require(&mut cmd)?;
 
-    if let Ok(entries) = std::fs::read_dir(&out_dir) {
-        let mut names: Vec<String> = entries
-            .flatten()
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        for name in names {
-            proc::done(format!("{}/{}", out_dir.display(), name));
-        }
+    let selected = if args.install {
+        Some(install::artifact(
+            staging.path(),
+            &install::STUDIO,
+            extension,
+        )?)
+    } else {
+        None
+    };
+    let published = publish_bundle(staging.path(), &out_dir)?;
+    if let Some(source) = selected {
+        let name = source.file_name().context("bundle artifact has no name")?;
+        install::bundled(&out_dir.join(name), &install::STUDIO)?;
     }
-    if args.install {
-        install::bundled(&out_dir, &install::STUDIO)?;
+    for path in published {
+        proc::done(format!("{}", path.display()));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn publish_bundle(staging: &Path, out_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut published = Vec::new();
+    for entry in std::fs::read_dir(staging)? {
+        let entry = entry?;
+        let dest = out_dir.join(entry.file_name());
+        let backup = tempfile::Builder::new()
+            .prefix(".previous-")
+            .tempdir_in(out_dir)?;
+        let previous = backup.path().join("artifact");
+        let existed = dest.exists();
+        if existed {
+            std::fs::rename(&dest, &previous)?;
+        }
+        if let Err(error) = std::fs::rename(entry.path(), &dest) {
+            if existed {
+                if let Err(restore) = std::fs::rename(&previous, &dest) {
+                    let saved = backup.keep().join("artifact");
+                    bail!("publishing {} failed: {error}; restoring the previous bundle failed: {restore}; it remains at {}", dest.display(), saved.display());
+                }
+            }
+            return Err(error).with_context(|| format!("publishing {}", dest.display()));
+        }
+        published.push(dest);
+    }
+    if published.is_empty() {
+        bail!("dx did not produce any bundle artifacts");
+    }
+    Ok(published)
 }
 
 fn check(ws: &Workspace) -> Result<ExitCode> {

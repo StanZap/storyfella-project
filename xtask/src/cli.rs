@@ -160,7 +160,7 @@ pub struct BundleArgs {
         long,
         value_enum,
         num_args = 1..,
-        default_values_t = [PackageType::Appimage],
+        default_value = if cfg!(target_os = "macos") { "macos" } else { "appimage" },
         value_name = "TYPE"
     )]
     pub package_types: Vec<PackageType>,
@@ -177,13 +177,13 @@ pub struct BundleArgs {
 /// are named; `dx config schema` documents the rest.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum PackageType {
-    /// Linux AppImage (the default, and the only self-contained one).
+    /// Linux AppImage (the Linux default).
     Appimage,
     /// Linux Debian package.
     Deb,
     /// Linux RPM package.
     Rpm,
-    /// macOS `.app` bundle.
+    /// macOS `.app` bundle (the macOS default).
     Macos,
     /// macOS `.dmg`.
     Dmg,

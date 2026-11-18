@@ -1,5 +1,6 @@
 //! A local writing workspace checkpoint, separate from accepted project saves.
 use super::{
+    novel::NovelProposal,
     writing::{WritingAction, WritingRequest},
     writing_review::WritingReview,
     RunStore,
@@ -61,6 +62,8 @@ pub struct WritingSession {
     pub request: Option<WritingRequest>,
     pub request_open: bool,
     pub review: Option<WritingReview>,
+    #[serde(default)]
+    pub novel_proposal: Option<NovelProposal>,
     pub generating: bool,
     pub streamed: String,
     pub phase: String,
@@ -86,6 +89,7 @@ impl WritingSession {
     pub fn has_source_context(&self) -> bool {
         self.request.is_some()
             || self.review.is_some()
+            || self.novel_proposal.is_some()
             || self.generating
             || self.draft != self.saved_source
     }
@@ -173,6 +177,7 @@ mod tests {
             request: Some(request),
             request_open: false,
             review: Some(review.clone()),
+            novel_proposal: None,
             generating: false,
             streamed: String::new(),
             phase: String::new(),
@@ -255,6 +260,7 @@ mod tests {
             request: None,
             request_open: true,
             review: None,
+            novel_proposal: None,
             generating: true,
             streamed: "    mara: \"Wait".into(),
             phase: "Writing a suggestion…".into(),

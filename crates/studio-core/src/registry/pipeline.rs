@@ -651,7 +651,7 @@ pub struct GenerateResponse {
 }
 
 /// The backend the pipeline executes against. The live implementation wraps
-/// `CreativeRuntime` + `LlmClient` (see `backend.rs`); tests inject a
+/// a host-supplied implementation; tests inject a
 /// fake to assert request bodies and state transitions.
 pub trait GenerationBackend: Send + Sync {
     fn generate(

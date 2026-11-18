@@ -7,6 +7,26 @@ meets its acceptance criteria.
 
 ## 0. Current direction and actionable backlog
 
+- [ ] **Coordinated novel writing.** Plan novel-wide requests, execute bounded
+  writing tasks with shared context, and present one review covering file edits,
+  additions and removals. Apply through a recoverable, conflict-checked project
+  save with undo, and expose the same proposal lifecycle through live MCP. Cover
+  cancellation, interrupted saves and external file changes.
+  - [ ] Capture the project source inventory and draft baselines, including
+    files outside the entry's current include graph. Define explicit create,
+    replace and delete changes and validate the resulting include graph.
+  - [ ] Split model work into bounded tasks coordinated by a shared plan. Keep
+    context, task results and cancellation in the workflow run; validate the
+    combined result before offering it for review.
+  - [ ] Extend draft state and undo to represent file existence as well as text.
+    Persist the accepted multi-file change with a durable source-write intent;
+    detect external changes and recover interrupted publication without replacing
+    unrelated files or deleting newer data.
+  - [ ] Render every proposed file change in the Writer, including additions and
+    removals, and expose the same proposal and apply behavior through live MCP.
+    Test real workflow execution with varied responses, stale snapshots,
+    cancellation and interrupted publication.
+
 ### Priority foundation: consume Agentkit for intelligence · 2026-10-28
 
 Agentkit is the shared framework dependency for intelligence capabilities and
@@ -982,8 +1002,7 @@ asset-only playback check independently of Atelier and all inference services.
   editable shapes and colored pressure-sensitive brush strokes, clip paint to
   a shape, and keep palettes with editable projects. Reuse the accepted
   composition for optional image-to-image variations. Keep drawing MCP
-  tools in sync. See [Atelier drawing and painting](../../storyfella-canvas/docs/atelier.md#drawing-and-painting)
-  and the [desktop acceptance notes](../DESIGN.md#atelier-drawing-and-painting--2026-11-11).
+  tools in sync. See [Atelier drawing and painting](../../storyfella-canvas/docs/atelier.md#drawing-and-painting).
 
 - [ ] **SF-PLAN-22 — Associate existing canvases with project assets.** Link the
   current Atelier canvas/artboard to a character, variation, illustration, place,

@@ -8,9 +8,9 @@ completion status.
 
 ## Start a text-first VN from a chat
 
-Build `svs` with `cargo build -p svs-cli --bin svs`. In an MCP-capable chat
+Build `sf-cli` with `cargo build -p sf-cli`. In an MCP-capable chat
 client, add a local stdio server. Set the executable to the absolute path to
-`target/debug/svs` and use these arguments, replacing the project folder.
+`target/debug/sf-cli` and use these arguments, replacing the project folder.
 Choose an existing parent directory.
 
 ```json
@@ -160,7 +160,7 @@ Open the project in Studio and its drawing in Atelier. Configure the two MCP
 clients with the respective arguments below.
 
 ```sh
-svs mcp --folder "$project" --studio-channel "$writer_channel"
+sf-cli mcp --folder "$project" --studio-channel "$writer_channel"
 atelier mcp --folder "$project" --atelier-channel "$drawing_channel"
 ```
 
@@ -204,6 +204,18 @@ uses standard Preview settings and a client-selected viewport of 360 to
 960 points per side. Each connection keeps one playtest and checkpoint.
 Studio bounds the total pinned artwork in isolated playtests and evicts older
 sessions when the cache fills.
+
+Writing help can propose a coordinated change across all currently reachable
+story files in the open Studio. Call `storyfella_novel_suggest_start` with the
+inspected session, instructions, `expand`, and `preserve_facts`; poll the
+returned job with `storyfella_novel_suggest_poll`. Studio processes bounded
+source fragments in sequence and validates their combined result. Review the returned complete
+replacement text for each file. `storyfella_novel_suggest_apply` checks that
+the captured project and every story file are unchanged, validates the proposed
+workspace, and applies the proposal as one undoable Studio draft change.
+Normal Studio save settings persist it. `storyfella_novel_suggest_cancel`
+requests cancellation or discards a finished proposal. These tools require the
+live Studio channel and its edit grant; they do not create new files.
 
 Grant a local client access to an explicitly selected project folder and to
 specific scopes for inspection, editing, publishing and provider submission.
@@ -335,7 +347,7 @@ Related code and tests establish the underlying guarantees.
   paths, verifies a second owner is refused while a draft is dirty, then
   opens it after the first owner switches projects. The persistence test
   verifies passive discovery leaves a pending source intent untouched.
-- The `svs` stdio tests create and playtest a branching chapter using a raw
+- The `sf-cli` stdio tests create and playtest a branching chapter using a raw
   JSON-RPC client, then reopen the same project with Agentkit's MCP client.
   They check competing owners, invalid edits, changed includes, stale
   proposals and a replaced lease file.

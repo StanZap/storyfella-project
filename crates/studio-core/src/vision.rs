@@ -3,7 +3,7 @@
 //! One home for the two things an image assessment needs: encoding an image
 //! file for an OpenAI vision request (downscaled to a fixed maximum edge), and
 //! starting the managed `llama.cpp` server a local `vision` provider names.
-//! `svs eval`, the plan driver's
+//! the plan driver's
 //! `expect_vision` step, and any future assessment surface all go through
 //! [`VisionSession`], so neither is reimplemented per caller.
 //!
@@ -32,7 +32,7 @@ pub const SYSTEM_PROMPT: &str = "You are a rigorous image evaluator for a visual
      question directly.";
 
 /// Default answer budget. A reasoning vision model can exhaust a small budget
-/// while thinking, so this is deliberately generous (see `svs eval`).
+/// while thinking, so this is deliberately generous.
 pub const DEFAULT_MAX_TOKENS: u32 = 2048;
 
 #[derive(Debug, Error)]

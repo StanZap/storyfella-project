@@ -1,7 +1,7 @@
 //! Slash-command parsing: command text → typed
 //! operations (the closed vocabulary from [`crate::registry::ops`]).
 //!
-//! Supported syntax (the `svs` CLI flags map 1:1):
+//! Supported operation syntax:
 //!
 //! ```text
 //! /create character Mia, a lighthouse keeper --name mia --size 512x768

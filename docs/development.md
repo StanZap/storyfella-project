@@ -16,8 +16,7 @@ cargo run -p storyfella-player -- /absolute/project.sf
 
 Language/compiler/runtime/LSP responsibilities are documented in
 [`architecture.md`](architecture.md#storyfella-workspace-boundaries), and
-[playback reference](ROADMAP.md#story-execution-and-playback-reference) documents preview, Player inputs and fixtures. Existing CLI and user-data identities
-remain unchanged. CI checks formatting, all workspace targets and tests, builds
+[playback reference](ROADMAP.md#story-execution-and-playback-reference) documents preview, Player inputs and fixtures. The `sf-cli` executable provides story tools and the project MCP server. CI checks formatting, all workspace targets and tests, builds
 CLI/Player, and builds and runs Studio's backend-free smoke plan through dx.
 Plan runs keep created projects, generated artwork and cache under `.svs-e2e/`,
 along with their hermetic config and logs. Normal launches retain user project
@@ -32,12 +31,7 @@ sibling checkout and do not need that secret.
 - The current stable Dioxus CLI (`dx`) — see <https://dioxuslabs.com>
 - Node.js/npm (Tailwind CSS and CodeMirror toolchain, pinned in `apps/studio/package-lock.json`)
 - An OpenAI-compatible LLM endpoint (llama.cpp / LM Studio), running separately, only when LLM features are exercised
-- A CUDA toolchain and an NVIDIA GPU to build and run `sd-server` (see below)
 - Linux desktop builds: the WebKitGTK/GTK development packages (see below)
-
-Validated target: Linux with an NVIDIA GPU (CUDA). The Qwen-Image-2.1 int8
-weights run on a CUDA build of `sd-server`; other sd.cpp backends are not
-validated here.
 
 ### Linux system packages
 
@@ -63,8 +57,7 @@ the domain layer — the artifact registry, typed operations, persistence, and
 the vision/LLM/runtime clients — and has **no GUI dependency**, so the CLI and
 the core tests never compile the toolkit or the WebKit stack. `apps/studio`
 (package `storyfella-studio`) is the Dioxus application and owns the
-`desktop` feature; `apps/cli` (package `svs-cli`) builds the `svs`,
-`model_setup`, and `vlm_probe` binaries. Both application crates depend on
+`desktop` feature; `apps/cli` builds the `sf-cli` story and MCP executable. Both application crates depend on
 `storyfella-studio-core` and name it explicitly (`storyfella_studio_core::…`) rather than re-exporting it.
 
 `apps/player` (package `storyfella-player`) uses shared Dioxus presentation from
@@ -83,12 +76,8 @@ HTTP clients, provider resolution and lifecycle controls are exposed through
 its `native-inference` feature. That checkout must be present; no Clipforge
 crate or installed Clipforge application is required.
 
-`apps/vision` was the Python vision runtime; it was removed with the Krea/SAM
-migration — the project is pure Rust plus the native `sd-server`. `config/` — the
-plan fixtures, the example provider config and the `config/plans` root marker —
-stays at the workspace root; generated assets now default to the platform data
-dir. `xtask/` is the developer task runner described below; nothing shipped
-depends on it.
+`config/` contains plan fixtures and the `config/plans` root marker.
+`xtask/` is the developer task runner described below.
 
 The payoff is a cheap domain loop: `storyfella-studio-core`'s dependency tree is 464 entries
 with no `dioxus`/`webkit`/`gtk`/`tao`/`wry` in it at all, against 1183 for the
@@ -96,7 +85,7 @@ desktop crate, so
 
 ```sh
 cargo test -p storyfella-studio-core                  # domain tests, no toolkit
-cargo run -p svs-cli --bin svs -- --help
+cargo run -p sf-cli -- --help
 ```
 
 skip the GUI stack entirely. The workspace-wide `cargo check --workspace
@@ -117,7 +106,7 @@ cargo xtask run [-r]              # build, then launch Dioxus Studio
 cargo xtask run -l                # …teeing its output to .svs-e2e/logs/
 cargo xtask plan config/plans/smoke.yaml --mode check
 cargo xtask serve                 # dx serve (hot reload)
-cargo xtask bundle                # release AppImage into dist/
+cargo xtask bundle                # release AppImage on Linux or .app on macOS
 cargo xtask bundle --package-types appimage deb
 cargo xtask bundle --install      # …and install it for the current user
 cargo xtask check                 # cargo check --workspace --all-targets
@@ -146,9 +135,10 @@ user's bin directory — `$XDG_BIN_HOME`, else `~/.local/bin` — as
 `storyfella-studio`, so the app starts by name
 from a shell; it says so when that directory is not on `PATH`. The artifact
 stays in `dist/` and the installed command is a copy the next `--install`
-replaces, chosen by the product name in its file name. On macOS the `.app` is
-installed into `~/Applications` and its executable linked from that directory.
-Installing needs the `appimage` package type on Linux (the default); `deb` and
+replaces, chosen from the current bundle operation by the product name in its
+file name. On macOS the `.app` is installed into `~/Applications` and its
+executable linked from that directory. Installing needs the `appimage` package
+type on Linux or `macos` on macOS; these are the respective defaults. `deb` and
 `rpm` are installed by the system package manager instead.
 
 `cargo xtask <command> --help` documents the flags. The sections below remain
@@ -185,30 +175,6 @@ npm install
 npm run css:build
 cd ../..
 ```
-
-### Native generation backend (`sd-server`)
-
-The app spawns the `sd-server` binary the image provider's `executable` points
-at (default `<model_dir>/runtime/stable-diffusion.cpp/bin/sd-server`, see the
-[inference settings](#inference-settings) section below). The native server is **not**
-part of this project: the sibling `clipforge` workspace owns the vendored
-`stable-diffusion.cpp` checkout (git-ignored, pinned to the `3f8527a` revision
-that added Qwen-Image-2.1 support) and builds it. From the `clipforge` checkout:
-
-```bash
-cd ../clipforge
-cargo xtask sd-server --model-dir "${XDG_DATA_HOME:-$HOME/.local/share}/storyfella/models"
-```
-
-The task clones the pinned source, builds it with CUDA, and installs the binary
-into the model tree — pass the Models folder shown in Studio Settings (the
-example uses Linux's default). `--cuda-architectures` picks the compute capability: 86 for RTX
-3090 (Ampere), 89 for RTX 40-series; the default is 86.
-
-The launcher passes `--model-args qwen_image_2_1_prefix_cache_type=q8_0` and
-`--diffusion-fa`, and points `--diffusion-model`/`--llm`/`--vae` at the
-profile's three safetensors (see [`architecture.md`](architecture.md)).
-Provision those weights with `model_setup` (see the CLI tools table below).
 
 ## Run the desktop application
 
@@ -300,39 +266,6 @@ WebKitGTK (`libwebkit2gtk-4.1`), so it runs on a normal desktop that already has
 WebKitGTK 4.1. Bundling the GUI stack itself needs `linuxdeploy-plugin-gtk` and
 is not wired here.
 
-Two inputs are still missing before a bundle is more than an empty shell (see
-[`ROADMAP.md`](ROADMAP.md) §12 item 11):
-
-- **An app icon.** `[bundle] icon` takes PNG paths (512×512 is the safe size).
-  The repo has none — `apps/studio/assets/favicon.ico` and
-  `apps/studio/assets/header.svg` came with the Dioxus scaffold and are
-  referenced nowhere. With no icon configured, `dx` writes a default one, so
-  the AppImage builds but is unlabelled.
-- **The runtime payload.** `sd-server` is bundled with `[bundle] external_bin`
-  (sidecar binaries) and/or `[bundle] resources` (data files); both keys are inert
-  until the file exists. Shipping it also needs the code change named in item 11:
-  resolve it relative to the bundle root instead of the provider's `executable`
-  in `clipforge.toml`.
-
-## Run the generation backend
-
-Local requests in Studio, Atelier and Clipforge use the same inference
-service and start it on demand. Manage providers and resource policy in
-Clipforge's **Servers** page. The `svs runtime` commands load, inspect or
-offload the configured image model through that service:
-
-```bash
-cargo run -p svs-cli --bin svs -- runtime start
-cargo run -p svs-cli --bin svs -- runtime status
-cargo run -p svs-cli --bin svs -- runtime stop
-```
-
-For opt-in native tests using the shared image client, build `svs` and set
-`AGENTKIT_INFERENCE_HOST` to its absolute path. A test executable does not
-handle the headless service entry point. Set `SVS_AI_CONFIG` and
-`SVS_STATE_DIR` in all three apps to exercise an isolated shared registry
-and supervisor.
-
 ## Tests
 
 ### Rust
@@ -341,15 +274,9 @@ and supervisor.
 cargo test --workspace
 ```
 
-The workspace runs 149 tests in `storyfella-studio-core`, 78 in Studio, 3
-in the CLI binaries, and 1 in xtask (231 total). They cover state transitions
-(`apps/studio/src/state/`), the runtime adapter and health probes
-(`crates/studio-core/src/runtime/`), and multimodal message shape
-(`crates/studio-core/src/llm/`). They do not require a running `sd-server` or an LLM
-endpoint.
-The `sdcpp` wire serialization tests (request body + job decoding) live in the
-shared `agentkit-ai` crate (`native::sd`) and
-are not part of this workspace's run. `cargo xtask test` runs the same command.
+The workspace tests cover the CLI, language, runtime, Studio and project
+persistence. The managed writing-provider fixture runs a local fake worker;
+no external model is needed. `cargo xtask test` runs the same command.
 
 ### End-to-end: plans (the app's own regression suite)
 
@@ -397,7 +324,7 @@ progress, `soft: true` downgrades a failure to a warning (for example, an
 optional vision endpoint), and `message:` is the
 narration shown in guide mode. `command:` supports `/describe` and text-only
 story/scene/beat creation. Visual operations are rejected when the plan loads,
-before any step changes state. Core and `svs` retain the full operation vocabulary.
+before any step changes state.
 `type_story:` appends text in the Writer through its normal source setter,
 keeping the caret and scope panel on the typed line. Guide mode animates typing;
 `sample_project:` also types its complete source using the same controls.
@@ -425,323 +352,23 @@ output and generation logs, and `.svs-e2e/quality/` for the images a run
 produced. See `AGENTS.md` for why experiment scratch stays inside the
 checkout rather than `/tmp`.
 
-### End-to-end: the grounding suite (planner quality)
-
-Planner quality is model-sensitive: the `modify`/`variant` grounding is a
-subtraction task (restate the artifact's traits as invariants, minus the one the
-edit changes), and a weaker planner either keeps the old trait or invents one.
-Compare models through the Rust `svs` CLI using the same base image and edit
-instructions, then judge outputs with `svs eval --expect`. Keep a separate
-project copy per model so each starts from the identical revision. Configure
-planner and vision providers in a scratch `clipforge.toml` under `.svs-e2e/` and
-point `SVS_AI_CONFIG` at that file; retain the vision endpoint when overriding
-the planner. Run the image backend with `svs runtime serve`.
-Store outputs and judgments under `.svs-e2e/quality/` and `.svs-e2e/logs/`.
-Scratch experiment scripts are local tools, not a shipped regression suite.
-Overriding `model` selects the served model only for an `openai` provider; a
-managed `llamacpp` provider serves `model_path`.
-
 ## CLI tools
 
-| Command | Purpose |
-| --- | --- |
-| `cargo run -p svs-cli --bin model_setup` | Download, resume, and checksum-verify the Qwen-Image-2.1 profile (diffusion + text encoder + VAE) into the image provider's model tree |
-| `cargo run -p svs-cli --bin vlm_probe -- --list-models` | List models visible through the LLM endpoint |
-| `cargo run -p svs-cli --bin vlm_probe -- --model <id>` | Run the visual-LLM probe against one model |
-| `cargo run -p svs-cli --example generate_vlm_fixtures` | Regenerate the deterministic probe fixtures |
-| `cargo run -p svs-cli --bin svs -- --help` | Operation CLI (typed ops, stacks, runtime serve, log, eval) — see [`development.md`](development.md) for the command reference and the light/LLM/generation session split |
+`sf-cli story` checks, compiles and traces stories. `sf-cli mcp` exposes the
+project authoring tools to an MCP client, including a bridge to an open Studio
+Writer. Run `cargo run -p sf-cli -- --help` for the commands and see
+[agentic production](agentic-vn-production.md) for MCP setup. Atelier owns
+project artwork operations; Clipforge supplies general image inference tools.
 
-`model_setup` provisions into the model tree configured for the selected image
-provider in `clipforge.toml`.
-The `svs` CLI needs no provisioned models for the model-only and
-LLM-assisted tiers; only the visual ops (`create`/`variant`/`regenerate`/`modify`)
-touch the generation backend.
+## Configuration
 
-## Configuration reference
+Studio stores application preferences in `studio.toml` and reads configured
+text and vision providers from the shared `clipforge.toml`. Select providers in
+Studio Settings and manage provider configuration and credentials in Clipforge.
+Studio uses its text provider for the writing workflow; the guide driver can
+also use a vision provider for image checks.
 
-Configuration is split by concern into two files, both loaded by
-`crates/studio-core/src/config.rs`. **App config** — `[paths]`, `[generation]`,
-`[generation.sizes]`, `[lora]` — lives in the platform
-`studio.toml` (see the `app config` note below). **AI config**
-— the `[defaults]` capability map and the `[providers.<id>]` registry — lives in
-the machine's shared `clipforge.toml` (see the
-[inference settings](#inference-settings) note below). Missing sections fall back
-to defaults. The keys below are app settings unless the note says otherwise.
-
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `appearance.theme` | `dark` | Studio interface: `dark`, `light` or live OS-following `system`; applies without restart |
-| `models.separate_vision` | Infer from configured providers and models | `false` makes Vision follow Text. `true` uses the separately selected Vision provider and model and shows their fields. When absent, Studio links identical selections and preserves distinct selections, including an unconfigured capability. |
-| `generation.steps` | `25` | CLI default steps per generation (Qwen-Image-2.1 has no few-step turbo path) |
-| `generation.cfg_scale` | `6.0` | Text-guidance scale (`sample_params.guidance.txt_cfg`) |
-| `generation.sample_method` | `euler` | Sampler (`sample_params.sample_method`) |
-| `generation.sizes.character` | `512x768` | Default canvas for character images (`WxH`, multiples of 32) |
-| `generation.sizes.environment` | `1024x576` | Default canvas for environment images |
-| `generation.sizes.object` | `768x768` | Default canvas for object images |
-| `generation.sizes.scene` | `1024x576` | Default canvas for scene images |
-| `generation.sizes.beat` | `1024x576` | Default canvas for beat images |
-| `lora.character` | none | Adapter file applied to character generations without a project binding |
-| `lora.environment` | none | Adapter file applied to environment generations without a project binding |
-| `lora.object` | none | Adapter file applied to object generations without a project binding |
-| `lora.multiplier` | `1.0` | Weight for the bindings above (per-artifact bindings carry their own) |
-| `paths.cache_dir` | platform cache dir | Disposable cache data |
-| `paths.asset_dir` | platform data dir + `assets` | Imported/generated assets |
-| `paths.project_dir` | platform data dir + `projects` | Where the Projects screen keeps `.svs-project.db` files |
-
-The **shared native-server state directory** (process markers and detached-server
-logs) is not a `paths.*` key: it always resolves to
-`storyfella_studio_core::ai_config::default_state_dir()` (on Linux
-`~/.local/share/clipforge`), overridable with `$SVS_STATE_DIR` for tests and
-hermetic `--plan` runs. It is the same directory Atelier and the Clipforge apps
-use, so one resident server is shared.
-
-Configured relative paths (`paths.*` and the plan directory) resolve against the
-**project root**, not the working directory: `crates/studio-core/src/paths.rs` picks
-`$SVS_HOME` first, otherwise the nearest ancestor of the working directory (then
-of the executable) that holds the `config/plans` directory, so commands do not need
-to be run from the repository root. The platform `studio.toml` is created with
-`generation.sizes.character` = `1024x1536` (the full Qwen portrait canvas).
-
-### App config
-
-Studio's Models settings reload the shared provider file when it changes and
-update the writing backend and configuration used by newly started plans.
-Plans already running retain their starting configuration. Manage providers opens the installed Clipforge app;
-on macOS it also tries `clipforge-desktop` on `PATH` when no app is registered.
-Studio selects configured providers and uses their configured model IDs; add or
-change a model in Clipforge rather than selecting an unconfigured endpoint model.
-
-The appearance and Vision-mode preferences belong to `studio.toml`; provider
-URLs, models, credentials and the separate Vision selection remain in the shared
-`clipforge.toml`. Turning separate Vision off does not rewrite those provider
-settings. Studio-core's effective `AppConfig::vision` follows Text while linked,
-including text-provider/model/key changes; `svs eval` and guide vision checks
-consume that same effective deployment. The Text provider must declare Vision
-support in this mode; otherwise Vision remains unavailable. Re-enabling separate
-Vision restores its saved selection.
-
-The app config is one platform-local file, `studio.toml`, in the platform
-application config directory resolved by `directories::ProjectDirs`
-(`paths::config_path()`) — on Linux `~/.config/dev.storyfella.studio/studio.toml`
-(`$XDG_CONFIG_HOME`), on macOS
-`~/Library/Application Support/dev.storyfella.studio/studio.toml`,
-and on Windows `%APPDATA%\dev.storyfella.studio\config\studio.toml`.
-`$SVS_USER_CONFIG` overrides the path, which is how tests and scratch roots keep
-it out of the picture. There is no repository base file: when the platform config
-directory exists and the file is absent, `AppConfig::load()` creates it, and every
-key it does not set falls back to the built-in code defaults.
-
-Studio uses its bundle identifier, `dev.storyfella.studio`, as the flat platform
-namespace for configuration, data and cache. On first startup after the rename,
-it copies existing application directories into absent destinations, retaining
-originals as backups. It updates recent-project links, explicit settings paths,
-stored artwork references and writing-session owner paths within those roots.
-External project locations, source text, stable IDs and request provenance stay
-unchanged. SQLite's backup API includes committed WAL data; separate WAL/SHM files
-are not copied over a restored database. A failed root copy is not published and
-can be retried. Existing destinations are never merged or overwritten.
-
-Close Studio and Atelier before starting the rebuilt Studio, then reopen shared
-projects from their new location in both apps. The old directories are backups;
-ongoing edits there do not synchronize with the migrated copies. An explicit
-`SVS_USER_CONFIG` bypasses this default-directory migration for isolated/custom
-setups. Shared `clipforge.toml`, inference state, model storage and Atelier's own
-application identity are separate and remain in their existing locations.
-
-The created file is seeded so the character canvas is the full Qwen portrait:
-
-```toml
-# ~/.config/dev.storyfella.studio/studio.toml
-[generation.sizes]
-character = "1024x1536"
-```
-
-The Settings generation pickers write here, which keeps the per-machine
-generation defaults. The file lives outside the checkout, so it is not in the
-repository to begin with. On first run, legacy user settings in the platform
-config directory — the unified `storyfella.toml`, or the older `app.toml` and
-`providers.toml` — are split once into this file (the app sections) and the shared
-`clipforge.toml` (the provider sections). The originals remain untouched for
-recovery; the new files are authoritative once present, and an existing
-`clipforge.toml` is never overwritten. `SVS_USER_CONFIG` overrides the app config
-path.
-
-### Inference settings
-
-The **shared AI config** — the `[defaults]` capability map and the
-`[providers.<id>]` registry — lives in the machine's `clipforge.toml`, resolved by
-`storyfella_studio_core::paths::clipforge_config_path()` (via
-`storyfella_studio_core::ai_config::default_config_path()`; Linux
-`~/.config/clipforge/clipforge.toml`), overridable with `$SVS_AI_CONFIG`. It is the
-machine's single provider registry, shared verbatim by Storyfella Studio, Atelier
-and Clipforge, so a provider edit is visible to every front end. Clipforge owns
-provider setup. When the file is absent or empty, Studio offers no providers;
-it does not create example endpoints. `crates/studio-core/src/config.rs` validates it
-through the shared `agentkit_ai::deployments::Providers` registry: the image backend —
-the `sd-server` executable, model tree, LoRA root, endpoint, and weights — is
-resolved to a provider and kept on `AppConfig::image`, and `text`/`vision` resolve
-to `AppConfig::text`/`vision`. The CLI's LoRA root is the provider's
-`lora_dir`.
-
-```toml
-# ~/.config/clipforge/clipforge.toml
-[defaults]                       # capability → provider id
-t2i = "qwen-image"
-edit = "qwen-image"
-
-[providers.qwen-image]
-kind = "sdcpp"                   # the native sd.cpp server
-architecture = "qwen-image-2.1"  # must be a profile the app serves
-capabilities = ["t2i", "edit"]
-base_url = "http://127.0.0.1:7861"
-model_dir = "/abs/path/to/models"
-# lora_dir / executable default beneath model_dir.
-
-# Override any artifact with a local file instead of downloading it.
-[providers.qwen-image.weights]
-diffusion = "/abs/path/to/qwen-image-2.1-UC-int8_convrot.safetensors"
-```
-
-`architecture` is validated against the served profile list: a provider may
-change *where* a model comes from, not *which* model it is, and any other value
-is rejected at load. Relative paths in `clipforge.toml` (`model_dir`, `lora_dir`,
-`executable`, and the `weights` entries) resolve against that file's own
-directory, not the project root. An omitted image `model_dir` resolves to the
-`models` directory next to the shared configuration file. When no provider serves
-a capability,
-`AppConfig` leaves it `None` and the app **degrades** rather than failing to
-start — the planner falls back to manual slash commands and `svs eval` reports
-that no `vision` provider is configured. `model_setup` provisions through this
-same deployment: it downloads the artifacts whose `needs_download()` is true and
-prints the local override it skips for the rest.
-
-Configure model locations, executables, LoRA roots and weight overrides in
-Clipforge. Studio and CLI provisioning read the same provider configuration.
-
-The same registry routes the LLM capabilities. `text` (the planner) and
-`vision` (`svs eval`, future vision steps) each name a provider:
-
-```toml
-[defaults]
-text = "local"
-vision = "vision"
-
-[providers.local]
-kind = "openai"                  # external endpoint the app calls but never starts
-capabilities = ["text"]
-base_url = "http://localhost:8080/v1"
-model = "prism-ml/bonsai-27b"
-
-[providers.vision]
-kind = "openai"
-capabilities = ["vision"]
-base_url = "http://localhost:8080/v1"
-model = "google/gemma-4-e4b"
-```
-
-Two provider kinds serve chat: `openai` is an external OpenAI-compatible service
-the app never starts (the default); `llamacpp` is a managed native `llama-server`
-the app starts on demand from `executable` + `model_path` (plus `mmproj` for a
-vision model). Configure providers and manage servers in Clipforge. Because text and vision are
-separate capabilities, the planner can point at a remote, text-only model — for
-example DeepSeek — while vision keeps a local multimodal endpoint. `api_key` is
-an inline secret; prefer `api_key_env`, which reads it from the named environment
-variable at load time.
-
-Because the shared `clipforge.toml` is one file, a hand edit only needs the
-keys it changes:
-
-```toml
-# ~/.config/clipforge/clipforge.toml
-[defaults]
-text = "deepseek"
-
-[providers.deepseek]
-kind = "openai"
-capabilities = ["text"]
-base_url = "https://api.deepseek.com/v1"
-model = "deepseek-chat"
-api_key_env = "DEEPSEEK_API_KEY"
-```
-This keeps the key out of the repository. Studio's **Settings → Models** page
-selects configured text, vision, image-generation and image-editing providers; provider
-details and credentials are managed in Clipforge. Studio stores its selections
-in its own settings and reloads the shared registry when Clipforge changes it.
-Existing jobs retain the configuration with which they started. Hosted image
-routes use their own sampling defaults; unsupported custom controls fail explicitly.
-
-## Common issues
-
-- **`cargo`/`dx` fail with path errors** — check for `:` in the checkout's parent
-  path; macOS/Linux library-path variables treat it as a separator. Use a
-  checkout path without that character and keep build output in local `target/`.
-- **Generation says the runtime is not ready / job fails** — the `sd-server`
-  binary or model artifacts are missing. Run `cargo run -p svs-cli --bin model_setup`
-  and confirm the provider's `executable` in `clipforge.toml`.
-- **`generation server on 127.0.0.1:7861 has … loaded; … needs the server restarted`** —
-  the resident `sd-server` has a different model loaded than the requested
-  profile. The shared owner restarts a server it started automatically (Settings
-  → Services → **Start**); a foreign server (a hand-run binary, no marker in the
-  shared state dir) is stopped with `svs runtime stop --force` (or
-  `svs runtime serve --force`), then rerun.
-- **LLM endpoint calls fail** — confirm the endpoint is running, the configured
-  model is loaded, and the relevant provider's `base_url` in `clipforge.toml`
-  matches its `/v1` endpoint (planning uses `text`, `svs eval` uses `vision`).
-  A managed `llamacpp` provider must have `model_path` (and `mmproj` for vision)
-  on disk.
-
-## Operation CLI reference
-
-The current Studio registry operations are also available through `svs`. Commands
-that generate images require a configured image deployment; source analysis and
-playback do not start inference. Consult `svs --help` and subcommand help for the
-complete current argument surface.
-
-```sh
-svs --project p.db project p.db                       # load or create (SQLite registry)
-svs --project p.db op create character "Mia, a lighthouse keeper" --name mia
-svs --project p.db op create scene "The kitchen at dusk" --name kitchen
-svs --project p.db op create object "an antique brass lantern" --name lantern --size 768x768
-svs --project p.db op compose c:<scene> "Mia lights the lantern" --background c:<env> --layer c:<char>
-svs --project p.db op variant c:<char> "in rain gear" --axis outfit
-svs --project p.db op regenerate c:<char> "make it warmer" --seed 42 --steps 25 --size 1024x1536 --out golden/
-svs --project p.db op draft c:<story> "write the opening"          # LLM + approval checkpoint
-svs --project p.db op draft c:<story> "write the opening" --text "…"   # manual, no checkpoint
-svs --project p.db op modify c:<char> "give her a short bob haircut"   # instruction edit
-svs --project p.db op describe c:<char> "Mia, a lighthouse keeper, short bob"  # make an edit canonical
-svs --project p.db op revert c:<char>                                # re-activate the previous image
-svs --project p.db stack run stack.json --approve auto             # the VLLM contract test bed
-svs --project p.db stack propose "Add a rainy variant of the kitchen scene"   # LLM → JSON
-svs --project p.db runtime serve --force                           # resident generation server
-svs eval -i image.png -p "answer YES or NO: …"                     # LLM vision judge
-svs --project p.db log [c:<ref>]
-```
-
-`create --size WxH` sets the artifact's default generation size (kind
-defaults otherwise: character 512×768, object 768×768, environment/scene/beat
-1024×576; the platform `studio.toml` is created with character at 1024×1536);
-`regenerate`/`modify` honor it, and `--size`/`--steps` on those
-commands override it per run. Variants inherit the base artifact's size.
-`create`/`variant` of visual kinds generate the first image at that size as
-part of the op (so they need the generation backend — see the table below);
-variants use the base's active image as the reference.
-
-`describe` rewrites an artifact's canonical description; `revert` re-activates
-its previous completed image (the newest revision made before the current one).
-Neither renders anything: both are registry mutations, so they need no
-backend. `revert` never deletes — the revision reverted from stays in the
-history and can be re-activated from the canvas.
-
-`--approve auto|interactive` (default interactive) resolves checkpoints;
-`--out <dir>` drops every intermediate image into a folder for human review —
-the manual golden-run tier. `stack run` persists already-applied ops even
-when a later op fails (fail-fast, intermediates kept).
-
-## Vision probe output
-
-`cargo run -p svs-cli --bin vlm_probe -- --help` lists model selection, endpoint,
-fixture and output options. Keep new results in `.svs-e2e/` by passing
-`--output .svs-e2e/vision-probe`; the current binary's default output location
-still points to the former proof-of-concept directory. Probe fixtures are under
-`apps/cli/tests/fixtures/vlm`. Results measure the selected models and fixtures,
-not general visual reasoning or artwork fidelity.
+`SVS_USER_CONFIG` and `SVS_AI_CONFIG` override the application and shared
+provider configuration paths. `SVS_HOME` selects the resource root for local
+plans. Portable story projects keep their own source, database and artwork.
+See [the shared project format](shared-project.md).

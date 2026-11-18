@@ -558,7 +558,15 @@ mod tests {
     fn PersistenceProbe(directory: PathBuf, complete: Rc<Cell<bool>>) -> Element {
         let mut state = use_signal(crate::state::AppState::default);
         let mut unbound = use_signal(crate::state::AppState::default);
+        let empty = use_signal(crate::state::AppState::default);
         use_hook(move || {
+            super::create_project(&directory, "Blank", empty).unwrap();
+            assert_eq!(empty.read().story.source(), "");
+            assert!(empty.read().registry.artifacts.is_empty());
+            assert_eq!(
+                std::fs::read_to_string(empty.read().story.path().unwrap()).unwrap(),
+                ""
+            );
             unbound
                 .write()
                 .set_story_source("scene exact\n  end\n".into());

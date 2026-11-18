@@ -5111,6 +5111,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "sf-cli"
+version = "0.1.0"
+dependencies = [
+ "agentkit-core",
+ "agentkit-mcp",
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "storyfella-compiler",
+ "storyfella-language",
+ "storyfella-runtime",
+ "storyfella-studio-core",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5529,31 +5551,6 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
-
-[[package]]
-name = "svs-cli"
-version = "0.1.0"
-dependencies = [
- "agentkit-ai",
- "agentkit-core",
- "agentkit-mcp",
- "anyhow",
- "base64 0.23.0",
- "clap",
- "image",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "storyfella-compiler",
- "storyfella-language",
- "storyfella-runtime",
- "storyfella-studio-core",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
 
 [[package]]
 name = "syn"

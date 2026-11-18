@@ -1,8 +1,7 @@
 # Storyfella
 
 Storyfella is the workspace for story authoring and playback. The existing
-Dioxus application is **Storyfella Studio**; the `svs` CLI keeps its current
-commands and behavior. Writer and Assets share persistent scene/beat associations
+Dioxus application is **Storyfella Studio**; `sf-cli` provides story tools and an MCP server. Writer and Assets share persistent scene/beat associations
 and authoring tools with the catalog-backed LSP. Language, compiler and story
 runtime are implemented; Studio preview and the standalone visual Dioxus Player
 share deterministic execution, exact artwork bindings and controls. See
@@ -11,7 +10,7 @@ share deterministic execution, exact artwork bindings and controls. See
 ```text
 storyfella/
 ├── apps/studio/       # storyfella-studio (Dioxus)
-├── apps/cli/          # svs-cli: svs, model_setup, vlm_probe
+├── apps/cli/          # sf-cli: story tools and MCP server
 ├── apps/player/       # storyfella-player (visual Dioxus desktop host)
 ├── crates/studio-core/ # storyfella-studio-core (no GUI)
 ├── crates/language/    # shared lexer, parser, AST and analysis
@@ -35,8 +34,8 @@ by path. See [Atelier](../storyfella-canvas/README.md) and
 Check or compile `.sf` stories without loading models or opening a project DB:
 
 ```sh
-cargo run -p svs-cli --bin svs -- story check examples/harbor.sf
-cargo run -p svs-cli --bin svs -- story compile examples/harbor.sf
+cargo run -p sf-cli -- story check examples/harbor.sf
+cargo run -p sf-cli -- story compile examples/harbor.sf
 ```
 
 See [the language contract](docs/language.md) and [compiler contract](docs/compiler.md).
@@ -62,19 +61,12 @@ Voice, expressive media and portable packaging/export remain later work.
 Storyfella Studio is a Dioxus desktop application for writing, arranging and
 previewing visual stories. It owns authoritative source editing, catalog
 definitions and saved artwork previews. Atelier owns image creation and editing;
-both apps use the same portable project. The independent `svs` CLI retains its
-typed operation/planner layer. Source order drives scene/beat associations and
-playback.
+both apps use the same portable project. `sf-cli` provides story checking, compilation,
+playtesting and project-scoped MCP access. Source order drives scene/beat
+associations and playback.
 
-The validated target is Linux with an NVIDIA GPU (CUDA). Image generation runs on a CUDA build of `stable-diffusion.cpp`'s `sd-server` serving Qwen-Image-2.1. The LLM endpoint is an external prerequisite and is never installed or bundled by this project.
-
-This is intentionally a desktop-only application. Web, mobile, and WASM targets are not supported. There is no Python in the project: the old FastAPI vision runtime and its SAM/segmentation stack were removed with the Qwen migration.
-
-## Architecture
-
-- **Rust** owns the Dioxus UI, application state, the artifact registry, project persistence boundary, model-download boundary, directory resolution, process lifecycle, the LLM client, and the native generation client. Rust never links an ML framework.
-- **`stable-diffusion.cpp`** (`sd-server`) is a separate native process owned by Rust that keeps the Qwen-Image-2.1 diffusion model resident. Rust talks to it directly over the server's async `sdcpp` HTTP API; it is not ComfyUI and there is no Python adapter in between.
-- The **LLM endpoint** is accessed directly from Rust through its OpenAI-compatible `/v1/chat/completions` endpoint. The typed planner vocabulary (operations + pipelines) lives in `crates/studio-core/src/registry/`; `crates/studio-core/src/llm/` is the client only.
+Studio runs on desktop. Its writing assistance uses Agentkit workflows and a
+configured text provider. Image creation and editing belong to Atelier.
 
 ## Product surface
 
@@ -95,19 +87,8 @@ findings from the app-wide usability audit.
   Ordinary linked Save updates the artwork in Studio automatically.
 - **Variations** are first-class catalog identities grouped under their base.
   Studio can define them without generating images; Atelier makes their artwork.
-- **Settings** is four pages: **General** (Dark/Light/System appearance, autosave), **Models**
-  (what the app uses), **Services** (how it runs) and **Storage** (where files
-  live). **Models** gives the **Text (LLM)** and **Vision (LLM)** capabilities
-  each a provider picker, a status dot and a **Model** dropdown fetched from the
-  endpoint (with a refetch action); **Base URL**, **Model** and **API key** are
-  editable for every provider — Text and Vision are the same card, so a managed
-  server is not a different shape. Shared model-file administration remains. A
-  **Providers** section lists every configured chat provider and can add one
-  (validated before it is written) or remove one you added. **Services** has the
-  image engine's status and start/stop/restart/take-over actions, its runtime
-  endpoint, residency, the model-files provisioning list, and each
-  managed chat server with **Start/Stop/Restart**. Edits save to the app or provider
-  configuration file and apply immediately.
+- **Settings** configures appearance, text and vision providers, and storage.
+  Provider credentials and model setup are managed in Clipforge.
 
 In Models, **Use a separate Vision LLM** reveals Vision's provider settings.
 Turn it off to follow the Text LLM's provider, model, URL and key; that model must
@@ -127,24 +108,19 @@ The shell deliberately uses a small reusable component vocabulary, low-contrast 
 4. Continue writing and previewing in Studio. Reopen Atelier whenever artwork
    needs revision; saved history remains available without image-editing controls.
 
-The independent `svs` CLI retains visual operations, planning and configured
-generation defaults. See [development](docs/development.md) for CLI commands.
-
 ## Project layout
 
 ```text
 Cargo.toml            Virtual workspace manifest ([workspace] members only)
 .cargo/config.toml    checkout-local build output and tool temporary directories
 crates/studio-core/          storyfella-studio-core — the domain layer (no GUI dependency):
-  src/registry/         Artifact registry, typed ops + pipelines, slash parser,
-                        CreativeBackend
+  src/registry/         Artifact registry, authoring operations and guide parser
   src/persistence/      SQLite project store (versioned migrations)
   src/story.rs          Exact .sf source, disk snapshots and save conflict checks
   src/authoring.rs      Source associations and shared asset catalog
   src/playback.rs       Snapshot compilation and pinned resource checks
-  src/llm/              OpenAI-compatible LLM client
-  src/runtime/          CreativeRuntime — application adapter over Agentkit native
-                        inference, provider configuration and shared controls
+  src/planner.rs        Selected text-provider binding for the writing workflow
+  src/runtime/          Text and vision provider health
   src/errors.rs         Error-code registry
   src/config.rs         Configuration loading
   src/paths.rs          Project-root path resolution
@@ -155,7 +131,7 @@ apps/studio/         storyfella-studio — the Dioxus application:
   src/commands.rs       Shared action language (slash parse → execute)
   src/driver/           YAML plan driver (Guide/Check modes)
   Dioxus.toml, tailwind.css, assets/, package.json
-apps/cli/             svs-cli — src/bin/{svs,model_setup,vlm_probe}.rs
+apps/cli/             sf-cli — story commands and project-scoped MCP
 apps/player/          storyfella-player — standalone visual Dioxus desktop host
 crates/language/      Shared front end and authoring services
 crates/compiler/      Versioned plans, linking and flow validation
@@ -172,7 +148,9 @@ docs/ cache/ .svs-e2e/
 
 `crates/studio-core` never depends on the GUI; `apps/studio` and `apps/cli` both depend on `storyfella-studio-core`, and the desktop crate names `storyfella_studio_core::…` explicitly rather than re-exporting it.
 
-Configuration is split by concern. The app's own settings live in a single platform-local `studio.toml` (`paths::config_path()`, overridden by `SVS_USER_CONFIG`), created on first load when absent and seeded with `[generation.sizes] character = "1024x1536"`; every other key falls back to the built-in defaults. Explicit relative `paths.*` values resolve against the project root (`$SVS_HOME`, else the nearest ancestor holding `config/plans`). The inference providers live in the shared `clipforge.toml` (`paths::clipforge_config_path()`, overridden by `SVS_AI_CONFIG`) at the platform config directory — the single registry shared verbatim with Atelier and Clipforge, created with Storyfella's defaults on first load and never overwritten. Model storage defaults to the OS-local Storyfella data folder in development and release builds: `~/Library/Application Support/Storyfella/models` on macOS, `%LOCALAPPDATA%\Storyfella\models` on Windows, and `$XDG_DATA_HOME/storyfella/models` (normally `~/.local/share/storyfella/models`) on Linux. Settings → Services offers Change location and Open folder. Location changes require restart; selecting an existing model tree reuses its files. Old user app/provider settings migrate once without deleting originals.
+Configuration is split between Studio's application settings and the shared
+`clipforge.toml` provider registry. Text and vision providers are selected in
+Studio; Clipforge manages provider setup. Artwork is created in Atelier.
 
 ## Documentation
 
@@ -184,28 +162,7 @@ In-depth material lives in the [documentation index](docs/README.md): current ar
 - The current stable Dioxus CLI (`dx`)
 - Node.js/npm (for the pinned Tailwind CSS and CodeMirror diff-editor toolchain)
 - An LLM endpoint (llama.cpp `llama-server` or LM Studio), running separately when LLM features are exercised
-- A CUDA toolchain and an NVIDIA GPU to build and run `sd-server`
 - Linux desktop builds: the system packages required by Dioxus/WebKitGTK
-
-## Set up the generation backend
-
-`sd-server` is built by the sibling `clipforge` workspace, which owns the
-vendored `stable-diffusion.cpp` checkout (git-ignored, pinned to the `3f8527a`
-revision that added Qwen-Image-2.1 support). From the `clipforge` checkout,
-build it and install it into the Models folder shown in Studio Settings. For
-the default Linux destination:
-
-```bash
-cd ../clipforge
-cargo xtask sd-server --model-dir "${XDG_DATA_HOME:-$HOME/.local/share}/storyfella/models"
-```
-
-Provision the Qwen-Image-2.1 weights (diffusion, text encoder, VAE) from
-Hugging Face:
-
-```bash
-cargo run -p svs-cli --bin model_setup
-```
 
 ## Run the desktop application
 
@@ -234,62 +191,9 @@ cargo check --workspace --all-targets
 
 This checkout keeps build artifacts in gitignored `target/` through `.cargo/config.toml`. Cargo, tests and inherited subprocesses use ignored `.cargo/tmp/` for temporary files. Keep task scratch files and desktop-plan projects under `.svs-e2e/`. Use a checkout path without `:`, which macOS and Linux treat as a separator in dynamic-library path lists.
 
-Configuration is split between the platform-local `studio.toml` and the shared `clipforge.toml` provider registry. The seeded text/vision endpoint is `http://localhost:8080/v1`; update `model` in Settings → Models to the identifier loaded in the endpoint. `api_key` is optional.
-
-## How generation runs
-
-Rust spawns the native `sd-server` on demand and talks to it directly over the
-`sdcpp` API: `POST /sdcpp/v1/img_gen` submits an async job, `GET
-/sdcpp/v1/jobs/{id}` polls it, and `GET /sdcpp/v1/capabilities` reports the
-resident model. Rust decodes the completed job's image and stores it in the
-configured asset directory (the platform data dir's `assets` by default; a
-`paths.asset_dir` override can point at `assets/generated/` for development).
-There is one generation profile — Qwen-Image-2.1 — so there is no profile
-switching. See
-[`docs/architecture.md`](docs/architecture.md) for the launch line
-and readiness rules.
-
-Only one model fits on a 24 GiB card: generation peaks at ≈23.4 GiB, so the
-LLM planner must not be resident during a generation.
-
-## Visual LLM probe
-
-The isolated proof of concept exercises vision-capable models through the LLM endpoint's OpenAI-compatible chat-completions API. It uses deterministic synthetic fixtures, structured JSON output, per-request latency and token capture, and machine-readable results. See [Vision probe output](docs/development.md#vision-probe-output) for commands and scoring limitations.
-
-## Native generation
-
-The product-oriented native path serves Qwen-Image-2.1 (int8 convrot
-safetensors) through `stable-diffusion.cpp`, with explicit request-time LoRAs
-and asynchronous jobs — no ComfyUI, no Python adapter. See
-[`docs/architecture.md`](docs/architecture.md) for the `sdcpp`
-contract and the launch line.
-
-## Visual evaluation (`svs eval`)
-
-The local LLM endpoint's vision model doubles as an automated image reviewer —
-"eyes" for evaluating generations, edits, and regressions without a
-human at the screen. `svs eval` attaches images, asks questions, prints the
-model's verdict, and can gate a script's exit code on the answer:
-
-```sh
-# Judge an instruction edit: is identity preserved?
-svs eval -i base.png -i edited.png \
-  -p "Answer with ONLY YES or NO: is image 2 the same person as image 1, \
-      with only the described change applied?"
-
-# Gate a test script on the verdict (exit 1 when the answer lacks "yes")
-svs eval -i image.png -p "Are there visible artifacts?" --expect-not "yes"
-
-# Multiple questions, one round each (all images attached to every round)
-svs eval -i a.png -i b.png -p "Same person in both?" -p "Which is sharper?"
-```
-
-The default model is the configured planner model, which must have vision
-support. Images are downscaled to a 1024px maximum before sending (the endpoint
-rejects oversized payloads), and the default token budget is 2048 because the
-model reasons before answering. The `--expect`/`--expect-not` checks are
-case-insensitive substrings — craft prompts that elicit a strict YES/NO to gate
-reliably.
+Configuration is split between the platform-local `studio.toml` and the shared
+`clipforge.toml` provider registry. Configure providers in Clipforge, then select
+the available text and vision providers in Studio Settings.
 
 ## Roadmap
 
