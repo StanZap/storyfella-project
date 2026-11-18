@@ -12,7 +12,9 @@ use design_system::{
 };
 use gpui_kit::{prelude::*, *};
 use storyfella_studio_core::{
-    config::{AppConfig, ChatCapability, ConfigError, ThemePreference, TEXT_CONTEXT_TOKENS},
+    config::{
+        AppConfig, ChatCapability, ConfigError, InterfaceSize, ThemePreference, TEXT_CONTEXT_TOKENS,
+    },
     errors::{CodedError, ErrorCode, ReportedError},
     runtime::{HealthStatus, ServiceHealth, ServiceId},
     workflows::{AssistantSettings, Thinking, MAX_OUTPUT_TOKENS, REPAIR_ATTEMPTS, WHOLE_STORY_KIB},
@@ -29,6 +31,11 @@ const THEMES: [Segment; 3] = [
     Segment::new("dark", "Dark"),
     Segment::new("light", "Light"),
     Segment::new("system", "System"),
+];
+const INTERFACE_SIZES: [Segment; 3] = [
+    Segment::new("small", "Small"),
+    Segment::new("default", "Default"),
+    Segment::new("large", "Large"),
 ];
 const AUTOSAVE: [Segment; 3] = [
     Segment::new("on-change", "On change"),
@@ -624,6 +631,10 @@ impl Settings {
             .iter()
             .position(|item| *item == config.theme)
             .unwrap_or(0);
+        let size_index = InterfaceSize::ALL
+            .iter()
+            .position(|item| *item == config.interface_size)
+            .unwrap_or(1);
         let autosave = self
             .studio
             .upgrade()
@@ -635,6 +646,7 @@ impl Settings {
         let preview = config.preview;
         let this = cx.entity().downgrade();
         let on_theme = this.clone();
+        let on_size = this.clone();
         let on_autosave = this.clone();
         let on_artwork = this.clone();
         div()
@@ -655,6 +667,29 @@ impl Settings {
                         on_theme
                             .update(cx, |settings, cx| {
                                 settings.persist(|config| config.persist_theme(theme), window, cx)
+                            })
+                            .ok();
+                    },
+                ),
+            ))
+            .child(row(
+                c,
+                "Interface size",
+                SegmentedControl::new(
+                    "interface-size",
+                    "Interface size",
+                    &INTERFACE_SIZES,
+                    size_index,
+                    c,
+                    move |index, window, cx| {
+                        let size = InterfaceSize::ALL[index];
+                        on_size
+                            .update(cx, |settings, cx| {
+                                settings.persist(
+                                    |config| config.persist_interface_size(size),
+                                    window,
+                                    cx,
+                                )
                             })
                             .ok();
                     },
@@ -964,11 +999,12 @@ impl Settings {
 }
 
 impl Render for Settings {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = self.theme(cx);
         let Some(config) = self.config(cx) else {
             return div().size_full().bg(c.surface_deep).into_any_element();
         };
+        window.set_rem_size(super::rem_size(config.interface_size));
         let body = match self.section {
             1 => self.render_models(&config, cx),
             2 => self.render_storage(&config, cx),
@@ -982,6 +1018,7 @@ impl Render for Settings {
             .flex_col()
             .bg(c.surface_deep)
             .text_color(c.text)
+            .type_scale(TypeScale::Body)
             .child(
                 div()
                     .h(c.metrics.bar + px(8.))

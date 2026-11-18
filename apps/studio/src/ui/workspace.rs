@@ -82,7 +82,7 @@ impl Studio {
                     .flex()
                     .items_center()
                     .gap(c.metrics.space)
-                    .child(div().font_weight(FontWeight::MEDIUM).truncate().child(name))
+                    .child(div().type_scale(TypeScale::Title).truncate().child(name))
                     .when(self.state.has_unsaved_changes, |row| {
                         row.child(
                             div()

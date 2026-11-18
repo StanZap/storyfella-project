@@ -71,6 +71,37 @@ impl ChatCapability {
     }
 }
 
+/// How large Studio draws its controls and text. The desktop host maps each
+/// step to a control density and a text scale.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InterfaceSize {
+    Small,
+    #[default]
+    Default,
+    Large,
+}
+
+impl InterfaceSize {
+    pub const ALL: [Self; 3] = [Self::Small, Self::Default, Self::Large];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Small => "small",
+            Self::Default => "default",
+            Self::Large => "large",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Small => "Small",
+            Self::Default => "Default",
+            Self::Large => "Large",
+        }
+    }
+}
+
 /// Studio appearance. System is resolved by the desktop host, never core.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -134,6 +165,7 @@ impl std::fmt::Debug for HostedImageProvider {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppConfig {
     pub theme: ThemePreference,
+    pub interface_size: InterfaceSize,
     pub preview: PreviewSettings,
     pub assistant: crate::workflows::AssistantSettings,
     /// False routes Vision through Text while retaining the shared registry's
@@ -314,6 +346,8 @@ impl PreviewSettings {
 struct AppearanceConfig {
     #[serde(default)]
     theme: ThemePreference,
+    #[serde(default)]
+    interface_size: InterfaceSize,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -678,6 +712,7 @@ impl AppConfig {
         };
         Ok(Self {
             theme: file.appearance.theme,
+            interface_size: file.appearance.interface_size,
             preview: file.preview.bounded(),
             assistant: file.assistant.bounded(),
             separate_vision,
@@ -738,6 +773,14 @@ impl AppConfig {
 
     pub fn persist_theme(&self, theme: ThemePreference) -> Result<(), ConfigError> {
         self.persist_app_setting("appearance", "theme", format!("{:?}", theme.as_str()))
+    }
+
+    pub fn persist_interface_size(&self, size: InterfaceSize) -> Result<(), ConfigError> {
+        self.persist_app_setting(
+            "appearance",
+            "interface_size",
+            format!("{:?}", size.as_str()),
+        )
     }
 
     pub fn persist_preview_settings(&self, settings: PreviewSettings) -> Result<(), ConfigError> {
@@ -1383,6 +1426,23 @@ mod tests {
         config.app_config_path = Some(blocked);
         assert!(config.persist_theme(ThemePreference::Light).is_err());
         assert!(config.persist_separate_vision(false).is_err());
+    }
+
+    #[test]
+    fn interface_size_round_trips_beside_the_theme() {
+        let directory = tempfile::tempdir().unwrap();
+        let app = directory.path().join("studio.toml");
+        fs::write(&app, "[appearance]\ntheme = 'light'\n").unwrap();
+        let config = AppConfig::load_split(Some(app.clone()), None).unwrap();
+        assert_eq!(config.interface_size, InterfaceSize::Default);
+        for size in InterfaceSize::ALL {
+            config.persist_interface_size(size).unwrap();
+            let reloaded = AppConfig::load_split(Some(app.clone()), None).unwrap();
+            assert_eq!(reloaded.interface_size, size);
+            assert_eq!(reloaded.theme, ThemePreference::Light);
+        }
+        let saved = fs::read_to_string(&app).unwrap();
+        assert_eq!(saved.matches("interface_size =").count(), 1);
     }
 
     #[test]

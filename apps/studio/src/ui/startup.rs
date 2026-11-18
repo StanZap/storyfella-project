@@ -1,6 +1,6 @@
 //! The window Studio opens instead when its configuration cannot load: what
 //! went wrong, where the files are, and a way to try again once fixed.
-use design_system::{ButtonKind, Glyph, Theme, TypeScale, Typography};
+use design_system::{ButtonKind, Density, Glyph, Theme, TypeScale, Typography};
 use gpui_kit::{prelude::*, *};
 use storyfella_studio_core::{config::ConfigError, errors::CodedError, paths};
 
@@ -52,7 +52,8 @@ impl Render for Startup {
             Theme::light()
         } else {
             Theme::dark()
-        };
+        }
+        .with_density(Density::Compact);
         let files = [
             ("Studio settings", paths::config_path()),
             ("Shared providers", paths::clipforge_config_path()),
@@ -64,6 +65,7 @@ impl Render for Startup {
             .justify_center()
             .bg(c.surface_deep)
             .text_color(c.text)
+            .type_scale(TypeScale::Body)
             .child(
                 div()
                     .w(px(520.))

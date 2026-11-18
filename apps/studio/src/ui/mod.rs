@@ -25,12 +25,12 @@ use std::{
     time::Duration,
 };
 
-use design_system::{CommandPalette, CommandPaletteEvent, Theme};
+use design_system::{CommandPalette, CommandPaletteEvent, Density, Theme, TypeScale, Typography};
 use gpui_kit::{prelude::*, *};
 use storyfella_language::Position;
 use storyfella_playback_panel::PlaybackPanel;
 use storyfella_studio_core::{
-    config::{AppConfig, ThemePreference},
+    config::{AppConfig, InterfaceSize, ThemePreference},
     errors::{CodedError, ErrorCode, ReportedError},
     playback::{stage::Viewer, PlaybackModel, PlaybackSession},
 };
@@ -256,8 +256,29 @@ fn open(launch: PlanLaunch, cx: &mut App) {
     .detach();
 }
 
-/// The design-system theme for a preference, following the OS for System.
-fn theme_for(preference: ThemePreference, window: &Window) -> Theme {
+/// The control density for an interface size. Desktop Studio stays compact
+/// by default; Large grows hit areas and spacing with the text.
+fn density(size: InterfaceSize) -> Density {
+    match size {
+        InterfaceSize::Small | InterfaceSize::Default => Density::Compact,
+        InterfaceSize::Large => Density::Comfortable,
+    }
+}
+
+/// The window's rem for an interface size. Every `TypeScale` step is in rems,
+/// so this scales all of Studio's text together.
+pub(crate) fn rem_size(size: InterfaceSize) -> Pixels {
+    px(match size {
+        InterfaceSize::Small => 15.,
+        InterfaceSize::Default => 16.,
+        InterfaceSize::Large => 17.,
+    })
+}
+
+/// The design-system theme for Studio's appearance settings, following the OS
+/// for System.
+fn theme_for(config: &AppConfig, window: &Window) -> Theme {
+    let preference = config.theme;
     let light = match preference {
         ThemePreference::Light => true,
         ThemePreference::Dark => false,
@@ -266,11 +287,8 @@ fn theme_for(preference: ThemePreference, window: &Window) -> Theme {
             WindowAppearance::Light | WindowAppearance::VibrantLight
         ),
     };
-    if light {
-        Theme::light()
-    } else {
-        Theme::dark()
-    }
+    let theme = if light { Theme::light() } else { Theme::dark() };
+    theme.with_density(density(config.interface_size))
 }
 
 impl Studio {
@@ -280,7 +298,7 @@ impl Studio {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let theme = theme_for(config.theme, window);
+        let theme = theme_for(&config, window);
         let (mailbox, mut jobs) = Mailbox::new();
         let pump = cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             while let Some(job) = jobs.next().await {
@@ -555,8 +573,8 @@ impl Studio {
     }
 
     fn apply_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let theme = theme_for(self.config.theme, window);
-        if theme.is_light == self.theme.is_light {
+        let theme = theme_for(&self.config, window);
+        if theme.is_light == self.theme.is_light && theme.density == self.theme.density {
             return;
         }
         self.theme = theme;
@@ -923,6 +941,7 @@ impl Render for Studio {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = self.theme;
         let shown = self.shown();
+        window.set_rem_size(rem_size(self.config.interface_size));
         div()
             .id("studio")
             .key_context(CONTEXT)
@@ -933,6 +952,7 @@ impl Render for Studio {
             .flex_col()
             .bg(c.surface_deep)
             .text_color(c.text)
+            .type_scale(TypeScale::Body)
             .on_action(cx.listener(Self::open_palette))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::undo))
