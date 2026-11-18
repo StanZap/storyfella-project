@@ -401,9 +401,10 @@ partial selections. Workspace checks/tests, formatting and strict Studio/core
 Clippy pass. Replay/logs live under `.svs-e2e/workflows/`; user source fixtures
 remain ignored and the original project was not modified.
 
-### Editor diff review · 2026-11-01 (current)
+### Editor diff review · 2026-11-01 (superseded)
 
-This supersedes the separate suggestion reading area below. A completed writing
+The GPUI assistant replaced this editable review with a read-only one; see
+`docs/workflows.md` (Writer). This superseded the separate suggestion reading area below. A completed writing
 request opens a continuous CodeMirror merge editor in the existing story area.
 Inline review shows read-only deleted lines above editable proposed lines;
 side-by-side review aligns the accepted draft and editable suggestion. Both use
@@ -624,22 +625,45 @@ must obey the same availability rules.
 | Situation | Required surface | Interaction |
 | --- | --- | --- |
 | Invalid input | Message beside the field | Retain input, identify the problem and give a valid example. |
-| An action fails | Persistent message in its task or object | Explain impact and offer Retry, correction or a relevant destination. |
+| An action fails | An indication in its task or object: a warning glyph and the error code's short label | The indication opens the Details dialog; offer Retry or a correction beside it, not inside it. |
 | A background event matters elsewhere | Nonblocking notification | One direct action to the object or complete report. |
 | Successful routine action | Quiet local status | Acknowledge the result without interrupting work. |
 | A decision blocks safe continuation | Dialog | Explain the choice and its consequences; use explicit action labels. |
-| Optional diagnostics | Inline disclosure or one report panel/dialog | Open directly from the originating error; allow selection and copying. |
+| Diagnostics | The one Details dialog | Opened from the indication; selectable, with Copy details. |
+| Guidance ("put the caret on a name") | One sentence where the action was attempted | No details, because there are none; it clears on the next change. |
 
-For the reported example, the required flow is **Status error → Details → full
-report**, in one activation. An inline disclosure is also acceptable. A toast
-must never serve as an intermediate navigation step. Seeing an error inline
-must not generate another copy merely to expose its details.
+### Indicate where, explain in one place
+
+A failure never prints its details where it happened. The place shows an
+**indication** — the warning glyph and the code's short label
+(`ErrorCode::message`, such as "Could not create a writing suggestion") — and
+the explanation opens on request in the **Details dialog**: what to do
+(`ErrorCode::hint`) first, then what happened (the report's details and
+context, selectable), then the code, with Copy details. One activation reaches
+it from any indication: the status bar, an assistant reply, the Settings
+window. Home's unreadable stories follow the same pattern with their own
+dialog, because it offers Remove from list and Show in Finder. Closing the dialog opened from the status bar clears that
+indication; the failure has been read.
+
+Every failure has a catalog code whose label describes it. Reporting under an
+unrelated code to reach the status bar is a defect, because the label is the
+only thing the place shows. A refusal that is guidance rather than failure —
+the caret is not on a name, the file is empty — is one sentence where the
+action was attempted (the status bar, or the assistant's prompt) and has no
+Details.
+
+Raw error text, `Debug` output and stack-like dumps never reach an indication.
+Code that produces a failure's details writes them for the dialog: a sentence
+saying what happened, not a type dump.
+
+Studio implements this in `apps/studio/src/ui/details.rs`
+(`failure_indication`, `details_dialog`, `Studio::fail`, `Studio::hint`), and
+the Chat kit's `AssistantMessage::on_error_details` gives a reply's error its
+Details action.
 
 The summary must say what happened, what was affected, and what to do next.
 Show remediation before technical diagnostics. Codes remain stable and available
-for support, but must not visually outrank the human explanation. Keep context
-such as file paths and requests expandable, wrapped and selectable. A single
-report component must serve both local and global entry points.
+for support, but must not visually outrank the human explanation.
 
 Do not expire unresolved actionable errors. Clearing a notification must not
 remove the underlying task's failure state. Repeated failures must not overwrite

@@ -6,7 +6,7 @@ use design_system::{
     Typography,
 };
 use gpui_kit::{prelude::*, *};
-use storyfella_studio_core::config::AppConfig;
+use storyfella_studio_core::{config::AppConfig, errors::ErrorCode};
 
 use super::{Studio, TITLE};
 use crate::recents::RecentProject;
@@ -383,7 +383,7 @@ impl Studio {
                 self.home.highlighted = None;
                 self.home.rescan(&self.config, cx);
             }
-            Err(message) => self.report_message(message, cx),
+            Err(message) => self.fail(ErrorCode::AppStoriesFolder, message, cx),
         }
         cx.notify();
     }

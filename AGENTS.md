@@ -1,4 +1,4 @@
-You are working on **Storyfella**, the workspace for story authoring and playback. Studio is the desktop GPUI application; Atelier in `../storyfella-canvas` owns visual creation and editing. Clipforge owns provider management and general image inference tools. Studio selects text and vision providers and runs Writing help through Agentkit's Workflow API. Managed requests hold the service lease for their full operation.
+You are working on **Storyfella**, the workspace for story authoring and playback. Studio is the desktop GPUI application; Atelier in `../storyfella-canvas` owns visual creation and editing. Clipforge owns provider management and general image inference tools. Studio selects text and vision providers and runs its writing assistant through Agentkit's Workflow API. Managed requests hold the service lease for their full operation.
 
 Shared user projects now use `studio-core::project::ProjectFolder`:
 `storyfella.toml`, `assets/story.sf` and `story.db`, portable immutable `artwork/` revisions
@@ -77,7 +77,7 @@ production; provider capabilities and wire formats belong in Agentkit.
 ### Shared inference through Agentkit
 
 Studio binds its selected text provider through Agentkit's shared inference
-service and runs Writing help as an Agentkit workflow. Clipforge manages the
+service and runs the assistant's writing requests as Agentkit workflows. Clipforge manages the
 shared provider registry and inference service settings. Atelier owns image
 creation and editing; generic provider contracts belong in Agentkit.
 

@@ -133,6 +133,11 @@ pub enum ErrorCode {
     AppCheckpointRejected,
     AppStackEmpty,
     WritingProposalFailed,
+    AppStoryEdit,
+    AppStoryFileOpen,
+    AppStoriesFolder,
+    AppConversation,
+    AppProviderManager,
 }
 
 impl ErrorCode {
@@ -711,6 +716,37 @@ impl ErrorCode {
                 "Your story and request are unchanged. Check the text model in Settings, \
                  or retry when the endpoint is available.",
             ),
+            Self::AppStoryEdit => (
+                "SVS-APP-107",
+                "Could not change the story",
+                "The change was not applied and the story is as it was. Check the story \
+                 file is still where Studio expects it, then try again.",
+            ),
+            Self::AppStoryFileOpen => (
+                "SVS-APP-108",
+                "Could not open the story file",
+                "The file is not part of the open story, or could not be read. Pick it \
+                 again from the story's files.",
+            ),
+            Self::AppStoriesFolder => (
+                "SVS-APP-109",
+                "Could not update your stories",
+                "The stories folder or its list of recent stories could not be written. \
+                 Check the folder in Settings exists and can be written to.",
+            ),
+            Self::AppProviderManager => (
+                "SVS-APP-111",
+                "Could not open Clipforge",
+                "Studio manages providers through Clipforge. Install Clipforge, or open it \
+                 yourself, then return to Settings.",
+            ),
+            Self::AppConversation => (
+                "SVS-APP-110",
+                "Could not keep the assistant conversation",
+                "The story is unaffected, but the conversation may not be there when the \
+                 story is opened again. Check disk space and that the story's folder can \
+                 be written to.",
+            ),
         }
     }
 
@@ -935,7 +971,7 @@ mod tests {
     fn registry_size_is_pinned() {
         assert_eq!(
             codes().len(),
-            94,
+            99,
             "update the registry count when adding error codes"
         );
     }
@@ -1108,6 +1144,11 @@ mod tests {
             ErrorCode::AppCheckpointRejected,
             ErrorCode::AppStackEmpty,
             ErrorCode::WritingProposalFailed,
+            ErrorCode::AppStoryEdit,
+            ErrorCode::AppStoryFileOpen,
+            ErrorCode::AppStoriesFolder,
+            ErrorCode::AppConversation,
+            ErrorCode::AppProviderManager,
         ]
     }
 }

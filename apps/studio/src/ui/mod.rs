@@ -5,7 +5,9 @@
 //! live MCP bridge reach it through its [`Mailbox`]; the views reach it
 //! directly. Every change to the story goes through [`Studio::changed`], which
 //! autosaves, rechecks the compile status and redraws.
+mod assistant;
 mod close;
+mod details;
 mod guide;
 mod home;
 mod palette;
@@ -91,7 +93,10 @@ pub struct Studio {
     place: Place,
     activity: OpActivity,
     error: Option<ReportedError>,
-    showing_error: bool,
+    /// The failure whose details are open.
+    details: Option<ReportedError>,
+    /// Guidance shown in the status bar until the next.
+    hint: Option<String>,
     autosave: AutosaveMode,
     /// The Write view's caret, moved by plans.
     caret: Position,
@@ -102,6 +107,7 @@ pub struct Studio {
     remembered: Option<PathBuf>,
     home: home::Home,
     write: write::Write,
+    assistant: assistant::Assistant,
     player: Entity<PlaybackPanel>,
     palette: Entity<CommandPalette>,
     palette_open: bool,
@@ -304,6 +310,7 @@ impl Studio {
         let mut studio = Self {
             home: home::Home::new(&config, theme, window, cx),
             write: write::Write::new(theme, window, cx),
+            assistant: assistant::Assistant::new(theme, window, cx),
             config,
             launch,
             theme,
@@ -312,7 +319,8 @@ impl Studio {
             place: Place::Home,
             activity: OpActivity::Idle,
             error: None,
-            showing_error: false,
+            details: None,
+            hint: None,
             autosave: AutosaveMode::default(),
             caret: Position::default(),
             problems: None,
@@ -391,19 +399,6 @@ impl Studio {
         }
     }
 
-    /// Reports a failure in the status bar, logged once with its code.
-    fn report(&mut self, error: ReportedError, cx: &mut Context<Self>) {
-        self.error = Some(error.log());
-        cx.notify();
-    }
-
-    fn report_message(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
-        self.report(
-            ReportedError::plain(ErrorCode::AppCommandInvalid, message.into()),
-            cx,
-        );
-    }
-
     /// Everything that follows a change to the story or project: remembers
     /// a newly opened project, autosaves when asked to, rechecks compilation
     /// and redraws.
@@ -417,13 +412,15 @@ impl Studio {
             if let Some(path) = &opened {
                 if let Err(error) = crate::recents::remember_project(&self.config.project_dir, path)
                 {
-                    self.report_message(error, cx);
+                    self.fail(ErrorCode::AppStoriesFolder, error, cx);
                 }
             }
         }
+        self.hint = None;
         if self.autosave == AutosaveMode::OnChange {
             self.autosave_now(cx);
         }
+        self.follow_project_in_assistant(cx);
         self.write.story_changed();
         self.recheck(cx);
         cx.notify();
@@ -567,6 +564,7 @@ impl Studio {
             .update(cx, |palette, cx| palette.set_theme(theme, cx));
         self.home.set_theme(theme, cx);
         self.write.set_theme(theme, cx);
+        self.assistant.set_theme(theme, cx);
         let viewer = viewer(&self.config);
         self.player
             .update(cx, |player, cx| player.configure(viewer, theme, cx));
@@ -614,7 +612,7 @@ impl Studio {
             return;
         }
         if let Err(message) = self.state.apply_description_drafts() {
-            self.report_message(message, cx);
+            self.hint(message, cx);
             return;
         }
         if self.state.project_path.is_none() {
@@ -638,7 +636,7 @@ impl Studio {
     ) {
         let directory = self.config.project_dir.clone();
         if let Err(error) = std::fs::create_dir_all(&directory) {
-            self.report_message(error.to_string(), cx);
+            self.fail(ErrorCode::AppStoriesFolder, error.to_string(), cx);
             return;
         }
         let answer = cx.prompt_for_new_path(&directory, Some("Untitled.db"));
@@ -981,6 +979,6 @@ impl Render for Studio {
             }))
             .child(self.render_rename(cx))
             .child(self.render_trouble(cx))
-            .child(self.render_error(cx))
+            .child(self.render_details(cx))
     }
 }

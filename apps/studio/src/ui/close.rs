@@ -58,7 +58,7 @@ impl Studio {
 
     fn save_and_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Err(message) = self.state.apply_description_drafts() {
-            self.report_message(message, cx);
+            self.hint(message, cx);
             return;
         }
         if self.state.project_path.is_none() {

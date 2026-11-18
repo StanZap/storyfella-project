@@ -25,111 +25,59 @@ in SF-PLAN-28.
 
 ## Writer
 
-Studio's GPUI Write view edits the story but has no Writing help panel yet;
-what follows is the writing workflow and its contracts, which the plan driver,
-MCP channel and `sf-cli` still reach.
+### The assistant
 
-**Writing help** opens beside the editable source. Choose a selection, the
-current beat, current scene or Entire file; choose Rewrite or Expand and enter custom
-instructions. Preserve facts is the default; creative changes are explicit.
+Write docks the assistant on its right. A project has one conversation, kept
+in the story's `workflows.sqlite3` beside `story.db` and reloaded when the
+story opens. A turn is a request and its reply; a reply lists the steps the
+workflow took, with their times, and ends in one outcome: a suggestion, no
+change, stopped, failed, or interrupted (Studio closed while it ran).
+
+A request names its passage with the scope chips: Selection, the Beat or Scene
+around the caret, or the whole File. The passage, the instructions and Keep
+facts (on by default) are captured when the request is sent; editing
+afterwards does not change it. An empty file, or Selection with nothing
+selected, is refused under the prompt, and the prompt keeps its text. Without a
+text provider in Settings, the prompt says so and Send is disabled.
+
+A suggestion arrives as a card with its line counts. Review replaces the
+editor with a read-only diff of the file; each change is kept or reset, and
+Keep all / Discard all decide the rest. The story changes once, when the
+review ends, as one undoable edit of the kept changes. Reviewing is refused if
+the file changed since the suggestion was written. Asking again while a review
+is open refines it: the kept changes are applied, and the same passage is
+asked for again with both instructions. The card records what was decided —
+Kept, Kept 2 of 3, Discarded.
+
+A failed reply shows the code's label ("Could not create a writing
+suggestion") with Details, which opens the shared details dialog (DESIGN.md
+§2).
+
+### The writing workflow
+
+`storyfella_studio_core::workflows::writing` runs a request as an Agentkit
+workflow with a language-model step, through the text-provider binding from
+Settings. A managed (`llamacpp`) provider is reached through the worker the
+shared inference service allocates — the address in `clipforge.toml` is only
+the provider's identity — and its lease is held for the whole request, repair
+attempts included; a hosted provider is called at its configured address.
+
 The request includes the containing scene and descriptions of its resolved
-assets. It uses the current text-provider binding from Settings. A managed
-(`llamacpp`) provider is reached through the worker the shared inference
-service allocates — the address in `clipforge.toml` is only the provider's
-identity — and its lease is held for the whole request, repair attempts
-included; a hosted provider is called at its configured address.
-Entire file captures the complete source, including every scene, comments and
-boundary whitespace, without depending on the caret. Retry keeps this scope.
+assets; the complete source supplies validation context for surrounding
+structure and cross-scene links. File scope captures the complete source,
+including comments and boundary whitespace. Responses regain captured
+indentation, line endings and terminal blank lines that a provider may have
+trimmed; a partial-line selection is not reindented. Before review, the
+replacement is inserted into the captured document and compiled. Invalid or
+empty output triggers up to two repair attempts using the original request,
+the rejected replacement and compiler diagnostics; repair runs link to their
+preceding attempt in the run store. Only a valid result becomes a suggestion,
+so compilation guarantees structural validity, not narrative quality or
+instruction fidelity. Stop cancels drafting and repair; a provider may
+continue remote compute after local cancellation.
 
-Agentkit streams provisional replacement text into the panel. Before model
-submission, the captured draft must compile without source errors; pending
-artwork warnings are allowed. Responses first regain captured indentation,
-line endings and terminal blank lines that a provider may have trimmed. A
-partial-line selection is not reindented. Before review, Studio inserts the
-replacement into the complete captured document and runs the shared compiler.
-Genuinely invalid or empty output triggers up to two automatic repair attempts using the original
-request, rejected replacement and compiler diagnostics. Each attempt uses the
-public runner and durable storage; repair runs link to their preceding attempt.
-The prompt supplies the DSL rules, complete source and small boundary previews
-as validation context. Repair feedback identifies offending source lines and
-line/column positions; the original request remains structured JSON. Progress
-shows the repair attempt and fixed limit.
-Only a valid result is published as a proposal. Exhausted repair produces a
-recoverable failure, retaining the draft, request and any prior valid proposal.
-Cancellation applies throughout drafting and repair. Compilation guarantees
-structural validity, not narrative quality or instruction fidelity.
-
-On completion, the request collapses and the story area becomes a continuous
-diff editor. Inline shows deleted lines and editable proposed text together;
-Side by side aligns a read-only draft with the editable suggestion. Changing
-views preserves text, selection and editor undo history. CodeMirror owns diff
-layout and native editing; shared Rust analysis supplies reference-aware syntax
-styles. Rust remains the authority for application and saving.
-
-The gutter's reset arrow restores an individual change to the accepted draft;
-its checkbox selects that change for group actions. With checked changes, the
-request panel offers Keep selected and Reset selected; otherwise it offers
-Keep change and Reset change for the current difference. A group is resolved
-against one snapshot and kept as one undoable edit. Editing the proposed text
-clears checkbox selection so shifted ranges cannot target another change.
-The panel also owns change navigation, Try again,
-Keep all and Discard all. Navigation buttons and F7/Shift+F7 stop at the
-first/last change. Actions have
-named icons and tooltips; acceptance and recovery retain visible labels.
-Edit request and Try again sit together in the header. Retry uses the current
-prompt and request settings; the panel shows the user's prompt without a
-separate Rewrite label, repeated count heading or generic editing instructions.
-Unavailable actions are disabled, including accepting an invalid selected
-change/group or discarding an empty review. Edits anywhere in the proposed version remain pending
-and excluded from project saving and Preview. Keep runs through AppState and
-source reconciliation as one undoable edit; Keep all applies all remaining
-changes in one edit. Discard restores the accepted text for the selected range,
-preserving previously kept changes. Compiler errors block acceptance, including
-partial edits that depend on another change. Newly introduced notes are grouped;
-existing warnings stay in Problems. Retry captures the current accepted draft;
-cancelled or failed retries retain the previous editable comparison.
-Manual edits and explicit reset choices are preserved across retries using a
-three-way source merge. Non-overlapping model changes combine with them; an
-overlap or compiler-invalid combination keeps the current review and reports
-the conflict; ambiguous adjacent edits are also treated conservatively. Merge
-markers never enter the source. Protection survives repeated
-retries and reopening, even when an intermediate model reproduces the user's
-text. Saved checkpoints from before this protection are upgraded transactionally
-using their original proposal as the pre-edit baseline. The Rust `diffy` crate
-provides text merging; CodeMirror continues to own editor interaction and layout.
-
-Writing workspaces autosave locally as they change. Reopening the same project
-restores the request form, pending review (including manual edits), comparison
-mode, checked changes, current difference and unsaved accepted draft. These checkpoints never write
-pending suggestions to the `.sf` file or feed them to Preview. Closing during
-generation retains the request and received partial text; reopening marks it
-interrupted and offers an explicit Try again, without sending a new request.
-If the story differs from both the checkpoint's disk snapshot and accepted
-draft, recovery preserves both versions and offers Restore writing session
-(an unsaved, undoable draft) or Discard saved session. Storage failures remain
-visible in Writing help. Editor undo history is scoped to the running app;
-recovery restores document text rather than the previous process's undo stack.
-
-Each request stores its exact source, byte range, project and source paths.
-Application requires the same complete source snapshot and owning paths; newer
-typing or another project never receives a delayed replacement. Selection
-changes after dispatch do not change the request. Errors appear once beside the
-story with retry, Settings and the shared technical report; request/instructions
-are retained. Cancel interrupts the pending step and discards its response
-without changing source. A provider may continue
-remote compute after local cancellation.
-
-Creative context includes the containing scene and resolved asset descriptions;
-the complete source supplies validation context for surrounding structure and
-cross-scene links.
-Project-wide writing instructions, conversational history and domain tool
-calling remain follow-up work.
-
-The desktop editor bridge exchanges UTF-16 positions and monotonic edit
-sequences. Rust resolves positions against the exact source, preserving CRLF
-and UTF-8 boundaries. Every acceptance action captures current editor text
-before dispatch; older host renders cannot overwrite newer typing. CodeMirror
-does not write files or contact model providers.
+Each request stores its exact source, byte range, project and source paths. A
+suggestion applies only to that same source.
 
 ## Atelier
 

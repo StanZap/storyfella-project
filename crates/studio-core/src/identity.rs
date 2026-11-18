@@ -209,20 +209,25 @@ fn remap_database(path: &Path, mappings: &[(PathBuf, PathBuf)]) -> Result<()> {
             }
         }
     }
-    let sessions: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'writing_sessions')", [], |row| row.get(0))?;
-    if sessions {
+    // A conversation is keyed by its project and quotes its files' paths.
+    let conversations: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'assistant_conversations')",
+        [],
+        |row| row.get(0),
+    )?;
+    if conversations {
         let values = tx
-            .prepare("SELECT source_path, snapshot FROM writing_sessions")?
+            .prepare("SELECT project, conversation FROM assistant_conversations")?
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        for (before, snapshot) in values {
-            let mut snapshot: serde_json::Value = serde_json::from_str(&snapshot)?;
-            remap_session(&mut snapshot, mappings);
+        for (before, conversation) in values {
+            let mut conversation: serde_json::Value = serde_json::from_str(&conversation)?;
+            remap_session(&mut conversation, mappings);
             tx.execute(
-                "UPDATE writing_sessions SET source_path=?1, snapshot=?2 WHERE source_path=?3",
-                [remap(&before, mappings), snapshot.to_string(), before],
+                "UPDATE assistant_conversations SET project=?1, conversation=?2 WHERE project=?3",
+                [remap(&before, mappings), conversation.to_string(), before],
             )?;
         }
     }
@@ -235,40 +240,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sqlite3_writing_sessions_keep_drafts_and_relocate_only_their_owner_paths() {
+    fn sqlite3_conversations_keep_their_text_and_relocate_only_their_paths() {
         let root = tempfile::tempdir().unwrap();
         let old = root.path().join("old");
         let new = root.path().join("new");
         fs::create_dir(&old).unwrap();
         let source = old.join("story.sf").to_string_lossy().into_owned();
         let project = old.join("story.db").to_string_lossy().into_owned();
-        let draft = format!("// Keep literal path {source}\r\n");
-        let snapshot = serde_json::json!({"project":project,"source_path":source,"draft":draft,"request":{"project":project,"source_path":source,"source":draft}});
+        let text = format!("// Keep literal path {source}\r\n");
+        let conversation = serde_json::json!({"turns":[{"proposal":{"request":{"project":project,"source_path":source,"source":text}}}]});
         let db = Connection::open(old.join("workflows.sqlite3")).unwrap();
-        db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE writing_sessions(source_path TEXT PRIMARY KEY, snapshot TEXT NOT NULL);").unwrap();
+        db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE assistant_conversations(project TEXT PRIMARY KEY, conversation TEXT NOT NULL);").unwrap();
         db.execute(
-            "INSERT INTO writing_sessions VALUES (?1, ?2)",
-            [&source, &snapshot.to_string()],
+            "INSERT INTO assistant_conversations VALUES (?1, ?2)",
+            [&project, &conversation.to_string()],
         )
         .unwrap();
         migrate_roots(&[(old, new.clone())]).unwrap();
         let copied = Connection::open(new.join("workflows.sqlite3")).unwrap();
         let (key, json): (String, String) = copied
             .query_row(
-                "SELECT source_path,snapshot FROM writing_sessions",
+                "SELECT project, conversation FROM assistant_conversations",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
         let json: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(key, new.join("story.sf").to_string_lossy());
-        assert_eq!(json["source_path"], key);
+        let request = &json["turns"][0]["proposal"]["request"];
+        assert_eq!(key, new.join("story.db").to_string_lossy());
+        assert_eq!(request["project"], key);
         assert_eq!(
-            json["request"]["project"],
-            new.join("story.db").to_string_lossy().as_ref()
+            request["source_path"],
+            new.join("story.sf").to_string_lossy().as_ref()
         );
-        assert_eq!(json["draft"], draft);
-        assert_eq!(json["request"]["source"], draft);
+        assert_eq!(request["source"], text);
     }
 
     #[test]

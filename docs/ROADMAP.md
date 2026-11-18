@@ -16,9 +16,16 @@ meets its acceptance criteria.
   - [x] Write on the design system's Code kit: the story's files, highlighting,
     inline problems and a problems list, completion, go to definition, rename
     and format. A run of typing is one undo step.
-  - [ ] Assistant: one saved conversation per project on the Chat kit, with
-    read-only review of its edits, replacing Writing help and the Novel
-    assistant.
+  - [x] Assistant: one saved conversation per project, docked in Write on the
+    Chat kit. It asks the writing workflow for an edit to a selection, beat,
+    scene or file; a suggestion is reviewed read-only in the editor's place
+    and kept as one undoable edit. Writing help's session and review modules
+    were removed.
+  - [x] Failures are an indication plus one Details dialog (DESIGN.md §2), in
+    the status bar, the assistant and Settings.
+  - [ ] Assistant tools: Studio's story tools always, Atelier's while it
+    runs, every edit reviewed; then plans as assistant workflows and the
+    novel-wide request (now reachable only over live MCP).
   - [ ] Play split beside the source, with the line on stage highlighted.
   - [ ] Find references in Write (the language reports them; nothing lists
     them yet).

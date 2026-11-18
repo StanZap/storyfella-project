@@ -56,7 +56,7 @@ fn descriptors() -> Vec<McpToolDescriptor> {
                     {"type":"object","properties":{"kind":{"const":"choose"},"index":offset},"required":["kind","index"],"additionalProperties":false}
                 ]}
             }), &["session","preview","action"]),
-            tool("storyfella_novel_suggest_start", "Start a Writing help request for the whole open novel. Poll and review every proposed file before applying.", McpPermission::Mutating, json!({
+            tool("storyfella_novel_suggest_start", "Start a writing request for the whole open novel. Poll and review every proposed file before applying.", McpPermission::Mutating, json!({
                 "session":session, "instructions":{"type":"string","maxLength":8192}, "expand":{"type":"boolean"}, "preserve_facts":{"type":"boolean"}
             }), &["session","instructions","expand","preserve_facts"]),
             tool("storyfella_novel_suggest_poll", "Check a novel-writing job and return its proposed file contents when ready.", McpPermission::ReadOnly, json!({"session":session,"job":session}), &["session","job"]),

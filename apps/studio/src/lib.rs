@@ -6,6 +6,7 @@
 //! (`storyfella_studio_core::…`) rather than re-exported here, so the boundary
 //! between the app and the domain stays visible.
 
+pub mod assistant;
 pub mod commands;
 pub mod driver;
 pub mod host;

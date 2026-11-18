@@ -203,7 +203,7 @@ connection keeps one playtest and checkpoint.
 Studio bounds the total pinned artwork in isolated playtests and evicts older
 sessions when the cache fills.
 
-Writing help can propose a coordinated change across all currently reachable
+The novel writing workflow can propose a coordinated change across all currently reachable
 story files in the open Studio. Call `storyfella_novel_suggest_start` with the
 inspected session, instructions, `expand`, and `preserve_facts`; poll the
 returned job with `storyfella_novel_suggest_poll`. Studio processes bounded

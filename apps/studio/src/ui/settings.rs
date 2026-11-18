@@ -13,6 +13,7 @@ use design_system::{
 use gpui_kit::{prelude::*, *};
 use storyfella_studio_core::{
     config::{AppConfig, ChatCapability, ConfigError, ThemePreference},
+    errors::{CodedError, ErrorCode, ReportedError},
     runtime::{HealthStatus, ServiceHealth, ServiceId},
 };
 
@@ -63,7 +64,10 @@ pub struct Settings {
     vision: Pickers,
     health: Option<Vec<ServiceHealth>>,
     checking: Option<Task<()>>,
-    error: Option<String>,
+    /// The last failure, indicated at the top of the window.
+    error: Option<ReportedError>,
+    /// Whether its details are open.
+    showing_error: bool,
 }
 
 /// Opens the Settings window for `studio`.
@@ -150,6 +154,7 @@ impl Settings {
             health: None,
             checking: None,
             error: None,
+            showing_error: false,
         };
         settings.refresh_pickers(window, cx);
         settings.check_health(cx);
@@ -186,7 +191,7 @@ impl Settings {
                     .update(cx, |studio, cx| studio.set_config(config, window, cx))
                     .ok();
             }
-            Err(error) => self.error = Some(error.to_string()),
+            Err(error) => self.error = Some(error.report()),
         }
         cx.notify();
     }
@@ -672,7 +677,13 @@ impl Settings {
                             if let Err(error) =
                                 storyfella_studio_core::ai_config::open_provider_manager()
                             {
-                                settings.error = Some(error.to_string());
+                                settings.error = Some(
+                                    ReportedError::plain(
+                                        ErrorCode::AppProviderManager,
+                                        error.to_string(),
+                                    )
+                                    .log(),
+                                );
                                 cx.notify();
                             }
                         })),
@@ -772,10 +783,42 @@ impl Render for Settings {
                     .flex_col()
                     .gap(px(12.))
                     .when_some(self.error.clone(), |body, error| {
-                        body.child(div().text_color(c.error).child(error))
+                        body.child(super::details::failure_indication(
+                            "settings-error",
+                            c,
+                            &error,
+                            {
+                                let settings = cx.entity().downgrade();
+                                move |_, cx| {
+                                    settings
+                                        .update(cx, |settings, cx| {
+                                            settings.showing_error = true;
+                                            cx.notify();
+                                        })
+                                        .ok();
+                                }
+                            },
+                        ))
                     })
                     .child(body),
             )
+            .child({
+                let settings = cx.entity().downgrade();
+                super::details::details_dialog(
+                    c,
+                    self.error.as_ref().filter(|_| self.showing_error),
+                    move |cx| {
+                        settings
+                            .update(cx, |settings, cx| {
+                                // Read once, the failure has been seen.
+                                settings.showing_error = false;
+                                settings.error = None;
+                                cx.notify();
+                            })
+                            .ok();
+                    },
+                )
+            })
             .into_any_element()
     }
 }

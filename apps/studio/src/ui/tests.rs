@@ -291,3 +291,115 @@ fn a_story_that_cannot_open_is_a_row_whose_details_open_on_request(cx: &mut Test
     assert!(trial.read(|studio| studio.home.trouble.is_none()));
     assert!(trial.read(|studio| studio.home.recents.is_empty()));
 }
+
+#[gpui::test]
+fn the_assistant_suggests_an_edit_that_is_kept_after_review(cx: &mut TestAppContext) {
+    use agentkit_ai::{providers::fake::FakeChatModel, ChatStreamEvent};
+    use storyfella_studio_core::workflows::{
+        assistant::{Decision, Outcome, Turn},
+        RunStore,
+    };
+
+    let mut trial = Trial::new(cx);
+    trial
+        .act(|studio, _, cx| studio.create_project("Harbor", cx))
+        .unwrap();
+    // An empty file has no passage to edit; the prompt stays and says so.
+    trial.act(|studio, window, cx| {
+        studio.assistant.model = Some(std::sync::Arc::new(FakeChatModel::new_streaming([])));
+        studio
+            .assistant
+            .prompt
+            .update(cx, |prompt, cx| prompt.set_text("Begin", window, cx));
+        studio.ask(window, cx);
+    });
+    assert!(trial.read(|studio| studio.assistant.notice.is_some()));
+    assert!(trial.read(|studio| studio.assistant.conversation().turns.is_empty()));
+
+    let before = "scene harbor\n  narrate: Dusk.\n  end\n";
+    let after = "scene harbor\n  narrate: Night falls.\n  end\n";
+    trial.act(|studio, _, cx| {
+        studio.state.set_story_source(before.into());
+        studio.changed(cx);
+    });
+    trial.act(|studio, window, cx| {
+        studio.assistant.model = Some(std::sync::Arc::new(FakeChatModel::new_streaming([vec![
+            ChatStreamEvent::TextDelta {
+                content: after.into(),
+            },
+            ChatStreamEvent::Done,
+        ]])));
+        studio.assistant.scope = crate::assistant::Scope::File;
+        studio.assistant.prompt.update(cx, |prompt, cx| {
+            prompt.set_text("Make it night", window, cx)
+        });
+        studio.ask(window, cx);
+    });
+    trial.settle();
+
+    let proposed = |trial: &mut Trial| {
+        trial.read(
+            |studio| match studio.assistant.conversation().turns.as_slice() {
+                [Turn::Asked(_), Turn::Answered(answer)] => match &answer.outcome {
+                    Outcome::Proposed(proposed) => Some(proposed.decision),
+                    other => panic!("{other:?}"),
+                },
+                turns => panic!("{turns:?}"),
+            },
+        )
+    };
+    assert_eq!(proposed(&mut trial), Some(Decision::Pending));
+    assert_eq!(
+        trial.read(|studio| studio.state.story.source().to_owned()),
+        before,
+        "nothing is written before the review"
+    );
+
+    trial.act(|studio, window, cx| studio.start_review(1, window, cx));
+    assert!(trial.read(|studio| studio.assistant.review.is_some()));
+    trial
+        .act(|studio, _, cx| studio.finish_review(Some(true), cx))
+        .unwrap();
+    assert_eq!(
+        trial.read(|studio| studio.state.story.source().to_owned()),
+        after
+    );
+    assert_eq!(trial.editor_text(), after);
+    assert_eq!(
+        proposed(&mut trial),
+        Some(Decision::Kept { kept: 1, of: 1 })
+    );
+
+    // The conversation is the project's, and outlives the window.
+    let project = trial.read(|studio| studio.state.project_path.clone().unwrap());
+    let saved = RunStore::open(&project.with_extension("workflows.sqlite3"))
+        .unwrap()
+        .conversation(&project)
+        .unwrap();
+    assert_eq!(
+        saved,
+        trial.read(|studio| studio.assistant.conversation().clone())
+    );
+}
+
+#[gpui::test]
+fn a_failure_is_indicated_and_explained_only_on_request(cx: &mut TestAppContext) {
+    use storyfella_studio_core::errors::ErrorCode;
+
+    let mut trial = Trial::new(cx);
+    trial.act(|studio, _, cx| {
+        studio.hint("Put the caret on a name.", cx);
+        studio.fail(ErrorCode::AppStoryEdit, "disk full", cx);
+    });
+    assert!(
+        trial.read(|studio| studio.hint.is_none()),
+        "a failure replaces guidance"
+    );
+    let error = trial.read(|studio| studio.error.clone()).unwrap();
+    assert!(trial.read(|studio| studio.details.is_none()));
+
+    trial.act(|studio, _, cx| studio.show_details(error, cx));
+    assert!(trial.read(|studio| studio.details.is_some()));
+    trial.act(|studio, _, cx| studio.close_details(cx));
+    assert!(trial.read(|studio| studio.details.is_none() && studio.error.is_none()));
+}

@@ -1,6 +1,6 @@
 //! An open story: the bar that switches between Write, Play and Board, the
 //! view itself, and the status bar beneath.
-use design_system::{ButtonKind, Dialog, Glyph, Segment, SegmentedControl, TypeScale, Typography};
+use design_system::{ButtonKind, Glyph, Segment, SegmentedControl, TypeScale, Typography};
 use gpui_kit::{prelude::*, *};
 
 use super::Studio;
@@ -177,21 +177,25 @@ impl Studio {
                 |bar, summary| bar.child(item().text_color(c.accent).child(summary)),
             )
             .when_some(self.error.clone(), |bar, error| {
+                let studio = cx.entity().downgrade();
+                let shown = error.clone();
+                bar.child(super::details::failure_indication(
+                    "error",
+                    c,
+                    &error,
+                    move |_, cx| {
+                        studio
+                            .update(cx, |studio, cx| studio.show_details(shown.clone(), cx))
+                            .ok();
+                    },
+                ))
+            })
+            .when_some(self.hint.clone(), |bar, hint| {
                 bar.child(
-                    div()
-                        .id("error")
-                        .flex()
+                    item()
                         .min_w_0()
-                        .items_center()
-                        .gap(c.metrics.space)
-                        .text_color(c.error)
-                        .cursor_pointer()
-                        .child(Glyph::Warning.render(c.error, px(12.)))
-                        .child(div().truncate().child(error.details.clone()))
-                        .on_click(cx.listener(|studio, _, _, cx| {
-                            studio.showing_error = true;
-                            cx.notify();
-                        })),
+                        .child(Glyph::Info.render(c.text_muted, px(12.)))
+                        .child(div().truncate().child(hint)),
                 )
             })
             .child(div().flex_1())
@@ -204,53 +208,6 @@ impl Studio {
             })
             .when_some(self.state.project_path.as_ref(), |bar, path| {
                 bar.child(div().min_w_0().truncate().child(path.display().to_string()))
-            })
-    }
-
-    /// The details of the last failure, opened from the status bar.
-    pub(super) fn render_error(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let c = self.theme;
-        let error = self.error.clone();
-        let studio = cx.entity().downgrade();
-        let dismiss = studio.clone();
-        let mut dialog = Dialog::new("error-details", "Something went wrong", c)
-            .open(self.showing_error && error.is_some())
-            .width(px(460.));
-        if let Some(error) = error {
-            dialog = dialog.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(div().child(error.details.clone()))
-                    .child(
-                        div()
-                            .type_scale(TypeScale::Small)
-                            .text_color(c.text_muted)
-                            .child(format!("Code {}", error.code.code())),
-                    ),
-            );
-        }
-        dialog
-            .action(
-                c.button("dismiss-error", "Dismiss", ButtonKind::Secondary)
-                    .on_click(move |_, _, cx| {
-                        studio
-                            .update(cx, |studio, cx| {
-                                studio.error = None;
-                                studio.showing_error = false;
-                                cx.notify();
-                            })
-                            .ok();
-                    }),
-            )
-            .on_dismiss(move |_, cx| {
-                dismiss
-                    .update(cx, |studio, cx| {
-                        studio.showing_error = false;
-                        cx.notify();
-                    })
-                    .ok();
             })
     }
 }

@@ -37,7 +37,7 @@ review and preview. Atelier lives in the sibling `storyfella-canvas` repository
 and owns creation, editing and publication of artwork in shared projects.
 Project and catalog contracts are shared through `storyfella-studio-core`.
 
-Studio's Writing help builds an Agentkit workflow with a language-model step.
+Studio's assistant runs each writing request as an Agentkit workflow with a language-model step.
 Studio binds its selected text provider and retains workflow runs and events in a
 project-local SQLite store. The plan driver can assess saved images using the
 selected vision provider. Clipforge manages shared provider configuration and

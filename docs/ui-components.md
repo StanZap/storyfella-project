@@ -19,9 +19,15 @@ and visual rules; [ROADMAP](ROADMAP.md) owns planned work.
 | A choice from a set the app knows | `ComboBox`, emitting `ComboSelection` | Settings' providers and models |
 | A bounded number | `NumericControl` with a `NumericSpec` range and unit; it draws its own label | Autoplay delay and text size |
 | A command anywhere | `CommandPalette` of `PaletteCommand`s, disabled where they cannot run | ⌘K / Ctrl+K |
-| A detail or a decision | `Dialog` with actions, the primary one last | The status bar's error details |
+| A decision | `Dialog` with actions, the primary one last | Home's unreadable story |
+| A failure | `details::failure_indication` (glyph and the code's label) opening `details::details_dialog`; see DESIGN.md §2 | The status bar's and Settings' failures |
 | Source text | `kits::code::CodeEditor`, given tokens, problems and suggestions by the host | Write's editor |
 | Problems to jump to | `kits::code::DiagnosticsList` of `ProblemItem`s | Write's problems list |
+| A conversation | `kits::chat::Transcript` over a `TranscriptState`, of `UserMessage`s and `AssistantMessage`s | The assistant column |
+| Steps a reply took | `kits::chat::ToolActivity` of `ToolCall`s | An assistant reply's phases |
+| A reply that failed | `AssistantMessage::error` with the code's label and `on_error_details` | An assistant reply |
+| A prompt with options | `PromptBar` over a `TextArea`, with chips and a send/stop action | The assistant's prompt and scope |
+| Changes to review | `kits::code::DiffView`, read-only, deciding each change | A suggestion under review in Write |
 
 Window-level prompts (quitting with unsaved work, file pickers) use GPUI's
 native `window.prompt`, `prompt_for_paths` and `prompt_for_new_path`.

@@ -18,6 +18,7 @@ use design_system::{
 };
 use gpui_kit::{prelude::*, *};
 use storyfella_language::{CompletionKind, Position};
+use storyfella_studio_core::errors::ErrorCode;
 
 use super::Studio;
 use crate::{
@@ -63,6 +64,11 @@ pub(super) struct Write {
 }
 
 impl Write {
+    /// The file the editor shows.
+    pub(super) fn file(&self) -> Option<&str> {
+        self.file.as_deref()
+    }
+
     pub(super) fn new(theme: Theme, window: &mut Window, cx: &mut Context<Studio>) -> Self {
         let editor = cx.new(|cx| CodeEditor::new(theme, window, cx).label("Story source"));
         let studio = cx.entity().downgrade();
@@ -288,7 +294,7 @@ impl Studio {
         }
         match writing::type_into(&mut self.state, &file, text, std::time::Instant::now()) {
             Ok(()) => self.changed(cx),
-            Err(message) => self.report_message(message, cx),
+            Err(message) => self.fail(ErrorCode::AppStoryEdit, message, cx),
         }
     }
 
@@ -319,7 +325,7 @@ impl Studio {
     /// Shows `file` in the editor, with the caret at `offset`.
     pub(super) fn open_file(&mut self, file: &str, offset: Option<usize>, cx: &mut Context<Self>) {
         if let Err(message) = writing::open(&mut self.state, file) {
-            self.report_message(message, cx);
+            self.fail(ErrorCode::AppStoryFileOpen, message, cx);
             return;
         }
         self.write.caret = offset;
@@ -339,9 +345,7 @@ impl Studio {
         let found = writing::navigation(&self.state, &file, self.caret_offset(cx));
         match found.definition {
             Some(place) => self.open_file(&place.file, Some(place.offset), cx),
-            None => {
-                self.report_message("Put the caret on a name to go to where it is declared.", cx)
-            }
+            None => self.hint("Put the caret on a name to go to where it is declared.", cx),
         }
     }
 
@@ -351,7 +355,7 @@ impl Studio {
         };
         let offset = self.caret_offset(cx);
         let Some(name) = writing::navigation(&self.state, &file, offset).rename else {
-            self.report_message("Put the caret on a scene, beat or flag to rename it.", cx);
+            self.hint("Put the caret on a scene, beat or flag to rename it.", cx);
             return;
         };
         self.write.renaming = Some((file, offset));
@@ -406,7 +410,7 @@ impl Studio {
                 self.write.story_changed();
                 self.changed(cx);
             }
-            Err(message) => self.report_message(message, cx),
+            Err(message) => self.fail(ErrorCode::AppStoryEdit, message, cx),
         }
     }
 
@@ -442,7 +446,7 @@ impl Studio {
                         studio.write.story_changed();
                         studio.changed(cx);
                     }
-                    Err(error) => studio.report_message(error.to_string(), cx),
+                    Err(error) => studio.fail(ErrorCode::AppStoryEdit, error.to_string(), cx),
                 }
             })
             .ok();
@@ -456,6 +460,13 @@ impl Studio {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         self.write.sync(&self.state, window, cx);
+        // A suggestion under review takes the editor's place while its file shows.
+        let review = self
+            .assistant
+            .review
+            .as_ref()
+            .filter(|review| self.write.file() == Some(review.file.as_str()))
+            .map(|review| review.diff.clone());
         div()
             .key_context(CONTEXT)
             .size_full()
@@ -474,9 +485,14 @@ impl Studio {
                     .flex()
                     .flex_col()
                     .child(self.render_file_bar(cx))
-                    .child(div().flex_1().min_h_0().child(self.write.editor.clone()))
+                    .children(review.is_some().then(|| self.render_review_bar(cx)))
+                    .child(div().flex_1().min_h_0().child(match review {
+                        Some(diff) => diff.into_any_element(),
+                        None => self.write.editor.clone().into_any_element(),
+                    }))
                     .children(self.write.problems_open.then(|| self.render_problems(cx))),
             )
+            .child(self.render_assistant(cx))
     }
 
     fn render_files(&self, cx: &mut Context<Self>) -> impl IntoElement {
