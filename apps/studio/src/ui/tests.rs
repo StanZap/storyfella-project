@@ -27,6 +27,8 @@ impl Trial {
         let directory = tempfile::tempdir().unwrap();
         let config = config(directory.path());
         cx.update(init);
+        // The assistant answers on its own thread, so a trial waits for it.
+        cx.executor().allow_parking();
         let window = cx.open_window(size(px(1280.), px(800.)), move |window, cx| {
             Studio::new(config, PlanLaunch::default(), window, cx)
         });
@@ -48,6 +50,15 @@ impl Trial {
     /// Runs what is pending, past the compile check's short debounce.
     fn settle(&mut self) {
         self.cx.run_until_parked();
+        let started = std::time::Instant::now();
+        while self.read(|studio| studio.assistant.is_running()) {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the assistant never answered"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+            self.cx.run_until_parked();
+        }
         self.cx.executor().advance_clock(Duration::from_millis(400));
         self.cx.run_until_parked();
         self.cx.update(|window, cx| window.draw(cx).clear(cx));

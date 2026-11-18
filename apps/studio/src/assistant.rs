@@ -203,16 +203,42 @@ pub enum Engine {
     Model(SharedStreamingModel),
 }
 
-/// Runs `request` to a suggestion or a reply on its own runtime; meant for a
-/// worker thread. `Ok(None)` means it was cancelled.
-pub fn suggest(
+/// The stack of the thread a request runs on. The workflow, its HTTP client
+/// and logging nest deeply enough to overflow an executor thread's stack,
+/// which is 512 KiB on macOS.
+const WORKER_STACK: usize = 16 * 1024 * 1024;
+
+/// What a request ended in: `Ok(None)` when it was cancelled.
+pub type Finished = anyhow::Result<Option<Answered>>;
+
+/// Runs `request` to a suggestion or a reply on a thread of its own, whose
+/// answer arrives on the returned channel.
+pub fn spawn(
     request: Request,
     engine: Engine,
     registry: ArtifactRegistry,
     store: PathBuf,
     cancel: Cancellation,
     feedback: impl Fn(Feedback) + Send + Sync + 'static,
-) -> anyhow::Result<Option<Answered>> {
+) -> std::io::Result<tokio::sync::oneshot::Receiver<Finished>> {
+    let (send, receive) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("assistant".into())
+        .stack_size(WORKER_STACK)
+        .spawn(move || {
+            let _ = send.send(suggest(request, engine, registry, store, cancel, feedback));
+        })?;
+    Ok(receive)
+}
+
+fn suggest(
+    request: Request,
+    engine: Engine,
+    registry: ArtifactRegistry,
+    store: PathBuf,
+    cancel: Cancellation,
+    feedback: impl Fn(Feedback) + Send + Sync + 'static,
+) -> Finished {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -265,7 +291,86 @@ pub fn suggest(
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        io::{BufRead, BufReader, Read, Write},
+        net::TcpListener,
+        sync::{atomic::AtomicBool, Arc},
+        time::Duration,
+    };
+
+    use agentkit_ai::providers::openai::OpenAiCompatibleChatModel;
+
     use super::*;
+
+    /// Answers one chat completion with `reply`, streamed.
+    fn serve(listener: TcpListener, reply: &'static str) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(&stream);
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((key, value)) = line.split_once(':') {
+                    if key.eq_ignore_ascii_case("content-length") {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+            }
+            reader.read_exact(&mut vec![0; length]).unwrap();
+            let delta = serde_json::json!({"id": "reply", "choices": [{"index": 0, "delta": {"role": "assistant", "content": reply}, "finish_reason": null}]});
+            let done = serde_json::json!({"id": "reply", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]});
+            let body = format!("data: {delta}\n\ndata: {done}\n\ndata: [DONE]\n\n");
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        })
+    }
+
+    #[test]
+    fn a_request_is_answered_over_http_on_its_own_thread() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = serve(listener, "Hello! Which scene should change?");
+        let directory = tempfile::tempdir().unwrap();
+        let source = "scene harbor\n  narrate: Dusk.\n  end\n";
+        let registry = ArtifactRegistry::new();
+        let request = Request::Passage {
+            file: "story.sf".into(),
+            request: WritingRequest::capture(
+                &directory.path().join("story.db"),
+                &directory.path().join("story.sf"),
+                source,
+                WritingScope::File,
+                &registry,
+            )
+            .unwrap(),
+        };
+        let model = OpenAiCompatibleChatModel::new(endpoint, "writing-model")
+            .with_timeout(Duration::from_secs(5));
+        let answer = spawn(
+            request,
+            Engine::Model(Arc::new(model)),
+            registry,
+            directory.path().join("runs.sqlite3"),
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        )
+        .unwrap()
+        .blocking_recv()
+        .unwrap();
+        server.join().unwrap();
+        assert!(
+            matches!(answer, Ok(Some(Answered::Reply(ref text))) if text == "Hello! Which scene should change?"),
+            "{answer:?}"
+        );
+    }
 
     #[test]
     fn a_passage_reads_as_its_scope_and_lines() {

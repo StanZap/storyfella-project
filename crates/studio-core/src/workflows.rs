@@ -20,7 +20,7 @@ use agentkit_workflow::{
     WorkflowRunOutcome, WorkflowRunState, WorkflowRunStatus, WorkflowRunStore,
 };
 use anyhow::{bail, ensure, Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 pub use agentkit_workflow as framework;
 pub type Cancellation = Arc<AtomicBool>;
@@ -128,7 +128,9 @@ impl WorkflowRunStore for RunStore {
             "Workflow revision must advance once"
         );
         let mut connection = self.0.lock().unwrap();
-        let transaction = connection.transaction()?;
+        // Immediate, so another connection's write waits on the busy timeout
+        // rather than failing this read-then-write at once.
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let old = transaction
             .query_row(
                 "SELECT state FROM workflow_runs WHERE id=?1",

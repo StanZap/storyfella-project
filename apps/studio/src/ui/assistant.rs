@@ -125,6 +125,11 @@ impl Review {
 }
 
 impl Assistant {
+    /// A reply is being written.
+    pub(super) fn is_running(&self) -> bool {
+        self.running.is_some()
+    }
+
     pub(super) fn new(theme: Theme, window: &mut Window, cx: &mut Context<Studio>) -> Self {
         let prompt = cx.new(|cx| {
             TextArea::new("Ask about this story…", theme, window, cx)
@@ -252,7 +257,7 @@ impl Studio {
     /// Sends the prompt: a new request, or a refinement of the open review.
     pub(super) fn ask(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.assistant.prompt.read(cx).text(cx).trim().to_owned();
-        if text.is_empty() || self.assistant.running.is_some() {
+        if text.is_empty() || self.assistant.is_running() {
             return;
         }
         let engine = match self.engine() {
@@ -391,14 +396,16 @@ impl Studio {
         let cancel: Cancellation = Arc::new(AtomicBool::new(false));
         let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
         let registry = self.state.registry.clone();
-        let worker = cx.background_spawn({
-            let cancel = cancel.clone();
-            async move {
-                assistant::suggest(request, engine, registry, store, cancel, move |event| {
-                    let _ = send.send(event);
-                })
-            }
-        });
+        let worker = assistant::spawn(
+            request,
+            engine,
+            registry,
+            store,
+            cancel.clone(),
+            move |event| {
+                let _ = send.send(event);
+            },
+        );
         let task = cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             while let Some(event) = receive.recv().await {
                 let alive = this.update(cx, |studio, cx| studio.heard(turn, event, cx));
@@ -406,7 +413,12 @@ impl Studio {
                     return;
                 }
             }
-            let result = worker.await;
+            let result = match worker {
+                Ok(answer) => answer.await.unwrap_or_else(|_| {
+                    Err(anyhow::anyhow!("The assistant stopped unexpectedly."))
+                }),
+                Err(error) => Err(anyhow::anyhow!("The assistant could not start: {error}")),
+            };
             this.update(cx, |studio, cx| studio.answered(turn, result, cx))
                 .ok();
         });
@@ -475,12 +487,7 @@ impl Studio {
         cx.notify();
     }
 
-    fn answered(
-        &mut self,
-        turn: usize,
-        result: anyhow::Result<Option<Answered>>,
-        cx: &mut Context<Self>,
-    ) {
+    fn answered(&mut self, turn: usize, result: assistant::Finished, cx: &mut Context<Self>) {
         let started = self
             .assistant
             .running
@@ -534,7 +541,7 @@ impl Studio {
     /// Starts over: the project's saved conversation is emptied. The story
     /// is not touched, and nothing runs or is under review while it clears.
     pub(super) fn new_conversation(&mut self, cx: &mut Context<Self>) {
-        if self.assistant.running.is_some() || self.assistant.review.is_some() {
+        if self.assistant.is_running() || self.assistant.review.is_some() {
             return;
         }
         self.assistant.conversation = Conversation::default();
@@ -902,7 +909,7 @@ impl Studio {
                 ),
             }
         };
-        let running = self.assistant.running.is_some();
+        let running = self.assistant.is_running();
         let empty = self.assistant.prompt.read(cx).text(cx).trim().is_empty();
         let configured = self.engine().is_ok();
         let action = if running {

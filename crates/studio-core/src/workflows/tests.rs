@@ -559,6 +559,55 @@ async fn writing_streams_and_commits_a_reopenable_run_without_model_credentials(
 }
 
 #[tokio::test]
+async fn a_commit_waits_for_another_connection_writing_the_same_store() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("runs.sqlite3");
+    let request = request();
+    let model = Arc::new(FakeChatModel::new_streaming([vec![
+        ChatStreamEvent::TextDelta {
+            content: request.original().replace("quiet", "empty"),
+        },
+        ChatStreamEvent::Done,
+    ]]));
+    let store = RunStore::open(&path).unwrap();
+    let proposal = writing::run_with_model(
+        request,
+        model,
+        &crate::registry::ArtifactRegistry::new(),
+        &store,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .proposal();
+    let state = store.load(&proposal.run_id).unwrap().unwrap();
+
+    // Another connection, such as the one saving the conversation, is
+    // writing when the run commits, and finishes shortly after.
+    let other = rusqlite::Connection::open(&path).unwrap();
+    let (locked, wait) = std::sync::mpsc::channel();
+    let finishing = std::thread::spawn(move || {
+        other
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 INSERT INTO assistant_conversations (project, conversation) VALUES ('p', '{}');",
+            )
+            .unwrap();
+        locked.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        other.execute_batch("COMMIT").unwrap();
+    });
+    wait.recv().unwrap();
+    let mut next = state.clone();
+    next.revision += 1;
+    store.commit(state.revision, &next, &[]).unwrap();
+    finishing.join().unwrap();
+    assert_eq!(store.load(&proposal.run_id).unwrap().unwrap(), next);
+}
+
+#[tokio::test]
 async fn cancellation_interrupts_a_stalled_step_and_retains_request_context() {
     let directory = tempfile::tempdir().unwrap();
     let store = RunStore::open(&directory.path().join("runs.sqlite3")).unwrap();
