@@ -8,23 +8,24 @@ use crate::{
     persistence::ProjectDb,
     registry::{ArtifactRegistry, RevisionStatus},
 };
-use base64::{engine::general_purpose::STANDARD, Engine};
 pub use model::PlaybackModel;
 use std::{
     io::Cursor,
     path::{Path, PathBuf},
+    sync::Arc,
 };
-use storyfella_compiler::{AssetBinding, StoryPlan};
-use storyfella_language::{analyze, Source};
-use storyfella_runtime::{AssetPolicy, Command, Event, Runtime, SavedState};
+use storyfella_compiler::{AssetBinding, Origin, StoryPlan};
+use storyfella_language::{analyze, Source, Span};
+use storyfella_runtime::{AssetPolicy, Command, Event, Phase, Runtime, SavedState};
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
 pub struct Visual {
     pub binding: AssetBinding,
-    /// Decoded and normalized PNG retained for this fixed snapshot. Replacing
-    /// the file or activating a newer revision cannot change an ongoing session.
-    pub image_url: String,
+    /// The image, normalized to PNG and retained for this fixed snapshot.
+    /// Replacing the file or activating a newer revision cannot change an
+    /// ongoing session.
+    pub png: Arc<[u8]>,
 }
 
 #[derive(Clone, Debug)]
@@ -173,10 +174,7 @@ impl PlaybackSession {
                     .map_err(|e| e.to_string())?;
                 Ok(Visual {
                     binding: binding.clone(),
-                    image_url: format!(
-                        "data:image/png;base64,{}",
-                        STANDARD.encode(png.into_inner())
-                    ),
+                    png: png.into_inner().into(),
                 })
             };
             match resolve() {
@@ -264,6 +262,66 @@ impl PlaybackSession {
         self.last_events = events;
         Ok(())
     }
+    /// Where the line on stage was written: its file, relative to the
+    /// entry's folder, and its span there. A single-file story is all
+    /// `entry`. `None` once the story has finished.
+    pub fn on_stage<'a>(&'a self, entry: &'a str) -> Option<(&'a str, Span)> {
+        if self.runtime.state().phase == Phase::Complete {
+            return None;
+        }
+        self.written(self.runtime.current().source, entry)
+    }
+
+    /// Plays from the start of the scene written around `offset` in `file`
+    /// up to the line there, with every flag as the story begins. Stops
+    /// early where the scene asks for a choice or leaves. `Ok(false)` when
+    /// no scene is written there.
+    pub fn play_to(&mut self, file: &str, offset: usize, entry: &str) -> Result<bool, String> {
+        let plan = self.runtime.plan();
+        let before = |span: Span| {
+            self.written(span, entry)
+                .filter(|(written, span)| *written == file && span.start <= offset)
+                .map(|(_, span)| span.start)
+        };
+        let Some((scene, _)) = plan
+            .scenes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, scene)| before(scene.source).map(|start| (index, start)))
+            .max_by_key(|(_, start)| *start)
+        else {
+            return Ok(false);
+        };
+        let instructions = &plan.scenes[scene].instructions;
+        let target = instructions
+            .iter()
+            .enumerate()
+            .filter(|(_, instruction)| instruction.origin == Origin::Authored)
+            .filter_map(|(index, instruction)| {
+                before(instruction.source).map(|start| (index, start))
+            })
+            .max_by_key(|(_, start)| *start)
+            .map_or(0, |(index, _)| index);
+        let (id, steps) = (plan.scenes[scene].id.clone(), instructions.len());
+        self.dispatch(Command::Restart)?;
+        self.dispatch(Command::Jump { scene: id })?;
+        for _ in 0..steps {
+            let state = self.runtime.state();
+            if state.scene != scene || state.instruction >= target || state.phase != Phase::Text {
+                break;
+            }
+            self.dispatch(Command::Advance)?;
+        }
+        Ok(true)
+    }
+
+    fn written<'a>(&'a self, span: Span, entry: &'a str) -> Option<(&'a str, Span)> {
+        match &self.runtime.plan().source_map {
+            Some(map) => map.original_span(span),
+            None => Some((entry, span)),
+        }
+    }
+
     pub fn restore(&mut self, saved: SavedState) -> Result<(), String> {
         let runtime = Runtime::restore_with_policy(
             self.runtime.plan().clone(),

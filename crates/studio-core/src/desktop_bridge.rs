@@ -139,6 +139,13 @@ pub enum PreviewCommand {
         preview: Uuid,
         action: PreviewAction,
     },
+    /// The preview's stage as a PNG, drawn in a viewport of this many points.
+    Capture {
+        session: Uuid,
+        preview: Uuid,
+        width: u32,
+        height: u32,
+    },
 }
 
 #[derive(Serialize, Deserialize)]

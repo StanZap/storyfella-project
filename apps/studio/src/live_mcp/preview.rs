@@ -35,7 +35,9 @@ impl Previews {
     ) -> Reply {
         request.check_project(&grant.folder)?;
         let session = match &request.command {
-            PreviewCommand::Start { session } | PreviewCommand::Step { session, .. } => *session,
+            PreviewCommand::Start { session }
+            | PreviewCommand::Step { session, .. }
+            | PreviewCommand::Capture { session, .. } => *session,
         };
         if epoch.is_none() || session != client {
             return Err(Failure::new(
@@ -94,6 +96,27 @@ impl Previews {
                 run.step(action)?;
                 Ok(run.describe())
             }
+            PreviewCommand::Capture {
+                preview,
+                width,
+                height,
+                ..
+            } => {
+                if !(360..=960).contains(&width) || !(360..=960).contains(&height) {
+                    return Err(Failure::new(
+                        "invalid_size",
+                        "Use width and height from 360 to 960 points.",
+                    ));
+                }
+                let session = self.run(client, preview)?.session.clone();
+                let png = capture(session, width, height).await?;
+                let folder = grant.folder.clone();
+                owned(state, move |app| owner(app, &folder, Some(current))).await?;
+                let mut reply = self.run(client, preview)?.describe();
+                reply["viewport"] = json!([width, height]);
+                reply["png"] = json!(png);
+                Ok(reply)
+            }
         }
     }
 
@@ -108,6 +131,30 @@ impl Previews {
                 )
             })
     }
+}
+
+/// The stage as base64 PNG, as an isolated preview's reader would see it.
+#[cfg(target_os = "macos")]
+async fn capture(session: PlaybackSession, width: u32, height: u32) -> Result<String, Failure> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use storyfella_studio_core::{config::PreviewSettings, playback::stage::Viewer};
+    let viewer = Viewer {
+        previewing_draft: true,
+        settings: PreviewSettings::default(),
+    };
+    tokio::task::spawn_blocking(move || crate::capture::stage_png(session, viewer, width, height))
+        .await
+        .map_err(|_| preview_error("Studio could not draw the stage."))?
+        .map(|png| STANDARD.encode(png))
+        .map_err(|error| preview_error(&format!("Studio could not draw the stage: {error:#}")))
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn capture(_: PlaybackSession, _: u32, _: u32) -> Result<String, Failure> {
+    Err(Failure::new(
+        "unsupported",
+        "Preview capture is available in Studio on macOS.",
+    ))
 }
 
 fn compile(draft: &Draft) -> Result<PlaybackSession, Failure> {
@@ -130,11 +177,7 @@ fn compile(draft: &Draft) -> Result<PlaybackSession, Failure> {
 }
 
 fn pinned_bytes(session: &PlaybackSession) -> usize {
-    session
-        .visuals
-        .iter()
-        .map(|visual| visual.image_url.len())
-        .sum()
+    session.visuals.iter().map(|visual| visual.png.len()).sum()
 }
 
 impl Run {

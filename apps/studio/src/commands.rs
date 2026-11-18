@@ -381,16 +381,7 @@ pub fn save_project(state: &mut AppState) -> Result<(), ReportedError> {
             .map_err(|error| ReportedError::plain(ErrorCode::StoreSave, format!("{error:#}")))?;
     }
     let db = ProjectDb::open_existing(&path).map_err(|error| error.report())?;
-    let stored = db.load().map_err(|error| error.report())?;
-    let mut refreshed = state.clone();
-    let result = refreshed.refresh_catalog(
-        stored,
-        storyfella_studio_core::catalog::sync::Resolution::Check,
-    );
-    if *state != refreshed {
-        *state = refreshed;
-    }
-    result.map_err(|message| {
+    take_catalog(state, &db).map_err(|message| {
         ReportedError::plain(
             ErrorCode::StoreSave,
             format!("{message}. Review the catalog conflict before saving."),
@@ -410,6 +401,38 @@ pub fn save_project(state: &mut AppState) -> Result<(), ReportedError> {
     }
     state.mark_saved(version);
     Ok(())
+}
+
+/// Takes in what Atelier or another owner saved to the project's catalog
+/// since Studio last read it, such as newly finished artwork. The story and
+/// unsaved catalog edits stay; a clash is kept on the state for review.
+pub fn refresh_catalog(state: &mut AppState) -> Result<(), ReportedError> {
+    let Some(path) = state.project_path.clone() else {
+        return Ok(());
+    };
+    if state.operation_in_progress() {
+        return Ok(());
+    }
+    let db = ProjectDb::open_existing(&path).map_err(|error| error.report())?;
+    take_catalog(state, &db).map_err(|message| {
+        ReportedError::plain(
+            ErrorCode::StoreLoad,
+            format!("{message}. Review the catalog conflict."),
+        )
+    })
+}
+
+fn take_catalog(state: &mut AppState, db: &ProjectDb) -> Result<(), String> {
+    let stored = db.load().map_err(|error| error.report().to_string())?;
+    let mut refreshed = state.clone();
+    let result = refreshed.refresh_catalog(
+        stored,
+        storyfella_studio_core::catalog::sync::Resolution::Check,
+    );
+    if *state != refreshed {
+        *state = refreshed;
+    }
+    result
 }
 
 /// Called only after the Writer's explicit discard confirmation when dirty.

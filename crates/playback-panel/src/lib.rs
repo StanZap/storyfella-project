@@ -4,6 +4,7 @@
 //! Call [`init`] once to bind the playback keys.
 mod images;
 pub mod stage;
+mod still;
 
 use std::{path::PathBuf, time::Duration};
 
@@ -22,7 +23,8 @@ use storyfella_studio_core::playback::{
 };
 
 pub use images::{StageImage, StageImages};
-use stage::{hex, TextScale, GROUND, INK, MUTED};
+use stage::{TextScale, GROUND, INK, MUTED};
+pub use still::Still;
 
 actions!(playback, [Advance, TogglePause, CloseOverlay]);
 
@@ -381,30 +383,20 @@ impl PlaybackPanel {
 
     fn choice(&self, index: usize, label: SharedString, cx: &mut Context<Self>) -> AnyElement {
         let scale = self.text_scale();
-        gpui_kit::base::Button::new(("choice", index))
-            .accessibility_label(label.clone())
-            .debug_selector(move || format!("choice-{index}"))
-            .disabled(self.paused())
-            .min_h(px(48.))
-            .px(px(18.))
-            .py(px(14.))
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap(px(24.))
-            .border_b_1()
-            .border_color(rgba(0xffffff26))
-            .bg(rgba(0x11191f99))
-            .hover(|style| style.bg(rgba(0x263038c9)))
-            .text_size(px(17. * scale.0))
-            .text_color(rgb(INK))
-            .child(div().min_w_0().child(label))
-            .child(Glyph::ChevronRight.render(hex(MUTED), px(18.)))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.dispatch(Command::SelectChoice { index }, cx);
-                window.focus(&this.focus, cx);
-            }))
-            .into_any_element()
+        stage::choice_row(
+            gpui_kit::base::Button::new(("choice", index))
+                .accessibility_label(label.clone())
+                .debug_selector(move || format!("choice-{index}"))
+                .disabled(self.paused())
+                .hover(|style| style.bg(rgba(0x263038c9))),
+            label,
+            scale,
+        )
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.dispatch(Command::SelectChoice { index }, cx);
+            window.focus(&this.focus, cx);
+        }))
+        .into_any_element()
     }
 
     fn text_scale(&self) -> TextScale {
@@ -813,21 +805,9 @@ impl Render for PlaybackPanel {
             _ => Vec::new(),
         };
         let reading = self.reading(frame.as_ref(), cx);
-        let stage = div()
+        let stage = stage::surface(layers, reading)
             .id("story-stage")
-            .relative()
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .overflow_y_scroll()
-            .bg(gpui_kit::linear_gradient(
-                180.,
-                gpui_kit::linear_color_stop(rgb(0x304044), 0.),
-                gpui_kit::linear_color_stop(rgb(0x111a1d), 1.),
-            ))
-            .children(layers)
-            .child(reading);
+            .overflow_y_scroll();
         let detail = self
             .overlay
             .filter(|overlay| *overlay != Overlay::Options)

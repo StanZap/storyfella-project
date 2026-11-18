@@ -250,6 +250,46 @@ fn scene_label(frame: &Frame) -> Div {
 }
 
 /// The reading card's surface. The caller adds the passage and controls.
+/// The stage: its ground, every backdrop layer, and `reading` over them.
+pub fn surface(layers: Vec<AnyElement>, reading: impl IntoElement) -> Div {
+    div()
+        .relative()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .bg(linear_gradient(
+            180.,
+            linear_color_stop(rgb(0x304044), 0.),
+            linear_color_stop(rgb(0x111a1d), 1.),
+        ))
+        .children(layers)
+        .child(reading)
+}
+
+/// One option of a choice, as a row of the reading card. `row` is what
+/// makes it a control, or a plain element where nothing can be chosen.
+pub fn choice_row<E: Styled + ParentElement>(
+    row: E,
+    label: gpui_kit::SharedString,
+    scale: TextScale,
+) -> E {
+    row.min_h(px(48.))
+        .px(px(18.))
+        .py(px(14.))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(24.))
+        .border_b_1()
+        .border_color(rgba(0xffffff26))
+        .bg(rgba(0x11191f99))
+        .text_size(px(17. * scale.0))
+        .text_color(rgb(INK))
+        .child(div().min_w_0().child(label))
+        .child(design_system::Glyph::ChevronRight.render(hex(MUTED), px(18.)))
+}
+
 pub fn reading_card(choice: bool) -> Div {
     div()
         .relative()

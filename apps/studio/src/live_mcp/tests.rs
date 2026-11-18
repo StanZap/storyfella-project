@@ -298,3 +298,74 @@ async fn checked_writer_edit_preserves_local_work_and_expires_with_its_owner() {
         .await
         .unwrap();
 }
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_preview_capture_returns_the_stage_as_a_png() {
+    use storyfella_studio_core::desktop_bridge::PreviewCommand;
+    let scratch = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
+    fs::create_dir_all(&scratch).unwrap();
+    let root = tempfile::tempdir_in(scratch.canonicalize().unwrap()).unwrap();
+    let state = Rc::new(RefCell::new(AppState::default()));
+    let story = root.path().join("story");
+    let folder = ProjectFolder::create(
+        &story,
+        "Story",
+        &ArtifactRegistry::default(),
+        "scene start\n  narrate: Lamps.\n  end\n",
+    )
+    .unwrap();
+    crate::commands::open_project(&story, &mut state.borrow_mut()).unwrap();
+    let grant = Grant {
+        folder: folder.clone(),
+        directory: root.path().join("channel"),
+        edit: false,
+    };
+    let client = Uuid::new_v4();
+    let mut epoch = None;
+    send(
+        &state,
+        &grant,
+        &folder,
+        client,
+        &mut epoch,
+        WriterCommand::Inspect {},
+    )
+    .await
+    .unwrap();
+    let mut previews = preview::Previews::default();
+    let ask = |command| Request {
+        schema: SCHEMA,
+        project: ProjectIdentity::from(&folder),
+        command,
+    };
+    let started = previews
+        .dispatch(
+            &state,
+            &grant,
+            ask(PreviewCommand::Start { session: client }),
+            client,
+            epoch,
+        )
+        .await
+        .unwrap();
+    let preview: Uuid = started["preview"].as_str().unwrap().parse().unwrap();
+    let capture = |width, height| PreviewCommand::Capture {
+        session: client,
+        preview,
+        width,
+        height,
+    };
+    let refused = previews
+        .dispatch(&state, &grant, ask(capture(200, 480)), client, epoch)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, "invalid_size");
+    let reply = previews
+        .dispatch(&state, &grant, ask(capture(480, 360)), client, epoch)
+        .await
+        .unwrap();
+    assert_eq!(reply["viewport"], serde_json::json!([480, 360]));
+    // Base64 of the PNG signature.
+    assert!(reply["png"].as_str().unwrap().starts_with("iVBORw0KGgo"));
+}

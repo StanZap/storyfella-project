@@ -34,18 +34,11 @@ impl Studio {
             .flex()
             .flex_col()
             .child(self.render_bar(view, cx))
-            .child(
-                div().flex_1().min_h_0().child(match view {
-                    Place::Play => div()
-                        .size_full()
-                        .child(self.player.clone())
-                        .into_any_element(),
-                    Place::Write => self.render_write(window, cx).into_any_element(),
-                    _ => self
-                        .render_unported("Board", "the asset board")
-                        .into_any_element(),
-                }),
-            )
+            .child(div().flex_1().min_h_0().child(match view {
+                Place::Play => self.render_play(window, cx),
+                Place::Write => self.render_write(window, cx).into_any_element(),
+                _ => self.render_board(cx).into_any_element(),
+            }))
             .child(self.render_status(view, cx))
     }
 
@@ -105,6 +98,19 @@ impl Studio {
                 },
             ))
             .child(div().flex_1())
+            .when(view == Place::Play, |bar| {
+                let (glyph, label) = if self.play.full {
+                    (Glyph::Sidebar, "Play beside the source")
+                } else {
+                    (Glyph::Fit, "Play full window")
+                };
+                bar.child(
+                    c.icon_action("play-full-window", glyph, label, ButtonKind::Quiet)
+                        .on_click(cx.listener(|studio, _, window, cx| {
+                            studio.toggle_full_window(window, cx)
+                        })),
+                )
+            })
             .child(
                 c.icon_action("commands", Glyph::Search, "Commands", ButtonKind::Quiet)
                     .on_click(
@@ -117,25 +123,6 @@ impl Studio {
                         studio.show(Place::Settings, window, cx)
                     })),
             )
-    }
-
-    fn render_unported(&self, view: &str, what: &str) -> Div {
-        let c = self.theme;
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap(px(6.))
-            .text_color(c.text_muted)
-            .child(
-                div()
-                    .type_scale(TypeScale::Title)
-                    .text_color(c.text)
-                    .child(view.to_owned()),
-            )
-            .child(format!("This build of Studio does not include {what} yet."))
     }
 
     fn render_status(&self, view: Place, cx: &mut Context<Self>) -> impl IntoElement {
@@ -199,6 +186,12 @@ impl Studio {
                 )
             })
             .child(div().flex_1())
+            .when_some(
+                (view == Place::Play)
+                    .then(|| self.stage_place(cx))
+                    .flatten(),
+                |bar, place| bar.child(item().child(format!("On stage: {place}"))),
+            )
             .when(view == Place::Write, |bar| {
                 bar.child(item().child(format!(
                     "Ln {}, Col {}",

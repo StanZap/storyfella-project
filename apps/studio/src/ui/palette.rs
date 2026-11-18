@@ -16,10 +16,12 @@ pub enum Command {
     RenameSymbol,
     FormatFile,
     ToggleProblems,
+    TogglePlayFullWindow,
+    NewAsset,
     Quit,
 }
 
-const ALL: [(&str, Command); 15] = [
+const ALL: [(&str, Command); 17] = [
     ("new-story", Command::NewStory),
     ("open-story", Command::OpenStory),
     ("save", Command::Save),
@@ -29,6 +31,8 @@ const ALL: [(&str, Command); 15] = [
     ("rename-symbol", Command::RenameSymbol),
     ("format-file", Command::FormatFile),
     ("toggle-problems", Command::ToggleProblems),
+    ("toggle-play-full-window", Command::TogglePlayFullWindow),
+    ("new-asset", Command::NewAsset),
     ("show-home", Command::Show(Place::Home)),
     ("show-write", Command::Show(Place::Write)),
     ("show-play", Command::Show(Place::Play)),
@@ -112,6 +116,22 @@ pub fn commands(studio: &Studio) -> Vec<PaletteCommand> {
             .shortcut(key("2"))
             .keywords(["preview", "playback"])
             .disabled(!open),
+        PaletteCommand::new(
+            "toggle-play-full-window",
+            if studio.play.full {
+                "Play beside the source"
+            } else {
+                "Play full window"
+            },
+        )
+        .group("Navigate")
+        .shortcut(key("⇧↩"))
+        .keywords(["preview", "read-through", "stage"])
+        .disabled(studio.shown() != Place::Play),
+        PaletteCommand::new("new-asset", "New asset…")
+            .group("Board")
+            .keywords(["character", "place", "prop", "illustration", "artwork"])
+            .disabled(!open || busy),
         PaletteCommand::new("show-board", "Go to Board")
             .group("Navigate")
             .shortcut(key("3"))

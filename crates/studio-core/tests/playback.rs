@@ -1,6 +1,8 @@
 use storyfella_runtime::{AssetPolicy, Command, Event, Phase};
 use storyfella_studio_core::{playback::PlaybackSession, registry::RevisionOrigin};
 
+const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+
 fn directory() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../.svs-e2e/tests")
@@ -40,7 +42,7 @@ fn both_hosts_follow_identical_events_source_positions_and_pinned_images() {
         let mut studio = studio.clone();
         let mut player = PlaybackSession::from_plan(plan.clone(), &registry).unwrap();
         assert_eq!(studio.last_events, player.last_events);
-        assert_eq!(studio.visuals[0].image_url, player.visuals[0].image_url);
+        assert_eq!(studio.visuals[0].png, player.visuals[0].png);
         for command in [
             Command::Pause,
             Command::Resume,
@@ -61,7 +63,7 @@ fn both_hosts_follow_identical_events_source_positions_and_pinned_images() {
                 session
                     .active_visuals()
                     .iter()
-                    .map(|v| (v.binding.clone(), v.image_url.clone()))
+                    .map(|v| (v.binding.clone(), v.png.clone()))
                     .collect::<Vec<_>>()
             };
             assert_eq!(visuals(&studio), visuals(&player));
@@ -109,7 +111,7 @@ fn missing_wrong_and_unreadable_pinned_resources_block_before_execution() {
     assert!(session
         .active_visuals()
         .iter()
-        .all(|v| v.image_url.starts_with("data:image/png;base64,")));
+        .all(|v| v.png.starts_with(PNG_SIGNATURE)));
     assert!(
         PlaybackSession::compile(&source.replace("    mara: ", "    shot: "), &registry)
             .unwrap_err()
@@ -274,6 +276,78 @@ fn relocated_shared_project_opens_from_folder_or_manifest_with_chapters_and_artw
     assert!(folder
         .visuals
         .iter()
-        .all(|image| image.image_url.starts_with("data:image/png;base64,")));
+        .all(|image| image.png.starts_with(PNG_SIGNATURE)));
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn playing_to_a_line_puts_that_line_on_stage() {
+    let source = "scene start\n  narrate: One\n  narrate: Two\n  goto second\n\
+                  scene second\n  narrate: Three\n  end\n";
+    let registry = storyfella_studio_core::registry::ArtifactRegistry::new();
+    let mut session =
+        PlaybackSession::compile_with_policy(source, &registry, AssetPolicy::Preview).unwrap();
+    let on_stage = |session: &PlaybackSession| {
+        let (file, span) = session.on_stage("story.sf").unwrap();
+        assert_eq!(file, "story.sf");
+        source[span.start..span.end].to_owned()
+    };
+    assert!(on_stage(&session).contains("One"));
+
+    let two = source.find("Two").unwrap();
+    assert!(session.play_to("story.sf", two, "story.sf").unwrap());
+    assert!(on_stage(&session).contains("Two"));
+
+    // The scene header and everything up to its first line start the scene.
+    let header = source.find("scene second").unwrap();
+    assert!(session.play_to("story.sf", header, "story.sf").unwrap());
+    assert!(on_stage(&session).contains("Three"));
+    let three = source.find("Three").unwrap();
+    assert!(session.play_to("story.sf", three + 2, "story.sf").unwrap());
+    assert!(on_stage(&session).contains("Three"));
+
+    // Playing there is a fresh history, not one that grows with each jump.
+    session.play_to("story.sf", two, "story.sf").unwrap();
+    let before = session.runtime.save().commands.len();
+    for _ in 0..50 {
+        session.play_to("story.sf", two, "story.sf").unwrap();
+    }
+    assert_eq!(session.runtime.save().commands.len(), before);
+
+    assert!(!session.play_to("other.sf", two, "story.sf").unwrap());
+    session.play_to("story.sf", three, "story.sf").unwrap();
+    session.dispatch(Command::Advance).unwrap();
+    assert_eq!(session.runtime.state().phase, Phase::Complete);
+    assert!(session.on_stage("story.sf").is_none());
+}
+
+#[test]
+fn playing_to_a_line_finds_it_in_an_included_file() {
+    use std::collections::BTreeMap;
+    use storyfella_compiler::SourceWorkspace;
+    let end = "scene finish\n  narrate: Almost\n  narrate: The end\n  end\n";
+    let workspace = SourceWorkspace {
+        entry: "story.sf".into(),
+        files: BTreeMap::from([
+            (
+                "story.sf".into(),
+                "include \"start.sf\"\ninclude \"end.sf\"\n".into(),
+            ),
+            (
+                "start.sf".into(),
+                "scene start\n  narrate: Begin\n  goto finish\n".into(),
+            ),
+            ("end.sf".into(), end.into()),
+        ]),
+    };
+    let registry = storyfella_studio_core::registry::ArtifactRegistry::new();
+    let mut session =
+        PlaybackSession::compile_workspace(&workspace, &registry, AssetPolicy::Preview).unwrap();
+    assert_eq!(session.on_stage("story.sf").unwrap().0, "start.sf");
+    let line = end.find("The end").unwrap();
+    assert!(session.play_to("end.sf", line, "story.sf").unwrap());
+    let (file, span) = session.on_stage("story.sf").unwrap();
+    assert_eq!(file, "end.sf");
+    assert!(end[span.start..span.end].contains("The end"));
+    assert!(!session.play_to("story.sf", 0, "story.sf").unwrap());
 }

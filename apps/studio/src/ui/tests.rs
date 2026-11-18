@@ -822,3 +822,136 @@ fn a_failed_reply_is_tried_again_with_the_same_words(cx: &mut TestAppContext) {
         turns => panic!("{turns:?}"),
     }
 }
+
+#[gpui::test]
+fn play_follows_the_caret_beside_the_source_and_lights_the_line_on_stage(cx: &mut TestAppContext) {
+    let mut trial = Trial::new(cx);
+    trial
+        .act(|studio, _, cx| studio.create_project("Harbor", cx))
+        .unwrap();
+    let source = "scene start\n  narrate: One\n  narrate: Two\n  goto second\n\
+                  scene second\n  narrate: Three\n  end\n";
+    trial.act(|studio, _, cx| {
+        studio.state.set_story_source(source.into());
+        studio.changed(cx);
+    });
+    trial.keys("2");
+    assert_eq!(trial.read(Studio::shown), Place::Play);
+    let stage = |trial: &mut Trial| {
+        trial.cx.update(|_, cx| {
+            let studio = trial.studio.read(cx);
+            let stage = studio.on_stage(cx).unwrap();
+            let text = studio.state.story.source();
+            let lit = studio.write.editor.read(cx).spotlight();
+            (
+                text[stage.span.start..stage.span.end].to_owned(),
+                lit.map(|lit| text[lit].to_owned()),
+            )
+        })
+    };
+    let (on_stage, lit) = stage(&mut trial);
+    assert!(on_stage.contains("One"), "{on_stage}");
+    assert_eq!(lit.as_deref(), Some(on_stage.as_str()));
+
+    // Clicking a line, or moving to it, plays up to it.
+    let go_to = |trial: &mut Trial, offset: usize| {
+        trial.act(|studio, window, cx| {
+            let editor = studio.write.editor.clone();
+            editor.update(cx, |editor, cx| editor.go_to(offset, window, cx));
+        })
+    };
+    go_to(&mut trial, source.find("Three").unwrap());
+    let (on_stage, lit) = stage(&mut trial);
+    assert!(on_stage.contains("Three"), "{on_stage}");
+    assert_eq!(lit.as_deref(), Some(on_stage.as_str()));
+    assert_eq!(
+        trial
+            .cx
+            .update(|_, cx| trial.studio.read(cx).stage_place(cx)),
+        Some(format!(
+            "{}, line 6",
+            trial.read(|s| s.write.file().unwrap().to_owned())
+        ))
+    );
+
+    // An edit plays the story as it now reads, at the caret.
+    go_to(&mut trial, source.find("Two").unwrap() + 3);
+    trial.cx.simulate_input(" and a half");
+    trial.settle();
+    let (on_stage, lit) = stage(&mut trial);
+    assert!(on_stage.contains("Two and a half"), "{on_stage}");
+    assert_eq!(lit.as_deref(), Some(on_stage.as_str()));
+
+    // Full window is the stage alone, with nothing lit in the hidden source.
+    trial.keys("shift-enter");
+    assert!(trial.read(|studio| studio.play.full));
+    assert_eq!(stage(&mut trial).1, None);
+    trial.keys("shift-enter");
+    assert!(stage(&mut trial).1.is_some());
+
+    // Write is for writing; the stage's light goes with Play.
+    trial.keys("1");
+    assert_eq!(stage(&mut trial).1, None);
+}
+
+#[gpui::test]
+fn the_board_lists_assets_adds_one_and_leads_to_where_the_story_uses_it(cx: &mut TestAppContext) {
+    let mut trial = Trial::new(cx);
+    trial
+        .act(|studio, _, cx| studio.create_project("Harbor", cx))
+        .unwrap();
+    let source =
+        "scene harbor\n  location: dock\n  cast: mara\n  mara: \"You came back.\"\n  end\n";
+    trial.act(|studio, _, cx| {
+        studio.state.set_story_source(source.into());
+        studio.changed(cx);
+    });
+    trial.keys("3");
+    assert_eq!(trial.read(Studio::shown), Place::Board);
+    let names = |trial: &mut Trial| -> Vec<String> {
+        trial.read(|studio| {
+            studio
+                .board
+                .cards_for_tests()
+                .iter()
+                .map(|card| card.name.clone())
+                .collect()
+        })
+    };
+    assert_eq!(names(&mut trial), ["mara", "dock"]);
+    let mara = trial.read(|studio| studio.board.cards_for_tests()[0].id);
+    assert_eq!(
+        trial.read(|studio| studio.board.shown_for_tests()),
+        Some(mara)
+    );
+
+    // A new asset joins the board and is shown.
+    trial.act(|studio, window, cx| studio.start_compose(super::board::Compose::New, window, cx));
+    trial.act(|studio, window, cx| {
+        studio.board.compose.expect("the dialog is open");
+        studio.board.set_name_for_tests("lantern", window, cx);
+        studio.board_finish_for_tests(window, cx);
+    });
+    assert_eq!(names(&mut trial), ["lantern", "mara", "dock"]);
+    let lantern = trial.read(|studio| {
+        studio
+            .state
+            .registry
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.name == "lantern")
+            .map(|artifact| artifact.id)
+    });
+    assert_eq!(trial.read(|studio| studio.board.shown_for_tests()), lantern);
+    assert!(trial.read(|studio| studio.board.compose.is_none()));
+
+    // Where the story names an asset leads back to Write, there.
+    trial.act(|studio, window, cx| {
+        let uses = crate::board::Reading::of(&studio.state).uses(&studio.state.registry, mara);
+        assert_eq!(uses.len(), 2, "cast and speech");
+        studio.open_file(&uses[1].file, Some(uses[1].offset), cx);
+        studio.show(Place::Write, window, cx);
+    });
+    assert_eq!(trial.read(Studio::shown), Place::Write);
+    assert_eq!(trial.read(|studio| studio.caret.line), 3);
+}

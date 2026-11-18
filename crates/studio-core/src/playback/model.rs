@@ -50,6 +50,25 @@ impl PlaybackModel {
             }
         }
     }
+    /// Plays up to a line of the story, as [`PlaybackSession::play_to`].
+    /// Back history starts again from there.
+    pub fn play_to(&mut self, file: &str, offset: usize, entry: &str) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        match session.play_to(file, offset, entry) {
+            Ok(played) => {
+                if played {
+                    self.history.clear();
+                }
+                played
+            }
+            Err(error) => {
+                self.error = Some(error);
+                false
+            }
+        }
+    }
     pub fn back(&mut self) {
         if let Some(saved) = self.history.pop() {
             self.error = self

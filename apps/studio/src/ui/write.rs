@@ -99,6 +99,7 @@ impl Write {
                         line: line as u32,
                         character: character as u32,
                     };
+                    studio.follow_caret(false, cx);
                     cx.notify();
                 }
             },

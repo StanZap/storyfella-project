@@ -73,16 +73,6 @@ impl ApprovedArtwork {
         write_atomic(&path, &bytes.into_inner())?;
         Ok(fs::canonicalize(path)?)
     }
-    pub fn preview_data_url(&self) -> Result<String> {
-        let mut bytes = std::io::Cursor::new(Vec::new());
-        self.image()?
-            .thumbnail(384, 384)
-            .write_to(&mut bytes, image::ImageFormat::Png)?;
-        Ok(format!(
-            "data:image/png;base64,{}",
-            STANDARD.encode(bytes.into_inner())
-        ))
-    }
 }
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let temporary = path.with_extension(format!("{}.partial", Uuid::new_v4()));

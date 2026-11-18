@@ -7,6 +7,9 @@
 //! between the app and the domain stays visible.
 
 pub mod assistant;
+pub mod board;
+#[cfg(target_os = "macos")]
+pub mod capture;
 pub mod commands;
 pub mod driver;
 pub mod host;

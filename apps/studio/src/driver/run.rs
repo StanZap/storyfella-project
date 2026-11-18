@@ -556,7 +556,6 @@ fn check_playback(model: &PlaybackModel, expected: &PlaybackExpectation) -> Step
         .map(|actor| {
             let revision = session
                 .staged_visual(actor)
-                .filter(|visual| visual.image_url.starts_with("data:image/png;base64,"))
                 .and_then(|visual| visual.binding.revision.parse().ok());
             (
                 actor.instance.clone(),
@@ -580,9 +579,9 @@ fn check_playback(model: &PlaybackModel, expected: &PlaybackExpectation) -> Step
                 .any(|visual| visual.binding.revision == revision.to_string())
         })
         && visuals.len() == runtime.state().assets.len()
-        && visuals.iter().all(|v| {
-            v.image_url.starts_with("data:image/png;base64,") && !v.binding.revision.is_empty()
-        });
+        && visuals
+            .iter()
+            .all(|v| !v.png.is_empty() && !v.binding.revision.is_empty());
     status(
         valid,
         format!(

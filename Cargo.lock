@@ -7236,7 +7236,6 @@ dependencies = [
 name = "storyfella-playback-panel"
 version = "0.1.0"
 dependencies = [
- "base64 0.23.0",
  "design-system",
  "gpui-kit",
  "gpui-pre",
@@ -7280,9 +7279,12 @@ version = "0.1.0"
 dependencies = [
  "agentkit-ai",
  "anyhow",
+ "base64 0.23.0",
  "design-system",
  "gpui-kit",
  "gpui-pre",
+ "gpui-pre-apple",
+ "image",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -9582,6 +9584,7 @@ dependencies = [
  "anyhow",
  "clap",
  "serde",
+ "tempfile",
  "toml 1.1.4+spec-1.1.0",
 ]
 

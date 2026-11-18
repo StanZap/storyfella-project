@@ -6,11 +6,13 @@
 //! directly. Every change to the story goes through [`Studio::changed`], which
 //! autosaves, rechecks the compile status and redraws.
 mod assistant;
+mod board;
 mod close;
 mod details;
 mod guide;
 mod home;
 mod palette;
+mod play;
 mod settings;
 mod startup;
 mod workspace;
@@ -108,6 +110,8 @@ pub struct Studio {
     home: home::Home,
     write: write::Write,
     assistant: assistant::Assistant,
+    play: play::Play,
+    board: board::Board,
     player: Entity<PlaybackPanel>,
     palette: Entity<CommandPalette>,
     palette_open: bool,
@@ -153,6 +157,7 @@ fn init(cx: &mut App) {
     gpui_kit::init(cx);
     storyfella_playback_panel::init(cx);
     write::bind_keys(cx);
+    play::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new(key!("q"), Quit, None),
         KeyBinding::new(key!("k"), Commands, Some(CONTEXT)),
@@ -324,6 +329,11 @@ impl Studio {
             }
         });
         let player = cx.new(|cx| PlaybackPanel::new(viewer(&config), theme, cx));
+        cx.observe(&player, |studio, _, cx| {
+            studio.light_stage(cx);
+            cx.notify();
+        })
+        .detach();
         let palette = cx.new(|cx| CommandPalette::new(Vec::new(), theme, window, cx));
         cx.subscribe_in(&palette, window, |studio, _, event, window, cx| {
             studio.palette_open = false;
@@ -342,6 +352,8 @@ impl Studio {
             home: home::Home::new(&config, theme, window, cx),
             write: write::Write::new(theme, window, cx),
             assistant: assistant::Assistant::new(theme, window, cx),
+            play: play::Play::new(),
+            board: board::Board::new(theme, window, cx),
             config,
             launch,
             theme,
@@ -453,6 +465,8 @@ impl Studio {
         }
         self.follow_project_in_assistant(cx);
         self.write.story_changed();
+        self.board.story_changed();
+        self.follow_caret(true, cx);
         self.recheck(cx);
         cx.notify();
     }
@@ -533,40 +547,17 @@ impl Studio {
     fn show(&mut self, place: Place, window: &mut Window, cx: &mut Context<Self>) {
         match place {
             Place::Settings => self.open_settings(cx),
-            Place::Play => {
-                self.start_preview(cx);
-                self.place = Place::Play;
-                if self.shown() == Place::Play {
-                    let focus = self.player.focus_handle(cx);
-                    window.focus(&focus, cx);
-                }
-            }
+            Place::Play => self.open_play(window, cx),
+            Place::Board => self.open_board(window, cx),
             place => {
                 self.place = place;
                 if place == Place::Home {
                     self.home.rescan(&self.config, cx);
                 }
+                self.light_stage(cx);
             }
         }
         cx.notify();
-    }
-
-    /// Plays the story as it stands in the editor, drafts included.
-    fn start_preview(&mut self, cx: &mut Context<Self>) {
-        if self.state.project_path.is_none() {
-            return;
-        }
-        let session = crate::preview::compile(&self.state);
-        self.install_preview(session, cx);
-    }
-
-    fn install_preview(
-        &mut self,
-        session: Result<PlaybackSession, String>,
-        cx: &mut Context<Self>,
-    ) {
-        self.player
-            .update(cx, |player, cx| player.install(session, cx));
     }
 
     fn open_settings(&mut self, cx: &mut Context<Self>) {
@@ -595,6 +586,7 @@ impl Studio {
             .update(cx, |palette, cx| palette.set_theme(theme, cx));
         self.home.set_theme(theme, cx);
         self.write.set_theme(theme, cx);
+        self.board.set_theme(theme, cx);
         self.assistant.set_theme(theme, cx);
         let viewer = viewer(&self.config);
         self.player
@@ -739,6 +731,11 @@ impl Studio {
             palette::Command::RenameSymbol => self.start_rename(window, cx),
             palette::Command::FormatFile => self.format_open_file(cx),
             palette::Command::ToggleProblems => self.toggle_problems(cx),
+            palette::Command::TogglePlayFullWindow => self.toggle_full_window(window, cx),
+            palette::Command::NewAsset => {
+                self.show(Place::Board, window, cx);
+                self.start_compose(board::Compose::New, window, cx);
+            }
             palette::Command::Quit => window.dispatch_action(Box::new(Quit), cx),
         }
     }
@@ -991,6 +988,11 @@ impl Render for Studio {
             .on_action(cx.listener(|studio, _: &ShowBoard, window, cx| {
                 studio.show(Place::Board, window, cx)
             }))
+            .on_action(
+                cx.listener(|studio, _: &play::ToggleFullWindow, window, cx| {
+                    studio.toggle_full_window(window, cx)
+                }),
+            )
             .on_action(cx.listener(|studio, _: &OpenSettings, window, cx| {
                 studio.show(Place::Settings, window, cx)
             }))
@@ -1011,6 +1013,7 @@ impl Render for Studio {
                     .child(self.palette.clone())
             }))
             .child(self.render_rename(cx))
+            .child(self.render_compose(cx))
             .child(self.render_trouble(cx))
             .child(self.render_details(cx))
     }

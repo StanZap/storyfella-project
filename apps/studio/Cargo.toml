@@ -24,6 +24,15 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 
+# A preview capture renders the stage in a headless GPUI app on the Metal
+# renderer. That API sits behind `test-support`, so the shipping build turns it
+# on; `capture`'s pixel test fails if a gpui-pre bump breaks it.
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+gpui-apple = { workspace = true, features = ["test-support"] }
+base64.workspace = true
+image.workspace = true
+
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
