@@ -391,7 +391,7 @@ Writing now restores captured block indentation, line endings and terminal blank
 lines before compiler validation. Partial-line selections retain their text-edit
 semantics; malformed DSL is still rejected. Repair requests contain a structured
 original request, boundary previews and offending lines with line/column
-diagnostics. Progress states show the repair attempt out of the fixed limit.
+diagnostics. Progress states show the repair attempt out of the configured limit.
 
 Offline replay of seven recent rejected outputs now compiles without another
 model call. An older output containing unlabelled prose remains invalid, showing
@@ -485,8 +485,12 @@ fixed Accept suggestion/Discard actions. Source text has one scroll container;
 normal review contains no filesystem paths. Closing returns focus to the source.
 
 Generation validates the complete proposed document and repairs
-invalid output automatically, with at most two repair attempts. Only valid
-results reach review; exhaustion becomes a contextual recovery notice. A draft
+invalid output automatically, up to the repair attempts set in Settings
+(two by default). Only valid
+passage results reach review; exhaustion becomes a contextual recovery notice.
+A Project request keeps what it wrote when it stops or fails and offers it
+for review marked unfinished, since discarding a long run's work costs more
+than reviewing it with its errors. A draft
 with existing source errors is still worked on; the model is told about them,
 and a result is held only to adding none. Live registry
 changes can still invalidate a retained suggestion, so acceptance rechecks the

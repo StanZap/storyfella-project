@@ -17,7 +17,7 @@ use storyfella_studio_core::{
     workflows::{
         novel::{self, NovelRequest, NovelResult},
         writing::WritingAction,
-        RunStore,
+        AssistantSettings, RunStore,
     },
 };
 use uuid::Uuid;
@@ -83,12 +83,12 @@ impl Jobs {
                     let model = self.model.clone();
                     #[cfg(not(test))]
                     let model: Option<Arc<dyn agentkit_ai::StreamingChatModel + Send + Sync>> = None;
-                    let backend = if model.is_none() {
+                    let (backend, settings) = if model.is_none() {
                         let config = AppConfig::load().map_err(|error| Failure::new("provider_unavailable", &error.to_string()))?;
                         let backend = PlannerBackend::new(&config);
                         if !backend.has_llm() { return Err(Failure::new("provider_unavailable", "Choose a text provider in Studio Settings.")); }
-                        Some(backend)
-                    } else { None };
+                        (Some(backend), config.assistant)
+                    } else { (None, AssistantSettings::default()) };
                     let mut jobs = self.jobs.borrow_mut();
                     jobs.retain(|_, job| {
                         if job.epoch != current { job.cancel.store(true, Ordering::Relaxed); return false; }
@@ -104,8 +104,8 @@ impl Jobs {
                         let request = NovelRequest { project: project.clone(), workspace, action: if expand { WritingAction::Expand } else { WritingAction::Rewrite }, instructions, preserve_facts, catalog_digest };
                         let result = match RunStore::open(&project.with_extension("workflows.sqlite3")) {
                             Ok(store) => match model {
-                                Some(model) => novel::run_with_model(request, model, &registry, &store, cancel, |_| {}).await,
-                                None => novel::run_with_backend(request, backend.as_ref().expect("configured backend"), &registry, &store, cancel, |_| {}).await,
+                                Some(model) => novel::run_with_model(request, settings, model, &registry, &store, cancel, |_| {}).await,
+                                None => novel::run_with_backend(request, settings, backend.as_ref().expect("configured backend"), &registry, &store, cancel, |_| {}).await,
                             }.map_err(|error| error.to_string()),
                             Err(error) => Err(error.to_string()),
                         };
@@ -203,6 +203,7 @@ mod tests {
                     "scene harbor\n  narrate: new\n  end\n".into(),
                 )]),
                 note: None,
+                unfinished: None,
             };
             let id = Uuid::new_v4();
             let mut jobs = Jobs::default();

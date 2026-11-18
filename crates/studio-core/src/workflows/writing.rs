@@ -11,7 +11,7 @@ use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use storyfella_language::{analyze, Diagnostic, Node, NodeKind, Severity, Span};
 
-use super::{execute, Cancellation, RunStore};
+use super::{execute, AssistantSettings, Cancellation, RunStore};
 use crate::{
     authoring::AssetCatalog,
     llm::LlmConfig,
@@ -23,7 +23,6 @@ mod reply;
 
 pub use reply::{interpret, preview, without_thinking, Preview, Reply};
 
-const MAX_REPAIR_ATTEMPTS: usize = 2;
 const WRITING_SYSTEM: &str = r#"You edit Storyfella DSL source for a writer.
 
 Answer in one of two ways:
@@ -72,7 +71,8 @@ pub struct WritingRequest {
     pub action: WritingAction,
     pub instructions: String,
     pub preserve_facts: bool,
-    pub context: String,
+    /// Each asset the passage's scene refers to, with its description.
+    pub assets: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,20 +146,21 @@ impl WritingRequest {
             range.start < range.end && source.get(range.start..range.end).is_some(),
             "Select a nonempty source range"
         );
-        // Passage scopes use their containing scene; file scope uses every
-        // scene. Include descriptions only for assets referenced in that context.
+        // The story itself is in the prompt once, as the document; what is
+        // added is the description of each asset the passage's scene — or
+        // the whole file — refers to.
         let nearby = if matches!(scope, WritingScope::File) {
             range
         } else {
             scope_node(&analysis.document.story.scenes, range.start, false).unwrap_or(range)
         };
-        let mut context = source[nearby.start..nearby.end].to_owned();
+        let mut assets = Vec::new();
         for artifact in &registry.artifacts {
             if analysis.references.iter().any(|reference| {
                 nearby.contains(reference.name.span.start)
                     && reference.asset_id.as_deref() == Some(&artifact.id.to_string())
             }) {
-                context.push_str(&format!("\n{}: {}", artifact.name, artifact.description));
+                assets.push(format!("{}: {}", artifact.name, artifact.description));
             }
         }
         Ok(Self {
@@ -170,7 +171,7 @@ impl WritingRequest {
             action: WritingAction::Rewrite,
             instructions: String::new(),
             preserve_facts: true,
-            context,
+            assets,
         })
     }
 
@@ -189,17 +190,23 @@ impl WritingRequest {
             .take(2)
             .collect();
         before.reverse();
-        serde_json::json!({
-            "scope": if self.range == Span::new(0, self.source.len()) { "entire_file" } else { "passage" },
+        let whole = self.range == Span::new(0, self.source.len());
+        let mut prompt = serde_json::json!({
+            "scope": if whole { "entire_file" } else { "passage" },
             "action": format!("{:?}", self.action), "preserve_facts": self.preserve_facts,
-            "instructions": self.instructions, "nearby_story_and_assets": self.context,
+            "instructions": self.instructions, "assets": self.assets,
             "replace_only_this_source": self.original(),
-            "complete_document_for_validation_context": self.source,
             "replacement_boundary_context": {
                 "before": before.join("\n"),
                 "after": self.source[self.range.end..].lines().take(2).collect::<Vec<_>>().join("\n"),
             },
-        })
+        });
+        // The whole file is the passage already; sending it twice would
+        // double the prompt for nothing.
+        if !whole {
+            prompt["complete_document_for_validation_context"] = self.source.as_str().into();
+        }
+        prompt
     }
 
     /// Restore transport formatting at a captured source boundary. Model APIs
@@ -297,7 +304,11 @@ impl WritingRequest {
         Ok(())
     }
 
-    fn workflow_for_prompt(&self, prompt: String) -> Result<Workflow> {
+    fn workflow_for_prompt(
+        &self,
+        prompt: String,
+        settings: &AssistantSettings,
+    ) -> Result<Workflow> {
         self.validate_range()?;
         let registry = StepRegistry::builtin();
         let mut graph = Workflow::builder("storyfella-writing");
@@ -314,7 +325,9 @@ impl WritingRequest {
             .wire(system_turn, "out", model, "messages")
             .wire(request, "out", user_turn, "text")
             .wire(user_turn, "out", model, "messages")
-            .expose("proposal", model, "reply")
+            .expose("proposal", model, "reply");
+        settings.configure(&mut graph, model);
+        graph
             .build(&registry)
             .map_err(|error| anyhow::anyhow!("Writing workflow: {error:?}"))
     }
@@ -355,6 +368,7 @@ impl WritingProposal {
 /// its repair attempts — finishes.
 pub async fn run_with_backend(
     request: WritingRequest,
+    settings: AssistantSettings,
     backend: &PlannerBackend,
     registry: &ArtifactRegistry,
     store: &RunStore,
@@ -370,6 +384,7 @@ pub async fn run_with_backend(
     };
     run_with_model(
         request,
+        settings,
         chat_model(allocation.config()),
         registry,
         store,
@@ -413,8 +428,12 @@ pub(super) async fn wait_for_allocation(
     }
 }
 
+/// What progress says when a cut-off answer is asked for again.
+pub(super) const CUT_OFF_RETRY: &str = "The answer was cut off; asking again without thinking";
+
 pub async fn run_with_model(
     request: WritingRequest,
+    mut settings: AssistantSettings,
     model: agentkit_workflow::SharedStreamingModel,
     registry: &ArtifactRegistry,
     store: &RunStore,
@@ -441,30 +460,46 @@ pub async fn run_with_model(
     let mut parent_run = None::<String>;
     // Bounded output repair, using the same public runner and durable store.
     // Invalid drafts are retained for diagnosis but never published as proposals.
-    for attempt in 0..=MAX_REPAIR_ATTEMPTS {
+    let repairs = settings.repairs();
+    for attempt in 0..=repairs {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return Ok(None);
         }
         feedback(Status(if attempt == 0 {
             "Writing".into()
         } else {
-            format!("Fixing the edit ({attempt} of {MAX_REPAIR_ATTEMPTS})")
+            format!("Fixing the edit ({attempt} of {repairs})")
         }));
-        let workflow = request.workflow_for_prompt(prompt.clone())?;
         let context = if let Some(parent) = &parent_run {
             serde_json::json!({"request": request, "repair_of": parent, "attempt": attempt})
         } else {
             serde_json::to_value(&request)?
         };
-        let answer = run_attempt(
-            workflow,
-            model.clone(),
-            store,
-            cancel.clone(),
-            feedback.clone(),
-            context,
-        )
-        .await?;
+        // An answer cut off at the output limit is asked for once more
+        // without thinking, which is what usually used the room up; the rest
+        // of the request keeps thinking off.
+        let answer = loop {
+            let workflow = request.workflow_for_prompt(prompt.clone(), &settings)?;
+            match run_attempt(
+                workflow,
+                model.clone(),
+                store,
+                cancel.clone(),
+                feedback.clone(),
+                context.clone(),
+            )
+            .await
+            {
+                Err(error) if error.is::<super::CutOff>() => match settings.without_thinking() {
+                    Some(lean) => {
+                        feedback(Detail(CUT_OFF_RETRY.into()));
+                        settings = lean;
+                    }
+                    None => return Err(error),
+                },
+                answer => break answer?,
+            }
+        };
         let Some((run_id, raw)) = answer else {
             return Ok(None);
         };
@@ -516,10 +551,18 @@ pub async fn run_with_model(
             1 => format!("1 problem: {}", errors[0].summary),
             count => format!("{count} problems; first: {}", errors[0].summary),
         }));
-        if attempt == MAX_REPAIR_ATTEMPTS {
+        if attempt == repairs {
+            let tried = match repairs {
+                0 => "The model's edit does not compile".to_owned(),
+                1 => {
+                    "The model could not produce a valid edit after 1 attempt to fix it".to_owned()
+                }
+                n => {
+                    format!("The model could not produce a valid edit after {n} attempts to fix it")
+                }
+            };
             anyhow::bail!(
-                "The model could not produce a valid edit after {MAX_REPAIR_ATTEMPTS} attempts \
-                 to fix it. Your story is unchanged.\n\n{}",
+                "{tried}. Your story is unchanged.\n\n{}",
                 errors
                     .iter()
                     .map(|error| error.full.as_str())

@@ -5,6 +5,9 @@
 //! in turn, whose changes are kept or reset one by one, and the story changes
 //! only when the review ends — every file at once, as one undoable edit.
 //!
+//! While a project request runs, its files are listed with how far each has
+//! got, and one can be watched being written; see [`live`].
+//!
 //! Asking again while a review is open refines it: the changes kept so far
 //! are applied, and the same passage — or project — is asked for again with
 //! both requests.
@@ -35,7 +38,8 @@ use storyfella_studio_core::{
             Answer, Asked, Conversation, Decision, FileChange, Outcome, Proposed, Step, Suggestion,
             Turn,
         },
-        writing as core_writing, Cancellation, Feedback, RunStore,
+        novel::UnusablePlan,
+        writing as core_writing, Cancellation, CutOff, Feedback, RunStore,
     },
 };
 
@@ -45,6 +49,10 @@ use crate::{
     host::Place,
     writing,
 };
+use live::LiveFile;
+pub(super) use live::Watch;
+
+mod live;
 
 pub(super) struct Assistant {
     conversation: Conversation,
@@ -62,6 +70,10 @@ pub(super) struct Assistant {
     /// How much reasoning the model has streamed apart from its answer.
     reasoned: usize,
     pub(super) review: Option<Review>,
+    /// The running project request's files.
+    live: Vec<LiveFile>,
+    /// The file shown being written, in the editor's place.
+    pub(super) watching: Option<Watch>,
     /// Why the last request could not be sent, shown under the prompt.
     pub(super) notice: Option<String>,
     open_activity: HashSet<usize>,
@@ -161,6 +173,8 @@ impl Assistant {
             streamed: String::new(),
             reasoned: 0,
             review: None,
+            live: Vec::new(),
+            watching: None,
             notice: None,
             open_activity: HashSet::new(),
             #[cfg(test)]
@@ -398,6 +412,7 @@ impl Studio {
         let registry = self.state.registry.clone();
         let worker = assistant::spawn(
             request,
+            self.config.assistant,
             engine,
             registry,
             store,
@@ -481,6 +496,7 @@ impl Studio {
             }
             Feedback::Text(text) => self.assistant.streamed.push_str(&text),
             Feedback::Reasoning(text) => self.assistant.reasoned += text.chars().count(),
+            Feedback::File { path, text, state } => self.heard_file(path, text, state, cx),
             Feedback::Event(_) => return,
         }
         self.assistant.transcript.changed(turn);
@@ -520,6 +536,8 @@ impl Studio {
             }
             Ok(Some(Answered::Reply(text))) => Outcome::Replied(text),
             Ok(None) => Outcome::Stopped,
+            Err(error) if error.is::<CutOff>() => Outcome::CutOff(format!("{error:#}")),
+            Err(error) if error.is::<UnusablePlan>() => Outcome::UnusablePlan(format!("{error:#}")),
             Err(error) => Outcome::Failed(format!("{error:#}")),
         };
         let streamed = streamed_detail(&self.assistant.streamed, self.assistant.reasoned, false);
@@ -533,6 +551,8 @@ impl Studio {
         }
         self.assistant.streamed.clear();
         self.assistant.reasoned = 0;
+        self.assistant.live.clear();
+        self.assistant.watching = None;
         self.assistant.transcript.changed(turn);
         self.save_conversation(cx);
         cx.notify();
@@ -588,14 +608,15 @@ impl Studio {
             .into_iter()
             .filter(|(file, _, _)| proposed.files.iter().any(|change| change.file == *file))
             .collect();
-        // Every file the suggestion changes, opened or not, as it is now.
+        // Every file the suggestion changes, opened or not, as it is now; a
+        // file it creates is not in the story yet.
         let base = match self.state.workspace_snapshot() {
             Ok(base) => base,
             Err(message) => return self.refuse(message, cx),
         };
         if let Some((file, _, _)) = texts
             .iter()
-            .find(|(file, before, _)| base.files.get(file) != Some(before))
+            .find(|(file, before, _)| base.files.get(file).map_or("", String::as_str) != before)
         {
             let message = format!(
                 "{file} changed since this suggestion was written. Ask again for a fresh one."
@@ -763,6 +784,13 @@ impl Studio {
             return div();
         };
         let (decided, of) = review.decided(cx);
+        let unfinished = match self.assistant.conversation.turns.get(review.turn) {
+            Some(Turn::Answered(Answer {
+                outcome: Outcome::Proposed(proposed),
+                ..
+            })) => proposed.suggestion.unfinished().is_some(),
+            _ => false,
+        };
         let (shown, _) = review.shown();
         let count = review.files.len();
         let current = review.current;
@@ -805,7 +833,12 @@ impl Studio {
                     .truncate()
                     .type_scale(TypeScale::Small)
                     .child(format!(
-                        "Reviewing {place} · {decided} of {of} changes decided · read-only"
+                        "Reviewing {place} · {decided} of {of} changes decided · {}",
+                        if unfinished {
+                            "unfinished, may not compile"
+                        } else {
+                            "read-only"
+                        }
                     )),
             )
             .when(count > 1, |bar| {
@@ -850,6 +883,7 @@ impl Studio {
             .map(|running| running.step_started);
         let reviewing = self.assistant.review.as_ref().map(|review| review.turn);
         let open = self.assistant.open_activity.clone();
+        let files = std::rc::Rc::new(self.assistant.live.clone());
         let item = move |index: usize, _: &mut Window, _: &mut App| -> AnyElement {
             match &turns[index] {
                 Turn::Asked(asked) => div()
@@ -895,6 +929,7 @@ impl Studio {
                     started
                         .filter(|_| running_turn == Some(index))
                         .map(|step_started| Live {
+                            files: &files,
                             streamed: &streamed,
                             reasoned,
                             step_started,
@@ -1108,6 +1143,7 @@ fn streamed_detail(streamed: &str, reasoned: usize, arriving: bool) -> Option<St
 /// The view of a run the column draws from: what is streaming now and when
 /// the running phase began.
 struct Live<'a> {
+    files: &'a [LiveFile],
     streamed: &'a str,
     reasoned: usize,
     step_started: Instant,
@@ -1133,7 +1169,9 @@ fn render_answer(
             let status = match (&answer.outcome, number == last) {
                 (Outcome::Working, true) if phase.millis.is_none() => ToolStatus::Running,
                 // The message's error card says what failed.
-                (Outcome::Failed(_), true) => ToolStatus::Failed("".into()),
+                (Outcome::Failed(_) | Outcome::CutOff(_) | Outcome::UnusablePlan(_), true) => {
+                    ToolStatus::Failed("".into())
+                }
                 (Outcome::Stopped | Outcome::Interrupted, true) => ToolStatus::Cancelled,
                 _ => ToolStatus::Done,
             };
@@ -1171,6 +1209,9 @@ fn render_answer(
     }
     match &answer.outcome {
         Outcome::Working => {
+            if let Some(live) = live.filter(|live| !live.files.is_empty()) {
+                message = message.block(live::live_files(live.files, c, browsing, studio.clone()));
+            }
             if let Some(live) = live {
                 let preview = core_writing::preview(live.streamed);
                 if !preview.text.trim().is_empty() {
@@ -1207,8 +1248,12 @@ fn render_answer(
                  review. Try more specific instructions.",
             );
         }
-        Outcome::Failed(details) => {
-            let code = ErrorCode::WritingProposalFailed;
+        Outcome::Failed(details) | Outcome::CutOff(details) | Outcome::UnusablePlan(details) => {
+            let code = match &answer.outcome {
+                Outcome::CutOff(_) => ErrorCode::WritingCutOff,
+                Outcome::UnusablePlan(_) => ErrorCode::WritingUnusablePlan,
+                _ => ErrorCode::WritingProposalFailed,
+            };
             let details = details.clone();
             let retry = studio.clone();
             message = message
@@ -1346,6 +1391,23 @@ fn proposal_card(
                         .child(status),
                 ),
         )
+        .when_some(proposed.suggestion.unfinished(), |card, reason| {
+            card.child(
+                div()
+                    .type_scale(TypeScale::Small)
+                    .text_color(c.warning)
+                    // The reason's first line; the rest lists errors by file.
+                    .child(format!(
+                        "Unfinished: {}. What was written is kept for review, and may not \
+                         compile.",
+                        reason
+                            .lines()
+                            .next()
+                            .unwrap_or_default()
+                            .trim_end_matches('.')
+                    )),
+            )
+        })
         .when(single.is_none(), |card| {
             card.child(
                 div()

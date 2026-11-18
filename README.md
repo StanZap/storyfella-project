@@ -77,11 +77,12 @@ findings from the app-wide usability audit.
 - **Play** runs the story as it stands, unsaved drafts included: still artwork,
   dialogue/thought/narration, choices, manual advancement, pause, restart,
   scene jump and verified save/restore. The Player shares the same panel.
-- **Write** and **Board** are not part of this build: the story editor and the
-  asset board have not been ported to GPUI. Stories still change through
-  plans, Studio's MCP channel and `sf-cli`.
+- **Write** edits the story's files, with the assistant docked beside them: it
+  suggests edits to a passage or the whole project, reviewed before anything
+  changes. **Board**, the asset board, has not been ported to GPUI yet.
 - **Settings** opens its own window: appearance, autosave, playback
-  preferences, text and vision providers, and storage locations. Provider
+  preferences, text and vision providers, the assistant's thinking, reply
+  length, context and repair limits, and storage locations. Provider
   credentials and model setup are managed in Clipforge.
 - The **command palette** (⌘K / Ctrl+K) reaches every view and file action.
   Closing or quitting with unsaved work asks before discarding it.

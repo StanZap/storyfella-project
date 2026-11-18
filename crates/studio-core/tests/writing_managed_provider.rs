@@ -121,6 +121,7 @@ async fn run() {
             executable: std::env::current_exe().unwrap(),
             model_path: model.clone(),
             mmproj: None,
+            context_tokens: agentkit_ai::native::llama::DEFAULT_CONTEXT_TOKENS,
             host: "127.0.0.1".into(),
             port: 1,
         }),
@@ -140,6 +141,7 @@ async fn run() {
     let service = service::Client::new(&state);
     let run = writing::run_with_backend(
         request,
+        storyfella_studio_core::workflows::AssistantSettings::default(),
         &backend,
         &registry,
         &store,

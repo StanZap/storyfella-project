@@ -12,7 +12,7 @@ use storyfella_studio_core::{
         framework::SharedStreamingModel,
         novel::{self, NovelRequest, NovelResult},
         writing::{self, WritingAction, WritingRequest, WritingResult, WritingScope},
-        Cancellation, Feedback, RunStore,
+        AssistantSettings, Cancellation, Feedback, RunStore,
     },
 };
 
@@ -215,6 +215,7 @@ pub type Finished = anyhow::Result<Option<Answered>>;
 /// answer arrives on the returned channel.
 pub fn spawn(
     request: Request,
+    settings: AssistantSettings,
     engine: Engine,
     registry: ArtifactRegistry,
     store: PathBuf,
@@ -226,13 +227,16 @@ pub fn spawn(
         .name("assistant".into())
         .stack_size(WORKER_STACK)
         .spawn(move || {
-            let _ = send.send(suggest(request, engine, registry, store, cancel, feedback));
+            let _ = send.send(suggest(
+                request, settings, engine, registry, store, cancel, feedback,
+            ));
         })?;
     Ok(receive)
 }
 
 fn suggest(
     request: Request,
+    settings: AssistantSettings,
     engine: Engine,
     registry: ArtifactRegistry,
     store: PathBuf,
@@ -249,13 +253,15 @@ fn suggest(
                 let result = match engine {
                     Engine::Provider(backend) => {
                         writing::run_with_backend(
-                            request, &backend, &registry, &store, cancel, feedback,
+                            request, settings, &backend, &registry, &store, cancel, feedback,
                         )
                         .await?
                     }
                     Engine::Model(model) => {
-                        writing::run_with_model(request, model, &registry, &store, cancel, feedback)
-                            .await?
+                        writing::run_with_model(
+                            request, settings, model, &registry, &store, cancel, feedback,
+                        )
+                        .await?
                     }
                 };
                 result.map(|result| match result {
@@ -269,13 +275,15 @@ fn suggest(
                 let result = match engine {
                     Engine::Provider(backend) => {
                         novel::run_with_backend(
-                            request, &backend, &registry, &store, cancel, feedback,
+                            request, settings, &backend, &registry, &store, cancel, feedback,
                         )
                         .await?
                     }
                     Engine::Model(model) => {
-                        novel::run_with_model(request, model, &registry, &store, cancel, feedback)
-                            .await?
+                        novel::run_with_model(
+                            request, settings, model, &registry, &store, cancel, feedback,
+                        )
+                        .await?
                     }
                 };
                 result.map(|result| match result {
@@ -356,6 +364,7 @@ mod tests {
             .with_timeout(Duration::from_secs(5));
         let answer = spawn(
             request,
+            AssistantSettings::default(),
             Engine::Model(Arc::new(model)),
             registry,
             directory.path().join("runs.sqlite3"),

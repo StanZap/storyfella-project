@@ -12,9 +12,10 @@ use design_system::{
 };
 use gpui_kit::{prelude::*, *};
 use storyfella_studio_core::{
-    config::{AppConfig, ChatCapability, ConfigError, ThemePreference},
+    config::{AppConfig, ChatCapability, ConfigError, ThemePreference, TEXT_CONTEXT_TOKENS},
     errors::{CodedError, ErrorCode, ReportedError},
     runtime::{HealthStatus, ServiceHealth, ServiceId},
+    workflows::{AssistantSettings, Thinking, MAX_OUTPUT_TOKENS, REPAIR_ATTEMPTS, WHOLE_STORY_KIB},
 };
 
 use super::{AutosaveMode, Studio, StudioEvent};
@@ -34,6 +35,15 @@ const AUTOSAVE: [Segment; 3] = [
     Segment::new("every-minute", "Every minute"),
     Segment::new("off", "Off"),
 ];
+const THINKING: [Segment; 5] = [
+    Segment::new("default", "Model default"),
+    Segment::new("off", "Off"),
+    Segment::new("low", "Low"),
+    Segment::new("medium", "Medium"),
+    Segment::new("high", "High"),
+];
+/// The reply limit a switched-on limit starts from.
+const REPLY_LIMIT: u32 = 8192;
 const ARTWORK: [Segment; 2] = [Segment::new("fill", "Fill"), Segment::new("fit", "Fit")];
 
 /// A fingerprint of a file's contents, to notice when another app rewrites it.
@@ -62,6 +72,10 @@ pub struct Settings {
     text_size: Entity<NumericControl>,
     text: Pickers,
     vision: Pickers,
+    reply_limit: Entity<NumericControl>,
+    context: Entity<NumericControl>,
+    repairs: Entity<NumericControl>,
+    whole_story: Entity<NumericControl>,
     health: Option<Vec<ServiceHealth>>,
     checking: Option<Task<()>>,
     /// The last failure, indicated at the top of the window.
@@ -141,6 +155,99 @@ impl Settings {
             }
         })
         .detach();
+        let assistant = config.assistant;
+        let numeric =
+            |spec: NumericSpec, value: u32, window: &mut Window, cx: &mut Context<Self>| {
+                cx.new(|cx| NumericControl::new(spec, Some(value as i32), theme, window, cx))
+            };
+        let spec = |label: &str, unit: &str, range: std::ops::RangeInclusive<u32>, default: u32| {
+            NumericSpec::new(
+                label.to_owned(),
+                unit.to_owned(),
+                *range.start() as i32..=*range.end() as i32,
+                default as i32,
+            )
+        };
+        let reply_limit = numeric(
+            spec("Reply limit", "tokens", MAX_OUTPUT_TOKENS, REPLY_LIMIT),
+            assistant.max_output_tokens.unwrap_or(REPLY_LIMIT),
+            window,
+            cx,
+        );
+        let default_context = agentkit_ai::native::llama::DEFAULT_CONTEXT_TOKENS;
+        let context = numeric(
+            spec("Context", "tokens", TEXT_CONTEXT_TOKENS, default_context),
+            config.text_context_tokens().unwrap_or(default_context),
+            window,
+            cx,
+        );
+        let defaults = AssistantSettings::default();
+        let repairs = numeric(
+            spec(
+                "Repair attempts",
+                "",
+                REPAIR_ATTEMPTS,
+                defaults.repair_attempts,
+            ),
+            assistant.repair_attempts,
+            window,
+            cx,
+        );
+        let whole_story = numeric(
+            spec(
+                "Whole story up to",
+                "KiB",
+                WHOLE_STORY_KIB,
+                defaults.whole_story_kib,
+            ),
+            assistant.whole_story_kib,
+            window,
+            cx,
+        );
+        cx.subscribe_in(&reply_limit, window, |settings, _, event, window, cx| {
+            if let NumericEvent::Commit { value, .. } = event {
+                let value = *value as u32;
+                settings.update_assistant(
+                    |assistant| assistant.max_output_tokens = Some(value),
+                    window,
+                    cx,
+                );
+            }
+        })
+        .detach();
+        cx.subscribe_in(&repairs, window, |settings, _, event, window, cx| {
+            if let NumericEvent::Commit { value, .. } = event {
+                let value = *value as u32;
+                settings.update_assistant(
+                    |assistant| assistant.repair_attempts = value,
+                    window,
+                    cx,
+                );
+            }
+        })
+        .detach();
+        cx.subscribe_in(&whole_story, window, |settings, _, event, window, cx| {
+            if let NumericEvent::Commit { value, .. } = event {
+                let value = *value as u32;
+                settings.update_assistant(
+                    |assistant| assistant.whole_story_kib = value,
+                    window,
+                    cx,
+                );
+            }
+        })
+        .detach();
+        cx.subscribe_in(&context, window, |settings, _, event, window, cx| {
+            if let NumericEvent::Commit { value, .. } = event {
+                let value = *value as u32;
+                settings.persist(
+                    |config| config.persist_text_context_tokens(Some(value)),
+                    window,
+                    cx,
+                );
+            }
+        })
+        .detach();
         let text = Pickers::new(ChatCapability::Text, theme, window, cx);
         let vision = Pickers::new(ChatCapability::Vision, theme, window, cx);
         let mut settings = Self {
@@ -151,6 +258,10 @@ impl Settings {
             text_size,
             text,
             vision,
+            reply_limit,
+            context,
+            repairs,
+            whole_story,
             health: None,
             checking: None,
             error: None,
@@ -214,9 +325,34 @@ impl Settings {
         );
     }
 
+    fn update_assistant(
+        &mut self,
+        change: impl FnOnce(&mut AssistantSettings),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(config) = self.config(cx) else {
+            return;
+        };
+        let mut assistant = config.assistant;
+        change(&mut assistant);
+        self.persist(
+            |config| config.persist_assistant_settings(assistant),
+            window,
+            cx,
+        );
+    }
+
     fn apply_theme(&mut self, cx: &mut Context<Self>) {
         let theme = self.theme(cx);
-        for control in [&self.autoplay, &self.text_size] {
+        for control in [
+            &self.autoplay,
+            &self.text_size,
+            &self.reply_limit,
+            &self.context,
+            &self.repairs,
+            &self.whole_story,
+        ] {
             control.update(cx, |control, cx| control.set_theme(theme, cx));
         }
         for picker in [
@@ -234,6 +370,12 @@ impl Settings {
         let Some(config) = self.config(cx) else {
             return;
         };
+        let context = config.text_context_tokens();
+        self.context.update(cx, |control, cx| {
+            if let Some(tokens) = context {
+                control.set_value(Some(tokens as i32), cx);
+            }
+        });
         let health = self.health.clone();
         self.text.refresh(&config, health.as_deref(), window, cx);
         self.vision.refresh(&config, health.as_deref(), window, cx);
@@ -657,6 +799,7 @@ impl Settings {
                     .child(row(c, "Vision model", self.vision.model.clone()))
                     .child(row(c, "Vision status", status(ServiceId::Vision)))
             })
+            .child(self.render_assistant(config, cx))
             .child(
                 div()
                     .pt(px(12.))
@@ -689,6 +832,98 @@ impl Settings {
                         })),
                     ),
             )
+    }
+
+    /// How the assistant asks the text model, and how hard it tries.
+    fn render_assistant(&self, config: &AppConfig, cx: &mut Context<Self>) -> Div {
+        let c = self.theme(cx);
+        let assistant = config.assistant;
+        let thinking_index = assistant
+            .thinking
+            .and_then(|thinking| Thinking::ALL.iter().position(|item| *item == thinking))
+            .map_or(0, |index| index + 1);
+        let limited = assistant.max_output_tokens.is_some();
+        let this = cx.entity().downgrade();
+        let heading = |label: &'static str| {
+            div()
+                .pt(px(12.))
+                .pb(px(4.))
+                .type_scale(TypeScale::Small)
+                .text_color(c.text_muted)
+                .child(label)
+        };
+        let note = |text: &'static str| {
+            div()
+                .type_scale(TypeScale::Small)
+                .text_color(c.text_muted)
+                .child(text)
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .child(heading("Assistant"))
+            .child(row(
+                c,
+                "Thinking",
+                SegmentedControl::new(
+                    "thinking",
+                    "Thinking",
+                    &THINKING,
+                    thinking_index,
+                    c,
+                    move |index, window, cx| {
+                        let thinking = index.checked_sub(1).map(|index| Thinking::ALL[index]);
+                        this.update(cx, |settings, cx| {
+                            settings.update_assistant(
+                                |assistant| assistant.thinking = thinking,
+                                window,
+                                cx,
+                            )
+                        })
+                        .ok();
+                    },
+                ),
+            ))
+            .child(row(
+                c,
+                "Reply length",
+                c.switch("reply-limit", "Limit reply length", limited).on_click(
+                    cx.listener(move |settings, _, window, cx| {
+                        let limit = settings
+                            .reply_limit
+                            .read(cx)
+                            .value()
+                            .map_or(REPLY_LIMIT, |value| value as u32);
+                        settings.update_assistant(
+                            |assistant| {
+                                assistant.max_output_tokens = (!limited).then_some(limit)
+                            },
+                            window,
+                            cx,
+                        )
+                    }),
+                ),
+            ))
+            // Numeric controls carry their own labels above the field.
+            .when(limited, |section| {
+                section.child(row(c, "", self.reply_limit.clone()))
+            })
+            .child(match config.text_context_tokens() {
+                Some(_) => row(c, "", self.context.clone()),
+                None => row(
+                    c,
+                    "Context",
+                    note("Set by the text provider's own server. Studio sizes the context only of the models it starts."),
+                ),
+            })
+            .child(row(c, "", self.repairs.clone()))
+            .child(row(c, "", self.whole_story.clone()))
+            .child(row(
+                c,
+                "",
+                note("A Project request sends every file's text while the story is smaller than this, and only its files' paths and scenes beyond it."),
+            ))
     }
 
     fn render_storage(&self, config: &AppConfig, cx: &mut Context<Self>) -> Div {

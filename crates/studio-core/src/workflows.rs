@@ -2,6 +2,7 @@
 //! bindings stay ephemeral; project context and results belong to the host.
 pub mod assistant;
 pub mod novel;
+mod settings;
 #[cfg(test)]
 mod tests;
 pub mod writing;
@@ -23,7 +24,15 @@ use anyhow::{bail, ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 pub use agentkit_workflow as framework;
+pub use settings::{
+    AssistantSettings, Thinking, MAX_OUTPUT_TOKENS, REPAIR_ATTEMPTS, WHOLE_STORY_KIB,
+};
 pub type Cancellation = Arc<AtomicBool>;
+
+/// A model call whose answer stopped at the output limit, before it finished.
+#[derive(Debug, thiserror::Error)]
+#[error("The model's answer was cut off at its output limit: {0}")]
+pub struct CutOff(pub String);
 
 #[derive(Clone, Debug)]
 pub enum Feedback {
@@ -36,6 +45,26 @@ pub enum Feedback {
     Detail(String),
     /// The model's reasoning, streamed apart from its answer.
     Reasoning(String),
+    /// A file of a project request as it stands now: its whole text, which
+    /// is the finished fragments followed by the rest as it was.
+    File {
+        path: String,
+        text: String,
+        state: FileState,
+    },
+}
+
+/// How far one file of a project request has got.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileState {
+    /// Fragment `part` of `parts` is being written.
+    Writing { part: usize, parts: usize },
+    /// Written in full; sent back with its errors.
+    Fixing,
+    /// The story compiles with this file, or has no new problems in it.
+    Compiles,
+    /// The new problems in this file, each as one line.
+    Problems(Vec<String>),
 }
 
 /// One database beside the owning project (or under the app's own data root).
@@ -265,6 +294,12 @@ pub async fn execute(
         WorkflowRunStatus::Failed => match &state.outcome {
             // The code's hint is written for the framework's own hosts; the
             // detail says what happened, and Studio's catalog says what to do.
+            Some(WorkflowRunOutcome::Failed(error))
+                if error.provider_kind
+                    == Some(agentkit_core::ProviderErrorKind::OutputLimitReached) =>
+            {
+                Err(CutOff(error.detail.clone()).into())
+            }
             Some(WorkflowRunOutcome::Failed(error)) => {
                 bail!("{}: {}", error.code.title(), error.detail)
             }

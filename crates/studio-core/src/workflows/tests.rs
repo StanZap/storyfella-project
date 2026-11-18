@@ -78,6 +78,7 @@ async fn writing_uses_the_bound_provider_and_streaming_http_contract() {
             .with_api_key("workflow-test-secret");
     let proposal = writing::run_with_model(
         request,
+        AssistantSettings::default(),
         Arc::new(model),
         &crate::registry::ArtifactRegistry::new(),
         &store,
@@ -136,6 +137,7 @@ async fn invalid_writing_is_repaired_before_publication_and_keeps_original_snaps
     let registry = crate::registry::ArtifactRegistry::new();
     let proposal = writing::run_with_model(
         request.clone(),
+        AssistantSettings::default(),
         model,
         &registry,
         &store,
@@ -184,6 +186,58 @@ async fn invalid_writing_is_repaired_before_publication_and_keeps_original_snaps
 }
 
 #[tokio::test]
+async fn the_assistant_settings_shape_the_model_step_and_the_repairs() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = RunStore::open(&directory.path().join("runs.sqlite3")).unwrap();
+    let model = Arc::new(FakeChatModel::new_streaming([
+        writing_reply("  beat\n"),
+        writing_reply("  beat\n"),
+    ]));
+    let settings = AssistantSettings {
+        thinking: Some(agentkit_ai::Thinking::Off),
+        max_output_tokens: Some(900),
+        repair_attempts: 0,
+        ..AssistantSettings::default()
+    };
+    let error = writing::run_with_model(
+        request(),
+        settings,
+        model,
+        &crate::registry::ArtifactRegistry::new(),
+        &store,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .starts_with("The model's edit does not compile."),
+        "{error}"
+    );
+    let definitions: Vec<String> = store
+        .0
+        .lock()
+        .unwrap()
+        .prepare("SELECT definition FROM workflow_runs")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(definitions.len(), 1, "no repair is attempted");
+    let workflow: Workflow = serde_json::from_str(&definitions[0]).unwrap();
+    let step = workflow
+        .nodes
+        .iter()
+        .find(|node| node.kind == "language_model")
+        .unwrap();
+    assert_eq!(step.config["thinking"], "off");
+    assert_eq!(step.config["max_output_tokens"], 900);
+}
+
+#[tokio::test]
 async fn invalid_writing_exhausts_a_bounded_repair_budget_without_a_proposal() {
     let directory = tempfile::tempdir().unwrap();
     let store = RunStore::open(&directory.path().join("runs.sqlite3")).unwrap();
@@ -194,6 +248,7 @@ async fn invalid_writing_exhausts_a_bounded_repair_budget_without_a_proposal() {
     ]));
     let error = writing::run_with_model(
         request(),
+        AssistantSettings::default(),
         model,
         &crate::registry::ArtifactRegistry::new(),
         &store,
@@ -221,6 +276,7 @@ async fn cancellation_during_repair_does_not_publish_or_submit_another_model_cal
     let signal = cancel.clone();
     let result = writing::run_with_model(
         request(),
+        AssistantSettings::default(),
         model,
         &crate::registry::ArtifactRegistry::new(),
         &store,
@@ -249,6 +305,7 @@ async fn run_writing_heard(
     let heard = details.clone();
     let result = writing::run_with_model(
         request,
+        AssistantSettings::default(),
         Arc::new(FakeChatModel::new_streaming(replies)),
         &crate::registry::ArtifactRegistry::new(),
         &store,
@@ -276,6 +333,28 @@ async fn a_draft_with_errors_is_still_edited_and_an_edit_may_leave_them() {
     .await;
     assert_eq!(result.unwrap().unwrap().proposal().replacement, edit);
     assert_eq!(details.last().unwrap(), "No new problems");
+}
+
+#[test]
+fn a_whole_file_is_sent_once_and_a_passage_with_its_document() {
+    let capture = |scope| {
+        WritingRequest::capture(
+            Path::new("project.db"),
+            Path::new("project.sf"),
+            SOURCE,
+            scope,
+            &crate::registry::ArtifactRegistry::new(),
+        )
+        .unwrap()
+        .prompt()
+    };
+    let times = |prompt: &str| {
+        prompt
+            .matches(&serde_json::to_string(SOURCE).unwrap())
+            .count()
+    };
+    assert_eq!(times(&capture(WritingScope::File)), 1);
+    assert_eq!(times(&capture(WritingScope::Beat(40))), 1);
 }
 
 #[tokio::test]
@@ -333,6 +412,7 @@ async fn cancellation_before_publication_discards_a_valid_result() {
     let signal = cancel.clone();
     let result = writing::run_with_model(
         request,
+        AssistantSettings::default(),
         model,
         &crate::registry::ArtifactRegistry::new(),
         &store,
@@ -353,7 +433,6 @@ fn scopes_are_exact_and_proposals_refuse_other_snapshots_or_projects() {
     let request = request();
     assert!(request.original().starts_with("  beat arrival"));
     assert!(!request.original().contains("departure"));
-    assert!(request.context.contains("departure"));
     let proposal = WritingProposal {
         run_id: "test".into(),
         replacement: request.original().replace("quiet", "empty"),
@@ -413,7 +492,6 @@ async fn entire_file_rewrite_and_expand_cover_all_scenes_and_exact_boundaries() 
             storyfella_language::Span::new(0, source.len())
         );
         assert_eq!(request.original(), source);
-        assert_eq!(request.context, source);
         let prompt: serde_json::Value = serde_json::from_str(&request.prompt()).unwrap();
         assert_eq!(prompt["scope"], "entire_file");
         assert_eq!(prompt["replace_only_this_source"], source);
@@ -427,6 +505,7 @@ async fn entire_file_rewrite_and_expand_cover_all_scenes_and_exact_boundaries() 
         let model = Arc::new(FakeChatModel::new_streaming([writing_reply(&replacement)]));
         let proposal = writing::run_with_model(
             request,
+            AssistantSettings::default(),
             model,
             &registry,
             &store,
@@ -459,6 +538,7 @@ async fn trimmed_model_output_keeps_block_boundaries_without_a_repair_call() {
     let registry = crate::registry::ArtifactRegistry::new();
     let proposal = writing::run_with_model(
         request,
+        AssistantSettings::default(),
         model,
         &registry,
         &store,
@@ -522,6 +602,7 @@ async fn writing_streams_and_commits_a_reopenable_run_without_model_credentials(
     let receive = deltas.clone();
     let proposal = writing::run_with_model(
         request.clone(),
+        AssistantSettings::default(),
         model,
         &crate::registry::ArtifactRegistry::new(),
         &store,
@@ -572,6 +653,7 @@ async fn a_commit_waits_for_another_connection_writing_the_same_store() {
     let store = RunStore::open(&path).unwrap();
     let proposal = writing::run_with_model(
         request,
+        AssistantSettings::default(),
         model,
         &crate::registry::ArtifactRegistry::new(),
         &store,
@@ -704,6 +786,7 @@ async fn run_writing(
     let store = RunStore::open(&directory.path().join("runs.sqlite3")).unwrap();
     let result = writing::run_with_model(
         request,
+        AssistantSettings::default(),
         Arc::new(FakeChatModel::new_streaming(replies)),
         &crate::registry::ArtifactRegistry::new(),
         &store,
@@ -760,23 +843,42 @@ async fn a_fenced_edit_keeps_its_note_and_a_whole_file_answer_is_cut_to_the_pass
     assert_eq!(proposal.note.as_deref(), Some("The café is empty now."));
 }
 
+fn cut_off(request: &WritingRequest) -> Vec<ChatStreamEvent> {
+    vec![
+        ChatStreamEvent::TextDelta {
+            content: format!("```\n{}", request.original()),
+        },
+        ChatStreamEvent::OutputLimitReached,
+        ChatStreamEvent::Done,
+    ]
+}
+
 #[tokio::test]
-async fn an_answer_cut_off_at_the_output_limit_is_refused() {
+async fn an_answer_cut_off_twice_is_refused_as_cut_off() {
     let request = request();
-    let (result, runs) = run_writing(
+    let (result, runs) =
+        run_writing(request.clone(), vec![cut_off(&request), cut_off(&request)]).await;
+    let error = result.unwrap_err();
+    assert!(error.is::<super::CutOff>(), "{error:#}");
+    assert_eq!(runs, 2, "asked once more, without thinking");
+}
+
+#[tokio::test]
+async fn an_answer_cut_off_is_asked_for_again_without_thinking() {
+    let request = request();
+    let edit = request.original().replace("quiet", "empty");
+    let (result, details) = run_writing_heard(
         request.clone(),
-        vec![vec![
-            ChatStreamEvent::TextDelta {
-                content: format!("```\n{}", request.original()),
-            },
-            ChatStreamEvent::OutputLimitReached,
-            ChatStreamEvent::Done,
-        ]],
+        vec![cut_off(&request), writing_reply(&edit)],
     )
     .await;
-    let error = result.unwrap_err().to_string();
-    assert!(error.contains("output token limit"), "{error}");
-    assert_eq!(runs, 1, "asking again would hit the same limit");
+    assert_eq!(result.unwrap().unwrap().proposal().replacement, edit);
+    assert!(
+        details
+            .iter()
+            .any(|detail| detail.contains("asking again without thinking")),
+        "{details:?}"
+    );
 }
 
 #[tokio::test]
@@ -801,6 +903,7 @@ async fn live_local_model_answers_a_greeting_in_prose() {
             .with_timeout(std::time::Duration::from_secs(120));
     let result = writing::run_with_model(
         request,
+        AssistantSettings::default(),
         Arc::new(model),
         &crate::registry::ArtifactRegistry::new(),
         &store,

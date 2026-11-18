@@ -138,6 +138,8 @@ pub enum ErrorCode {
     AppStoriesFolder,
     AppConversation,
     AppProviderManager,
+    WritingCutOff,
+    WritingUnusablePlan,
 }
 
 impl ErrorCode {
@@ -747,6 +749,21 @@ impl ErrorCode {
                  story is opened again. Check disk space and that the story's folder can \
                  be written to.",
             ),
+            Self::WritingCutOff => (
+                "SVS-APP-112",
+                "The model's answer was cut off",
+                "It ran out of room before it finished, usually while thinking, and asking \
+                 again without thinking did not help. Your story is unchanged. Ask about a \
+                 smaller part of the story, or give the model more room: turn off Limit \
+                 reply length or raise it, or raise the text model's context.",
+            ),
+            Self::WritingUnusablePlan => (
+                "SVS-APP-113",
+                "The model's plan did not fit the story",
+                "It kept naming files or scenes the story does not have. Your story is \
+                 unchanged. Say which scenes or files you mean, or ask about a smaller part \
+                 of the story.",
+            ),
         }
     }
 
@@ -971,7 +988,7 @@ mod tests {
     fn registry_size_is_pinned() {
         assert_eq!(
             codes().len(),
-            99,
+            101,
             "update the registry count when adding error codes"
         );
     }
@@ -1149,6 +1166,8 @@ mod tests {
             ErrorCode::AppStoriesFolder,
             ErrorCode::AppConversation,
             ErrorCode::AppProviderManager,
+            ErrorCode::WritingCutOff,
+            ErrorCode::WritingUnusablePlan,
         ]
     }
 }

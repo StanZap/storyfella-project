@@ -69,6 +69,12 @@ pub enum Outcome {
     /// The suggestion matched the passage as it stood.
     Unchanged,
     Failed(String),
+    /// A model call's answer stopped at the output limit, even when asked
+    /// for again without thinking.
+    CutOff(String),
+    /// The project workflow's plan still did not fit the story after its
+    /// repairs.
+    UnusablePlan(String),
     Stopped,
     /// Studio closed while the reply was being written.
     Interrupted,
@@ -109,6 +115,15 @@ impl Suggestion {
         match self {
             Self::Passage { proposal, .. } => proposal.note.as_deref(),
             Self::Project(proposal) => proposal.note.as_deref(),
+        }
+    }
+
+    /// Why the run ended before its files were finished and checked; such
+    /// a suggestion may not compile.
+    pub fn unfinished(&self) -> Option<&str> {
+        match self {
+            Self::Passage { .. } => None,
+            Self::Project(proposal) => proposal.unfinished.as_deref(),
         }
     }
 

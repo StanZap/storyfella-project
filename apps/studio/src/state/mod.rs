@@ -544,8 +544,17 @@ impl AppState {
             Some(sources) => sources.clone(),
             None => AdditionalSources::new(&entry_path).map_err(|error| error.to_string())?,
         };
+        // A file the change creates is written empty now, so keeping it and
+        // saving work as for any other file; undo leaves it out of the story.
+        let root = entry_path.parent().ok_or("Open a story first")?;
         for file in texts.keys().filter(|file| *file != &current.entry) {
-            before.open(file).map_err(|error| error.to_string())?;
+            if current.files.contains_key(file) || root.join(file).exists() {
+                before.open(file).map_err(|error| error.to_string())?;
+            } else {
+                before
+                    .create(&root.join(file))
+                    .map_err(|error| error.to_string())?;
+            }
         }
         let mut after = before.clone();
         for (file, text) in texts.iter().filter(|(file, _)| *file != &current.entry) {
@@ -1195,6 +1204,7 @@ mod tests {
                 ),
             ]),
             note: None,
+            unfinished: None,
         };
         state.apply_novel_proposal(&proposal).unwrap();
         assert!(state.story.source().starts_with("# revised"));

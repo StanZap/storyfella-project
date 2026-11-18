@@ -24,9 +24,20 @@ meets its acceptance criteria.
   - [x] Failures are an indication plus one Details dialog (DESIGN.md §2), in
     the status bar, the assistant and Settings.
   - [x] Project scope in the assistant: the novel-wide request plans which
-    files change, rewrites only those, compiles the project and repairs the
+    files change and which whole scenes move to which new files, moves those
+    itself, rewrites only the planned files, compiles the project and repairs the
     files that break it; the review steps through each file and keeps the
     result as one undoable edit.
+  - [x] Assistant settings in Settings › Models: thinking, reply length, a
+    managed text model's context, repair attempts and the whole-story size.
+  - [x] A Project request shows each file as it is written, can be watched as
+    a live diff, keeps what it wrote when stopped or failed, asks again
+    without thinking when an answer is cut off, and splits files by moving
+    whole scenes.
+  - [ ] Accept a file of a Project request while later files are still being
+    written, and Continue an unfinished one where it stopped.
+  - [ ] Context size before sending and live token use, from typed usage and
+    each deployment's context window in Agentkit.
   - [ ] Assistant tools: Studio's story tools always, Atelier's while it
     runs, every edit reviewed; then plans as assistant workflows.
   - [ ] Play split beside the source, with the line on stage highlighted.

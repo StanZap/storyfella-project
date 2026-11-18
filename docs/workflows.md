@@ -72,13 +72,27 @@ Kept, Kept 2 of 3, Discarded.
 
 A Project request runs the project workflow below. Its steps are Planning
 (with the files it will change), Writing each of those files — "Writing
-chapter.sf (part 2 of 3)" for a long one — and Checking the story. Its card
+chapter.sf (part 2 of 3)" for a long one — and Checking the story. While it
+runs, the reply lists each file it has reached with how it stands — Writing
+part 2 of 3, Fixing, Compiles, or its new problems — and the lines added and
+removed so far. A file's name shows it being written in the editor's place: a
+diff with no Accept or Reject that fills in as each part arrives, and changes
+nothing; Back to the file returns to the editor, and the run ending closes it.
+Its card
 lists every changed file with its line counts. Review opens the first file's
 diff; deciding a file's last change moves on to the next file with changes
 left, and the review bar steps between files. Nothing is written until the
 review ends, when every file's kept changes become one undoable edit. A
 review is refused if any of its files changed since the suggestion was
-written, whether or not that file is open.
+written, whether or not that file is open. A file the suggestion creates is reviewed
+like the others, against nothing; keeping it creates the file empty in the
+story's folder and puts its text in as an unsaved change, saved with the rest.
+
+A Project request that stops, or fails after writing something, still ends in
+a card: what was written is the suggestion, the card says why it is
+unfinished and that it may not compile, and the review bar says the same. Its
+changes are kept or discarded like any other's, with errors if they have
+them. A request that fails before writing anything fails as before.
 
 A failed reply says so once, in a card under its steps: the code's label
 ("Could not create a writing suggestion"), Try again, which sends the same
@@ -96,10 +110,24 @@ shared inference service allocates — the address in `clipforge.toml` is only
 the provider's identity — and its lease is held for the whole request, repair
 attempts included; a hosted provider is called at its configured address.
 
-The request includes the containing scene and descriptions of its resolved
-assets; the complete source supplies validation context for surrounding
-structure and cross-scene links. File scope captures the complete source,
-including comments and boundary whitespace. Responses regain captured
+Settings › Models › Assistant shapes both workflows; the choices are kept in
+the `[assistant]` section of Studio's settings. **Thinking** sets how much the
+model reasons before answering — Model default, Off, Low, Medium or High —
+which is the `thinking` field of the `language_model` step. A provider that
+cannot change it fails the run rather than ignoring it. **Limit reply length**
+caps each answer's tokens, reasoning included (`max_output_tokens`); off, the
+provider's own limit applies. **Context** is the context a managed text model
+is started with, shared by its two request slots, and is saved on its provider
+in `clipforge.toml`; a provider whose server Studio does not start keeps its
+own. **Repair attempts** (0–5, default 2) is how many times a rejected answer
+is sent back, and **Whole story up to** (4–256 KiB, default 24) is where a
+Project request stops sending every file's text.
+
+The request carries the story once: the passage, and — for anything smaller
+than the whole file — the complete source, for surrounding structure and
+cross-scene links. Alongside it go the descriptions of the assets the
+passage's scene refers to. File scope captures the complete source, including
+comments and boundary whitespace, as the passage. Responses regain captured
 indentation, line endings and terminal blank lines that a provider may have
 trimmed; a partial-line selection is not reindented. The model answers in one of two forms: the replacement in a fenced block,
 with an optional sentence about it, or prose with no block when the request
@@ -110,14 +138,18 @@ closing tag whose opening tag the server stripped. A prose answer to the
 first attempt becomes the reply and skips the repairs; prose during a repair
 counts as an empty replacement. A whole-file answer to a smaller passage is
 cut back to the passage when the text around it is unchanged. An answer cut
-off at the provider's output limit fails the run rather than being checked.
+off at the provider's output limit is never checked: it is asked for once more
+with thinking off, which is usually what used the room up, and the rest of the
+request keeps thinking off. Cut off again, the run fails as cut off, with
+advice to ask about less or give the model more room rather than to check the
+provider. The project workflow does the same for each of its calls.
 A draft that already has errors is worked on like any other: the model is
 given them as `existing_problems`, so asking to fix them works, and an edit is
 held only to adding none — errors are matched by code and message, as many
 times as the draft has each. The check's line says "The story compiles now",
 "Fixes 1 of 2 problems" or "No new problems". Before review, the
 replacement is inserted into the captured document and compiled. Empty output,
-or output that adds errors, triggers up to two repair attempts using the
+or output that adds errors, triggers up to the configured repair attempts using the
 original request, the rejected replacement and compiler diagnostics; repair runs link to their
 preceding attempt in the run store. Only a valid result becomes a suggestion,
 so compilation guarantees structural validity, not narrative quality or
@@ -131,20 +163,36 @@ suggestion applies only to that same source.
 
 `storyfella_studio_core::workflows::novel` runs a request about the whole
 story. It plans first: the model reads the instructions against every file's
-text when the story is under 24 KiB, or each file's path, scenes and size
+text when the story is within the whole-story size, or each file's path, scenes and size
 when it is larger, and answers either in prose — the reply, after one call —
-or with a JSON plan naming the files to change and a note on what it will
-do. A plan naming a file the story does not have is sent back, up to twice.
+or with a JSON plan and a note on what it will do. The plan names the files
+to rewrite, any new files, and any whole scenes to move. Studio moves the
+scenes itself, word for word, before anything is written: the model never
+retypes a scene to move it, so splitting a file is one short answer. A new
+file must sit beside an existing one; its `include` takes the place of the
+first scene moved into it, so the story plays in the same order from the same
+first scene, and a new file nothing moves into is included at the end of the
+entry for the model to write. A plan that names a file the story does not
+have without creating it, moves a scene that does not exist, or creates a file
+nothing goes into is sent back, up to the configured repair attempts, with
+what the story has instead — its scene names, and that a beat is not a scene.
+A plan that still does not fit fails with its own advice: say which scenes or
+files are meant, or ask about less.
 Each planned file is rewritten in fragments of at most 2 KiB, split between
 lines, each answered as one fenced block; an answer in prose is sent back.
 The changed files are then compiled together with the rest of the project.
 As in the writing workflow, a story that already has errors is worked on: the
 plan and each file's fragments are given them, and the result is held to
 adding none. A file with new errors is sent back whole, with its errors, up to
-twice; a file
-too long to send back whole fails the run with the errors listed by file and
+the configured repair attempts; a file too long to send back whole fails the run with the errors listed by file and
 line. Every model call after the first is a run linked to the first in the
-run store. The same workflow serves live MCP's novel tools.
+run store. Each file is reported as it goes: first as it was, then with each
+finished part in place, then compiled together with the files written before
+it. A run that is stopped or fails after writing something returns what it
+wrote as a proposal marked unfinished, with the reason — a file that was
+being written has its finished parts and the rest as it was. The same
+workflow serves live MCP's novel tools; applying a proposal there still
+requires it to add no problems.
 
 ## Atelier
 

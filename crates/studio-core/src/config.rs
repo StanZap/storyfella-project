@@ -10,6 +10,9 @@ use agentkit_ai::native::sd;
 use serde::Deserialize;
 use thiserror::Error;
 
+mod assistant;
+pub use assistant::TEXT_CONTEXT_TOKENS;
+
 use crate::{
     errors::{CodedError, ErrorCode},
     llm::LlmConfig,
@@ -132,6 +135,7 @@ impl std::fmt::Debug for HostedImageProvider {
 pub struct AppConfig {
     pub theme: ThemePreference,
     pub preview: PreviewSettings,
+    pub assistant: crate::workflows::AssistantSettings,
     /// False routes Vision through Text while retaining the shared registry's
     /// separate Vision selection for when the user enables it again.
     pub separate_vision: bool,
@@ -255,6 +259,8 @@ struct FileConfig {
     appearance: AppearanceConfig,
     #[serde(default)]
     preview: PreviewSettings,
+    #[serde(default)]
+    assistant: crate::workflows::AssistantSettings,
     #[serde(default)]
     models: ModelsConfig,
     #[serde(default)]
@@ -673,6 +679,7 @@ impl AppConfig {
         Ok(Self {
             theme: file.appearance.theme,
             preview: file.preview.bounded(),
+            assistant: file.assistant.bounded(),
             separate_vision,
             configured_vision_provider_id,
             text,
@@ -1566,6 +1573,7 @@ mod tests {
                     executable: None,
                     api_key_env: None,
                     api_key: None,
+                    context_tokens: None,
                 },
             )
             .unwrap();

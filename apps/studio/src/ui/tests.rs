@@ -563,6 +563,182 @@ fn a_project_edit_is_reviewed_file_by_file_and_kept_as_one_undo(cx: &mut TestApp
 }
 
 #[gpui::test]
+fn a_split_creates_its_files_when_kept(cx: &mut TestAppContext) {
+    use agentkit_ai::{providers::fake::FakeChatModel, ChatStreamEvent};
+    use storyfella_studio_core::workflows::assistant::{Outcome, Turn};
+
+    let mut trial = Trial::new(cx);
+    trial
+        .act(|studio, _, cx| studio.create_project("Harbor", cx))
+        .unwrap();
+    let entry =
+        "scene start\n  narrate: Dawn.\n  goto harbor\n\nscene harbor\n  narrate: Dusk.\n  end\n";
+    let plan = serde_json::json!({
+        "files": [], "new_files": ["harbor.sf"],
+        "moves": [{"scene": "harbor", "to": "harbor.sf"}],
+        "note": "The harbor gets its own file.",
+    })
+    .to_string();
+    trial.act(|studio, window, cx| {
+        studio.state.set_story_source(entry.into());
+        studio.changed(cx);
+        studio.assistant.model = Some(std::sync::Arc::new(FakeChatModel::new_streaming([vec![
+            ChatStreamEvent::TextDelta { content: plan },
+            ChatStreamEvent::Done,
+        ]])));
+        studio.assistant.scope = crate::assistant::Scope::Project;
+        studio.assistant.prompt.update(cx, |prompt, cx| {
+            prompt.set_text("Split the story", window, cx)
+        });
+        studio.ask(window, cx);
+    });
+    trial.settle();
+    let files = trial.read(
+        |studio| match studio.assistant.conversation().turns.last() {
+            Some(Turn::Answered(answer)) => match &answer.outcome {
+                Outcome::Proposed(proposed) => proposed
+                    .files
+                    .iter()
+                    .map(|change| change.file.clone())
+                    .collect::<Vec<_>>(),
+                other => panic!("{other:?} after {:?}", answer.steps),
+            },
+            other => panic!("{other:?}"),
+        },
+    );
+    assert_eq!(files, ["harbor.sf", "story.sf"]);
+
+    trial.act(|studio, window, cx| studio.start_review(1, window, cx));
+    assert!(
+        trial.read(|studio| studio.assistant.review.is_some()),
+        "a new file can be reviewed"
+    );
+    trial
+        .act(|studio, _, cx| studio.finish_review(Some(true), cx))
+        .unwrap();
+    let (story, harbor, on_disk) = trial.read(|studio| {
+        let folder = studio
+            .state
+            .story
+            .path()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_owned();
+        (
+            studio.state.story.source().to_owned(),
+            crate::writing::source(&studio.state, "harbor.sf").map(str::to_owned),
+            folder.join("harbor.sf").exists(),
+        )
+    });
+    assert_eq!(
+        story,
+        "scene start\n  narrate: Dawn.\n  goto harbor\n\ninclude \"harbor.sf\"\n"
+    );
+    assert_eq!(
+        harbor.as_deref(),
+        Some("scene harbor\n  narrate: Dusk.\n  end\n")
+    );
+    assert!(on_disk, "the kept file exists, to be saved like any other");
+}
+
+#[gpui::test]
+fn a_file_being_written_can_be_watched_and_unfinished_work_is_kept(cx: &mut TestAppContext) {
+    use agentkit_ai::{providers::fake::FakeChatModel, ChatStreamEvent};
+    use storyfella_studio_core::workflows::{
+        assistant::{Outcome, Turn},
+        FileState,
+    };
+
+    let mut trial = Trial::new(cx);
+    trial
+        .act(|studio, _, cx| studio.create_project("Harbor", cx))
+        .unwrap();
+    let entry = "include \"chapter.sf\"\nscene start\n  narrate: Dawn.\n  goto harbor\n";
+    let chapter = "scene harbor\n  narrate: Dusk.\n  end\n";
+    trial.act(|studio, _, cx| {
+        let folder = studio
+            .state
+            .story
+            .path()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_owned();
+        std::fs::write(folder.join("chapter.sf"), chapter).unwrap();
+        studio.state.set_story_source(entry.into());
+        studio.changed(cx);
+    });
+
+    // The watched file's diff follows each part as it arrives.
+    let night = "scene harbor\n  narrate: Night.\n  end\n";
+    trial.act(|studio, window, cx| {
+        let writing = FileState::Writing { part: 1, parts: 1 };
+        studio.heard_file("chapter.sf".into(), chapter.into(), writing, cx);
+        studio.watch("chapter.sf", window, cx);
+    });
+    let hunks = |trial: &mut Trial| {
+        trial.act(|studio, _, cx| {
+            let watch = studio.assistant.watching.as_ref().expect("watching");
+            watch.view.read(cx).diff().hunks().len()
+        })
+    };
+    assert_eq!(hunks(&mut trial), 0, "nothing is written yet");
+    trial.act(|studio, _, cx| {
+        studio.heard_file("chapter.sf".into(), night.into(), FileState::Compiles, cx)
+    });
+    assert_eq!(hunks(&mut trial), 1);
+    assert_eq!(
+        trial.read(|studio| crate::writing::source(&studio.state, "chapter.sf").map(str::to_owned)),
+        Some(chapter.into()),
+        "watching changes nothing"
+    );
+
+    // A run whose edit never compiles still ends in a suggestion to review.
+    let reply = |text: &str| {
+        vec![
+            ChatStreamEvent::TextDelta {
+                content: text.into(),
+            },
+            ChatStreamEvent::Done,
+        ]
+    };
+    let broken = "```storyfella\nscene harbor\n  narrate: Night.\n  goto nowhere\n```";
+    trial.act(|studio, window, cx| {
+        studio.assistant.model = Some(std::sync::Arc::new(FakeChatModel::new_streaming([
+            reply(r#"{"files":["chapter.sf"],"note":"Night falls."}"#),
+            reply(broken),
+            reply(broken),
+            reply(broken),
+        ])));
+        studio.assistant.scope = crate::assistant::Scope::Project;
+        studio.assistant.prompt.update(cx, |prompt, cx| {
+            prompt.set_text("Make it night", window, cx)
+        });
+        studio.ask(window, cx);
+    });
+    trial.settle();
+    let unfinished = trial.read(|studio| {
+        assert!(
+            studio.assistant.watching.is_none(),
+            "the watch ends with the run"
+        );
+        match studio.assistant.conversation().turns.last() {
+            Some(Turn::Answered(answer)) => match &answer.outcome {
+                Outcome::Proposed(proposed) => proposed.suggestion.unfinished().map(str::to_owned),
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        }
+    });
+    let unfinished = unfinished.expect("the run did not finish");
+    assert!(
+        unfinished.contains("could not produce a story that compiles"),
+        "{unfinished}"
+    );
+}
+
+#[gpui::test]
 fn a_failure_is_indicated_and_explained_only_on_request(cx: &mut TestAppContext) {
     use storyfella_studio_core::errors::ErrorCode;
 
