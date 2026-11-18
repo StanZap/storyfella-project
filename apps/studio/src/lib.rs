@@ -17,3 +17,4 @@ pub mod sample;
 pub mod state;
 pub mod status;
 pub mod ui;
+pub mod writing;

@@ -20,6 +20,8 @@ and visual rules; [ROADMAP](ROADMAP.md) owns planned work.
 | A bounded number | `NumericControl` with a `NumericSpec` range and unit; it draws its own label | Autoplay delay and text size |
 | A command anywhere | `CommandPalette` of `PaletteCommand`s, disabled where they cannot run | ⌘K / Ctrl+K |
 | A detail or a decision | `Dialog` with actions, the primary one last | The status bar's error details |
+| Source text | `kits::code::CodeEditor`, given tokens, problems and suggestions by the host | Write's editor |
+| Problems to jump to | `kits::code::DiagnosticsList` of `ProblemItem`s | Write's problems list |
 
 Window-level prompts (quitting with unsaved work, file pickers) use GPUI's
 native `window.prompt`, `prompt_for_paths` and `prompt_for_new_path`.

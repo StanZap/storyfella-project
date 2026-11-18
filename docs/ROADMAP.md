@@ -13,8 +13,15 @@ meets its acceptance criteria.
   - [x] Window shell, Home, command palette, guide card, close guard and the
     Settings window; the plan driver and live MCP reach the window through
     `host::Mailbox`. The CI smoke plan runs through it.
-  - [ ] Write: the story editor, diagnostics, completion and the Writing help
-    review, on the design system's code editor.
+  - [x] Write on the design system's Code kit: the story's files, highlighting,
+    inline problems and a problems list, completion, go to definition, rename
+    and format. A run of typing is one undo step.
+  - [ ] Assistant: one saved conversation per project on the Chat kit, with
+    read-only review of its edits, replacing Writing help and the Novel
+    assistant.
+  - [ ] Play split beside the source, with the line on stage highlighted.
+  - [ ] Find references in Write (the language reports them; nothing lists
+    them yet).
   - [ ] Board: the asset catalog, details and Open in Atelier.
   - [ ] Preview frame capture over MCP: render the playback panel headlessly
     and return a PNG through a new `storyfella_preview_capture` tool.

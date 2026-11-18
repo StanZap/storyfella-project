@@ -13,6 +13,17 @@ use storyfella_studio_core::story::{AdditionalSources, StoryDocument, StoryFileE
 /// Cap on the undo stack depth (source and artwork travel together).
 const UNDO_DEPTH: usize = 100;
 
+/// A pause in typing this long ends one undo step.
+const TYPING_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The last keystroke's file and time, and the history change it made.
+#[derive(Clone, Debug, PartialEq)]
+struct Typing {
+    file: String,
+    at: std::time::Instant,
+    history: u64,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct AuthoringSnapshot {
     registry: ArtifactRegistry,
@@ -50,6 +61,10 @@ pub struct AppState {
     /// state restore, never pipeline re-execution.
     undo_stack: Vec<AuthoringSnapshot>,
     redo_stack: Vec<AuthoringSnapshot>,
+    /// Counts every change to the undo history, so typing can tell whether
+    /// anything else happened since its last keystroke.
+    history: u64,
+    typing: Option<Typing>,
 }
 
 impl AppState {
@@ -998,11 +1013,42 @@ impl AppState {
     /// Snapshot the registry before an operation applies — the undo basis.
     /// Also clears the redo stack (a new operation forks history).
     pub fn snapshot_for_undo(&mut self) {
+        self.history += 1;
         self.undo_stack.push(self.authoring_snapshot());
         if self.undo_stack.len() > UNDO_DEPTH {
             self.undo_stack.remove(0);
         }
         self.redo_stack.clear();
+    }
+
+    /// Makes `edit`, a keystroke typed into `file` at `now`, part of the
+    /// previous keystroke's undo step when it follows in the same file within
+    /// [`TYPING_PAUSE`] and nothing else changed the history in between.
+    pub fn typed<R>(
+        &mut self,
+        file: &str,
+        now: std::time::Instant,
+        edit: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let joins = self.typing.as_ref().is_some_and(|last| {
+            last.file == file
+                && last.history == self.history
+                && now.saturating_duration_since(last.at) < TYPING_PAUSE
+        });
+        let before = self.history;
+        let result = edit(self);
+        if self.history != before {
+            if joins {
+                // The run's first keystroke already saved the text before it.
+                self.undo_stack.pop();
+            }
+            self.typing = Some(Typing {
+                file: file.to_owned(),
+                at: now,
+                history: self.history,
+            });
+        }
+        result
     }
 
     pub fn can_undo(&self) -> bool {
@@ -1022,6 +1068,7 @@ impl AppState {
         let Some(snapshot) = self.undo_stack.pop() else {
             return false;
         };
+        self.history += 1;
         self.redo_stack.push(self.authoring_snapshot());
         self.registry = snapshot.registry;
         self.story.set_source(snapshot.source);
@@ -1040,6 +1087,7 @@ impl AppState {
         let Some(snapshot) = self.redo_stack.pop() else {
             return false;
         };
+        self.history += 1;
         self.undo_stack.push(self.authoring_snapshot());
         self.registry = snapshot.registry;
         self.story.set_source(snapshot.source);

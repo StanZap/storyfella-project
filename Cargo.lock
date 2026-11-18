@@ -1656,7 +1656,9 @@ dependencies = [
 name = "design-system"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "gpui-kit",
+ "lsp-types",
 ]
 
 [[package]]

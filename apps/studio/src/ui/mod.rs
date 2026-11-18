@@ -12,6 +12,7 @@ mod palette;
 mod settings;
 mod startup;
 mod workspace;
+mod write;
 
 #[cfg(test)]
 mod tests;
@@ -37,7 +38,7 @@ use crate::{
     driver::{GuideSession, PlanLaunch},
     host::{Driven, Mailbox, Place},
     state::AppState,
-    status::Problems,
+    status::{Check, Problems},
 };
 
 pub use settings::Settings;
@@ -100,6 +101,7 @@ pub struct Studio {
     /// The project last written to the recent-projects index.
     remembered: Option<PathBuf>,
     home: home::Home,
+    write: write::Write,
     player: Entity<PlaybackPanel>,
     palette: Entity<CommandPalette>,
     palette_open: bool,
@@ -139,10 +141,12 @@ macro_rules! key {
         }
     };
 }
+pub(super) use key;
 
 fn init(cx: &mut App) {
     gpui_kit::init(cx);
     storyfella_playback_panel::init(cx);
+    write::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new(key!("q"), Quit, None),
         KeyBinding::new(key!("k"), Commands, Some(CONTEXT)),
@@ -299,6 +303,7 @@ impl Studio {
         .detach();
         let mut studio = Self {
             home: home::Home::new(&config, theme, window, cx),
+            write: write::Write::new(theme, window, cx),
             config,
             launch,
             theme,
@@ -419,6 +424,7 @@ impl Studio {
         if self.autosave == AutosaveMode::OnChange {
             self.autosave_now(cx);
         }
+        self.write.story_changed();
         self.recheck(cx);
         cx.notify();
     }
@@ -442,6 +448,7 @@ impl Studio {
         let Some(sources) = crate::preview::drafts(&self.state).ok() else {
             self.problems = None;
             self.checking = None;
+            self.write.set_check(None, cx);
             return;
         };
         let registry = self.state.registry.clone();
@@ -450,16 +457,22 @@ impl Studio {
                 cx.background_executor()
                     .timer(Duration::from_millis(300))
                     .await;
-                let problems = cx
+                let checked = cx
                     .background_spawn(async move {
                         let (entry, drafts) = sources;
                         storyfella_studio_core::story::load_source_workspace(&entry, &drafts)
+                            .and_then(|workspace| Check::of(&workspace, &registry))
                             .map_err(|error| error.to_string())
-                            .and_then(|workspace| Problems::of(&workspace, &registry))
                     })
                     .await;
                 this.update(cx, |studio, cx| {
-                    studio.problems = Some(problems);
+                    studio.problems = Some(
+                        checked
+                            .as_ref()
+                            .map(|check| check.problems)
+                            .map_err(Clone::clone),
+                    );
+                    studio.write.set_check(checked.ok(), cx);
                     cx.notify();
                 })
                 .ok();
@@ -553,6 +566,7 @@ impl Studio {
         self.palette
             .update(cx, |palette, cx| palette.set_theme(theme, cx));
         self.home.set_theme(theme, cx);
+        self.write.set_theme(theme, cx);
         let viewer = viewer(&self.config);
         self.player
             .update(cx, |player, cx| player.configure(viewer, theme, cx));
@@ -692,6 +706,10 @@ impl Studio {
             palette::Command::Save => self.save(&Save, window, cx),
             palette::Command::Undo => self.undo(&Undo, window, cx),
             palette::Command::Redo => self.redo(&Redo, window, cx),
+            palette::Command::GoToDefinition => self.go_to_definition(cx),
+            palette::Command::RenameSymbol => self.start_rename(window, cx),
+            palette::Command::FormatFile => self.format_open_file(cx),
+            palette::Command::ToggleProblems => self.toggle_problems(cx),
             palette::Command::Quit => window.dispatch_action(Box::new(Quit), cx),
         }
     }
@@ -881,6 +899,7 @@ impl Driven for Bound<'_, '_> {
 
     fn set_caret(&mut self, position: Position) {
         self.studio.caret = position;
+        self.studio.write.place_caret(position, &self.studio.state);
         self.cx.notify();
     }
 
@@ -960,6 +979,7 @@ impl Render for Studio {
                     .pt(px(96.))
                     .child(self.palette.clone())
             }))
+            .child(self.render_rename(cx))
             .child(self.render_error(cx))
     }
 }

@@ -25,9 +25,9 @@ in SF-PLAN-28.
 
 ## Writer
 
-Studio's GPUI build does not include the Writer view; what follows is the
-writing workflow and its contracts, which the plan driver, MCP channel and
-`sf-cli` still reach.
+Studio's GPUI Write view edits the story but has no Writing help panel yet;
+what follows is the writing workflow and its contracts, which the plan driver,
+MCP channel and `sf-cli` still reach.
 
 **Writing help** opens beside the editable source. Choose a selection, the
 current beat, current scene or Entire file; choose Rewrite or Expand and enter custom

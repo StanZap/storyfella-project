@@ -26,7 +26,7 @@ impl Studio {
     pub(super) fn render_workspace(
         &mut self,
         view: Place,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         div()
@@ -34,11 +34,18 @@ impl Studio {
             .flex()
             .flex_col()
             .child(self.render_bar(view, cx))
-            .child(div().flex_1().min_h_0().child(match view {
-                Place::Play => div().size_full().child(self.player.clone()),
-                Place::Write => self.render_unported("Write", "the story editor"),
-                _ => self.render_unported("Board", "the asset board"),
-            }))
+            .child(
+                div().flex_1().min_h_0().child(match view {
+                    Place::Play => div()
+                        .size_full()
+                        .child(self.player.clone())
+                        .into_any_element(),
+                    Place::Write => self.render_write(window, cx).into_any_element(),
+                    _ => self
+                        .render_unported("Board", "the asset board")
+                        .into_any_element(),
+                }),
+            )
             .child(self.render_status(view, cx))
     }
 

@@ -164,3 +164,99 @@ fn naming_nothing_is_refused_and_the_palette_follows_the_story(cx: &mut TestAppC
         .unwrap();
     assert!(!disabled(&mut trial, "show-write"));
 }
+
+impl Trial {
+    fn editor_text(&mut self) -> String {
+        self.cx.update(|_, cx| {
+            let editor = self.studio.read(cx).write.editor.clone();
+            editor.read(cx).text(cx).to_string()
+        })
+    }
+}
+
+#[gpui::test]
+fn typing_in_write_edits_the_story_and_outside_edits_reach_the_editor(cx: &mut TestAppContext) {
+    let mut trial = Trial::new(cx);
+    trial
+        .act(|studio, _, cx| studio.create_project("Harbor", cx))
+        .unwrap();
+    trial.act(|studio, _, cx| {
+        studio
+            .state
+            .set_story_source("scene harbor\n  narrate: Dusk.\n  end\n".into());
+        studio.changed(cx);
+    });
+    // A change from outside the editor — a plan, the MCP bridge — shows up in it.
+    assert_eq!(
+        trial.editor_text(),
+        "scene harbor\n  narrate: Dusk.\n  end\n"
+    );
+
+    // Typing goes through the editor into the story.
+    trial.act(|studio, window, cx| {
+        let editor = studio.write.editor.clone();
+        editor.update(cx, |editor, cx| {
+            editor.go_to("scene harbor\n  narrate: Dusk".len(), window, cx)
+        });
+    });
+    trial.cx.simulate_input(" falls");
+    trial.settle();
+    assert_eq!(
+        trial.read(|studio| studio.state.story.source().to_owned()),
+        "scene harbor\n  narrate: Dusk falls.\n  end\n"
+    );
+    assert_eq!(trial.read(|studio| studio.caret.line), 1);
+    assert_eq!(
+        trial.read(|studio| studio.caret.character as usize),
+        "  narrate: Dusk falls".len()
+    );
+
+    // Undo is the story's, and the editor follows it.
+    trial.act(|studio, window, cx| studio.undo(&super::Undo, window, cx));
+    assert_eq!(
+        trial.editor_text(),
+        "scene harbor\n  narrate: Dusk.\n  end\n"
+    );
+}
+
+#[gpui::test]
+fn write_shows_the_problems_of_the_open_file_and_renames_a_scene(cx: &mut TestAppContext) {
+    let mut trial = Trial::new(cx);
+    trial
+        .act(|studio, _, cx| studio.create_project("Harbor", cx))
+        .unwrap();
+    trial.act(|studio, _, cx| {
+        studio
+            .state
+            .set_story_source("scene harbor\n  goto pier\n".into());
+        studio.changed(cx);
+    });
+    let errors = trial.read(|studio| {
+        studio
+            .write
+            .check_for_tests()
+            .map(|check| check.problems.errors)
+    });
+    assert!(errors.is_some_and(|errors| errors > 0), "{errors:?}");
+
+    trial.act(|studio, _, cx| {
+        studio
+            .state
+            .set_story_source("scene harbor\n  goto harbor\n".into());
+        studio.changed(cx);
+    });
+    trial.act(|studio, window, cx| {
+        let editor = studio.write.editor.clone();
+        editor.update(cx, |editor, cx| {
+            editor.go_to("scene harb".len(), window, cx)
+        });
+        studio.start_rename(window, cx);
+    });
+    assert!(trial.read(|studio| studio.write.renaming_for_tests()));
+    trial.act(|studio, window, cx| studio.finish_rename("dock".into(), window, cx));
+    assert_eq!(
+        trial.read(|studio| studio.state.story.source().to_owned()),
+        "scene dock\n  goto dock\n"
+    );
+    assert_eq!(trial.editor_text(), "scene dock\n  goto dock\n");
+}

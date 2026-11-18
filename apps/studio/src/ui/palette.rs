@@ -12,15 +12,23 @@ pub enum Command {
     Save,
     Undo,
     Redo,
+    GoToDefinition,
+    RenameSymbol,
+    FormatFile,
+    ToggleProblems,
     Quit,
 }
 
-const ALL: [(&str, Command); 11] = [
+const ALL: [(&str, Command); 15] = [
     ("new-story", Command::NewStory),
     ("open-story", Command::OpenStory),
     ("save", Command::Save),
     ("undo", Command::Undo),
     ("redo", Command::Redo),
+    ("go-to-definition", Command::GoToDefinition),
+    ("rename-symbol", Command::RenameSymbol),
+    ("format-file", Command::FormatFile),
+    ("toggle-problems", Command::ToggleProblems),
     ("show-home", Command::Show(Place::Home)),
     ("show-write", Command::Show(Place::Write)),
     ("show-play", Command::Show(Place::Play)),
@@ -48,6 +56,7 @@ pub fn commands(studio: &Studio) -> Vec<PaletteCommand> {
     let state = &studio.state;
     let open = state.project_path.is_some();
     let busy = state.operation_in_progress();
+    let writing = studio.shown() == Place::Write;
     vec![
         PaletteCommand::new("new-story", "New story…")
             .group("Story")
@@ -69,6 +78,26 @@ pub fn commands(studio: &Studio) -> Vec<PaletteCommand> {
             .group("Edit")
             .shortcut(key("⇧Z"))
             .disabled(!state.can_redo()),
+        PaletteCommand::new("go-to-definition", "Go to definition")
+            .group("Write")
+            .shortcut("F12")
+            .keywords(["declaration", "jump", "scene"])
+            .disabled(!writing),
+        PaletteCommand::new("rename-symbol", "Rename symbol…")
+            .group("Write")
+            .shortcut("F2")
+            .keywords(["scene", "beat", "flag", "refactor"])
+            .disabled(!writing || busy),
+        PaletteCommand::new("format-file", "Format file")
+            .group("Write")
+            .shortcut("⇧⌥F")
+            .keywords(["spacing", "tidy"])
+            .disabled(!writing || busy),
+        PaletteCommand::new("toggle-problems", "Show or hide problems")
+            .group("Write")
+            .shortcut(key("⇧M"))
+            .keywords(["errors", "warnings", "diagnostics"])
+            .disabled(!writing),
         PaletteCommand::new("show-home", "Go to Home")
             .group("Navigate")
             .shortcut(key("⇧H"))
