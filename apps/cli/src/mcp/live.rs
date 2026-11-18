@@ -56,11 +56,6 @@ fn descriptors() -> Vec<McpToolDescriptor> {
                     {"type":"object","properties":{"kind":{"const":"choose"},"index":offset},"required":["kind","index"],"additionalProperties":false}
                 ]}
             }), &["session","preview","action"]),
-            tool("storyfella_preview_capture", "Render the current isolated Preview stage as a native PNG on macOS. Width and height describe the Preview viewport in points.", McpPermission::ReadOnly, json!({
-                "session":session,"preview":session,
-                "width":{"type":"integer","minimum":360,"maximum":960},
-                "height":{"type":"integer","minimum":360,"maximum":960}
-            }), &["session","preview","width","height"]),
             tool("storyfella_novel_suggest_start", "Start a Writing help request for the whole open novel. Poll and review every proposed file before applying.", McpPermission::Mutating, json!({
                 "session":session, "instructions":{"type":"string","maxLength":8192}, "expand":{"type":"boolean"}, "preserve_facts":{"type":"boolean"}
             }), &["session","instructions","expand","preserve_facts"]),
@@ -102,7 +97,6 @@ impl ServerHandler for Bridge {
             "storyfella_draft_edit" => ("writer", "edit"),
             "storyfella_preview_start" => ("preview", "start"),
             "storyfella_preview_step" => ("preview", "step"),
-            "storyfella_preview_capture" => ("preview", "capture"),
             "storyfella_novel_suggest_start" => ("novel", "start"),
             "storyfella_novel_suggest_poll" => ("novel", "poll"),
             "storyfella_novel_suggest_apply" => ("novel", "apply"),

@@ -1,5 +1,5 @@
 //! Where things live: the workspace root, the resolved cargo target directory,
-//! and the `dx`-laid-out app binary.
+//! and the built app binary.
 //!
 //! Nothing here is relative to the *working* directory in the way the shell
 //! usually assumes — commands run against absolute paths computed from the
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-/// The desktop package name; `dx` also names its build directory after it.
+/// The desktop package name.
 pub const APP_PACKAGE: &str = "storyfella-studio";
 /// The desktop binary (package and binary share a name).
 pub const APP_BIN: &str = "storyfella-studio";
@@ -87,15 +87,6 @@ impl Workspace {
         }
     }
 
-    pub fn studio(&self) -> PathBuf {
-        self.root.join("apps/studio")
-    }
-
-    /// Where `cargo xtask bundle` writes artifacts by default.
-    pub fn dist(&self) -> PathBuf {
-        self.root.join("dist")
-    }
-
     /// The gitignored home for validation logs (`AGENTS.md` → Validation).
     pub fn e2e_logs(&self) -> PathBuf {
         self.root.join(".svs-e2e/logs")
@@ -121,40 +112,17 @@ impl Workspace {
         Ok(self.root.join("target"))
     }
 
-    /// The binary `dx` drops after a desktop build.
-    ///
-    /// The documented layout is
-    /// `<target>/dx/<package>/<profile>/<platform>/app/<bin>`; a recursive
-    /// search under the package directory covers any future `dx` that moves the
-    /// platform segment.
+    /// The binary `cargo build -p storyfella-studio` produces.
     pub fn app_binary(&self, profile: Profile) -> Result<PathBuf> {
-        let dir = self
+        let binary = self
             .target_dir()?
-            .join("dx")
-            .join(APP_PACKAGE)
-            .join(profile.dir());
-        let direct = dir.join(host_platform_dir()).join("app").join(APP_BIN);
-        if direct.is_file() {
-            return Ok(direct);
+            .join(profile.dir())
+            .join(APP_BIN)
+            .with_extension(std::env::consts::EXE_EXTENSION);
+        if !binary.is_file() {
+            bail!("expected a built app binary at {}", binary.display());
         }
-        if let Some(found) = find_app_binary(&dir) {
-            return Ok(found);
-        }
-        bail!(
-            "could not find a built app binary under {}\n  \
-             expected {} — did `dx build` succeed?",
-            dir.display(),
-            direct.display()
-        )
-    }
-}
-
-/// The `dx` platform directory for the host.
-fn host_platform_dir() -> &'static str {
-    match std::env::consts::OS {
-        "macos" => "macos",
-        "windows" => "windows",
-        _ => "linux",
+        Ok(binary)
     }
 }
 
@@ -173,53 +141,6 @@ fn find_root(start: &Path) -> Option<PathBuf> {
         dir = current.parent();
     }
     None
-}
-
-/// The app binary inside an `app/` directory, found by walking `dir`.
-fn find_app_binary(dir: &Path) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if let Some(found) = find_app_binary(&path) {
-                return Some(found);
-            }
-        } else if is_app_binary(&path) {
-            return Some(path);
-        }
-    }
-    None
-}
-
-/// dx uses `app/<bin>` on Linux/Windows and `.app/Contents/MacOS/<bin>`
-/// on macOS. Reject similarly named build intermediates outside those layouts.
-fn is_app_binary(path: &Path) -> bool {
-    path.file_name().is_some_and(|name| name == APP_BIN)
-        && path.parent().and_then(Path::file_name).is_some_and(|name| {
-            name == "app"
-                || (name == "MacOS"
-                    && path
-                        .parent()
-                        .and_then(Path::parent)
-                        .and_then(Path::file_name)
-                        .is_some_and(|name| name == "Contents"))
-        })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn recognizes_dx_app_layouts_and_rejects_intermediates() {
-        assert!(is_app_binary(Path::new("linux/app/storyfella-studio")));
-        assert!(is_app_binary(Path::new(
-            "macos/StoryfellaStudio.app/Contents/MacOS/storyfella-studio"
-        )));
-        assert!(!is_app_binary(Path::new("debug/storyfella-studio")));
-        assert!(!is_app_binary(Path::new("linux/app/svs")));
-        assert!(!is_app_binary(Path::new("debug/MacOS/storyfella-studio")));
-    }
 }
 
 #[derive(Deserialize)]

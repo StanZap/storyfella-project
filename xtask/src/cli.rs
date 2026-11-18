@@ -15,7 +15,7 @@ use crate::workspace::Profile;
     name = "xtask",
     version,
     about = "Development tasks for the Storyfella workspace",
-    long_about = "Wraps the project's build, run, bundle, check and test workflows \
+    long_about = "Wraps the project's build, run, check and test workflows \
                   so the exact tool invocations live in one place. Run it as \
                   `cargo xtask <command>` (the alias is in .cargo/config.toml).",
     after_help = "Examples:\n  \
@@ -24,8 +24,6 @@ use crate::workspace::Profile;
         cargo xtask run -l                       …logging the app to .svs-e2e/logs/\n  \
         cargo xtask plan config/plans/smoke.yaml\n  \
         cargo xtask plan config/plans/ui-tour.yaml --mode guide\n  \
-        cargo xtask bundle --package-types appimage deb\n  \
-        cargo xtask bundle --install             install the AppImage for this user\n  \
         cargo xtask test"
 )]
 pub struct Cli {
@@ -35,16 +33,12 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Build Dioxus Studio with `dx` (no launch).
+    /// Build Studio (no launch).
     Build(BuildArgs),
-    /// Build Dioxus Studio, then launch it.
+    /// Build Studio, then launch it.
     Run(RunArgs),
     /// Build, then play a YAML plan through the app (`--plan <file> --mode …`).
     Plan(PlanArgs),
-    /// Serve the desktop app with hot reload (`dx serve`).
-    Serve(ServeArgs),
-    /// Bundle distributable artifacts with `dx bundle`.
-    Bundle(BundleArgs),
     /// Type-check the whole workspace (`cargo check --workspace --all-targets`).
     Check,
     /// Lint the whole workspace (`cargo clippy`); `--deny` turns warnings into errors.
@@ -53,11 +47,9 @@ pub enum Command {
     Fmt(FmtArgs),
     /// Run the workspace test suite (`cargo test --workspace`).
     Test,
-    /// Rebuild the Tailwind stylesheet (`npm run css:build`).
-    Css(CssArgs),
     /// Report prerequisite tools and provisioned directories.
     Doctor,
-    /// Remove build output (cargo target directory and `dist/`).
+    /// Remove build output (the cargo target directory).
     Clean,
 }
 
@@ -92,8 +84,8 @@ impl ProfileArgs {
 pub struct BuildArgs {
     #[command(flatten)]
     pub profile: ProfileArgs,
-    /// Extra arguments forwarded verbatim to `dx build`.
-    #[arg(last = true, value_name = "DX_ARGS")]
+    /// Extra arguments forwarded verbatim to `cargo build`.
+    #[arg(last = true, value_name = "CARGO_ARGS")]
     pub passthrough: Vec<String>,
 }
 
@@ -143,71 +135,6 @@ impl PlanMode {
 }
 
 #[derive(Args)]
-pub struct ServeArgs {
-    #[command(flatten)]
-    pub profile: ProfileArgs,
-    /// Extra arguments forwarded verbatim to `dx serve`.
-    #[arg(last = true, value_name = "DX_ARGS")]
-    pub passthrough: Vec<String>,
-}
-
-#[derive(Args)]
-pub struct BundleArgs {
-    #[command(flatten)]
-    pub profile: ProfileArgs,
-    /// Bundle formats to produce. Repeatable, or several values after one flag.
-    #[arg(
-        long,
-        value_enum,
-        num_args = 1..,
-        default_value = if cfg!(target_os = "macos") { "macos" } else { "appimage" },
-        value_name = "TYPE"
-    )]
-    pub package_types: Vec<PackageType>,
-    /// Where to place the artifacts (default `dist/` at the workspace root).
-    #[arg(long, value_name = "DIR")]
-    pub out_dir: Option<PathBuf>,
-    /// Copy the bundled app into the current user's bin directory
-    /// (`$XDG_BIN_HOME`, else `~/.local/bin`) so it runs from `PATH`.
-    #[arg(long)]
-    pub install: bool,
-}
-
-/// The `dx bundle --package-types` values. Only the ones a desktop app can use
-/// are named; `dx config schema` documents the rest.
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub enum PackageType {
-    /// Linux AppImage (the Linux default).
-    Appimage,
-    /// Linux Debian package.
-    Deb,
-    /// Linux RPM package.
-    Rpm,
-    /// macOS `.app` bundle (the macOS default).
-    Macos,
-    /// macOS `.dmg`.
-    Dmg,
-    /// Windows `.msi`.
-    Msi,
-    /// Windows NSIS installer.
-    Nsis,
-}
-
-impl PackageType {
-    pub fn as_arg(self) -> &'static str {
-        match self {
-            PackageType::Appimage => "appimage",
-            PackageType::Deb => "deb",
-            PackageType::Rpm => "rpm",
-            PackageType::Macos => "macos",
-            PackageType::Dmg => "dmg",
-            PackageType::Msi => "msi",
-            PackageType::Nsis => "nsis",
-        }
-    }
-}
-
-#[derive(Args)]
 pub struct ClippyArgs {
     /// Deny warnings (`cargo clippy … -- -D warnings`).
     #[arg(long)]
@@ -219,11 +146,4 @@ pub struct FmtArgs {
     /// Check formatting without rewriting files (`cargo fmt -- --check`).
     #[arg(long)]
     pub check: bool,
-}
-
-#[derive(Args)]
-pub struct CssArgs {
-    /// Install the frontend toolchain (`npm install`) before building.
-    #[arg(long)]
-    pub install: bool,
 }

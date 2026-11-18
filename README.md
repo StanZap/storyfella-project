@@ -1,15 +1,14 @@
 # Storyfella
 
-Storyfella is the workspace for story authoring and playback. The existing
-Dioxus application is **Storyfella Studio**; `sf-cli` provides story tools and an MCP server. Writer and Assets share persistent scene/beat associations
-and authoring tools with the catalog-backed LSP. Language, compiler and story
+Storyfella is the workspace for story authoring and playback. The desktop
+GPUI application is **Storyfella Studio**; `sf-cli` provides story tools and an MCP server. Language, compiler and story
 runtime are implemented; Studio preview and the standalone visual GPUI Player
 share deterministic execution, exact artwork bindings and controls. See
 [workspace boundaries](docs/architecture.md#storyfella-workspace-boundaries).
 
 ```text
 storyfella/
-├── apps/studio/       # storyfella-studio (Dioxus)
+├── apps/studio/       # storyfella-studio (GPUI)
 ├── apps/cli/          # sf-cli: story tools and MCP server
 ├── apps/player/       # storyfella-player (visual GPUI desktop host)
 ├── crates/studio-core/ # storyfella-studio-core (no GUI)
@@ -17,7 +16,7 @@ storyfella/
 ├── crates/compiler/    # versioned story plans, linking and flow validation
 ├── crates/lsp/         # stdio editor services
 ├── crates/runtime/     # deterministic execution and verified saved state
-├── crates/playback-ui/ # shared visual presentation and controls
+├── crates/playback-panel/ # GPUI playback panel and stage, shared by Studio and Player
 └── xtask/            # developer tasks
 ```
 
@@ -58,7 +57,7 @@ The fixture stays under `.svs-e2e/`. [Playback documentation](docs/ROADMAP.md#st
 defines open inputs, fixed snapshots, keyboard controls and save/restore.
 Voice, expressive media and portable packaging/export remain later work.
 
-Storyfella Studio is a Dioxus desktop application for writing, arranging and
+Storyfella Studio is a GPUI desktop application for writing, arranging and
 previewing visual stories. It owns authoritative source editing, catalog
 definitions and saved artwork previews. Atelier owns image creation and editing;
 both apps use the same portable project. `sf-cli` provides story checking, compilation,
@@ -73,30 +72,26 @@ configured text provider. Image creation and editing belong to Atelier.
 [DESIGN.md](DESIGN.md) defines Studio's shared UI/UX rules and tracks the open
 findings from the app-wide usability audit.
 
-- **Projects** creates a fresh story and reopens paired `.sf`/`.db` projects.
-- **Writer** preserves exact drafts, reconciles valid scene/beat declarations with
-  Assets identities, and supplies precise completion, navigation, diagnostics,
-  resolved rename and conservative formatting.
-- **Preview / Player** share still artwork, dialogue/thought/narration, choices,
-  manual advancement, pause, restart, scene jump and verified save/restore.
-- **Assets** browses catalog definitions, variations, saved images and read-only
-  revision history. Names/descriptions stay editable as story requirements;
-  undo/redo coordinates source and catalog changes.
-- **Open in Atelier** saves the current story and opens the intended asset with
-  its story context. Atelier owns image generation, editing and visual settings.
-  Ordinary linked Save updates the artwork in Studio automatically.
-- **Variations** are first-class catalog identities grouped under their base.
-  Studio can define them without generating images; Atelier makes their artwork.
-- **Settings** configures appearance, text and vision providers, and storage.
-  Provider credentials and model setup are managed in Clipforge.
+- **Home** starts a story, opens a project folder, `.db` or `.sf`, and lists
+  recent stories with their asset count, last edit and whether they compile.
+- **Play** runs the story as it stands, unsaved drafts included: still artwork,
+  dialogue/thought/narration, choices, manual advancement, pause, restart,
+  scene jump and verified save/restore. The Player shares the same panel.
+- **Write** and **Board** are not part of this build: the story editor and the
+  asset board have not been ported to GPUI. Stories still change through
+  plans, Studio's MCP channel and `sf-cli`.
+- **Settings** opens its own window: appearance, autosave, playback
+  preferences, text and vision providers, and storage locations. Provider
+  credentials and model setup are managed in Clipforge.
+- The **command palette** (⌘K / Ctrl+K) reaches every view and file action.
+  Closing or quitting with unsaved work asks before discarding it.
 
-In Models, **Use a separate Vision LLM** reveals Vision's provider settings.
-Turn it off to follow the Text LLM's provider, model, URL and key; that model must
-accept images. Turning it back on restores the separate selection. Appearance
-and this preference persist in Studio's app config; shared provider credentials
-stay in the inference registry.
+In Models, **Use a separate vision model** reveals Vision's provider settings.
+Turn it off to follow the text provider and model; that model must accept
+images. Appearance and this preference persist in Studio's app config; shared
+provider credentials stay in the inference registry.
 
-The shell deliberately uses a small reusable component vocabulary, low-contrast boundaries, and progressive disclosure instead of a dense card dashboard. Styling is primarily Tailwind CSS 4 utility classes in RSX, with a small shared CSS layer for global browser behavior and form controls.
+Controls come from the shared GPUI design system in `../gpui-design-system`.
 
 ### Current creative workflow
 
@@ -124,22 +119,21 @@ crates/studio-core/          storyfella-studio-core — the domain layer (no GUI
   src/errors.rs         Error-code registry
   src/config.rs         Configuration loading
   src/paths.rs          Project-root path resolution
-apps/studio/         storyfella-studio — the Dioxus application:
-  src/app/              Dioxus root
-  src/ui/               Desktop UI components (canvas, writer, projects, settings)
+apps/studio/         storyfella-studio — the GPUI application:
+  src/ui/               The window: Home, workspace, guide card, Settings window
   src/state/            AppState: registry, selection, undo/redo
   src/commands.rs       Shared action language (slash parse → execute)
+  src/host.rs           The mailbox the driver and MCP bridge reach the window through
   src/driver/           YAML plan driver (Guide/Check modes)
-  Dioxus.toml, tailwind.css, assets/, package.json
+  src/live_mcp/         Studio's live MCP channel
 apps/cli/             sf-cli — story commands and project-scoped MCP
 apps/player/          storyfella-player — standalone visual GPUI desktop host
 crates/language/      Shared front end and authoring services
 crates/compiler/      Versioned plans, linking and flow validation
 crates/lsp/           Catalog-backed stdio editor tooling
 crates/runtime/       Independent deterministic story execution
-crates/playback-ui/   Studio's Dioxus preview panel
 crates/playback-panel/ GPUI playback panel and stage, on the shared design system
-xtask/                cargo xtask — the developer task runner (build, run, bundle,
+xtask/                cargo xtask — the developer task runner (build, run, plan,
                       check, test); not part of any shipped artifact
 config/               plans/*.yaml (+ clipforge.example.toml) (data, at the workspace root)
 assets/generated/     Optional dev asset location via a paths.asset_dir override; the
@@ -160,30 +154,19 @@ In-depth material lives in the [documentation index](docs/README.md): current ar
 ## Prerequisites
 
 - Rust 1.98, pinned by `rust-toolchain.toml` (GPUI needs it)
-- The sibling `../gpui-design-system` checkout, for the Player
-- The current stable Dioxus CLI (`dx`)
-- Node.js/npm (for the pinned Tailwind CSS and CodeMirror diff-editor toolchain)
+- The sibling `../gpui-design-system` checkout, for Studio and the Player
 - An LLM endpoint (llama.cpp `llama-server` or LM Studio), running separately when LLM features are exercised
-- Linux desktop builds: the system packages required by Dioxus/WebKitGTK and GPUI (see CI)
+- Linux desktop builds: the system packages GPUI requires (see CI)
 
 ## Run the desktop application
 
-Install the frontend toolchain once (from `apps/studio`, which holds `package.json`):
-
 ```bash
-cd apps/studio
-npm ci
+cargo xtask run
 ```
 
-The `tailwind.css` file in `apps/studio` selects Tailwind CSS 4 and lets `dx` automatically compile `assets/tailwind.css`. Most component styling is expressed as Tailwind utility classes in RSX. To build or watch CSS independently, use `npm run css:build` or `npm run css:watch`. Studio's Cargo build script also bundles the local CodeMirror diff editor with esbuild; see [the editor toolchain](docs/development.md).
-
-```bash
-cd apps/studio && dx serve --platform desktop
-```
-
-The workspace also carries a task runner for the common commands — `cargo xtask
-run` (build and launch), `cargo xtask bundle` (release AppImage into `dist/`),
-`cargo xtask test`, and more; see [`docs/development.md`](docs/development.md).
+`cargo xtask run` builds and launches Studio; `cargo xtask plan
+config/plans/smoke.yaml` runs a plan through it, and `cargo xtask test` the
+suite. See [`docs/development.md`](docs/development.md).
 
 For a compile-only check:
 

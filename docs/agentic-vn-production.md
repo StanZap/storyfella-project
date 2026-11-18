@@ -197,11 +197,9 @@ Successful edits advance the live drawing revision and participate in Undo.
 
 `storyfella_preview_start` compiles the current draft into a separate
 playtest with pinned artwork. `storyfella_preview_step` inspects, advances,
-chooses a zero-based option, checkpoints, or restores that session.
-`storyfella_preview_capture` renders its stage in a separate macOS WebKit
-view and returns a native PNG up to 800 pixels on the long edge. The capture
-uses standard Preview settings and a client-selected viewport of 360 to
-960 points per side. Each connection keeps one playtest and checkpoint.
+chooses a zero-based option, checkpoints, or restores that session. There is no
+frame capture: a playtest reports its state, not a picture of the stage. Each
+connection keeps one playtest and checkpoint.
 Studio bounds the total pinned artwork in isolated playtests and evicts older
 sessions when the cache fills.
 
@@ -315,7 +313,7 @@ in Storyfella. Test with two independent clients before claiming
 interoperability. Use durable polling for jobs and avoid making client task
 extensions a prerequisite.
 
-For playback capture, render the same `storyfella-playback-ui` stage and styles
+For playback capture, render the same `storyfella-playback-panel` stage and styles
 at a specified viewport and device scale. Wait for the requested playback step,
 fonts and image decoding before capturing. Return viewport and crop geometry
 with the PNG. A pinned image loaded by the runtime establishes the correct
@@ -373,7 +371,7 @@ branches on a copy of *The Hour of the Beacon*. The driver asserted exact
 staged and background revisions. Native frames record the opening and both
 branches at two aspect ratios, including the missing `ivo_worried` placeholder.
 Studio plan launches accept `--window-size WIDTHxHEIGHT` and `--keep-window`
-for frame capture, and `--manual-save` to turn off editor autosave for the run.
+to inspect the window after a run, and `--manual-save` to turn off editor autosave for the run.
 These checks and their evidence are in `.svs-e2e/coord/acceptance.md`. The paid
 run and its review remain recorded separately in
 `.svs-e2e/live-branching-chapter/live-run.md`.

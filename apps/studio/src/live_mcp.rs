@@ -2,7 +2,6 @@
 use std::{collections::BTreeMap, fmt::Write as _, path::PathBuf};
 
 use anyhow::{ensure, Context, Result};
-use dioxus::prelude::*;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use storyfella_compiler::compile_workspace_with_catalog;
@@ -24,7 +23,7 @@ use storyfella_studio_core::{
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
-use crate::state::AppState;
+use crate::{host::Mailbox, state::AppState};
 
 const MAX_STORY_BYTES: usize = 1024 * 1024;
 const READ_BYTES: usize = 24 * 1024;
@@ -56,28 +55,78 @@ impl Grant {
     }
 }
 
-pub(crate) fn use_bridge(state: Signal<AppState>) {
-    let window = dioxus::desktop::use_window();
-    use_future(move || {
-        let window = window.clone();
-        async move {
-            let result = match Grant::from_environment() {
-                Ok(Some(grant)) => run(state, grant, window).await,
-                Ok(None) => Ok(()),
-                Err(error) => Err(error),
-            };
-            if let Err(error) = result {
-                tracing::warn!(%error, "Studio MCP channel unavailable");
-            }
-        }
-    });
+/// Runs a closure on the state Studio is editing. The window owns that state
+/// on its own thread; tests own it directly.
+pub(crate) trait StateOwner {
+    /// `None` once the owner has gone.
+    async fn with<R: Send + 'static>(
+        &self,
+        act: impl FnOnce(&mut AppState) -> R + Send + 'static,
+    ) -> Option<R>;
 }
 
-async fn run(
-    state: Signal<AppState>,
-    grant: Grant,
-    window: dioxus::desktop::DesktopContext,
-) -> Result<()> {
+impl StateOwner for Mailbox {
+    async fn with<R: Send + 'static>(
+        &self,
+        act: impl FnOnce(&mut AppState) -> R + Send + 'static,
+    ) -> Option<R> {
+        self.call(move |app| act(app.state())).await
+    }
+}
+
+#[cfg(test)]
+impl StateOwner for std::rc::Rc<std::cell::RefCell<AppState>> {
+    async fn with<R: Send + 'static>(
+        &self,
+        act: impl FnOnce(&mut AppState) -> R + Send + 'static,
+    ) -> Option<R> {
+        Some(act(&mut self.borrow_mut()))
+    }
+}
+
+/// Runs `act` on the owner's state, failing when Studio has closed.
+async fn owned<R: Send + 'static>(
+    state: &impl StateOwner,
+    act: impl FnOnce(&mut AppState) -> Result<R, Failure> + Send + 'static,
+) -> Result<R, Failure> {
+    state.with(act).await.unwrap_or_else(|| {
+        Err(Failure::new(
+            "owner_unavailable",
+            "Studio closed. Open the project in Studio and reconnect.",
+        ))
+    })
+}
+
+/// Serves the MCP channel named by the environment, if any, on a thread of
+/// its own until Studio exits.
+pub(crate) fn start(host: Mailbox) {
+    let grant = match Grant::from_environment() {
+        Ok(Some(grant)) => grant,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(%error, "Studio MCP channel unavailable");
+            return;
+        }
+    };
+    let spawned = std::thread::Builder::new()
+        .name("studio mcp".into())
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Studio MCP runtime");
+            // Novel jobs share connection state, so they stay on this thread.
+            let local = tokio::task::LocalSet::new();
+            if let Err(error) = local.block_on(&runtime, run(host, grant)) {
+                tracing::warn!(%error, "Studio MCP channel unavailable");
+            }
+        });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "Studio MCP channel unavailable");
+    }
+}
+
+async fn run(state: impl StateOwner, grant: Grant) -> Result<()> {
     let (sender, mut receiver) = mpsc::channel::<Call<Command>>(MAX_CONNECTIONS);
     let serve = desktop_bridge::serve(&grant.directory, sender);
     let dispatch = async {
@@ -101,7 +150,7 @@ async fn run(
                         epoch,
                         previews
                             .dispatch(
-                                state,
+                                &state,
                                 &grant,
                                 Request {
                                     schema,
@@ -110,24 +159,27 @@ async fn run(
                                 },
                                 session,
                                 epoch,
-                                &window,
                             )
                             .await,
                     ),
-                    Command::Novel(command) => novels.dispatch(
-                        state,
-                        &grant,
-                        Request {
-                            schema,
-                            project,
-                            command,
-                        },
-                        session,
-                        epoch,
-                    ),
+                    Command::Novel(command) => {
+                        novels
+                            .dispatch(
+                                &state,
+                                &grant,
+                                Request {
+                                    schema,
+                                    project,
+                                    command,
+                                },
+                                session,
+                                epoch,
+                            )
+                            .await
+                    }
                     Command::Writer(command) => {
                         dispatch_call(
-                            state,
+                            &state,
                             &grant,
                             Request {
                                 schema,
@@ -157,11 +209,11 @@ mod preview;
 #[path = "live_mcp/tests.rs"]
 mod tests;
 
-fn owner(state: &AppState, grant: &Grant, epoch: Option<Uuid>) -> Result<Uuid, Failure> {
+fn owner(state: &AppState, folder: &ProjectFolder, epoch: Option<Uuid>) -> Result<Uuid, Failure> {
     let current = state
         .authoring_lease
         .as_ref()
-        .filter(|lease| lease.belongs_to(&grant.folder))
+        .filter(|lease| lease.belongs_to(folder))
         .map(AuthoringLease::epoch);
     if epoch.is_some() && current != epoch {
         return Err(Failure::new(
@@ -205,7 +257,7 @@ impl Draft {
 }
 
 async fn dispatch_call(
-    mut state: Signal<AppState>,
+    state: &impl StateOwner,
     grant: &Grant,
     request: Request<WriterCommand>,
     session: Uuid,
@@ -224,12 +276,12 @@ async fn dispatch_call(
         if !grant.edit && matches!(request.command, WriterCommand::Edit { apply: true, .. }) {
             return Err(Failure::new("scope_denied", "Studio granted inspection only. Enable draft edits when opening a new channel."));
         }
-        let (current, lease, draft) = {
-            let state = state.peek();
-            let current = owner(&state, grant, epoch)?;
+        let folder = grant.folder.clone();
+        let (current, lease, draft) = owned(state, move |state| {
+            let current = owner(state, &folder, epoch)?;
             let lease = state.authoring_lease.as_ref().expect("owner checked the lease").clone();
-            (current, lease, Draft::from(&*state))
-        };
+            Ok((current, lease, Draft::from(&*state)))
+        }).await?;
         let project_id = grant.folder.id();
         let entry = source_path(&grant.folder.database());
         let edit = grant.edit;
@@ -242,34 +294,36 @@ async fn dispatch_call(
             });
             (draft, prepared)
         }).await.map_err(|_| Failure::new("owner_busy", "Studio could not prepare the request. Inspect the draft before retrying."))?;
-        owner(&state.peek(), grant, Some(current))?;
+        let folder = grant.folder.clone();
+        owned(state, move |state| owner(state, &folder, Some(current))).await?;
         let (reply, change) = prepared?;
         if let Some(change) = change {
             if response.is_closed() {
                 return Err(Failure::new("client_disconnected", "Reconnect and inspect the draft."));
             }
-            let app = state.peek();
-            if app.operation_in_progress() || app.catalog_conflict.is_some() {
-                return Err(Failure::new("owner_busy", "Finish the current Studio operation or resolve the catalog conflict, then inspect again."));
-            }
-            if draft != Draft::from(&*app) {
-                return Err(Failure::new("stale_version", "The draft changed during validation. Read the current draft and retry."));
-            }
-            app.authoring_lease.as_ref().expect("owner checked the lease").verify().map_err(|_| moved())?;
-            if let Change::Include { file, sources, .. } = &change {
-                let entry = app.story.path().ok_or_else(moved)?;
-                let path = included_edit_path(entry, file).map_err(|_| source_changed())?;
-                if sources.get(file).and_then(StoryDocument::path) != Some(path.as_path()) {
-                    return Err(source_changed());
+            owned(state, move |app| {
+                if app.operation_in_progress() || app.catalog_conflict.is_some() {
+                    return Err(Failure::new("owner_busy", "Finish the current Studio operation or resolve the catalog conflict, then inspect again."));
                 }
-            }
-            drop(app);
-            match change {
-                Change::Entry(source) => state.write().set_story_source(source),
-                Change::Include { file, sources, source } => state.write()
-                    .apply_checked_include(&file, sources, source)
-                    .map_err(|_| source_changed())?,
-            }
+                if draft != Draft::from(&*app) {
+                    return Err(Failure::new("stale_version", "The draft changed during validation. Read the current draft and retry."));
+                }
+                app.authoring_lease.as_ref().expect("owner checked the lease").verify().map_err(|_| moved())?;
+                if let Change::Include { file, sources, .. } = &change {
+                    let entry = app.story.path().ok_or_else(moved)?;
+                    let path = included_edit_path(entry, file).map_err(|_| source_changed())?;
+                    if sources.get(file).and_then(StoryDocument::path) != Some(path.as_path()) {
+                        return Err(source_changed());
+                    }
+                }
+                match change {
+                    Change::Entry(source) => app.set_story_source(source),
+                    Change::Include { file, sources, source } => app
+                        .apply_checked_include(&file, sources, source)
+                        .map_err(|_| source_changed())?,
+                }
+                Ok(())
+            }).await?;
         }
         Ok((current, reply))
     }.await;

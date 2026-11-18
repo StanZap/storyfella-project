@@ -25,6 +25,10 @@ in SF-PLAN-28.
 
 ## Writer
 
+Studio's GPUI build does not include the Writer view; what follows is the
+writing workflow and its contracts, which the plan driver, MCP channel and
+`sf-cli` still reach.
+
 **Writing help** opens beside the editable source. Choose a selection, the
 current beat, current scene or Entire file; choose Rewrite or Expand and enter custom
 instructions. Preserve facts is the default; creative changes are explicit.
@@ -152,7 +156,7 @@ checks the stored result and reopens the attached image from an `.atelier`
 document. Its pre-cancelled workflow makes no network submission or output.
 These are offline contracts, not model-quality or live desktop acceptance.
 
-Isolated macOS desktop acceptance (2026-10-31) used the styled dx build and a
+Isolated macOS desktop acceptance (2026-10-31) used the Dioxus Studio build and a
 local streaming HTTP fixture, with no real provider submissions. It verified
 the beat scope and instructions, original/proposal review, acceptance and a
 single Undo, running cancellation with retained instructions, a source edit

@@ -1,5 +1,5 @@
 use super::*;
-use std::{cell::Cell, fs, path::Path, rc::Rc, time::Duration};
+use std::{cell::RefCell, fs, path::Path, rc::Rc, time::Duration};
 use tokio::time::timeout;
 
 use serde_json::Value;
@@ -26,7 +26,7 @@ fn session(reply: &Value) -> Uuid {
 }
 
 async fn send(
-    state: Signal<AppState>,
+    state: &Rc<RefCell<AppState>>,
     grant: &Grant,
     project: &ProjectFolder,
     client: Uuid,
@@ -44,13 +44,10 @@ async fn send(
     reply.map_err(|failure| failure.code)
 }
 
-#[component]
-fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
-    let mut state = use_signal(AppState::default);
-    use_future(move || {
-        let root = root.clone();
-        let finished = finished.clone();
-        async move {
+async fn probe(root: PathBuf) {
+    let state = Rc::new(RefCell::new(AppState::default()));
+    {
+        {
             let first = root.join("first");
             let folder =
                 ProjectFolder::create(&first, "First", &ArtifactRegistry::default(), ENTRY)
@@ -69,14 +66,14 @@ fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
                 directory: root.join("channel"),
                 edit: true,
             };
-            crate::commands::open_project(&first, state).unwrap();
+            crate::commands::open_project(&first, &mut state.borrow_mut()).unwrap();
 
             let a = Uuid::new_v4();
             let b = Uuid::new_v4();
             let mut owner_a = None;
             let mut owner_b = None;
             let initial = send(
-                state,
+                &state,
                 &grant,
                 &folder,
                 a,
@@ -88,7 +85,7 @@ fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
             assert!(!initial["dirty"].as_bool().unwrap());
             assert_eq!(session(&initial), a);
             let wrong_project = send(
-                state,
+                &state,
                 &grant,
                 &second,
                 b,
@@ -99,7 +96,7 @@ fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
             .unwrap_err();
             assert_eq!(wrong_project, "project_mismatch");
             let other = send(
-                state,
+                &state,
                 &grant,
                 &folder,
                 b,
@@ -110,7 +107,7 @@ fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
             .unwrap();
             assert_ne!(session(&other), a);
             let cross_client = send(
-                state,
+                &state,
                 &grant,
                 &folder,
                 b,
@@ -125,14 +122,17 @@ fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
             .unwrap_err();
             assert_eq!(cross_client, "session_changed");
 
-            state.write().open_additional_source("opening.sf").unwrap();
             state
-                .write()
+                .borrow_mut()
+                .open_additional_source("opening.sf")
+                .unwrap();
+            state
+                .borrow_mut()
                 .set_additional_source("opening.sf", LOCAL.into())
                 .unwrap();
-            state.write().set_story_source(format!("{ENTRY}\n"));
+            state.borrow_mut().set_story_source(format!("{ENTRY}\n"));
             let stale = send(
-                state,
+                &state,
                 &grant,
                 &folder,
                 a,
@@ -143,7 +143,7 @@ fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
             .unwrap_err();
             assert_eq!(stale, "stale_version");
             let draft = send(
-                state,
+                &state,
                 &grant,
                 &folder,
                 b,
@@ -163,7 +163,7 @@ fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
             let at = ENTRY.len() + 1;
             grant.edit = false;
             let forbidden = send(
-                state,
+                &state,
                 &grant,
                 &folder,
                 b,
@@ -175,7 +175,7 @@ fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
             assert_eq!(forbidden, "scope_denied");
             grant.edit = true;
             let result = send(
-                state,
+                &state,
                 &grant,
                 &folder,
                 b,
@@ -185,10 +185,10 @@ fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
             .await
             .unwrap();
             assert_eq!(result["applied"], true);
-            assert!(state.read().story.source().ends_with(append));
+            assert!(state.borrow().story.source().ends_with(append));
             assert_eq!(
                 state
-                    .read()
+                    .borrow()
                     .additional_sources
                     .as_ref()
                     .unwrap()
@@ -202,11 +202,11 @@ fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
                 fs::read_to_string(first.join("assets/story.sf")).unwrap(),
                 ENTRY
             );
-            assert!(state.write().undo());
-            assert_eq!(state.read().story.source(), format!("{ENTRY}\n"));
+            assert!(state.borrow_mut().undo());
+            assert_eq!(state.borrow().story.source(), format!("{ENTRY}\n"));
 
             let chapter_read = send(
-                state,
+                &state,
                 &grant,
                 &folder,
                 b,
@@ -231,13 +231,13 @@ fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
                 apply: true,
             };
             assert_eq!(
-                send(state, &grant, &folder, b, &mut owner_b, chapter_edit)
+                send(&state, &grant, &folder, b, &mut owner_b, chapter_edit)
                     .await
                     .unwrap()["applied"],
                 true
             );
             assert!(state
-                .read()
+                .borrow()
                 .additional_sources
                 .as_ref()
                 .unwrap()
@@ -246,11 +246,11 @@ fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
                 .source()
                 .contains("MCP chapter."));
             assert_eq!(fs::read_to_string(&chapter).unwrap(), OPENING);
-            assert!(state.write().undo());
+            assert!(state.borrow_mut().undo());
 
-            crate::commands::open_project(&second.database(), state).unwrap();
+            crate::commands::open_project(&second.database(), &mut state.borrow_mut()).unwrap();
             let closed = send(
-                state,
+                &state,
                 &grant,
                 &folder,
                 b,
@@ -260,9 +260,9 @@ fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
             .await
             .unwrap_err();
             assert_eq!(closed, "owner_changed");
-            crate::commands::open_project(&first, state).unwrap();
+            crate::commands::open_project(&first, &mut state.borrow_mut()).unwrap();
             let old = send(
-                state,
+                &state,
                 &grant,
                 &folder,
                 a,
@@ -273,7 +273,7 @@ fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
             .unwrap_err();
             assert_eq!(old, "owner_changed");
             let reconnected = send(
-                state,
+                &state,
                 &grant,
                 &folder,
                 Uuid::new_v4(),
@@ -285,10 +285,8 @@ fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
             assert_ne!(session(&reconnected), a);
             assert_eq!(reconnected["dirty"], false);
             assert_eq!(fs::read_to_string(chapter).unwrap(), LOCAL);
-            finished.set(true);
         }
-    });
-    rsx! {}
+    }
 }
 
 #[tokio::test]
@@ -296,23 +294,7 @@ async fn checked_writer_edit_preserves_local_work_and_expires_with_its_owner() {
     let scratch = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
     fs::create_dir_all(&scratch).unwrap();
     let root = tempfile::tempdir_in(scratch.canonicalize().unwrap()).unwrap();
-    let finished = Rc::new(Cell::new(false));
-    let mut dom = VirtualDom::new_with_props(
-        Probe,
-        ProbeProps {
-            root: root.path().to_owned(),
-            finished: finished.clone(),
-        },
-    );
-    dom.rebuild_in_place();
-    timeout(Duration::from_secs(15), async {
-        while !finished.get() {
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_millis(5)) => {},
-                _ = dom.wait_for_work() => dom.render_immediate(&mut dioxus::core::NoOpMutations),
-            }
-        }
-    })
-    .await
-    .unwrap();
+    timeout(Duration::from_secs(15), probe(root.path().to_owned()))
+        .await
+        .unwrap();
 }

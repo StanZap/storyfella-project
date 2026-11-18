@@ -76,12 +76,10 @@ fn manifest_requires_the_current_layout_version() {
 }
 
 #[test]
-fn adoption_and_relocation_preserve_source_identities_associations_and_every_revision() {
+fn relocation_preserves_source_identities_associations_and_every_revision() {
     let fixture = fixture();
     let old = fixture.path().join("old");
     fs::create_dir(&old).unwrap();
-    let db = ProjectDb::open(old.join("existing.db")).unwrap();
-    db.rename_project("Harbor").unwrap();
     let mut registry = ArtifactRegistry::default();
     let base = registry
         .create_artifact(
@@ -125,12 +123,14 @@ fn adoption_and_relocation_preserve_source_identities_associations_and_every_rev
         &mut registry,
         &storyfella_language::analyze(source, &[]),
     );
-    db.save_registry(&registry).unwrap();
-    let mut stored = db.load().unwrap();
-    stored.story.set_source(source.into());
-    stored.story.save().unwrap();
-    let folder = ProjectFolder::import(&fixture.path().join("portable"), &stored).unwrap();
-    assert_eq!(folder.id(), stored.id);
+    let folder = ProjectFolder::create(
+        &fixture.path().join("portable"),
+        "Harbor",
+        &registry,
+        source,
+    )
+    .unwrap();
+    let id = folder.id();
     assert!(ProjectFolder::create(folder.root(), "Overwrite", &registry, "lost").is_err());
     let raw = rusqlite::Connection::open(folder.database()).unwrap();
     let paths: Vec<String> = raw
@@ -145,14 +145,13 @@ fn adoption_and_relocation_preserve_source_identities_associations_and_every_rev
         .iter()
         .all(|path| path.starts_with("artwork/") && !Path::new(path).is_absolute()));
     drop(raw);
-    drop(db);
     fs::remove_dir_all(&old).unwrap();
     let moved = fixture.path().join("moved");
     fs::rename(folder.root(), &moved).unwrap();
     let folder = ProjectFolder::open(&moved.join(MANIFEST)).unwrap();
     let db = ProjectDb::open(folder.database()).unwrap();
     let reopened = db.load().unwrap();
-    assert_eq!(reopened.id, stored.id);
+    assert_eq!(reopened.id, id);
     assert_eq!(reopened.story.source(), source);
     assert_eq!(reopened.registry.story_scenes, registry.story_scenes);
     assert_eq!(

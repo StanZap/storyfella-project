@@ -780,8 +780,8 @@ mod tests {
 
     #[test]
     fn smart_punctuation_is_normalized() {
-        // WebKit text input autocorrects `--` to `—` and `"` to `“ ”`; the
-        // parser must recover the intended command.
+        // Text editors autocorrect `--` to `—` and `"` to `“ ”`; a pasted
+        // command must still parse as intended.
         assert_eq!(
             parse_slash("/create character —name mia “a woman wearing a hat”").unwrap(),
             Operation::Create {

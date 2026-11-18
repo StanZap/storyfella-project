@@ -1,7 +1,6 @@
 //! Per-client playback snapshots, independent of the interactive Preview.
 use std::collections::VecDeque;
 
-use dioxus::desktop::DesktopContext;
 use storyfella_compiler::InstructionKind;
 use storyfella_runtime::{AssetPolicy, Command as PlaybackCommand, Phase, SavedState};
 use storyfella_studio_core::{
@@ -10,10 +9,6 @@ use storyfella_studio_core::{
 };
 
 use super::*;
-
-#[cfg(target_os = "macos")]
-#[path = "preview/capture.rs"]
-mod capture;
 
 const MAX_PINNED_BYTES: usize = 64 * 1024 * 1024;
 
@@ -32,18 +27,15 @@ struct Run {
 impl Previews {
     pub(super) async fn dispatch(
         &mut self,
-        state: Signal<AppState>,
+        state: &impl StateOwner,
         grant: &Grant,
         request: Request<PreviewCommand>,
         client: Uuid,
         epoch: Option<Uuid>,
-        window: &DesktopContext,
     ) -> Reply {
         request.check_project(&grant.folder)?;
         let session = match &request.command {
-            PreviewCommand::Start { session }
-            | PreviewCommand::Step { session, .. }
-            | PreviewCommand::Capture { session, .. } => *session,
+            PreviewCommand::Start { session } | PreviewCommand::Step { session, .. } => *session,
         };
         if epoch.is_none() || session != client {
             return Err(Failure::new(
@@ -51,24 +43,26 @@ impl Previews {
                 "Inspect the Writer draft on this connection first.",
             ));
         }
-        let current = {
-            let app = state.peek();
-            let current = owner(&app, grant, epoch)?;
+        let folder = grant.folder.clone();
+        let current = owned(state, move |app| {
+            let current = owner(app, &folder, epoch)?;
             app.authoring_lease
                 .as_ref()
                 .expect("owner checked the lease")
                 .verify()
                 .map_err(|_| moved())?;
-            current
-        };
+            Ok(current)
+        })
+        .await?;
         self.0.retain(|run| run.owner == current);
         match request.command {
             PreviewCommand::Start { .. } => {
-                let draft = Draft::from(&*state.peek());
+                let draft = owned(state, |app| Ok(Draft::from(&*app))).await?;
                 let session = tokio::task::spawn_blocking(move || compile(&draft))
                     .await
                     .map_err(|_| preview_error("Studio could not start Preview."))??;
-                owner(&state.peek(), grant, Some(current))?;
+                let folder = grant.folder.clone();
+                owned(state, move |app| owner(app, &folder, Some(current))).await?;
                 self.0.retain(|run| run.client != client);
                 while self.0.len() == MAX_CONNECTIONS
                     || pinned_bytes(&session)
@@ -99,26 +93,6 @@ impl Previews {
                 let run = self.run(client, preview)?;
                 run.step(action)?;
                 Ok(run.describe())
-            }
-            PreviewCommand::Capture {
-                preview,
-                width,
-                height,
-                ..
-            } => {
-                let run = self.run(client, preview)?;
-                if !(360..=960).contains(&width) || !(360..=960).contains(&height) {
-                    return Err(Failure::new(
-                        "invalid_size",
-                        "Use width and height from 360 to 960 points.",
-                    ));
-                }
-                let png = capture_frame(window, &run.session, width, height).await?;
-                owner(&state.peek(), grant, Some(current))?;
-                let mut reply = run.describe();
-                reply["viewport"] = json!([width, height]);
-                reply["png"] = json!(png);
-                Ok(reply)
             }
         }
     }
@@ -214,38 +188,12 @@ impl Run {
             "scene":runtime.plan().scenes[state.scene].id, "phase":state.phase,
             "source":position, "passage":passage, "flags":state.flags, "staged":staged,
             "active_assets":state.assets, "checkpoint":self.bookmark.is_some(),
-            "can_capture":cfg!(target_os = "macos"),
         })
     }
 }
 
 fn preview_error(message: &str) -> Failure {
     Failure::new("preview_error", message)
-}
-
-#[cfg(target_os = "macos")]
-async fn capture_frame(
-    window: &DesktopContext,
-    session: &PlaybackSession,
-    width: u32,
-    height: u32,
-) -> Result<String, Failure> {
-    capture::stage_png(window, session, width, height)
-        .await
-        .map_err(|error| Failure::new("capture_failed", &error.to_string()))
-}
-
-#[cfg(not(target_os = "macos"))]
-async fn capture_frame(
-    _: &DesktopContext,
-    _: &PlaybackSession,
-    _: u32,
-    _: u32,
-) -> Result<String, Failure> {
-    Err(Failure::new(
-        "capture_unavailable",
-        "Native Preview frame capture is available on macOS.",
-    ))
 }
 
 #[cfg(test)]

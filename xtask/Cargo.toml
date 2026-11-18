@@ -12,4 +12,3 @@ anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true
 toml.workspace = true
-tempfile.workspace = true

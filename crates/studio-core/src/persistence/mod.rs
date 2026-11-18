@@ -423,20 +423,7 @@ impl ProjectDb {
         Ok(crate::project::prepare_registry(&self.path, registry)?)
     }
 
-    /// Used only when adopting a saved project into a new portable folder.
-    pub(crate) fn set_project_id(&self, id: Uuid) -> Result<(), StoreError> {
-        self.conn
-            .lock()
-            .execute("UPDATE projects SET id = ?1", [id.to_string()])
-            .map_err(|source| StoreError::Save {
-                path: self.path.clone(),
-                source,
-            })?;
-        Ok(())
-    }
-
-    /// Renames the `projects` row (used at creation, and by any future
-    /// rename UI).
+    /// Renames the `projects` row.
     pub fn rename_project(&self, name: &str) -> Result<(), StoreError> {
         let conn = self.conn.lock();
         conn.execute(

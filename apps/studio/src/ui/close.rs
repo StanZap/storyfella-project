@@ -1,101 +1,82 @@
-use super::dialog::Dialog;
-use crate::{commands, state::AppState};
-use dioxus::desktop::{
-    tao::event::{Event, WindowEvent},
-    WindowCloseBehaviour,
-};
-use dioxus::prelude::*;
-use storyfella_studio_core::{
-    config::AppConfig,
-    errors::{ErrorCode, ReportedError},
-};
+//! Closing the window or quitting asks first while work would be lost.
+use gpui_kit::{prelude::*, *};
 
+use super::Studio;
+use crate::{commands, state::AppState};
+
+/// Unsaved writing, unapplied description drafts, or an operation still
+/// running would all be lost by quitting now.
 fn needs_close_confirmation(state: &AppState) -> bool {
     state.has_unsaved_changes || state.has_description_drafts() || state.operation_in_progress()
 }
 
-#[component]
-pub fn CloseGuard(config: AppConfig, app_state: Signal<AppState>) -> Element {
-    let mut confirm = use_signal(|| false);
-    let mut error = use_signal(|| None::<String>);
-    let desktop = dioxus::desktop::use_window();
-    let event_window = desktop.clone();
-    dioxus::desktop::use_wry_event_handler(move |event, _| {
-        if let Event::WindowEvent {
-            window_id,
-            event: WindowEvent::CloseRequested,
-            ..
-        } = event
-        {
-            if *window_id != event_window.window.id() {
+impl Studio {
+    /// Whether the window may close now. When work would be lost it asks
+    /// instead, and quits itself once answered.
+    pub(super) fn can_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.closing || !needs_close_confirmation(&self.state) {
+            return true;
+        }
+        let busy = self.state.operation_in_progress();
+        let (detail, buttons): (&str, &'static [&'static str]) = if busy {
+            (
+                "An operation is still running. Quitting stops it and loses its result.",
+                &["Cancel", "Discard and Quit"],
+            )
+        } else {
+            (
+                "This story has changes that are not saved.",
+                &["Cancel", "Discard and Quit", "Save and Quit"],
+            )
+        };
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "Quit Storyfella Studio?",
+            Some(detail),
+            buttons,
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(choice) = answer.await else {
                 return;
-            }
-            if needs_close_confirmation(&app_state.peek()) {
-                event_window.set_close_behavior(WindowCloseBehaviour::WindowHides);
-                confirm.set(true);
-                let window = event_window.clone();
-                spawn(async move {
-                    window.window.set_visible(true);
-                    window.window.set_focus();
-                });
-            } else {
-                event_window.set_close_behavior(WindowCloseBehaviour::WindowCloses);
-            }
+            };
+            this.update_in(cx, |studio, window, cx| match buttons[choice] {
+                "Discard and Quit" => studio.quit(cx),
+                "Save and Quit" => studio.save_and_quit(window, cx),
+                _ => {}
+            })
+            .ok();
+        })
+        .detach();
+        false
+    }
+
+    fn quit(&mut self, cx: &mut Context<Self>) {
+        self.closing = true;
+        cx.quit();
+    }
+
+    fn save_and_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(message) = self.state.apply_description_drafts() {
+            self.report_message(message, cx);
+            return;
         }
-    });
-    let menu_window = desktop.clone();
-    dioxus::desktop::use_muda_event_handler(move |event| {
-        if event.id.0 == super::QUIT_MENU_ID {
-            if needs_close_confirmation(&app_state.peek()) {
-                confirm.set(true);
-            } else {
-                menu_window.set_close_behavior(WindowCloseBehaviour::WindowCloses);
-                menu_window.close();
-            }
+        if self.state.project_path.is_none() {
+            self.save_as(window, cx, |studio, _, cx| studio.quit(cx));
+            return;
         }
-    });
-    let save_window = desktop.clone();
-    let working = app_state.read().operation_in_progress();
-    let title = if working {
-        "Quit Studio?"
-    } else {
-        "Save before quitting?"
-    };
-    rsx! {
-        if confirm() {
-            Dialog { title, on_close: move |_| confirm.set(false),
-                div { class: "studio-task-form",
-                    h2 { class: "text-xl font-semibold", "{title}" }
-                    if !working { p { class: "text-sm text-zinc-300", "Save your changes before quitting." } }
-                    if working { p { role: "status", class: "text-sm text-amber-300", "Wait for the current operation to finish before saving." } }
-                    if let Some(message) = error() { p { role: "alert", class: "studio-inline-error", "{message}" } }
-                    footer { class: "flex flex-wrap justify-end gap-2",
-                        button { class: "studio-button", title: "Cancel", autofocus: true, onclick: move |_| confirm.set(false), "Cancel" }
-                        button { class: "studio-button studio-button-danger", title: "Discard and quit", onclick: move |_| { desktop.set_close_behavior(WindowCloseBehaviour::WindowCloses); desktop.close(); }, "Discard and quit" }
-                        button { class: "studio-button studio-button-primary", title: "Save and quit", disabled: working, onclick: move |_| {
-                            let applied = app_state.write().apply_description_drafts().map_err(|message| ReportedError::plain(ErrorCode::AppCommandInvalid, message));
-                            let result = applied.and_then(|_| {
-                                    if app_state.read().project_path.is_none() {
-                                        let Some(path) = rfd::FileDialog::new().set_title("Save new project").set_directory(&config.project_dir).add_filter("Storyfella project", &["db"]).set_file_name("Untitled.db").save_file() else { return Err(ReportedError::plain(ErrorCode::AppCommandInvalid, "Save cancelled.")); };
-                                        let path = if path.extension().is_none() { path.with_extension("db") } else { path };
-                                        commands::save_new_project(&path, app_state)
-                                    } else { commands::save_project(app_state) }
-                                });
-                            match result {
-                                Ok(()) => { save_window.set_close_behavior(WindowCloseBehaviour::WindowCloses); save_window.close(); }
-                                Err(report) => error.set(Some(report.details)),
-                            }
-                        }, "Save and quit" }
-                    }
-                }
-            }
+        match commands::save_project(&mut self.state) {
+            Ok(()) => self.quit(cx),
+            Err(error) => self.report(error, cx),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::needs_close_confirmation;
+    use crate::state::AppState;
+
     #[test]
     fn quitting_protects_source_drafts_and_active_operations() {
         let mut state = AppState::default();

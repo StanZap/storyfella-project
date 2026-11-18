@@ -139,12 +139,6 @@ pub enum PreviewCommand {
         preview: Uuid,
         action: PreviewAction,
     },
-    Capture {
-        session: Uuid,
-        preview: Uuid,
-        width: u32,
-        height: u32,
-    },
 }
 
 #[derive(Serialize, Deserialize)]

@@ -1,26 +1,20 @@
 [package]
-# The product's name stays the package name: the `dx` build/bundle artifact
-# names and the documented launch paths key off it.
 name = "storyfella-studio"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 description = "Write, arrange, and preview visual stories."
 
-[features]
-default = ["desktop"]
-desktop = ["dioxus/desktop"]
-
 [dependencies]
 agentkit-ai.workspace = true
 storyfella-language.workspace = true
 storyfella-compiler.workspace = true
-storyfella-playback-ui.workspace = true
 storyfella-runtime.workspace = true
 storyfella-studio-core = { path = "../../crates/studio-core" }
+storyfella-playback-panel.workspace = true
+design-system.workspace = true
+gpui-kit.workspace = true
 anyhow.workspace = true
-dioxus.workspace = true
-rfd.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
@@ -30,14 +24,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 
-[target.'cfg(target_os = "macos")'.dependencies]
-base64.workspace = true
-block2.workspace = true
-image.workspace = true
-objc2.workspace = true
-objc2-app-kit = { workspace = true, features = ["NSBitmapImageRep", "NSImage", "NSImageRep"] }
-objc2-foundation = { workspace = true, features = ["NSData", "NSDictionary", "NSError", "NSGeometry", "objc2-core-foundation"] }
-objc2-web-kit = { workspace = true, features = ["WKSnapshotConfiguration", "WKWebView", "block2", "objc2-core-foundation"] }
-
 [dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true

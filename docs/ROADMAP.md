@@ -7,6 +7,20 @@ meets its acceptance criteria.
 
 ## 0. Current direction and actionable backlog
 
+- [ ] **Studio on GPUI.** Studio is a GPUI app on the shared design system; the
+  Dioxus UI, its Tailwind/npm toolchain and `dx` packaging were removed.
+  - [x] Player and Studio's Play view on `crates/playback-panel`.
+  - [x] Window shell, Home, command palette, guide card, close guard and the
+    Settings window; the plan driver and live MCP reach the window through
+    `host::Mailbox`. The CI smoke plan runs through it.
+  - [ ] Write: the story editor, diagnostics, completion and the Writing help
+    review, on the design system's code editor.
+  - [ ] Board: the asset catalog, details and Open in Atelier.
+  - [ ] Preview frame capture over MCP: render the playback panel headlessly
+    and return a PNG through a new `storyfella_preview_capture` tool.
+  - [ ] Desktop packaging (an `.app` and AppImage) without `dx bundle`.
+  - [ ] Re-accept the DESIGN.md §7 requirements against each ported view.
+
 - [ ] **Coordinated novel writing.** Plan novel-wide requests, execute bounded
   writing tasks with shared context, and present one review covering file edits,
   additions and removals. Apply through a recoverable, conflict-checked project

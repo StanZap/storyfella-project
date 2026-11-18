@@ -352,11 +352,6 @@ impl AdditionalSources {
         self.documents.get(relative)
     }
 
-    /// Forget a clean file after its guarded removal from the project tree.
-    pub fn forget(&mut self, relative: &str) {
-        self.documents.remove(relative);
-    }
-
     /// Create an empty source without replacing any existing file.
     pub fn create(&mut self, path: &Path) -> Result<String, StoryFileError> {
         let fail = |message: &str| StoryFileError::Write {

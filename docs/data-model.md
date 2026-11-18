@@ -195,7 +195,7 @@ alias. The export is an active schema upgrade for existing projects.
 Filesystem tests cover exact text, malformed drafts, external edits, copy/reload,
 missing files, migration/retry and moved project pairs with stable artifact IDs.
 Studio state tests verify joint source/registry undo and draft preservation.
-A headless Dioxus harness exercises the actual project commands,
+Studio's command tests exercise the actual project commands,
 including conflict-blocked navigation and retrying a partial project save.
 
 ### Scene and beat reconciliation

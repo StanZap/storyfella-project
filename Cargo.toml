@@ -3,20 +3,18 @@
 #   crates/studio-core   — the domain layer (artifact registry, typed operations,
 #                   persistence, the native generation client, and the
 #                   runtime/LLM clients). No GUI dependency, so `sf-cli` and the
-#                   core tests never compile the toolkit or the WebKit stack.
-#   apps/studio  — the Dioxus application: UI, state, command language, the
-#                   plan driver, and the compiled assets. Owns the `desktop`
-#                   feature.
+#                   core tests never compile the toolkit.
+#   apps/studio  — the GPUI application: UI, state, command language and the
+#                   plan driver.
 #   apps/cli      — `sf-cli` story commands and MCP.
 #   apps/player   — the GPUI desktop Player.
-#   crates/playback-panel — the GPUI playback panel and stage, for the Player
-#                   and, once its shell moves to GPUI, Studio.
-#   xtask         — `cargo xtask`: the developer task runner (build/run/bundle/
+#   crates/playback-panel — the GPUI playback panel and stage.
+#   xtask         — `cargo xtask`: the developer task runner (build/run/
 #                   check/test). Not part of any shipped artifact.
 #
 # The `.cargo/config.toml` target-dir redirect must stay at this level.
 [workspace]
-members = ["crates/studio-core", "crates/language", "crates/compiler", "crates/lsp", "crates/runtime", "crates/playback-ui", "crates/playback-panel", "apps/studio", "apps/cli", "apps/player", "xtask"]
+members = ["crates/studio-core", "crates/language", "crates/compiler", "crates/lsp", "crates/runtime", "crates/playback-panel", "apps/studio", "apps/cli", "apps/player", "xtask"]
 resolver = "2"
 
 [workspace.package]
@@ -31,7 +29,6 @@ storyfella-studio-core = { path = "crates/studio-core" }
 storyfella-language = { path = "crates/language" }
 storyfella-compiler = { path = "crates/compiler" }
 storyfella-runtime = { path = "crates/runtime" }
-storyfella-playback-ui = { path = "crates/playback-ui" }
 storyfella-playback-panel = { path = "crates/playback-panel" }
 # GPUI apps share the design system with Atelier in ../storyfella-canvas, and
 # pin the same exact gpui-kit and gpui-pre releases it does.
@@ -52,16 +49,9 @@ directories = "6.0.0"
 # Three-way source merging preserves manual review edits across AI retries.
 diffy = "0.5.2"
 tempfile = "3.10"
-dioxus = { version = "0.7.10", features = [] }
 futures-util = "0.3.33"
 image = "0.25.10"
-objc2 = "0.6"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSEvent", "NSWindow", "NSView", "block2"] }
-objc2-foundation = { version = "0.3.2", default-features = false }
-objc2-web-kit = { version = "0.3.2", default-features = false }
-block2 = "0.6"
 parking_lot = "0.12.5"
-rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
 rusqlite = { version = "0.40.1", features = ["bundled", "backup"] }
 same-file = "1.0.6"
 serde = { version = "1.0.229", features = ["derive"] }

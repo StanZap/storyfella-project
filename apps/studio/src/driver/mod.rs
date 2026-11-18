@@ -7,9 +7,8 @@
 //! (`crate::commands`), and outcomes are asserted against app state.
 //!
 //! Two run modes:
-//! - `Guide` — slow and narrated: the UI shows an assistant card (see
-//!   `crate::ui::guide`) with the step message, waits, then watches the app
-//!   perform the action. This is the tutoring experience.
+//! - `Guide` — slow and narrated: the window shows a guide card with the
+//!   step message, waits, then watches the app perform the action.
 //! - `Check` — fast: the same steps run back to back, expectations gate
 //!   progress, and a pass/fail report is produced. This is the regression
 //!   suite — a plan that passes means the flows it covers still work.
@@ -17,26 +16,15 @@
 //! Plans support authoring and saved playback. Visual production commands
 //! are rejected on load, before any plan step can change the project.
 
-use std::{
-    path::{Path, PathBuf},
-    str::FromStr,
-    time::{Duration, Instant},
-};
+use std::{path::PathBuf, str::FromStr};
 
-use dioxus::prelude::*;
 use serde::Deserialize;
 
 use storyfella_studio_core::config::AppConfig;
-use storyfella_studio_core::errors::CodedError;
-use storyfella_studio_core::persistence::ProjectDb;
-use storyfella_studio_core::registry::{ArtifactKind, GenerationDefaults};
-use storyfella_studio_core::vision;
+use storyfella_studio_core::registry::ArtifactKind;
 
-use crate::{
-    commands::{self, ExecutionUi, OpActivity},
-    state::AppState,
-    ui::AppScreen,
-};
+mod run;
+pub use run::run_plan;
 
 /// One step in a plan: an action in the app's vocabulary, plus the
 /// tutorial narration (`message`) and pacing.
@@ -79,9 +67,6 @@ pub enum StepVerb {
     Caret(usize),
     /// Append authored text in the Writer, character by character in Guide mode.
     TypeStory(String),
-    /// Move the grid's keyboard cursor onto an artifact, so the focus ring
-    /// moves the way it does under `hjkl`.
-    Cursor(String),
     /// Show or hide the command palette.
     Palette(bool),
     Command(String),
@@ -153,7 +138,6 @@ impl StepVerb {
             Self::Say => String::new(),
             Self::Caret(line) => format!("caret to line {line}"),
             Self::TypeStory(_) => "type in the Writer".to_owned(),
-            Self::Cursor(name) => format!("cursor to \"{name}\""),
             Self::Palette(true) => "open the palette".to_owned(),
             Self::Palette(false) => "close the palette".to_owned(),
             Self::Command(command) => command.clone(),
@@ -199,7 +183,6 @@ impl StepVerb {
                     .ok_or_else(|| "action caret expects a line number".to_owned())?
                     as usize,
             ),
-            "cursor" => Self::Cursor(text(&value)?),
             "type_story" => Self::TypeStory(text(&value)?),
             "palette" => Self::Palette(value.as_bool().unwrap_or(true)),
             "go_settings" => Self::GoSettings,
@@ -400,88 +383,12 @@ impl Plan {
             if let StepVerb::Command(command) = &step.verb {
                 let operation = storyfella_studio_core::registry::slash::parse_slash(command)
                     .map_err(|error| error.to_string())?;
-                commands::validate_studio_operations(&[operation])
+                crate::commands::validate_studio_operations(&[operation])
                     .map_err(|error| error.details)?;
             }
         }
         Ok(plan)
     }
-}
-
-/// One plan file on disk, as the Plans screen lists it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct PlanFile {
-    pub path: PathBuf,
-    pub plan: Plan,
-    /// Parse failures keep the file visible with the reason.
-    pub error: Option<String>,
-}
-
-/// Loads every `*.yaml` in the plans directory; unreadable or unparseable
-/// files yield entries with an error (so a broken plan is visible, not
-/// silently dropped).
-pub fn discover(dir: &Path) -> Vec<PlanFile> {
-    let mut files: Vec<PlanFile> = match std::fs::read_dir(dir) {
-        Ok(entries) => entries
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let path = entry.path();
-                if path.extension().and_then(|ext| ext.to_str()) != Some("yaml") {
-                    return None;
-                }
-                let raw = match std::fs::read_to_string(&path) {
-                    Ok(raw) => raw,
-                    Err(error) => {
-                        let name = path
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("plan")
-                            .to_owned();
-                        return Some(PlanFile {
-                            path,
-                            plan: Plan {
-                                name,
-                                description: String::new(),
-                                speed_ms: None,
-                                typing_cps: default_typing_cps(),
-                                steps: Vec::new(),
-                            },
-                            error: Some(format!("cannot read: {error}")),
-                        });
-                    }
-                };
-                let plan = match Plan::from_yaml(&raw) {
-                    Ok(plan) => plan,
-                    Err(error) => {
-                        let name = path
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("plan")
-                            .to_owned();
-                        return Some(PlanFile {
-                            path,
-                            plan: Plan {
-                                name,
-                                description: String::new(),
-                                speed_ms: None,
-                                typing_cps: default_typing_cps(),
-                                steps: Vec::new(),
-                            },
-                            error: Some(error),
-                        });
-                    }
-                };
-                Some(PlanFile {
-                    path,
-                    plan,
-                    error: None,
-                })
-            })
-            .collect(),
-        Err(_) => Vec::new(),
-    };
-    files.sort_by(|a, b| a.plan.name.cmp(&b.plan.name));
-    files
 }
 
 /// The two run modes: narrated tutoring vs. fast regression.
@@ -596,6 +503,22 @@ impl PlanLaunch {
         );
     }
 
+    /// The `--plan` to run at startup, with how its run ends: a Check run
+    /// prints its verdict and exits unless `--keep-window` is given; a Guide
+    /// run shows its report in the window.
+    pub fn plan(&self) -> Option<(Result<Plan, String>, GuideMode, PlanCompletion)> {
+        let path = self.path.as_ref()?;
+        let plan = std::fs::read_to_string(path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))
+            .and_then(|yaml| Plan::from_yaml(&yaml));
+        let completion = match (self.mode, self.keep_window) {
+            (GuideMode::Guide, _) => PlanCompletion::ShowReport,
+            (GuideMode::Check, false) => PlanCompletion::PrintAndExit,
+            (GuideMode::Check, true) => PlanCompletion::PrintAndKeepWindow,
+        };
+        Some((plan, self.mode, completion))
+    }
+
     /// Plan-created projects, generated fixtures and cache are scratch artifacts,
     /// separate from ordinary user project storage and repository source assets.
     pub fn configure_paths(&self, config: &mut AppConfig) {
@@ -677,23 +600,6 @@ impl RunReport {
     }
 }
 
-/// What the runner needs to act: the app's signals, plus the driver's own
-/// execution surface (failures land on its error signal — observed, never
-/// the global toast).
-#[derive(Clone)]
-pub struct DriveContext {
-    pub config: AppConfig,
-    pub app_state: Signal<AppState>,
-    pub defaults: Signal<GenerationDefaults>,
-    pub screen: Signal<AppScreen>,
-    pub playback: Signal<storyfella_studio_core::playback::PlaybackModel>,
-    /// The two cursors and the palette, so a demo can show state rather
-    /// than only describe it.
-    pub writer_caret: crate::ui::WriterCaret,
-    pub grid_cursor: crate::ui::GridCursor,
-    pub palette_open: Signal<bool>,
-}
-
 /// The live state of a run, as the assistant card renders it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GuideSession {
@@ -716,679 +622,11 @@ pub enum GuideState {
     Done(RunReport),
 }
 
-const POLL_INTERVAL_MS: u64 = 80;
-const STEP_TIMEOUT_MS: u64 = 30_000;
-const OP_TIMEOUT_MS: u64 = 300_000;
-const IMAGE_TIMEOUT_MS: u64 = 300_000;
-
 #[derive(Clone, Copy)]
 pub enum PlanCompletion {
     ShowReport,
     PrintAndExit,
     PrintAndKeepWindow,
-}
-
-/// Installs the guide session and executes the steps on a spawned task.
-/// CLI launches can print the verdict and either exit or leave the window open.
-pub fn run_plan(
-    ctx: DriveContext,
-    ui: ExecutionUi,
-    plan: Plan,
-    mode: GuideMode,
-    mut session: Signal<Option<GuideSession>>,
-    completion: PlanCompletion,
-) {
-    session.set(Some(GuideSession {
-        plan: plan.clone(),
-        mode,
-        current: 0,
-        busy: None,
-        paused: false,
-        speed: 1,
-        typing_cps: plan.typing_cps,
-        state: GuideState::Running,
-    }));
-    spawn(async move {
-        let report = run_steps(ctx.clone(), ui, &plan, mode, session).await;
-        let exit_code = if report.failed() > 0 { 1 } else { 0 };
-        if matches!(completion, PlanCompletion::PrintAndExit) {
-            // Check mode exits the process right after the report; the
-            // autosave effect may not get a render tick in between, so the
-            // final state is persisted here, before the report.
-            if let Err(error) = commands::save_project(ctx.app_state) {
-                println!(
-                    "warning: could not save the project before exit: {}",
-                    error.details
-                );
-            }
-            report.print();
-            std::process::exit(exit_code);
-        }
-        if matches!(completion, PlanCompletion::PrintAndKeepWindow) {
-            report.print();
-            session.set(None);
-            return;
-        }
-        session.with_mut(|slot| {
-            if let Some(session) = slot {
-                session.state = GuideState::Done(report);
-            }
-        });
-    });
-}
-
-async fn run_steps(
-    ctx: DriveContext,
-    ui: ExecutionUi,
-    plan: &Plan,
-    mode: GuideMode,
-    mut session: Signal<Option<GuideSession>>,
-) -> RunReport {
-    let started = Instant::now();
-    let mut results: Vec<(String, StepStatus)> = Vec::new();
-    // The vision session (if a step needs one) lives for the whole run, so a
-    // managed server is started once rather than per assessment.
-    let mut vision: Option<vision::VisionSession> = None;
-    for (index, step) in plan.steps.iter().enumerate() {
-        if session.read().is_none() {
-            break; // cancelled
-        }
-        session.with_mut(|slot| {
-            if let Some(session) = slot {
-                session.current = index;
-                session.state = GuideState::Running;
-            }
-        });
-        if mode == GuideMode::Guide {
-            let wait = step.wait_ms.or(plan.speed_ms).unwrap_or(2_000);
-            wait_with_pause(&session, wait).await;
-        }
-        if session.read().is_none() {
-            break;
-        }
-        let status = execute_step(ctx.clone(), ui.clone(), step, session, &mut vision).await;
-        let mut status = status;
-        if step.soft {
-            if let StepStatus::Failed { reason } = status {
-                status = StepStatus::Warned { reason };
-            }
-        }
-        results.push((step.verb.label(), status.clone()));
-        if status.is_failure() {
-            break; // fail-fast: the flow is broken, stop walking it
-        }
-    }
-    session.with_mut(|slot| {
-        if let Some(session) = slot {
-            session.busy = None;
-        }
-    });
-    RunReport {
-        plan_name: plan.name.clone(),
-        steps: results,
-        duration_ms: started.elapsed().as_millis() as u64,
-    }
-}
-
-async fn execute_step(
-    mut ctx: DriveContext,
-    mut ui: ExecutionUi,
-    step: &Step,
-    session: Signal<Option<GuideSession>>,
-    vision: &mut Option<vision::VisionSession>,
-) -> StepStatus {
-    match &step.verb {
-        StepVerb::OpenProjectFile(path) => {
-            let path = storyfella_studio_core::paths::root().join(path);
-            match commands::open_project(&path, ctx.app_state) {
-                Ok(()) => StepStatus::Passed,
-                Err(error) => StepStatus::Failed {
-                    reason: error.details,
-                },
-            }
-        }
-        StepVerb::Preview => {
-            crate::ui::preview::start_preview(ctx.playback, ctx.app_state);
-            ctx.screen.set(AppScreen::Preview);
-            let error = ctx.playback.read().error.clone();
-            status(error.is_none(), error.unwrap_or_default())
-        }
-        StepVerb::Playback(command) => {
-            ctx.playback.write().dispatch(command.clone());
-            let error = ctx.playback.read().error.clone();
-            status(error.is_none(), error.unwrap_or_default())
-        }
-        StepVerb::PlaybackBookmark => {
-            ctx.playback.write().bookmark();
-            StepStatus::Passed
-        }
-        StepVerb::PlaybackRestore => {
-            ctx.playback.write().restore_bookmark();
-            let error = ctx.playback.read().error.clone();
-            status(error.is_none(), error.unwrap_or_default())
-        }
-        StepVerb::ExpectPlayback(expected) => {
-            let model = ctx.playback.read();
-            let Some(session) = &model.session else {
-                return StepStatus::Failed {
-                    reason: "no playback session".into(),
-                };
-            };
-            let runtime = &session.runtime;
-            let text = match &runtime.current().kind {
-                storyfella_compiler::InstructionKind::Speech { text, .. }
-                | storyfella_compiler::InstructionKind::Narration { text } => {
-                    Some(text.value.as_str())
-                }
-                _ => None,
-            };
-            let visuals = session.active_visuals();
-            let staged: std::collections::BTreeMap<_, _> = runtime
-                .staged()
-                .iter()
-                .map(|actor| {
-                    let revision = session
-                        .staged_visual(actor)
-                        .filter(|visual| visual.image_url.starts_with("data:image/png;base64,"))
-                        .and_then(|visual| visual.binding.revision.parse().ok());
-                    (
-                        actor.instance.clone(),
-                        StagedExpectation {
-                            asset: actor.asset.name.value.clone(),
-                            revision,
-                        },
-                    )
-                })
-                .collect();
-            let valid = runtime.state().phase == expected.phase
-                && runtime.plan().scenes[runtime.state().scene].id.0 == expected.scene
-                && expected.text.as_deref().is_none_or(|t| Some(t) == text)
-                && expected
-                    .staged
-                    .as_ref()
-                    .is_none_or(|expected| *expected == staged)
-                && expected.artwork_revision.is_none_or(|revision| {
-                    visuals
-                        .iter()
-                        .any(|visual| visual.binding.revision == revision.to_string())
-                })
-                && visuals.len() == runtime.state().assets.len()
-                && visuals.iter().all(|v| {
-                    v.image_url.starts_with("data:image/png;base64,")
-                        && !v.binding.revision.is_empty()
-                });
-            status(
-                valid,
-                format!(
-                    "expected {expected:?}; got {:?}, text {text:?}, staged {staged:?}",
-                    runtime.state()
-                ),
-            )
-        }
-        StepVerb::GoProjects => {
-            ctx.screen.set(AppScreen::Projects);
-            StepStatus::Passed
-        }
-        StepVerb::GoStory => {
-            ctx.screen.set(AppScreen::Writer);
-            StepStatus::Passed
-        }
-        StepVerb::GoAssets => {
-            ctx.screen.set(AppScreen::Assets);
-            StepStatus::Passed
-        }
-        StepVerb::SampleProject => {
-            match commands::create_project(
-                &ctx.config.project_dir,
-                "Keeper of the Low Light",
-                ctx.app_state,
-            ) {
-                Ok(_) => {
-                    let (registry, story) = crate::app::sample::project(&ctx.config.asset_dir);
-                    {
-                        let mut state = ctx.app_state.write();
-                        state.registry = registry;
-                        state.set_story_source(String::new());
-                        state.has_unsaved_changes = true;
-                    }
-                    ui.error_report.set(None);
-                    type_story(&mut ctx, &session, &story).await
-                }
-                Err(report) => StepStatus::Failed {
-                    reason: report.details.clone(),
-                },
-            }
-        }
-        StepVerb::Open(name) => {
-            let id = ctx
-                .app_state
-                .read()
-                .registry
-                .artifacts
-                .iter()
-                .find(|artifact| artifact.name.eq_ignore_ascii_case(name))
-                .map(|artifact| artifact.id);
-            match id {
-                Some(id) => {
-                    ctx.app_state.write().select_artifact(id);
-                    ctx.screen.set(AppScreen::Assets);
-                    StepStatus::Passed
-                }
-                None => StepStatus::Failed {
-                    reason: format!("no artifact named {name:?}"),
-                },
-            }
-        }
-        StepVerb::Back => {
-            ctx.app_state.write().clear_selection();
-            StepStatus::Passed
-        }
-        StepVerb::Say => StepStatus::Passed,
-        StepVerb::Caret(line) => {
-            ctx.writer_caret.navigate(storyfella_language::Position {
-                line: *line as u32,
-                character: 0,
-            });
-            ctx.screen.set(AppScreen::Writer);
-            StepStatus::Passed
-        }
-        StepVerb::TypeStory(text) => type_story(&mut ctx, &session, text).await,
-        StepVerb::Cursor(name) => {
-            let query = String::new();
-            let ids = crate::ui::gallery::ordered_ids(&ctx.app_state.read().registry, &query);
-            let target = ctx
-                .app_state
-                .read()
-                .registry
-                .artifacts
-                .iter()
-                .find(|artifact| artifact.name.eq_ignore_ascii_case(name))
-                .map(|artifact| artifact.id);
-            match target.and_then(|id| ids.iter().position(|candidate| *candidate == id)) {
-                Some(index) => {
-                    ctx.grid_cursor.0.clone().set(index);
-                    ctx.app_state.write().clear_selection();
-                    ctx.screen.set(AppScreen::Assets);
-                    StepStatus::Passed
-                }
-                None => StepStatus::Failed {
-                    reason: format!("no tile for {name:?}"),
-                },
-            }
-        }
-        StepVerb::Palette(open) => {
-            ctx.palette_open.clone().set(*open);
-            StepStatus::Passed
-        }
-        StepVerb::GoSettings => {
-            ctx.screen.set(AppScreen::Settings);
-            StepStatus::Passed
-        }
-        StepVerb::CreateProject(name) => {
-            match commands::create_project(&ctx.config.project_dir, name, ctx.app_state) {
-                Ok(_) => {
-                    ctx.screen.set(AppScreen::Assets);
-                    ui.error_report.set(None);
-                    StepStatus::Passed
-                }
-                Err(report) => StepStatus::Failed {
-                    reason: report.details.clone(),
-                },
-            }
-        }
-        StepVerb::OpenProject(name) => match find_project_by_name(&ctx.config.project_dir, name) {
-            Some(path) => match commands::open_project(&path, ctx.app_state) {
-                Ok(()) => {
-                    ctx.screen.set(AppScreen::Assets);
-                    StepStatus::Passed
-                }
-                Err(report) => StepStatus::Failed {
-                    reason: report.details.clone(),
-                },
-            },
-            None => StepStatus::Failed {
-                reason: format!("no project named \"{name}\" in the projects directory"),
-            },
-        },
-        StepVerb::Command(command) => {
-            let defaults = ctx.defaults.read().clone();
-            match commands::run_slash_command(ctx.app_state, defaults, ui.clone(), command) {
-                Err(report) => StepStatus::Failed {
-                    reason: report.details.clone(),
-                },
-                Ok(()) => wait_for_op(ui, session).await,
-            }
-        }
-        StepVerb::ExpectProject(name) => {
-            let expected = name.clone();
-            let app_state = ctx.app_state;
-            let ok = poll_until(
-                move || {
-                    let state = app_state.read();
-                    state.project_name.eq_ignore_ascii_case(&expected)
-                        && state.project_path.is_some()
-                },
-                STEP_TIMEOUT_MS,
-            )
-            .await;
-            status(ok, format!("expected the open story to be \"{name}\""))
-        }
-        StepVerb::ExpectStorySequence(expected) => {
-            let registry = ctx.app_state.read().registry.clone();
-            let actual: Vec<String> = registry
-                .story_scenes
-                .iter()
-                .flat_map(|scene| {
-                    std::iter::once(scene.name.clone()).chain(
-                        scene
-                            .beats
-                            .iter()
-                            .map(|beat| format!("{}.{}", scene.name, beat.name)),
-                    )
-                })
-                .collect();
-            let valid = storyfella_studio_core::authoring::validate_associations(&registry).is_ok();
-            status(
-                valid && &actual == expected,
-                format!("expected {expected:?}, got {actual:?}"),
-            )
-        }
-        StepVerb::ExpectArtifact { name, kind } => {
-            let expected = name.clone();
-            let kind = *kind;
-            let app_state = ctx.app_state;
-            let ok = poll_until(
-                move || {
-                    let state = app_state.read();
-                    let found = state.registry.iter().any(|artifact| {
-                        artifact.name.eq_ignore_ascii_case(&expected)
-                            && kind.is_none_or(|kind| artifact.kind == kind)
-                    });
-                    found
-                },
-                STEP_TIMEOUT_MS,
-            )
-            .await;
-            status(
-                ok,
-                format!("expected an artifact named \"{name}\" in the registry"),
-            )
-        }
-        StepVerb::ExpectArtifactCount { kind, count } => {
-            let kind = *kind;
-            let count = *count;
-            let app_state = ctx.app_state;
-            let ok = poll_until(
-                move || {
-                    let state = app_state.read();
-                    let matches = state
-                        .registry
-                        .iter()
-                        .filter(|artifact| artifact.kind == kind)
-                        .count()
-                        == count;
-                    matches
-                },
-                STEP_TIMEOUT_MS,
-            )
-            .await;
-            status(
-                ok,
-                format!("expected exactly {count} {kind}s in the registry"),
-            )
-        }
-        StepVerb::ExpectImage(name) => {
-            let expected = name.clone();
-            let app_state = ctx.app_state;
-            let ok = poll_until(
-                move || {
-                    let state = app_state.read();
-                    let has_image = state
-                        .registry
-                        .iter()
-                        .find(|artifact| artifact.name.eq_ignore_ascii_case(&expected))
-                        .and_then(|artifact| state.registry.active_revision(artifact.id))
-                        .and_then(|revision| revision.asset_path.as_ref())
-                        .map(|path| Path::new(path).exists())
-                        .unwrap_or(false);
-                    has_image
-                },
-                IMAGE_TIMEOUT_MS,
-            )
-            .await;
-            status(
-                ok,
-                format!("expected \"{name}\" to have a finished active image"),
-            )
-        }
-        StepVerb::ExpectVision {
-            image,
-            question,
-            expect,
-            expect_not,
-        } => {
-            let Some(deployment) = ctx.config.vision.clone() else {
-                return StepStatus::Failed {
-                    reason: "no `vision` provider is configured in clipforge.toml".to_owned(),
-                };
-            };
-            let session = vision.get_or_insert_with(|| {
-                vision::VisionSession::new(deployment, &ctx.config.state_dir)
-            });
-
-            // The image currently shown for the artifact (its active revision).
-            let path = {
-                let state = ctx.app_state.read();
-                let artifact = state
-                    .registry
-                    .iter()
-                    .find(|artifact| artifact.name.eq_ignore_ascii_case(image));
-                artifact.and_then(|artifact| AppState::display_image(artifact).map(str::to_owned))
-            };
-            let Some(path) = path else {
-                return StepStatus::Failed {
-                    reason: format!("artifact \"{image}\" has no image to assess"),
-                };
-            };
-            let attachment = match vision::image_for_chat(Path::new(&path)) {
-                Ok(attachment) => attachment,
-                Err(error) => {
-                    let report = error.report().log();
-                    return StepStatus::Failed {
-                        reason: format!("{} — {}", report.code.code(), report.details),
-                    };
-                }
-            };
-            let answer = match session
-                .assess(vec![attachment], question, vision::DEFAULT_MAX_TOKENS)
-                .await
-            {
-                Ok(answer) => answer,
-                Err(error) => {
-                    let report = error.report().log();
-                    return StepStatus::Failed {
-                        reason: format!("{} — {}", report.code.code(), report.details),
-                    };
-                }
-            };
-            match vision::check(&answer, expect.as_deref(), expect_not.as_deref()) {
-                Ok(()) => StepStatus::Passed,
-                Err(reason) => StepStatus::Failed {
-                    reason: format!("{reason} (model said: {answer})"),
-                },
-            }
-        }
-        StepVerb::ExpectNoError => {
-            let ok = ui.error_report.read().is_none();
-            status(ok, "expected no error report".to_owned())
-        }
-    }
-}
-
-fn status(ok: bool, reason: String) -> StepStatus {
-    if ok {
-        StepStatus::Passed
-    } else {
-        StepStatus::Failed { reason }
-    }
-}
-
-/// Waits for a submitted operation to settle back to Idle, mirroring its
-/// summary on the session (the assistant card shows what the app is doing).
-/// The busy sync must not live inside a poll closure — signals need `&mut`,
-/// closures passed to polling are `Fn`.
-async fn wait_for_op(ui: ExecutionUi, mut session: Signal<Option<GuideSession>>) -> StepStatus {
-    let deadline = Instant::now() + Duration::from_millis(OP_TIMEOUT_MS);
-    let done = loop {
-        if session.read().is_none() {
-            break false; // cancelled
-        }
-        if !ui.activity.read().is_busy() {
-            break true;
-        }
-        if let OpActivity::Running { summary } = ui.activity.read().clone() {
-            session.with_mut(|slot| {
-                if let Some(session) = slot {
-                    if session.busy.as_deref() != Some(summary.as_str()) {
-                        session.busy = Some(summary.clone());
-                    }
-                }
-            });
-        }
-        if Instant::now() >= deadline {
-            break false;
-        }
-        tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
-    };
-    session.with_mut(|slot| {
-        if let Some(session) = slot {
-            session.busy = None;
-        }
-    });
-    if !done {
-        StepStatus::Failed {
-            reason: "the operation did not finish in time".to_owned(),
-        }
-    } else if let Some(report) = ui.error_report.read().clone() {
-        StepStatus::Failed {
-            reason: format!("{} — {}", report.code.code(), report.details),
-        }
-    } else {
-        StepStatus::Passed
-    }
-}
-
-/// Finds the project database whose stored story name matches, scanning
-/// the projects directory (the Recent-list equivalent).
-fn find_project_by_name(project_dir: &Path, name: &str) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(project_dir).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("db") {
-            continue;
-        }
-        if let Ok(stored) = ProjectDb::open(&path).and_then(|db| db.load()) {
-            if stored.name.eq_ignore_ascii_case(name) {
-                return Some(path);
-            }
-        }
-    }
-    None
-}
-
-/// Polls a condition (reading app state) until it holds or the timeout
-/// expires. The only sleeping primitive the runner needs.
-async fn poll_until<F: Fn() -> bool>(check: F, timeout_ms: u64) -> bool {
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    while Instant::now() < deadline {
-        if check() {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
-    }
-    check()
-}
-
-/// Guide-mode narration pacing: waits the step's duration, honoring pause
-/// and speed from the assistant card; a cancelled session returns early.
-async fn wait_with_pause(session: &Signal<Option<GuideSession>>, wait_ms: u64) -> bool {
-    let mut remaining = wait_ms;
-    loop {
-        let control = session.read().as_ref().map(|s| (s.paused, s.speed));
-        let Some((paused, speed)) = control else {
-            return false;
-        };
-        if paused {
-            tokio::time::sleep(Duration::from_millis(80)).await;
-            continue;
-        }
-        if remaining == 0 {
-            return true;
-        }
-        let speed = u64::from(speed.max(1));
-        let slice = remaining.div_ceil(speed).min(POLL_INTERVAL_MS);
-        tokio::time::sleep(Duration::from_millis(slice)).await;
-        remaining = remaining.saturating_sub(slice * speed);
-    }
-}
-
-async fn type_story(
-    ctx: &mut DriveContext,
-    session: &Signal<Option<GuideSession>>,
-    text: &str,
-) -> StepStatus {
-    ctx.screen.set(AppScreen::Writer);
-    let original = ctx.app_state.read().story.source().to_owned();
-    let completed = type_text(session, text, |typed| {
-        let source = format!("{original}{typed}");
-        let position = storyfella_language::Source::new(&source)
-            .position(source.len())
-            .unwrap();
-        ctx.app_state.write().set_story_source(source);
-        ctx.writer_caret.navigate(position);
-    })
-    .await;
-    status(completed, "the run was cancelled while typing".to_owned())
-}
-
-/// Emit UTF-8-safe prefixes through the same state setters as manual edits.
-/// Check mode applies the text once; Guide mode reads live controls per character.
-async fn type_text(
-    session: &Signal<Option<GuideSession>>,
-    text: &str,
-    mut emit: impl FnMut(&str),
-) -> bool {
-    if !wait_with_pause(session, 0).await {
-        return false;
-    }
-    if session
-        .read()
-        .as_ref()
-        .is_some_and(|s| s.mode == GuideMode::Check)
-    {
-        emit(text);
-        return true;
-    }
-    for (offset, character) in text.char_indices() {
-        loop {
-            if !wait_with_pause(session, 0).await {
-                return false;
-            }
-            let Some(rate) = session.read().as_ref().map(|s| s.typing_cps) else {
-                return false;
-            };
-            tokio::time::sleep(Duration::from_secs_f64(1.0 / f64::from(rate.max(1)))).await;
-            let active = session.read();
-            let Some(active) = active.as_ref() else {
-                return false;
-            };
-            if !active.paused {
-                break;
-            }
-        }
-        emit(&text[..offset + character.len_utf8()]);
-    }
-    true
 }
 
 #[cfg(test)]
@@ -1449,7 +687,7 @@ mod tests {
     #[test]
     fn tour_appends_valid_source() {
         let tour = Plan::from_yaml(include_str!("../../../../config/plans/ui-tour.yaml")).unwrap();
-        let mut source = crate::app::sample::STORY.to_owned();
+        let mut source = crate::sample::STORY.to_owned();
         for step in tour.steps {
             if let StepVerb::TypeStory(text) = step.verb {
                 source.push_str(&text);
@@ -1465,90 +703,6 @@ mod tests {
             "{:?}",
             analysis.diagnostics
         );
-    }
-
-    fn typing_session(mode: GuideMode) -> GuideSession {
-        GuideSession {
-            plan: Plan::from_yaml("name: typing\nsteps: []\n").unwrap(),
-            mode,
-            current: 0,
-            busy: None,
-            paused: false,
-            speed: 1,
-            typing_cps: 200,
-            state: GuideState::Running,
-        }
-    }
-
-    #[component]
-    fn TypingProbe() -> Element {
-        let mut session = use_signal(|| Some(typing_session(GuideMode::Guide)));
-        use_hook(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_time()
-                .build()
-                .unwrap();
-            runtime.block_on(async {
-                let mut prefixes = Vec::new();
-                assert!(
-                    type_text(&session, "é🌊\r\n", |text| prefixes
-                        .push(text.to_owned()))
-                    .await
-                );
-                assert_eq!(prefixes, ["é", "é🌊", "é🌊\r", "é🌊\r\n"]);
-
-                // Check mode has no character delay: its first poll can only
-                // remain pending without emitting text if pause is honored.
-                session.set(Some(typing_session(GuideMode::Check)));
-                session.with_mut(|s| s.as_mut().unwrap().paused = true);
-                let count = std::rc::Rc::new(std::cell::Cell::new(0));
-                let observed = count.clone();
-                let mut controller = session;
-                let mut typing = Box::pin(type_text(&session, "ab", move |_| {
-                    observed.set(observed.get() + 1);
-                }));
-                std::future::poll_fn(|context| {
-                    use std::future::Future;
-                    assert!(typing.as_mut().poll(context).is_pending());
-                    assert_eq!(count.get(), 0);
-                    controller.with_mut(|s| s.as_mut().unwrap().paused = false);
-                    std::task::Poll::Ready(())
-                })
-                .await;
-                assert!(typing.await);
-                assert_eq!(count.get(), 1);
-
-                // Stop preserves the emitted prefix and never emits the rest.
-                session.set(Some(typing_session(GuideMode::Guide)));
-                let mut partial = String::new();
-                let mut cancelled_session = session;
-                assert!(
-                    !type_text(&session, "é🌊", |text| {
-                        partial = text.to_owned();
-                        cancelled_session.set(None);
-                    })
-                    .await
-                );
-                assert_eq!(partial, "é");
-
-                // Check mode emits the exact complete string once, without animation.
-                session.set(Some(typing_session(GuideMode::Check)));
-                let mut emissions = Vec::new();
-                assert!(
-                    type_text(&session, "é🌊\r\n", |text| emissions
-                        .push(text.to_owned()))
-                    .await
-                );
-                assert_eq!(emissions, ["é🌊\r\n"]);
-            });
-        });
-        rsx! {}
-    }
-
-    #[test]
-    fn typing_obeys_pause_stop_and_mode_without_corrupting_unicode() {
-        let mut dom = VirtualDom::new(TypingProbe);
-        dom.rebuild_in_place();
     }
 
     #[test]

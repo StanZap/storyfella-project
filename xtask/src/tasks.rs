@@ -1,22 +1,18 @@
 //! What each subcommand actually does.
 //!
 //! Thin wrappers over the documented workflows: build (debug or release),
-//! launch, bundle, check, lint, format, test, stylesheet, doctor, clean. The
+//! launch, check, lint, format, test, doctor, clean. The
 //! only logic worth reading here is path resolution and exit-code propagation —
 //! everything else is a command assembled and handed to [`crate::proc`].
 
-use std::path::{Path, PathBuf};
 use std::process::{Command as Process, ExitCode, ExitStatus};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 
-use crate::cli::{
-    BuildArgs, BundleArgs, Cli, ClippyArgs, Command, CssArgs, FmtArgs, PlanArgs, RunArgs, ServeArgs,
-};
-use crate::install;
+use crate::cli::{BuildArgs, Cli, ClippyArgs, Command, FmtArgs, PlanArgs, RunArgs};
 use crate::proc;
-use crate::workspace::{Profile, Workspace};
+use crate::workspace::{Profile, Workspace, APP_PACKAGE};
 
 /// Dispatch a parsed command line.
 pub fn dispatch(cli: Cli) -> Result<ExitCode> {
@@ -25,13 +21,10 @@ pub fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Build(args) => build(&ws, args),
         Command::Run(args) => run(&ws, args),
         Command::Plan(args) => plan(&ws, args),
-        Command::Serve(args) => serve(&ws, args),
-        Command::Bundle(args) => bundle(&ws, args),
         Command::Check => check(&ws),
         Command::Clippy(args) => clippy(&ws, args),
         Command::Fmt(args) => fmt(&ws, args),
         Command::Test => test(&ws),
-        Command::Css(args) => css(&ws, args),
         Command::Doctor => doctor(&ws),
         Command::Clean => clean(&ws),
     }
@@ -39,7 +32,7 @@ pub fn dispatch(cli: Cli) -> Result<ExitCode> {
 
 fn build(ws: &Workspace, args: BuildArgs) -> Result<ExitCode> {
     let profile = args.profile.resolve(false);
-    dx_build(ws, profile, &args.passthrough)?;
+    build_app(ws, profile, &args.passthrough)?;
     let binary = ws.app_binary(profile)?;
     proc::done(format!("built {} ({})", binary.display(), profile.label()));
     Ok(ExitCode::SUCCESS)
@@ -57,114 +50,6 @@ fn plan(ws: &Workspace, args: PlanArgs) -> Result<ExitCode> {
         args.mode.as_arg().to_string(),
     ];
     launch_app(ws, args.profile.resolve(false), app_args, args.log)
-}
-
-fn serve(ws: &Workspace, args: ServeArgs) -> Result<ExitCode> {
-    let profile = args.profile.resolve(false);
-    let mut cmd = Process::new("dx");
-    cmd.current_dir(ws.studio())
-        .args(["serve", "--platform", "desktop"]);
-    if profile.is_release() {
-        cmd.arg("-r");
-    }
-    cmd.args(&args.passthrough);
-    proc::require(&mut cmd)?;
-    Ok(ExitCode::SUCCESS)
-}
-
-fn bundle(ws: &Workspace, args: BundleArgs) -> Result<ExitCode> {
-    // Shipping a debug bundle is almost never intended, so release is the
-    // default here; `-d` still overrides it.
-    let profile = args.profile.resolve(true);
-    let out_dir = args
-        .out_dir
-        .as_deref()
-        .map(|dir| ws.resolve(dir))
-        .unwrap_or_else(|| ws.dist());
-    std::fs::create_dir_all(&out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
-    let extension = if cfg!(target_os = "macos") {
-        "app"
-    } else {
-        "AppImage"
-    };
-    if args.install {
-        let required = if cfg!(target_os = "macos") {
-            "macos"
-        } else {
-            "appimage"
-        };
-        if !args
-            .package_types
-            .iter()
-            .any(|kind| kind.as_arg() == required)
-        {
-            bail!("--install requires --package-types {required}");
-        }
-    }
-    let staging = tempfile::Builder::new()
-        .prefix(".bundle-")
-        .tempdir_in(&out_dir)?;
-
-    let mut cmd = Process::new("dx");
-    cmd.current_dir(ws.studio())
-        .args(["bundle", "--platform", "desktop"]);
-    for package_type in &args.package_types {
-        cmd.args(["--package-types", package_type.as_arg()]);
-    }
-    cmd.arg("--out-dir").arg(staging.path());
-    if profile.is_release() {
-        cmd.arg("-r");
-    }
-    proc::require(&mut cmd)?;
-
-    let selected = if args.install {
-        Some(install::artifact(
-            staging.path(),
-            &install::STUDIO,
-            extension,
-        )?)
-    } else {
-        None
-    };
-    let published = publish_bundle(staging.path(), &out_dir)?;
-    if let Some(source) = selected {
-        let name = source.file_name().context("bundle artifact has no name")?;
-        install::bundled(&out_dir.join(name), &install::STUDIO)?;
-    }
-    for path in published {
-        proc::done(format!("{}", path.display()));
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-fn publish_bundle(staging: &Path, out_dir: &Path) -> Result<Vec<PathBuf>> {
-    let mut published = Vec::new();
-    for entry in std::fs::read_dir(staging)? {
-        let entry = entry?;
-        let dest = out_dir.join(entry.file_name());
-        let backup = tempfile::Builder::new()
-            .prefix(".previous-")
-            .tempdir_in(out_dir)?;
-        let previous = backup.path().join("artifact");
-        let existed = dest.exists();
-        if existed {
-            std::fs::rename(&dest, &previous)?;
-        }
-        if let Err(error) = std::fs::rename(entry.path(), &dest) {
-            if existed {
-                if let Err(restore) = std::fs::rename(&previous, &dest) {
-                    let saved = backup.keep().join("artifact");
-                    bail!("publishing {} failed: {error}; restoring the previous bundle failed: {restore}; it remains at {}", dest.display(), saved.display());
-                }
-            }
-            return Err(error).with_context(|| format!("publishing {}", dest.display()));
-        }
-        published.push(dest);
-    }
-    if published.is_empty() {
-        bail!("dx did not produce any bundle artifacts");
-    }
-    Ok(published)
 }
 
 fn check(ws: &Workspace) -> Result<ExitCode> {
@@ -198,30 +83,10 @@ fn test(ws: &Workspace) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn css(ws: &Workspace, args: CssArgs) -> Result<ExitCode> {
-    let studio = ws.studio();
-    if args.install {
-        npm(&studio, &["install"])?;
-    } else if !studio.join("node_modules").is_dir() {
-        bail!(
-            "frontend toolchain missing at {} — run `cargo xtask css --install`",
-            studio.join("node_modules").display()
-        );
-    }
-    npm(&studio, &["run", "css:build"])?;
-    Ok(ExitCode::SUCCESS)
-}
-
 fn doctor(ws: &Workspace) -> Result<ExitCode> {
     // Tools that must be present for the documented workflows to run at all.
     proc::step("toolchain");
-    let tools = [
-        ("cargo", "--version", true),
-        ("rustc", "--version", true),
-        ("dx", "--version", true),
-        ("node", "--version", false),
-        ("npm", "--version", false),
-    ];
+    let tools = [("cargo", "--version", true), ("rustc", "--version", true)];
     let mut missing_required = Vec::new();
     for (program, version_arg, required) in tools {
         match proc::version(program, version_arg) {
@@ -245,16 +110,6 @@ fn doctor(ws: &Workspace) -> Result<ExitCode> {
             ws.root().join("config/plans"),
             true,
             "plan fixtures + project-root marker",
-        ),
-        (
-            ws.studio().join("node_modules"),
-            false,
-            "npm install (from apps/studio)",
-        ),
-        (
-            ws.studio().join("assets/tailwind.css"),
-            false,
-            "cargo xtask css",
         ),
     ];
     for (path, required, hint) in paths {
@@ -280,22 +135,16 @@ fn doctor(ws: &Workspace) -> Result<ExitCode> {
 
 fn clean(ws: &Workspace) -> Result<ExitCode> {
     cargo(ws, &["clean"])?;
-    let dist = ws.dist();
-    if dist.is_dir() {
-        proc::step(format!("removing {}", dist.display()));
-        std::fs::remove_dir_all(&dist).with_context(|| format!("removing {}", dist.display()))?;
-    }
     Ok(ExitCode::SUCCESS)
 }
 
-/// Build the desktop app with `dx` (never plain `cargo`, which skips the asset
-/// pipeline and produces an unstyled binary — see `AGENTS.md`).
-fn dx_build(ws: &Workspace, profile: Profile, extra: &[String]) -> Result<()> {
-    let mut cmd = Process::new("dx");
-    cmd.current_dir(ws.studio())
-        .args(["build", "--platform", "desktop"]);
+/// Build the desktop app with cargo.
+fn build_app(ws: &Workspace, profile: Profile, extra: &[String]) -> Result<()> {
+    let mut cmd = Process::new("cargo");
+    cmd.current_dir(ws.root())
+        .args(["build", "-p", APP_PACKAGE]);
     if profile.is_release() {
-        cmd.arg("-r");
+        cmd.arg("--release");
     }
     cmd.args(extra);
     proc::require(&mut cmd)
@@ -309,7 +158,7 @@ fn launch_app(
     app_args: Vec<String>,
     log: bool,
 ) -> Result<ExitCode> {
-    dx_build(ws, profile, &[])?;
+    build_app(ws, profile, &[])?;
     let binary = ws.app_binary(profile)?;
     let mut cmd = Process::new(&binary);
     cmd.args(&app_args).current_dir(ws.root());
@@ -332,12 +181,6 @@ fn launch_with_log(ws: &Workspace, cmd: &mut Process, log: bool, prefix: &str) -
 fn cargo(ws: &Workspace, args: &[&str]) -> Result<()> {
     let mut cmd = Process::new("cargo");
     cmd.current_dir(ws.root()).args(args);
-    proc::require(&mut cmd)
-}
-
-fn npm(dir: &Path, args: &[&str]) -> Result<()> {
-    let mut cmd = Process::new("npm");
-    cmd.current_dir(dir).args(args);
     proc::require(&mut cmd)
 }
 

@@ -9,13 +9,12 @@ and [central tracker](ROADMAP.md#0-current-direction-and-actionable-backlog) for
 
 | Component | Responsibility | Dependency boundary |
 | --- | --- | --- |
-| `apps/studio` / `storyfella-studio` | Dioxus authoring UI, project state, creative workflows and snapshot preview | Consumes GUI-free core and shared playback UI/runtime |
+| `apps/studio` / `storyfella-studio` | GPUI authoring app: Home, project state, creative workflows and Play | Consumes GUI-free core and `playback-panel` |
 | `crates/studio-core` / `storyfella-studio-core` | Artifact registry, operations, persistence, config, creative inference adapters | No GUI dependencies; consumes sibling `agentkit-ai` |
 | `apps/cli` / `sf-cli` | Story checking, compilation, tracing and MCP authoring | Consumes story crates and Studio core |
 | `apps/player` / `storyfella-player` | Standalone visual GPUI desktop playback | Shared core playback model, stage composition and runtime through `playback-panel`; no Studio state dependency |
-| `crates/playback-panel` / `storyfella-playback-panel` | GPUI playback panel and stage | Draws Studio core's stage composition with the shared design system; no dependency on either app |
-| `crates/playback-ui` / `storyfella-playback-ui` | Studio's Dioxus preview panel | Draws the same stage composition until Studio moves to GPUI |
-| `xtask` | Build, launch, package and validation commands | Developer tooling only |
+| `crates/playback-panel` / `storyfella-playback-panel` | GPUI playback panel and stage, for Studio's Play view and the Player | Draws Studio core's stage composition with the shared design system; no dependency on either app |
+| `xtask` | Build, launch and validation commands | Developer tooling only |
 
 Language, compiler, LSP and story runtime are implemented below. No placeholder
 crates are added; [playback reference](ROADMAP.md#story-execution-and-playback-reference) records the execution contract.
@@ -48,8 +47,8 @@ local inference services; Studio uses their public Agentkit interfaces.
 
 `sf-cli story` operates on source and compiled story plans. `sf-cli mcp` exposes
 project-scoped story tools over stdio. With `--studio-channel`, it connects to
-a running Studio's private channel to edit its Writer draft and inspect or
-capture Preview. Atelier exposes its own MCP server for project artwork.
+a running Studio's private channel to edit its Writer draft and inspect a
+Preview playtest. Atelier exposes its own MCP server for project artwork.
 See [agentic production](agentic-vn-production.md) for connection and ownership
 rules.
 

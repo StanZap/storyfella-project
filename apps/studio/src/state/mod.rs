@@ -280,23 +280,6 @@ impl AppState {
         Ok(())
     }
 
-    pub fn forget_source_file(&mut self, relative: &str) {
-        if let Some(sources) = &mut self.additional_sources {
-            sources.forget(relative);
-        }
-        if self.active_source.as_deref() == Some(relative) {
-            self.active_source = None;
-        }
-        // Earlier snapshots can still contain an include targeting this path.
-        if !self.undo_stack.is_empty() || !self.redo_stack.is_empty() {
-            self.undo_stack.clear();
-            self.redo_stack.clear();
-            self.source_notice = Some(
-                "Undo history was cleared because a story file was renamed or removed.".into(),
-            );
-        }
-    }
-
     pub fn set_additional_source(
         &mut self,
         relative: &str,

@@ -1,15 +1,14 @@
 //! `cargo xtask` — the workspace's own task runner.
 //!
 //! Every subcommand wraps a workflow documented in `docs/development.md`, so
-//! the exact `dx` / `cargo` / `npm` invocations live in one
+//! the exact `cargo` invocations live in one
 //! reviewable place instead of being retyped from memory. Run it through the
 //! alias in `.cargo/config.toml`:
 //!
 //! ```text
 //! cargo xtask run          # build (debug) and launch the desktop app
 //! cargo xtask run -r       # …in release
-//! cargo xtask bundle       # release AppImage into dist/
-//! cargo xtask bundle --install  # …and install it for the current user
+//! cargo xtask plan config/plans/smoke.yaml
 //! ```
 //!
 //! Launch tasks default to debug; `-r`/`--release` opts into the release
@@ -17,7 +16,6 @@
 //! `cargo xtask plan … --mode check` can gate a script.
 
 mod cli;
-mod install;
 mod proc;
 mod tasks;
 mod workspace;

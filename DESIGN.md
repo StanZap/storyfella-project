@@ -856,6 +856,11 @@ The descriptions below preserve the **original audit observations**, rather than
 describe the remediated app. All 25 have implementation changes recorded in §9;
 remaining manual acceptance coverage is identified there.
 
+The source links in §7 and §9 point into the Dioxus Studio, which was replaced by
+the GPUI Studio; read them at commit **f98007f**, the last that contains it. The
+GPUI views carry these requirements forward, and each view's port is accepted
+against them again.
+
 ### SF-UX-01 · P1 · Details opens another Details entry point
 
 **Live + source; supplied screenshots.** In

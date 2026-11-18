@@ -284,7 +284,7 @@ pub fn actor_position(group: StageGroup, slot: usize) -> f32 {
 
 /// Placeholders alternate from the left and right edges inwards.
 fn placeholder_position(index: usize) -> f32 {
-    if index % 2 == 0 {
+    if index.is_multiple_of(2) {
         (22 + (index / 2) * 9) as f32
     } else {
         78_usize.saturating_sub((index / 2) * 9) as f32

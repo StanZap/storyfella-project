@@ -1,7 +1,5 @@
 //! Nonblocking, connection-scoped novel-writing jobs for the live Studio owner.
-use super::{owner, Grant};
-use crate::state::AppState;
-use dioxus::prelude::*;
+use super::{owned, owner, Grant, StateOwner};
 use serde_json::json;
 use std::{
     cell::RefCell,
@@ -39,15 +37,15 @@ struct Job {
 }
 
 impl Jobs {
-    pub(super) fn dispatch(
+    pub(super) async fn dispatch(
         &mut self,
-        mut state: Signal<AppState>,
+        state: &impl StateOwner,
         grant: &Grant,
         request: Request<NovelCommand>,
         session: Uuid,
         epoch: Option<Uuid>,
     ) -> (Option<Uuid>, Reply) {
-        let result = (|| {
+        let result = async {
             request.check_project(&grant.folder)?;
             let supplied = match &request.command {
                 NovelCommand::Start { session, .. }
@@ -67,18 +65,20 @@ impl Jobs {
                     "Enable draft edits when opening the Studio channel.",
                 ));
             }
-            let current = owner(&state.peek(), grant, epoch)?;
+            let folder = grant.folder.clone();
+            let current = owned(state, move |state| owner(state, &folder, epoch)).await?;
             match request.command {
                 NovelCommand::Start { instructions, expand, preserve_facts, .. } => {
                     if instructions.len() > 8192 { return Err(Failure::new("invalid_arguments", "Use at most 8192 bytes of instructions.")); }
-                    let app = state.peek();
-                    if app.operation_in_progress() || app.catalog_conflict.is_some() { return Err(Failure::new("owner_busy", "Finish the current operation or resolve the catalog conflict.")); }
-                    app.authoring_lease.as_ref().expect("owner checked lease").verify().map_err(|_| super::moved())?;
-                    let project = app.project_path.clone().ok_or_else(super::moved)?;
-                    let workspace = app.workspace_snapshot().map_err(|error| Failure::new("source_unavailable", &error))?;
-                    let registry = app.registry.clone();
-                    let catalog_digest = novel::catalog_digest(&registry).map_err(|error| Failure::new("source_unavailable", &error.to_string()))?;
-                    drop(app);
+                    let (project, workspace, registry, catalog_digest) = owned(state, |app| {
+                        if app.operation_in_progress() || app.catalog_conflict.is_some() { return Err(Failure::new("owner_busy", "Finish the current operation or resolve the catalog conflict.")); }
+                        app.authoring_lease.as_ref().expect("owner checked lease").verify().map_err(|_| super::moved())?;
+                        let project = app.project_path.clone().ok_or_else(super::moved)?;
+                        let workspace = app.workspace_snapshot().map_err(|error| Failure::new("source_unavailable", &error))?;
+                        let registry = app.registry.clone();
+                        let catalog_digest = novel::catalog_digest(&registry).map_err(|error| Failure::new("source_unavailable", &error.to_string()))?;
+                        Ok((project, workspace, registry, catalog_digest))
+                    }).await?;
                     #[cfg(test)]
                     let model = self.model.clone();
                     #[cfg(not(test))]
@@ -100,7 +100,7 @@ impl Jobs {
                     jobs.insert(id, Job { session, epoch: current, cancel: cancel.clone(), result: None });
                     drop(jobs);
                     let jobs = self.jobs.clone();
-                    spawn(async move {
+                    tokio::task::spawn_local(async move {
                         let request = NovelRequest { project: project.clone(), workspace, action: if expand { WritingAction::Expand } else { WritingAction::Rewrite }, instructions, preserve_facts, catalog_digest };
                         let result = match RunStore::open(&project.with_extension("workflows.sqlite3")) {
                             Ok(store) => match model {
@@ -137,12 +137,13 @@ impl Jobs {
                         let job = jobs.get(&job).filter(|job| job.session == session && job.epoch == current).ok_or_else(|| Failure::new("unknown_job", "Start a novel-writing job on this connection."))?;
                         match &job.result { Some(Ok(Some(proposal))) => proposal.clone(), _ => return Err(Failure::new("job_not_ready", "Wait for a completed suggestion.")) }
                     };
-                    state.write().apply_novel_proposal(&proposal).map_err(|error| Failure::new("stale_or_invalid", &error))?;
+                    let applied = proposal.clone();
+                    owned(state, move |app| app.apply_novel_proposal(&applied).map_err(|error| Failure::new("stale_or_invalid", &error))).await?;
                     self.jobs.borrow_mut().remove(&job);
                     Ok(json!({"applied":true,"saved":false,"files":proposal.files.keys().collect::<Vec<_>>() }))
                 }
             }.map(|value| (current, value))
-        })();
+        }.await;
         match result {
             Ok((current, value)) => (Some(current), Ok(value)),
             Err(error) => (epoch, Err(error)),
@@ -153,17 +154,17 @@ impl Jobs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{cell::Cell, path::PathBuf};
+    use crate::state::AppState;
+    use std::path::PathBuf;
     use storyfella_studio_core::{
         desktop_bridge::{ProjectIdentity, SCHEMA},
         project::ProjectFolder,
         registry::ArtifactRegistry,
     };
 
-    #[component]
-    fn Probe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
-        let mut state = use_signal(AppState::default);
-        use_hook(move || {
+    async fn probe(root: PathBuf) {
+        let state = Rc::new(RefCell::new(AppState::default()));
+        {
             let folder = ProjectFolder::create(
                 &root.join("project"),
                 "Novel",
@@ -176,22 +177,22 @@ mod tests {
                 "scene harbor\n  narrate: old\n  end\n",
             )
             .unwrap();
-            crate::commands::open_project(folder.root(), state).unwrap();
+            crate::commands::open_project(folder.root(), &mut state.borrow_mut()).unwrap();
             let grant = Grant {
                 folder: folder.clone(),
                 directory: root.join("channel"),
                 edit: true,
             };
             let session = Uuid::new_v4();
-            let epoch = state.read().authoring_lease.as_ref().unwrap().epoch();
-            let workspace = state.read().workspace_snapshot().unwrap();
+            let epoch = state.borrow().authoring_lease.as_ref().unwrap().epoch();
+            let workspace = state.borrow().workspace_snapshot().unwrap();
             let request = NovelRequest {
-                project: state.read().project_path.clone().unwrap(),
+                project: state.borrow().project_path.clone().unwrap(),
                 workspace,
                 action: WritingAction::Rewrite,
                 instructions: "change it".into(),
                 preserve_facts: true,
-                catalog_digest: novel::catalog_digest(&state.read().registry).unwrap(),
+                catalog_digest: novel::catalog_digest(&state.borrow().registry).unwrap(),
             };
             let proposal = NovelProposal {
                 run_id: "fixture".into(),
@@ -218,44 +219,40 @@ mod tests {
                 command,
             };
             let poll = NovelCommand::Poll { session, job: id };
-            let (_, result) = jobs.dispatch(state, &grant, request(poll), session, Some(epoch));
+            let (_, result) = jobs
+                .dispatch(&state, &grant, request(poll), session, Some(epoch))
+                .await;
             assert_eq!(result.unwrap()["status"], "ready");
-            assert!(state.read().workspace_snapshot().unwrap().files["chapter.sf"].contains("old"));
+            assert!(
+                state.borrow().workspace_snapshot().unwrap().files["chapter.sf"].contains("old")
+            );
             let apply = NovelCommand::Apply { session, job: id };
-            let (_, result) = jobs.dispatch(state, &grant, request(apply), session, Some(epoch));
+            let (_, result) = jobs
+                .dispatch(&state, &grant, request(apply), session, Some(epoch))
+                .await;
             assert_eq!(result.unwrap()["applied"], true);
-            assert!(state.read().workspace_snapshot().unwrap().files["chapter.sf"].contains("new"));
-            assert!(state.write().undo());
-            assert!(state.read().workspace_snapshot().unwrap().files["chapter.sf"].contains("old"));
-            finished.set(true);
-        });
-        rsx! {}
+            assert!(
+                state.borrow().workspace_snapshot().unwrap().files["chapter.sf"].contains("new")
+            );
+            assert!(state.borrow_mut().undo());
+            assert!(
+                state.borrow().workspace_snapshot().unwrap().files["chapter.sf"].contains("old")
+            );
+        }
     }
 
-    #[test]
-    fn live_job_review_applies_only_after_explicit_request_and_is_undoable() {
+    #[tokio::test]
+    async fn live_job_review_applies_only_after_explicit_request_and_is_undoable() {
         let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
         std::fs::create_dir_all(&scratch).unwrap();
         let dir = tempfile::tempdir_in(scratch).unwrap();
-        let finished = Rc::new(Cell::new(false));
-        let mut dom = VirtualDom::new_with_props(
-            Probe,
-            ProbeProps {
-                root: dir.path().to_owned(),
-                finished: finished.clone(),
-            },
-        );
-        dom.rebuild_in_place();
-        assert!(finished.get());
+        probe(dir.path().to_owned()).await;
     }
 
-    #[component]
-    fn RunningProbe(root: PathBuf, finished: Rc<Cell<bool>>) -> Element {
-        let state = use_signal(AppState::default);
-        use_future(move || {
-            let root = root.clone();
-            let finished = finished.clone();
-            async move {
+    async fn running_probe(root: PathBuf) {
+        let state = Rc::new(RefCell::new(AppState::default()));
+        {
+            {
                 let folder = ProjectFolder::create(
                     &root.join("project"),
                     "Novel",
@@ -263,14 +260,14 @@ mod tests {
                     "scene harbor\n  narrate: old\n  end\n",
                 )
                 .unwrap();
-                crate::commands::open_project(folder.root(), state).unwrap();
+                crate::commands::open_project(folder.root(), &mut state.borrow_mut()).unwrap();
                 let grant = Grant {
                     folder: folder.clone(),
                     directory: root.join("channel"),
                     edit: true,
                 };
                 let session = Uuid::new_v4();
-                let epoch = state.read().authoring_lease.as_ref().unwrap().epoch();
+                let epoch = state.borrow().authoring_lease.as_ref().unwrap().epoch();
                 let model = agentkit_ai::providers::fake::FakeChatModel::new_streaming([vec![
                     agentkit_ai::ChatStreamEvent::TextDelta {
                         content:
@@ -288,27 +285,31 @@ mod tests {
                     project: ProjectIdentity::from(&folder),
                     command,
                 };
-                let (_, started) = jobs.dispatch(
-                    state,
-                    &grant,
-                    request(NovelCommand::Start {
-                        session,
-                        instructions: "revise".into(),
-                        expand: false,
-                        preserve_facts: true,
-                    }),
-                    session,
-                    Some(epoch),
-                );
-                let id = started.unwrap()["job"].as_str().unwrap().parse().unwrap();
-                loop {
-                    let (_, reply) = jobs.dispatch(
-                        state,
+                let (_, started) = jobs
+                    .dispatch(
+                        &state,
                         &grant,
-                        request(NovelCommand::Poll { session, job: id }),
+                        request(NovelCommand::Start {
+                            session,
+                            instructions: "revise".into(),
+                            expand: false,
+                            preserve_facts: true,
+                        }),
                         session,
                         Some(epoch),
-                    );
+                    )
+                    .await;
+                let id = started.unwrap()["job"].as_str().unwrap().parse().unwrap();
+                loop {
+                    let (_, reply) = jobs
+                        .dispatch(
+                            &state,
+                            &grant,
+                            request(NovelCommand::Poll { session, job: id }),
+                            session,
+                            Some(epoch),
+                        )
+                        .await;
                     let reply = reply.unwrap();
                     if reply["status"] == "ready" {
                         assert!(reply["files"]["story.sf"].as_str().unwrap().contains("new"));
@@ -317,20 +318,20 @@ mod tests {
                     assert_eq!(reply["status"], "running", "{reply}");
                     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                 }
-                assert!(state.read().story.source().contains("old"));
-                let (_, applied) = jobs.dispatch(
-                    state,
-                    &grant,
-                    request(NovelCommand::Apply { session, job: id }),
-                    session,
-                    Some(epoch),
-                );
+                assert!(state.borrow().story.source().contains("old"));
+                let (_, applied) = jobs
+                    .dispatch(
+                        &state,
+                        &grant,
+                        request(NovelCommand::Apply { session, job: id }),
+                        session,
+                        Some(epoch),
+                    )
+                    .await;
                 assert_eq!(applied.unwrap()["applied"], true);
-                assert!(state.read().story.source().contains("new"));
-                finished.set(true);
+                assert!(state.borrow().story.source().contains("new"));
             }
-        });
-        rsx! {}
+        }
     }
 
     #[tokio::test]
@@ -338,22 +339,13 @@ mod tests {
         let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
         std::fs::create_dir_all(&scratch).unwrap();
         let dir = tempfile::tempdir_in(scratch).unwrap();
-        let finished = Rc::new(Cell::new(false));
-        let mut dom = VirtualDom::new_with_props(
-            RunningProbe,
-            RunningProbeProps {
-                root: dir.path().to_owned(),
-                finished: finished.clone(),
-            },
-        );
-        dom.rebuild_in_place();
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            while !finished.get() {
-                tokio::select! {
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {},
-                    _ = dom.wait_for_work() => dom.render_immediate(&mut dioxus::core::NoOpMutations),
-                }
-            }
-        }).await.unwrap();
+        // Started jobs run on the bridge's local task set.
+        let local = tokio::task::LocalSet::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            local.run_until(running_probe(dir.path().to_owned())),
+        )
+        .await
+        .unwrap();
     }
 }

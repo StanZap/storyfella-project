@@ -103,6 +103,26 @@ impl PlaybackPanel {
         &self.model
     }
 
+    /// Runs `act` on the model, for a host that drives playback itself.
+    /// Installing a new session goes through [`install`](Self::install),
+    /// which decodes its artwork.
+    pub fn update_model<R>(
+        &mut self,
+        act: impl FnOnce(&mut PlaybackModel) -> R,
+        cx: &mut Context<Self>,
+    ) -> R {
+        let result = act(&mut self.model);
+        cx.notify();
+        result
+    }
+
+    /// Applies changed reader settings or a new theme.
+    pub fn configure(&mut self, viewer: Viewer, theme: Theme, cx: &mut Context<Self>) {
+        self.viewer = viewer;
+        self.theme = theme;
+        cx.notify();
+    }
+
     /// Installs a freshly compiled session, or reports why it failed while
     /// keeping the session already playing.
     pub fn install(&mut self, result: Result<PlaybackSession, String>, cx: &mut Context<Self>) {

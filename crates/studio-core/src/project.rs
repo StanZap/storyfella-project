@@ -81,60 +81,6 @@ impl ProjectFolder {
         registry: &ArtifactRegistry,
         source: &str,
     ) -> Result<Self> {
-        Self::write_new(root, name, None, registry, source)
-    }
-
-    /// Copy an existing saved project into a portable folder, retaining identities.
-    /// The original database/source/images are never modified or removed.
-    pub fn import(root: &Path, stored: &StoredProject) -> Result<Self> {
-        ensure!(
-            stored
-                .story
-                .path()
-                .is_none_or(|path| path.parent().is_none_or(|parent| {
-                    !(parent.join(MANIFEST).exists()
-                        || (parent.file_name().is_some_and(|name| name == "assets")
-                            && parent
-                                .parent()
-                                .is_some_and(|root| root.join(MANIFEST).exists())))
-                })),
-            "This project already uses a shared folder; move or copy the complete folder instead"
-        );
-        let mut registry = stored.registry.clone();
-        for artifact in &mut registry.artifacts {
-            for revision in &mut artifact.revisions {
-                if let Some(value) = &mut revision.asset_path {
-                    if Path::new(value).is_relative() {
-                        let parent = stored
-                            .story
-                            .path()
-                            .and_then(Path::parent)
-                            .context("Original project source has no folder")?;
-                        *value = parent
-                            .join(&*value)
-                            .to_str()
-                            .context("Artwork path is not UTF-8")?
-                            .to_owned();
-                    }
-                }
-            }
-        }
-        Self::write_new(
-            root,
-            &stored.name,
-            Some(stored.id),
-            &registry,
-            stored.story.source(),
-        )
-    }
-
-    fn write_new(
-        root: &Path,
-        name: &str,
-        id: Option<Uuid>,
-        registry: &ArtifactRegistry,
-        source: &str,
-    ) -> Result<Self> {
         ensure!(!name.trim().is_empty(), "Enter a project name");
         fs::create_dir(root)
             .with_context(|| format!("Create new project folder {}", root.display()))?;
@@ -142,9 +88,6 @@ impl ProjectFolder {
         // an interrupted/failed copy is never advertised as a complete project.
         let root = root.canonicalize()?;
         let db = ProjectDb::open(root.join(DATABASE))?;
-        if let Some(id) = id {
-            db.set_project_id(id)?;
-        }
         db.rename_project(name)?;
         let id = db.load()?.id;
         fs::create_dir(root.join("assets"))?;

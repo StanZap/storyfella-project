@@ -1,4 +1,4 @@
-You are working on **Storyfella**, the workspace for story authoring and playback. Studio is the desktop Dioxus application; Atelier in `../storyfella-canvas` owns visual creation and editing. Clipforge owns provider management and general image inference tools. Studio selects text and vision providers and runs Writing help through Agentkit's Workflow API. Managed requests hold the service lease for their full operation.
+You are working on **Storyfella**, the workspace for story authoring and playback. Studio is the desktop GPUI application; Atelier in `../storyfella-canvas` owns visual creation and editing. Clipforge owns provider management and general image inference tools. Studio selects text and vision providers and runs Writing help through Agentkit's Workflow API. Managed requests hold the service lease for their full operation.
 
 Shared user projects now use `studio-core::project::ProjectFolder`:
 `storyfella.toml`, `assets/story.sf` and `story.db`, portable immutable `artwork/` revisions
@@ -38,12 +38,11 @@ A Cargo workspace: ten packages.
 | `crates/compiler` | `storyfella-compiler` | deterministic, versioned story plans with scene flow, exact asset revision bindings, source maps and readiness; independent of Studio |
 | `crates/lsp` | `storyfella-lsp` | stdio LSP transport over the shared language analysis |
 | `crates/runtime` | `storyfella-runtime` | deterministic story execution, events and verified save/restore; no GUI/inference |
-| `apps/studio` | `storyfella-studio` | the Dioxus app — `ui/`, `state/`, `commands.rs`, `driver/`, `app/`, plus `Dioxus.toml`, `tailwind.css`, `assets/`, `package.json` |
+| `apps/studio` | `storyfella-studio` | the GPUI app — `ui/` (window, Home, workspace, Settings), `state/`, `commands.rs`, `host.rs` (the mailbox automation reaches the window through), `driver/`, `live_mcp/` |
 | `apps/cli` | `sf-cli` | Story check/compile/trace and the project-scoped stdio MCP server |
 | `apps/player` | `storyfella-player` | standalone GPUI visual Player; same runtime, resources and stage as Studio preview |
-| `crates/playback-panel` | `storyfella-playback-panel` | the GPUI playback panel and stage, on the shared design system; used by the Player, and by Studio once its shell moves to GPUI |
-| `crates/playback-ui` | `storyfella-playback-ui` | Studio's Dioxus preview panel until Studio moves to GPUI; independent of Studio state |
-| `xtask` | `xtask` | `cargo xtask` — the developer task runner (build/run/bundle/check/test); not part of any shipped artifact |
+| `crates/playback-panel` | `storyfella-playback-panel` | the GPUI playback panel and stage, on the shared design system; Studio's Play view and the Player; independent of Studio state |
+| `xtask` | `xtask` | `cargo xtask` — the developer task runner (build/run/plan/check/test); not part of any shipped artifact |
 
 `crates/studio-core` never depends on the GUI. `apps/studio` and `apps/cli` both depend on
 `storyfella-studio-core`, and the desktop crate names `storyfella_studio_core::…` explicitly rather than re-exporting
@@ -121,27 +120,19 @@ guides use `go_assets` and navigation uses `g a`.
 - **Keep MCP tools current.** When adding or changing a feature, update the affected MCP tools, schemas, documentation, and tests in the same change. Use the same application operations and validation for MCP and the desktop UI.
 - **Keep task work inside the current project checkout.** Implementation, documentation and every output whose location we control belong here. Use `.svs-e2e/` for scratch work and `target/` for build output. Do not choose `/tmp`, another checkout, Downloads, an agent scratchpad or platform application-data directories for work that can live here. This applies to scripts, downloaded inputs, generated media, test projects/databases, exports, screenshots, logs and caches. Check tool defaults and native file-picker destinations before writing; plan runs already isolate projects/artwork/cache under `.svs-e2e/`.
 - **Permissions do not change the project boundary.** If the sandbox covers a sibling repository instead of this checkout, request the required tool escalation here; never relocate the work to an externally writable directory. Read installed tools, skills, system libraries and the existing sibling inference dependency in place, but do not edit those repositories or put this task's files there. A necessary external output requires an explicit user instruction; explain a concrete tool limitation before requesting an exception. Tool-owned storage that we cannot redirect does not authorize choosing an external workspace.
-- **Desktop only.** Never add web, mobile, WASM, routing, or fullstack features. The `apps/studio/Cargo.toml` features are limited to `default = ["desktop"]` / `dioxus/desktop`. Ignore any Dioxus docs about routers, server functions, or hydration.
+- **Desktop only.** Never add web, mobile, WASM, routing, or fullstack features. Studio and the Player are GPUI desktop windows.
 - **Clean code is required.** Keep each change focused, readable and complete. Fix quality issues found in the affected paths before committing; successful compilation alone is not a code review. Apply the code quality rules below to implementation, tests, manifests and documentation.
 - **No stale/dead code; no backward-compatibility shims.** This project is pre-1.0: do not add or retain deprecated aliases, alternate old-format parsers, import shims, redundant wrappers or superseded implementations for backward compatibility. Replace the old shape and update all consumers in the same change. Remove unused functions, types, fields, modules, dependencies, feature flags, no-op handlers and commented-out code; Git preserves history. Never hide unused code with `#[allow(dead_code)]` or broaden lint suppressions to get a check to pass. Existing SQLite migrations remain active upgrade code for stored projects; they are not permission to keep a second runtime model or legacy parser. Preserve actual project data when changing persistence.
 - **Unshipped formats may break.** Apply breaking changes directly to unreleased APIs, MCP schemas, configuration, and saved project formats. Update callers, fixtures, and docs together. Do not add missing-field defaults, aliases, fallback parsing, migrations, or compatibility tests solely to keep an earlier development build's format working. This applies even when the fallback would fit in the current loader. When a field can be empty in the current format, distinguish an explicit empty value from a field omitted by an older format. Keep existing migrations in place. If a specific project needs conversion, handle it as an explicitly scoped data task.
-- **Reusable components before repetition.** Isolate repeated patterns into small shared components/modules and reuse them everywhere. The UI vocabulary in `apps/studio/src/ui/components.rs` (`SettingRow`, `EmptyVisual`, `StatusDot`, …) and `apps/studio/src/ui/icons.rs` is the model; apply the same instinct outside the UI (registry ops, pipeline steps, persistence helpers, config). When a new use case needs a variant, extend the shared component instead of copy-pasting a near-identical one, and keep similar use cases looking and behaving the same. A new control for a case an existing control already covers is a code smell.
-  Consult `docs/ui-components.md` for available components and examples. Plain
-  fields, fields with a trailing icon action and search use
-  `ui/inputs.rs` (`TextInput`, `TextInputWithAction`, `SearchInput`); preserve the
-  native text-value bridge and update the catalog when extending this vocabulary.
-  Display-first metadata fields use `ui/editable.rs` (`EditableText`,
-  `EditableMultiline`); saved-artwork previews use `ui/artwork.rs` so transparent
-  PNGs share a visible display background without modifying their pixels.
+- **Reusable components before repetition.** Isolate repeated patterns into small shared components/modules and reuse them everywhere. UI controls come from the shared design system (`../gpui-design-system/crates/components`: `TextField`, `ComboBox`, `SegmentedControl`, `ListBox`, `NumericControl`, `Dialog`, `CommandPalette`, `Theme::button`/`switch`, …); apply the same instinct outside the UI (registry ops, pipeline steps, persistence helpers, config). When a new use case needs a variant, extend the shared component in the design system instead of hand-rolling a near-identical one in Studio, and keep similar use cases looking and behaving the same. A new control for a case an existing control already covers is a code smell.
 - **No perl for code edits.** Never use `perl -i` (or similar opaque one-liner rewrites) to modify source files — they are hard to review and have corrupted code before. Make edits with the file editing tools (`edit_file`/`write_file`), which produce reviewable diffs; `cargo fmt` is the only bulk formatter allowed.
 - **No ML frameworks in Rust.** Rust must never depend on or know about PyTorch, Transformers, or any other ML framework. Inference is the native `stable-diffusion.cpp` process; Rust is only its HTTP client.
 - **Text and vision are capability-routed providers.** There is no `[llm]` section: the planner (`Capability::Text`) and vision (`Capability::Vision`) are declared in the shared `clipforge.toml` (`paths::clipforge_config_path()`, `$SVS_AI_CONFIG` overrides) so a key stays out of git. An `openai` provider is an external service the app never starts (the default); a `llamacpp` provider is a managed native `llama-server` the app starts on demand. Weights are never bundled. `crates/studio-core/src/llm/` is the client only; the planner vocabulary (typed operations + pipelines) lives in `crates/studio-core/src/registry/`; LLM steps are soft dependencies that degrade to manual input, never hard-fail.
 - **UI and UX standard:** read `DESIGN.md` before changing user-facing flows, controls, feedback or styling. It is the central design reference, audit and remediation record; update its acceptance evidence when fixes land.
-- **UI styling** is Tailwind CSS 4 utility classes in RSX, with shared styles in `apps/studio/tailwind.css`. `apps/studio/assets/tailwind.css` is generated output; regenerate with `npm run css:build` from `apps/studio`. Prefer the small shared component vocabulary in `apps/studio/src/ui/components.rs` (`SettingRow`, `EmptyVisual`, `StatusDot`, …) and icons from `apps/studio/src/ui/icons.rs`.
-- **Writing diff editor:** CodeMirror merge owns continuous editing and diff layout in `apps/studio/ui-js/writing-diff.js`, bundled locally by esbuild through Studio's Cargo build script. Run `npm ci` in `apps/studio` after checkout/dependency changes; never hand-edit or commit the ignored generated bundle. Rust owns model requests, source/project guards, compiler checks, acceptance, undo and saving. The JavaScript bridge sends current text, UTF-16 ranges and edit sequences; it never writes files or calls providers. Keep pending edits separate from accepted source used by saves and Preview.
+- **UI styling** comes from the design system's `Theme`: colors, metrics and type scales are its tokens, never literal values chosen in Studio. Studio follows the persisted appearance (`ThemePreference`), resolving System from the window.
 - **State mutations** go through `AppState` methods in `apps/studio/src/state/mod.rs`, which maintain the registry invariants documented in `docs/data-model.md`. Never mutate `Project` fields directly from UI code.
 - **Build artifacts and tool temporary files stay inside the checkout.** Keep `.cargo/config.toml`: it selects gitignored `target/` and sets `TMPDIR`/`TMP`/`TEMP` to ignored `.cargo/tmp/` for Cargo, tests and inherited subprocesses. Keep that temporary directory's tracked `.gitignore` so it exists on a fresh clone. Do not override these paths with external locations. Use a checkout path without `:` for macOS/Linux library-path compatibility; do not reinstate an external target directory as a workaround. Older handoffs documenting an external build target do not override this policy.
-- **Build Studio with `dx build --platform desktop` for runnable binaries, not plain `cargo build`.** Run `dx` from `apps/studio`, where `Cargo.toml` and `Dioxus.toml` live. The `asset!` pipeline (Tailwind CSS + custom protocols) is wired by the dx CLI: a plain `cargo build` Studio binary starts fine but renders **unstyled** (no CSS — the stylesheet is never embedded/served). `cargo check`/`cargo test` are workspace-wide (`--workspace`); launching Studio uses its dx artifact (`target/dx/storyfella-studio/debug/linux/app/storyfella-studio` on Linux). Player is a GPUI app and launches with `cargo run -p storyfella-player`. `cargo xtask build`/`run`/`serve`/`bundle` (and `check`/`test`/`fmt`/`clippy`) wrap the Studio commands from the workspace root — prefer them over retyping the invocations.
+- **Build Studio with cargo.** `cargo build -p storyfella-studio` produces a runnable binary at `target/<profile>/storyfella-studio`; `cargo run -p storyfella-player` launches the Player. `cargo xtask build`/`run`/`plan` (and `check`/`test`/`fmt`/`clippy`) wrap these from the workspace root — prefer them over retyping the invocations.
 - **Validation logs and scratch files stay in the repo** under `.svs-e2e/` (gitignored). When live-testing the GUI, write its stdout/logs to `.svs-e2e/logs/` — never to `/tmp` or the repo root. When killing a stale app instance, use a bracket-quoted pattern so `pgrep`/`pkill` do not match their own command line (e.g. `pkill -f "storyfella-studi[o]"`).
 - Consult the documentation below before making changes; many decisions and known gaps are recorded there.
 
@@ -179,13 +170,13 @@ Always verify changes that touch Rust code:
 cargo check --workspace --all-targets
 cargo test --workspace
 cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-That is `cargo xtask check` (+ `test`), which wraps the same commands from the workspace root. Do not modify `Cargo.toml` features or add dependencies without a strong reason — dependencies live in `[workspace.dependencies]` at the root and are added there once, then referenced from a member with `name.workspace = true`; the `desktop` feature lives in `apps/studio` and `apps/player`.
+That is `cargo xtask check` (+ `test`), which wraps the same commands from the workspace root. Do not modify `Cargo.toml` features or add dependencies without a strong reason — dependencies live in `[workspace.dependencies]` at the root and are added there once, then referenced from a member with `name.workspace = true`.
 
-Run `cargo clippy -p <changed-package> --all-targets -- -D warnings` for changed
-Rust packages. Fix warnings introduced by the change; do not silence them to
-pass validation. Report any existing failures separately and accurately.
+The workspace is clippy-clean with warnings denied, and CI keeps it so. Fix
+what clippy reports; do not silence it to pass validation.
 
 Before committing, review the complete diff, including new files. Confirm that
 replaced code and all consumers were updated, no compatibility or dead-code
@@ -226,198 +217,12 @@ print a number (change inside vs. outside a region, drift against the base)
 so results are comparable across sessions; record the conclusions in
 `.svs-e2e/logs/<date>-quality-evals.md`.
 
-# Dioxus 0.7 essentials
+# GPUI in Studio
 
-Dioxus 0.7 changed every API. Only use the current documentation at <https://dioxuslabs.com/learn/0.7>. `cx`, `Scope`, and `use_state` are gone. Provide concise code examples with detailed descriptions.
-
-## Dependency
-
-```toml
-[dependencies]
-dioxus = { version = "0.7.1" }
-
-[features]
-default = ["desktop"]
-desktop = ["dioxus/desktop"]
-```
-
-## Launching
-
-Create a main function that sets up the Dioxus runtime and mounts your root component:
-
-```rust
-use dioxus::prelude::*;
-
-fn main() {
-	dioxus::launch(App);
-}
-
-#[component]
-fn App() -> Element {
-	rsx! { "Hello, Dioxus!" }
-}
-```
-
-Serve with `dx serve --platform desktop`.
-
-## UI with RSX
-
-```rust
-rsx! {
-	div {
-		class: "container", // Attribute
-		color: "red", // Inline styles
-		width: if condition { "100%" }, // Conditional attributes
-		"Hello, Dioxus!"
-	}
-	// Prefer loops over iterators
-	for i in 0..5 {
-		div { "{i}" } // use elements or components directly in loops
-	}
-	if condition {
-		div { "Condition is true!" } // use elements or components directly in conditionals
-	}
-
-	{children} // Expressions are wrapped in brace
-	{(0..5).map(|i| rsx! { span { "Item {i}" } })} // Iterators must be wrapped in braces
-}
-```
-
-## Assets
-
-The asset macro links to local files. All links start with `/` and are relative to the root of your project:
-
-```rust
-rsx! {
-	img {
-		src: asset!("/assets/image.png"),
-		alt: "An image",
-	}
-}
-```
-
-`document::Stylesheet` injects a stylesheet into the `<head>`:
-
-```rust
-rsx! {
-	document::Stylesheet {
-		href: asset!("/assets/styles.css"),
-	}
-}
-```
-
-Generated images are not static assets; they are served through the custom `generated` asset handler in `apps/studio/src/ui/mod.rs`.
-
-## Components
-
-- Components are functions annotated with `#[component]`.
-- The function name must start with a capital letter or contain an underscore.
-- A component re-renders only under two conditions: its props change (as determined by `PartialEq`), or internal reactive state it depends on is updated.
-
-```rust
-#[component]
-fn Input(mut value: Signal<String>) -> Element {
-	rsx! {
-		input {
-            value,
-			oninput: move |e| {
-				*value.write() = e.value();
-			},
-			onkeydown: move |e| {
-				if e.key() == Key::Enter {
-					value.write().clear();
-				}
-			},
-		}
-	}
-}
-```
-
-Props are function arguments:
-
-- Props must be owned values, not references. Use `String` and `Vec<T>` instead of `&str` or `&[T]`.
-- Props must implement `PartialEq` and `Clone`.
-- To make a prop reactive and copy, wrap the type in `ReadOnlySignal`. Reactive state like memos and resources that read `ReadOnlySignal` props re-run when the prop changes.
-
-## State
-
-A signal wraps a value and automatically tracks where it's read and written. Changing a signal's value reruns the code that relies on it.
-
-### Local state
-
-`use_signal` creates state local to a component. Call the signal like a function (e.g. `my_signal()`) to clone the value, `.read()` for a reference, `.write()` for a mutable reference.
-
-`use_memo` creates a memoized value that recalculates when its dependencies change:
-
-```rust
-#[component]
-fn Counter() -> Element {
-	let mut count = use_signal(|| 0);
-	let mut doubled = use_memo(move || count() * 2); // re-runs when count changes
-
-	rsx! {
-		h1 { "Count: {count}" } // re-renders when count changes
-		h2 { "Doubled: {doubled}" }
-		button {
-			onclick: move |_| *count.write() += 1,
-			"Increment"
-		}
-		button {
-			onclick: move |_| count.with_mut(|count| *count += 1),
-			"Increment with with_mut"
-		}
-	}
-}
-```
-
-### Context API
-
-A parent provides state with `use_context_provider`; any child consumes it with `use_context`:
-
-```rust
-#[component]
-fn App() -> Element {
-	let mut theme = use_signal(|| "light".to_string());
-	use_context_provider(|| theme); // Provide a type to children
-	rsx! { Child {} }
-}
-
-#[component]
-fn Child() -> Element {
-	let theme = use_context::<Signal<String>>(); // Consume the same type
-	rsx! {
-		div {
-			"Current theme: {theme}"
-		}
-	}
-}
-```
-
-## Async
-
-For state that depends on an async operation, use `use_resource`. It takes an `async` closure and re-runs it whenever signals it reads are updated. Reading the `Resource` returns `None` while loading and `Some(value)` once loaded:
-
-```rust
-let mut dog = use_resource(move || async move {
-	// api request
-});
-
-match dog() {
-	Some(dog_info) => rsx! { Dog { dog_info } },
-	None => rsx! { "Loading..." },
-}
-```
-
-For fire-and-forget work (such as starting a generation and updating app state from a spawned task), use `spawn(async move { ... })` as in `run_operations` in `apps/studio/src/commands.rs`.
-
-## Dioxus 0.7 usage notes (learned while building this app)
-
-- `use_effect(move || { ... })` runs after the first render and re-runs whenever a signal it reads changes. The closure is `FnMut`, so it cannot move captured non-`Copy` values out — clone them inside (`runtime.clone()`) or move the originals in once and never use them again.
-- `Signal::set(value)` consumes a copy of the signal, so the binding must be declared `mut` at the call site (`let mut prompt = use_signal(...); prompt.set(...)`). Prefer `*prompt.write() = value` when the binding is not `mut`.
-- Signals are `Copy`. Pass them to child components as props (`Signal<T>`) and to plain helper functions that mutate them — the helper declares `mut signal: Signal<T>` parameters.
-- `EventHandler<T>` props receive closures at the call site (`onclick: move |event| ...`). Handlers are `Clone`, so one handler can be shared between several components by binding it once.
-- `use_hook` constructs one-time, non-reactive values (for example a one-time service initialized from configuration).
-- In `spawn`ed tasks, never hold a signal `.read()`/`.write()` guard across an `await`; read or clone first, await, then write (see `run_operations` in `apps/studio/src/commands.rs`).
+- **One owner for app state.** `ui::Studio` owns `AppState` on the UI thread. Views read and change it directly; every change to the story ends in `Studio::changed`, which remembers the project, autosaves, rechecks compilation and redraws.
+- **Automation goes through the mailbox.** The plan driver and the live MCP bridge run on their own threads with their own tokio runtimes, because GPUI's executors are not tokio. They reach the window with `host::Mailbox::call`, which runs a closure against `host::Driven` on the UI thread. Keep `Driven` toolkit-free so the driver's tests run against a plain fake.
+- **Slow work leaves the UI thread.** Operations, compile checks, project scans and health checks run on `background_spawn`; their results come back through `WeakEntity::update`. Anything needing tokio (reqwest, timers) builds its own runtime inside that task.
+- **Tests:** window behaviour uses `#[gpui::test]` with `TestAppContext`/`VisualTestContext` (see `apps/studio/src/ui/tests.rs`). A test module that glob-imports `gpui_kit::prelude::*` shadows `#[test]` with GPUI's macro; import only what the test needs.
 
 ## Scope and validation
 

@@ -1,204 +1,162 @@
-//! The assistant card — the visible surface of a plan run.
-//!
-//! While a plan executes, a floating card (bottom-right, above every
-//! screen) narrates the steps: the current message, the step index, and
-//! the operation summary while an op is in flight. The controls pause and
-//! adjust narration and typing speed and stop the run. When the run finishes
-//! it shows the per-step verdict. The runner and controls share the session signal.
+//! The card a running plan narrates itself in, with its pacing controls.
+use design_system::{ButtonKind, Glyph, TypeScale, Typography};
+use gpui_kit::{prelude::*, *};
 
-use dioxus::prelude::*;
+use super::Studio;
+use crate::driver::{GuideMode, GuideSession, GuideState};
 
-use crate::driver::{GuideSession, GuideState, StepStatus};
+const SPEEDS: [u32; 3] = [1, 2, 4];
 
-use super::{
-    components::IconButton,
-    icons::{Icon, IconName},
-};
+impl Studio {
+    fn update_guide(
+        &mut self,
+        act: impl FnOnce(&mut Option<GuideSession>),
+        cx: &mut Context<Self>,
+    ) {
+        act(&mut self.guide);
+        cx.notify();
+    }
 
-/// The narration-speed buttons: `(rate, active class)` pairs.
-fn speed_options(current: u32) -> [(u32, &'static str); 3] {
-    [
-        (
-            1,
-            if current == 1 {
-                "bg-violet-500/20 text-violet-200"
-            } else {
-                "text-zinc-600 hover:text-zinc-300"
-            },
-        ),
-        (
-            2,
-            if current == 2 {
-                "bg-violet-500/20 text-violet-200"
-            } else {
-                "text-zinc-600 hover:text-zinc-300"
-            },
-        ),
-        (
-            4,
-            if current == 4 {
-                "bg-violet-500/20 text-violet-200"
-            } else {
-                "text-zinc-600 hover:text-zinc-300"
-            },
-        ),
-    ]
-}
+    pub(super) fn render_guide(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let c = self.theme;
+        let session = self.guide.as_ref()?;
+        let total = session.plan.steps.len();
+        let card = div()
+            .id("guide")
+            .absolute()
+            .right(px(16.))
+            .top(px(112.))
+            .w(px(320.))
+            .p(px(14.))
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .rounded(c.radius_panel)
+            .border_1()
+            .border_color(c.hairline)
+            .bg(c.surface)
+            .shadow_lg()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(c.metrics.space)
+                    .child(Glyph::Sparkle.render(c.accent, c.metrics.icon))
+                    .child(
+                        div()
+                            .flex_1()
+                            .font_weight(FontWeight::MEDIUM)
+                            .truncate()
+                            .child(session.plan.name.clone()),
+                    ),
+            );
+        let card = match &session.state {
+            GuideState::Running => {
+                let message = session
+                    .plan
+                    .steps
+                    .get(session.current)
+                    .and_then(|step| step.message.clone())
+                    .unwrap_or_else(|| "…".to_owned());
+                card.child(
+                    div()
+                        .type_scale(TypeScale::Small)
+                        .text_color(c.text_muted)
+                        .child(format!(
+                            "Step {} of {total}{}",
+                            (session.current + 1).min(total),
+                            if session.paused { " · paused" } else { "" }
+                        )),
+                )
+                .child(div().child(message))
+                .when_some(session.busy.clone(), |card, busy| {
+                    card.child(
+                        div()
+                            .type_scale(TypeScale::Small)
+                            .text_color(c.accent)
+                            .child(busy),
+                    )
+                })
+                .child(self.render_guide_controls(session, cx))
+            }
+            GuideState::Done(report) => {
+                let failed = report.failed();
+                let (verdict, color) = if failed == 0 {
+                    (format!("All {} steps passed", report.passed()), c.success)
+                } else {
+                    (
+                        format!("{failed} of {} steps failed", report.steps.len()),
+                        c.error,
+                    )
+                };
+                card.child(div().text_color(color).child(verdict)).child(
+                    div().flex().justify_end().child(
+                        c.button("guide-close", "Close", ButtonKind::Secondary)
+                            .on_click(cx.listener(|studio, _, _, cx| {
+                                studio.update_guide(|guide| *guide = None, cx)
+                            })),
+                    ),
+                )
+            }
+        };
+        Some(card)
+    }
 
-#[component]
-pub fn GuideCard(mut session: Signal<Option<GuideSession>>) -> Element {
-    let Some(active) = session.read().clone() else {
-        return rsx! {};
-    };
-    let mode_label = if active.mode.as_str() == "guide" {
-        "Guide"
-    } else {
-        "Check"
-    };
-    let step_count = active.plan.steps.len();
-    let current = active.current.min(step_count.saturating_sub(1));
-    let step_message = active
-        .plan
-        .steps
-        .get(current)
-        .and_then(|step| step.message.clone())
-        .unwrap_or_else(|| "…".to_owned());
-    let busy = active.busy.clone().unwrap_or_else(|| "working".to_owned());
-    let progress_pct = if step_count == 0 {
-        100.0
-    } else {
-        (current as f32 / step_count as f32) * 100.0
-    };
-
-    match &active.state {
-        GuideState::Running => {
-            let mut paused = active.paused;
-            let speed = active.speed;
-            let typing_cps = active.typing_cps;
-            rsx! {
-                div { class: "fixed bottom-6 right-6 z-40 w-[360px] overflow-hidden rounded-2xl bg-[var(--studio-panel)] shadow-[0_30px_90px_rgba(0,0,0,.55)] ring-1 ring-white/[0.09]",
-                    div { class: "flex items-center justify-between border-b border-white/[0.06] px-4 py-3",
-                        div { class: "flex min-w-0 items-center gap-2.5",
-                            span { class: "size-2 shrink-0 animate-pulse rounded-full bg-violet-400" }
-                            div { class: "min-w-0",
-                                p { class: "truncate text-[11px] font-semibold text-zinc-100", "{active.plan.name}" }
-                                p { class: "text-[9px] uppercase tracking-[0.16em] text-zinc-600", "{mode_label} · step {current + 1} of {step_count}" }
+    fn render_guide_controls(
+        &self,
+        session: &GuideSession,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let c = self.theme;
+        let paused = session.paused;
+        div()
+            .flex()
+            .items_center()
+            .gap(c.metrics.space)
+            .child(
+                c.icon_action(
+                    "guide-pause",
+                    if paused { Glyph::Play } else { Glyph::Pause },
+                    if paused { "Resume" } else { "Pause" },
+                    ButtonKind::Secondary,
+                )
+                .on_click(cx.listener(|studio, _, _, cx| {
+                    studio.update_guide(
+                        |guide| {
+                            if let Some(guide) = guide {
+                                guide.paused = !guide.paused;
                             }
-                        }
-                        IconButton {
-                            label: "Stop after the current operation", icon: IconName::Close,
-                            tooltip: "The current generation finishes in the background.",
-                            onclick: move |_| session.set(None),
-                        }
-                    }
-                    div { class: "px-4 py-4",
-                        if active.busy.is_some() {
-                            p { class: "mb-2 flex items-center gap-2 text-[10px] font-medium text-violet-300",
-                                span { class: "size-2 animate-pulse rounded-full bg-violet-400" }
-                                "{busy}"
-                            }
-                        }
-                        p { class: "text-[13px] leading-6 text-zinc-200", "{step_message}" }
-                    }
-                    div { class: "h-0.5 w-full bg-white/[0.05]",
-                        div { class: "h-full bg-violet-500/60 transition-all duration-300", width: "{progress_pct}%" }
-                    }
-                    div { class: "flex items-center justify-between border-t border-white/[0.06] px-4 py-2.5",
-                    div { class: "flex items-center gap-1",
-                        IconButton {
-                            label: if paused { "Resume" } else { "Pause" }, icon: if paused { IconName::Play } else { IconName::Pause },
-                            onclick: move |_| {
-                                paused = !paused;
-                                session.with_mut(|slot| {
-                                    if let Some(s) = slot { s.paused = paused; }
-                                });
-                            },
-                        }
-                        for (rate, active_class) in speed_options(speed) {
-                            button {
-                                class: "rounded-md px-1.5 py-1 font-mono text-[9px] transition {active_class}",
-                                title: "Narration speed: {rate}x",
-                                onclick: move |_| {
-                                    session.with_mut(|slot| {
-                                        if let Some(s) = slot { s.speed = rate; }
-                                    });
+                        },
+                        cx,
+                    )
+                })),
+            )
+            .when(session.mode == GuideMode::Guide, |row| {
+                row.children(SPEEDS.into_iter().map(|speed| {
+                    let kind = if session.speed == speed {
+                        ButtonKind::Secondary
+                    } else {
+                        ButtonKind::Quiet
+                    };
+                    c.button(("guide-speed", speed as usize), format!("{speed}×"), kind)
+                        .on_click(cx.listener(move |studio, _, _, cx| {
+                            studio.update_guide(
+                                |guide| {
+                                    if let Some(guide) = guide {
+                                        guide.speed = speed;
+                                    }
                                 },
-                                "{rate}x"
-                            }
-                        }
-                    }
-                        p { class: "font-mono text-[9px] text-zinc-700", "artificial user · {mode_label}" }
-                    }
-                    div { class: "flex items-center gap-3 border-t border-white/[0.06] px-4 py-2.5",
-                        label { class: "shrink-0 text-[10px] text-zinc-400", r#for: "guide-typing-speed", "Typing" }
-                        input {
-                            id: "guide-typing-speed",
-                            class: "min-w-0 flex-1 accent-violet-400",
-                            r#type: "range",
-                            min: "1", max: "200", step: "1",
-                            value: "{typing_cps}",
-                            oninput: move |event| {
-                                if let Ok(rate @ 1..=200) = event.value().parse::<u16>() {
-                                    session.with_mut(|slot| {
-                                        if let Some(s) = slot { s.typing_cps = rate; }
-                                    });
-                                }
-                            },
-                        }
-                        span { class: "w-16 shrink-0 text-right font-mono text-[10px] text-zinc-400", "{typing_cps} char/s" }
-                    }
-                }
-            }
-        }
-        GuideState::Done(report) => {
-            let passed = report.passed();
-            let failed = report.failed();
-            let verdict_class = if failed == 0 {
-                "text-emerald-300"
-            } else {
-                "text-rose-300"
-            };
-            let rows = report.steps.iter().map(|(label, status)| {
-                let (icon, icon_class, text_class) = match status {
-                    StepStatus::Passed => (IconName::Check, "text-emerald-400", "text-zinc-400"),
-                    StepStatus::Failed { .. } => (IconName::Close, "text-rose-400", "text-rose-200"),
-                    StepStatus::Warned { .. } => (IconName::Refresh, "text-amber-400", "text-amber-200"),
-                };
-                let detail = match status {
-                    StepStatus::Failed { reason } | StepStatus::Warned { reason } => Some(reason.as_str()),
-                    StepStatus::Passed => None,
-                };
-                rsx! {
-                    div { class: "flex items-start gap-2.5 border-b border-white/[0.04] py-2 last:border-b-0",
-                        Icon { name: icon, class: "mt-0.5 size-3 shrink-0 {icon_class}" }
-                        div { class: "min-w-0",
-                            p { class: "truncate text-[11px] {text_class}", "{label}" }
-                            if let Some(detail) = detail {
-                                p { class: "mt-0.5 text-[10px] leading-4 text-zinc-600", "{detail}" }
-                            }
-                        }
-                    }
-                }
-            });
-            rsx! {
-                div { class: "fixed bottom-6 right-6 z-40 w-[360px] overflow-hidden rounded-2xl bg-[var(--studio-panel)] shadow-[0_30px_90px_rgba(0,0,0,.55)] ring-1 ring-white/[0.09]",
-                    div { class: "flex items-center justify-between border-b border-white/[0.06] px-4 py-3",
-                        div { class: "min-w-0",
-                            p { class: "truncate text-[11px] font-semibold text-zinc-100", "{active.plan.name}" }
-                            p { class: "text-[9px] uppercase tracking-[0.16em] text-zinc-600", "{mode_label} · finished in {report.duration_ms / 1000}s" }
-                        }
-                        IconButton {
-                            label: "Dismiss", icon: IconName::Close,
-                            onclick: move |_| session.set(None),
-                        }
-                    }
-                    div { class: "max-h-64 overflow-y-auto px-4 py-1", {rows} }
-                    div { class: "flex items-center justify-between border-t border-white/[0.06] px-4 py-2.5",
-                        p { class: "text-[11px] font-semibold {verdict_class}", "{passed} passed · {failed} failed" }
-                        p { class: "font-mono text-[9px] text-zinc-700", "check mode · state-level" }
-                    }
-                }
-            }
-        }
+                                cx,
+                            )
+                        }))
+                }))
+            })
+            .child(div().flex_1())
+            .child(
+                c.icon_action("guide-stop", Glyph::Stop, "Stop", ButtonKind::Quiet)
+                    .on_click(cx.listener(|studio, _, _, cx| {
+                        studio.update_guide(|guide| *guide = None, cx)
+                    })),
+            )
     }
 }
