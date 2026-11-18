@@ -99,7 +99,7 @@ pub fn open(studio: Entity<Studio>, cx: &mut App) -> Option<WindowHandle<Setting
         titlebar: Some(TitlebarOptions {
             title: Some("Settings".into()),
             appears_transparent: true,
-            traffic_light_position: Some(point(px(16.), px(16.))),
+            traffic_light_position: Some(super::traffic_lights()),
         }),
         focus: true,
         ..WindowOptions::default()
@@ -1021,7 +1021,7 @@ impl Render for Settings {
             .type_scale(TypeScale::Body)
             .child(
                 div()
-                    .h(c.metrics.bar + px(8.))
+                    .h(super::title_bar_height())
                     .flex_none()
                     .flex()
                     .items_center()

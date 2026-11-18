@@ -59,7 +59,7 @@ impl Studio {
             self.state.project_name.clone()
         };
         div()
-            .h(c.metrics.bar + px(8.))
+            .h(super::title_bar_height())
             .flex_none()
             .flex()
             .items_center()

@@ -193,6 +193,19 @@ fn init(cx: &mut App) {
     ]);
 }
 
+/// Height of the bar along the top of every Studio window. It is fixed at
+/// every interface size because the traffic lights are placed once, when the
+/// window opens, and must stay centred in it.
+pub(crate) fn title_bar_height() -> Pixels {
+    px(40.)
+}
+
+/// Where macOS draws the traffic lights: centred in the title bar. The
+/// buttons are 14 points tall.
+pub(crate) fn traffic_lights() -> Point<Pixels> {
+    point(px(16.), (title_bar_height() - px(14.)) / 2.)
+}
+
 fn window_options(size: Size<Pixels>, cx: &App) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size, cx))),
@@ -200,7 +213,7 @@ fn window_options(size: Size<Pixels>, cx: &App) -> WindowOptions {
         titlebar: Some(TitlebarOptions {
             title: Some(TITLE.into()),
             appears_transparent: true,
-            traffic_light_position: Some(point(px(16.), px(16.))),
+            traffic_light_position: Some(traffic_lights()),
         }),
         focus: true,
         ..WindowOptions::default()
