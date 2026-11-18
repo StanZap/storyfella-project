@@ -686,7 +686,7 @@ pub struct DriveContext {
     pub app_state: Signal<AppState>,
     pub defaults: Signal<GenerationDefaults>,
     pub screen: Signal<AppScreen>,
-    pub playback: Signal<storyfella_playback_ui::PlaybackModel>,
+    pub playback: Signal<storyfella_studio_core::playback::PlaybackModel>,
     /// The two cursors and the palette, so a demo can show state rather
     /// than only describe it.
     pub writer_caret: crate::ui::WriterCaret,

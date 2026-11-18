@@ -12,8 +12,9 @@ and [central tracker](ROADMAP.md#0-current-direction-and-actionable-backlog) for
 | `apps/studio` / `storyfella-studio` | Dioxus authoring UI, project state, creative workflows and snapshot preview | Consumes GUI-free core and shared playback UI/runtime |
 | `crates/studio-core` / `storyfella-studio-core` | Artifact registry, operations, persistence, config, creative inference adapters | No GUI dependencies; consumes sibling `agentkit-ai` |
 | `apps/cli` / `sf-cli` | Story checking, compilation, tracing and MCP authoring | Consumes story crates and Studio core |
-| `apps/player` / `storyfella-player` | Standalone visual Dioxus desktop playback | Shared core resource adapter, playback UI and runtime; no Studio state dependency |
-| `crates/playback-ui` / `storyfella-playback-ui` | Shared visual presentation and controls | Consumes GUI-free host adapter and runtime; no dependency on either app |
+| `apps/player` / `storyfella-player` | Standalone visual GPUI desktop playback | Shared core playback model, stage composition and runtime through `playback-panel`; no Studio state dependency |
+| `crates/playback-panel` / `storyfella-playback-panel` | GPUI playback panel and stage | Draws Studio core's stage composition with the shared design system; no dependency on either app |
+| `crates/playback-ui` / `storyfella-playback-ui` | Studio's Dioxus preview panel | Draws the same stage composition until Studio moves to GPUI |
 | `xtask` | Build, launch, package and validation commands | Developer tooling only |
 
 Language, compiler, LSP and story runtime are implemented below. No placeholder

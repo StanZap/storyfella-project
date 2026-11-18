@@ -188,7 +188,7 @@ fn start_plan(
     app_state: Signal<AppState>,
     defaults: Signal<storyfella_studio_core::registry::GenerationDefaults>,
     screen: Signal<AppScreen>,
-    playback: Signal<storyfella_playback_ui::PlaybackModel>,
+    playback: Signal<storyfella_studio_core::playback::PlaybackModel>,
     writer_caret: WriterCaret,
     grid_cursor: GridCursor,
     palette_open: Signal<bool>,
@@ -238,13 +238,13 @@ pub fn Workspace(
     let action_request = actions::ActionRequest(use_signal(|| None));
     use_context_provider(|| action_request);
     use_context_provider(|| app_state);
-    let mut playback = use_signal(storyfella_playback_ui::PlaybackModel::default);
+    let mut playback = use_signal(storyfella_studio_core::playback::PlaybackModel::default);
     use_context_provider(|| playback);
     let preview_settings = use_signal(|| config.preview);
     use_context_provider(|| preview_settings);
     let project_path = app_state.read().project_path.clone();
     use_effect(use_reactive((&project_path,), move |_| {
-        playback.set(storyfella_playback_ui::PlaybackModel::default());
+        playback.set(storyfella_studio_core::playback::PlaybackModel::default());
     }));
     let backend_config = config.clone();
     // The backend lives in a signal so the Settings model picker can swap

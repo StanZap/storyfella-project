@@ -1,0 +1,21 @@
+[package]
+name = "storyfella-playback-panel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "The GPUI playback panel and stage shared by the Player and Studio."
+
+[dependencies]
+storyfella-studio-core.workspace = true
+storyfella-runtime.workspace = true
+storyfella-compiler.workspace = true
+storyfella-language.workspace = true
+design-system.workspace = true
+gpui-kit.workspace = true
+base64.workspace = true
+image.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true

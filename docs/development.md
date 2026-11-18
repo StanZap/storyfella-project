@@ -7,7 +7,8 @@ For Studio UI changes, consult the [reusable component catalog](ui-components.md
 before creating another field, icon action, dialog or feedback surface.
 
 The repository directory is `storyfella`, beside the separate `clipforge` and
-`finewinetts` repositories. Studio and the visual Player use Dioxus desktop:
+`finewinetts` repositories. Studio uses Dioxus desktop; the visual Player is a
+GPUI app built on the shared design system in `../gpui-design-system`:
 
 ```sh
 cargo build -p storyfella-player
@@ -60,9 +61,12 @@ the core tests never compile the toolkit or the WebKit stack. `apps/studio`
 `desktop` feature; `apps/cli` builds the `sf-cli` story and MCP executable. Both application crates depend on
 `storyfella-studio-core` and name it explicitly (`storyfella_studio_core::…`) rather than re-exporting it.
 
-`apps/player` (package `storyfella-player`) uses shared Dioxus presentation from
-`crates/playback-ui`, the GUI-free host/resource adapter in Studio core and the
-independent `crates/runtime` execution engine. It does not consume Studio state.
+`apps/player` (package `storyfella-player`) draws the GPUI panel from
+`crates/playback-panel` over the GUI-free playback model, stage composition and
+resource adapter in Studio core (`playback::{PlaybackModel, stage}`) and the
+independent `crates/runtime` execution engine. It does not consume Studio
+state. Studio's Dioxus preview in `crates/playback-ui` draws the same stage
+composition until Studio moves to GPUI.
 
 Atelier, the GPUI drawing and image-generation app, is a separate repository
 (`../storyfella-canvas`) that uses `storyfella-studio-core` by path. Its own

@@ -3,48 +3,30 @@ use crate::{
         close_panel, control_keys, focus_stage, load_state, save_state, ExtraPanel, PlaybackOptions,
     },
     icons::{Icon, Symbol},
-    PlaybackModel,
 };
 use dioxus::prelude::*;
-use storyfella_compiler::{InstructionKind, VisualDirection};
-use storyfella_language::{AssetKind, Source, Span, StageGroup};
+use storyfella_language::{AssetKind, Source, Span};
 use storyfella_runtime::{Command, Phase};
+use storyfella_studio_core::playback::{
+    stage::{Effects, Frame, Passage, Portrait, Viewer},
+    PlaybackModel,
+};
 
-fn stage_class(presentation: storyfella_runtime::Presentation) -> String {
+fn stage_class(effects: Effects) -> String {
     format!(
         "sf-stage{}{}{}",
-        if presentation.shot == Some(VisualDirection::Close) {
+        if effects.close_shot {
             " sf-shot-close"
         } else {
             ""
         },
-        if presentation.mood == Some(VisualDirection::Tense) {
-            " sf-mood-tense"
-        } else {
-            ""
-        },
-        if presentation.style == Some(VisualDirection::Monochrome) {
+        if effects.tense { " sf-mood-tense" } else { "" },
+        if effects.monochrome {
             " sf-style-monochrome"
         } else {
             ""
         },
     )
-}
-
-fn actor_position(group: StageGroup, slot: usize) -> f32 {
-    let anchor = match group {
-        StageGroup::Left => 20.0,
-        StageGroup::Center => 50.0,
-        StageGroup::Right => 80.0,
-    };
-    let offset = if slot == 0 {
-        0.0
-    } else if slot % 2 == 1 {
-        -(slot.div_ceil(2) as f32) * 8.0
-    } else {
-        (slot / 2) as f32 * 8.0
-    };
-    anchor + offset
 }
 
 #[component]
@@ -140,69 +122,13 @@ pub fn PlaybackPanel(
         .unwrap_or("Storyfella Player");
     let paused = session.is_some_and(|s| s.runtime.state().paused);
     let phase = session.map(|s| s.runtime.state().phase);
-    let presentation = session
-        .map(|s| s.runtime.presentation())
-        .unwrap_or_default();
-    let stage_class = stage_class(presentation);
+    let viewer = Viewer {
+        previewing_draft: on_apply.is_some(),
+        settings,
+    };
+    let frame = session.map(|s| Frame::new(s, viewer));
+    let stage_class = stage_class(frame.as_ref().map(|f| f.effects).unwrap_or_default());
     let visuals = session.map(|s| s.active_visuals()).unwrap_or_default();
-    let missing = if on_apply.is_some() && settings.show_diagnostics {
-        session.map(|s| s.missing_uses()).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    let staged = session.map(|s| s.runtime.staged()).unwrap_or_default();
-    let staging_used = session.is_some_and(|s| s.runtime.has_staging());
-    let missing_backdrop = missing
-        .iter()
-        .find(|asset| asset.kind == AssetKind::Illustration)
-        .or_else(|| {
-            missing
-                .iter()
-                .find(|asset| asset.kind == AssetKind::Location)
-        });
-    let missing_objects: Vec<_> = missing
-        .iter()
-        .filter(|asset| {
-            !matches!(asset.kind, AssetKind::Location | AssetKind::Illustration)
-                && !staged.iter().any(|actor| {
-                    actor.asset.kind == asset.kind
-                        && actor
-                            .asset
-                            .name
-                            .value
-                            .eq_ignore_ascii_case(&asset.name.value)
-                })
-        })
-        .collect();
-    let ignored_directions = session.is_some_and(|s| {
-        on_apply.is_some()
-            && settings.show_diagnostics
-            && !s.runtime.plan().readiness.unsupported_directions.is_empty()
-    });
-    let scene_backdrop = visuals
-        .iter()
-        .find(|v| v.binding.kind == AssetKind::Illustration)
-        .or_else(|| {
-            visuals
-                .iter()
-                .find(|v| v.binding.kind == AssetKind::Location)
-        });
-    // With no location, keep the available artwork intact rather than treating
-    // a portrait or prop as a landscape. Every active asset remains inspectable.
-    let backdrop = scene_backdrop.copied().or_else(|| {
-        if staging_used {
-            None
-        } else {
-            visuals.first().copied()
-        }
-    });
-    let speaker = match current.map(|i| &i.kind) {
-        Some(InstructionKind::Speech { speaker, .. }) => speaker.binding.as_ref(),
-        _ => None,
-    };
-    let portrait = speaker
-        .and_then(|binding| visuals.iter().find(|v| &v.binding == binding).copied())
-        .filter(|v| backdrop.is_none_or(|b| b.binding != v.binding));
     rsx! {
         style { {include_str!("playback.css")} }
         div { class: "sf-play", style: "--sf-text-scale: {settings.text_percent as f32 / 100.0};", tabindex: "0", aria_label: "Story playback", "data-owns-keys": "true",
@@ -237,92 +163,85 @@ pub fn PlaybackPanel(
                 }
             }
             div { class: "{stage_class}", tabindex: "0", aria_label: "Story stage",
-                if let Some(asset) = missing_backdrop {
+                if let Some(asset) = frame.as_ref().and_then(|f| f.missing_backdrop) {
                     div { class: "sf-placeholder-location", aria_label: if asset.kind == AssetKind::Location { format!("Location {}: missing artwork", asset.name.value) } else { format!("Illustration {}: missing artwork", asset.name.value) } }
                 }
-                if let Some(backdrop) = backdrop {
+                if let Some(backdrop) = frame.as_ref().and_then(|f| f.backdrop) {
                     div { class: "sf-backdrop-frame",
-                        img { class: if backdrop.binding.kind == AssetKind::Location && !settings.contain_artwork { "sf-backdrop" } else { "sf-backdrop sf-backdrop-contained" },
-                            src: "{backdrop.image_url}", alt: "{backdrop.binding.name}" }
+                        img { class: if backdrop.contained { "sf-backdrop sf-backdrop-contained" } else { "sf-backdrop" },
+                            src: "{backdrop.visual.image_url}", alt: "{backdrop.visual.binding.name}" }
                     }
-                } else if missing_backdrop.is_none() && settings.show_diagnostics {
+                } else if frame.as_ref().map_or(settings.show_diagnostics, |f| f.backdrop_unavailable) {
                     div { class: "sf-missing-backdrop", aria_label: "Artwork unavailable", "Artwork unavailable" }
                 }
-                if let Some(session) = session {
+                if let Some(frame) = &frame {
                     div { class: "sf-actors", aria_label: "Characters on stage",
-                        for actor in staged.iter() {
-                            { let x = actor.position.map(|(x, _)| f32::from(x)).unwrap_or_else(|| actor_position(actor.group, actor.slot));
-                              let y = actor.position.map(|(_, y)| y).unwrap_or(0);
-                              let style = format!("left:{x}%;bottom:{y}%;height:{}%;z-index:{};", f32::from(actor.scale) * 0.72, actor.depth);
-                              let visual = session.staged_visual(actor);
+                        for actor in frame.actors.iter() {
+                            { let style = format!("left:{}%;bottom:{}%;height:{}%;z-index:{};", actor.left, actor.bottom, actor.height, actor.depth);
                               rsx! {
-                                  if let Some(visual) = visual {
-                                      img { key: "{actor.instance}", class: "sf-actor", style: "{style}", src: "{visual.image_url}", alt: "{actor.asset.name.value}" }
-                                  } else if settings.show_diagnostics {
-                                      div { key: "{actor.instance}", class: "sf-actor sf-staged-missing", style: "{style}", "{actor.asset.name.value} · missing artwork" }
+                                  if let Some(visual) = actor.visual {
+                                      img { key: "{actor.instance}", class: "sf-actor", style: "{style}", src: "{visual.image_url}", alt: "{actor.name}" }
+                                  } else {
+                                      div { key: "{actor.instance}", class: "sf-actor sf-staged-missing", style: "{style}", "{actor.name} · missing artwork" }
                                   }
                               }
                             }
                         }
                     }
-                }
-                if !missing_objects.is_empty() {
-                    div { class: "sf-placeholders", aria_label: "Missing artwork; positions are approximate",
-                        for (index, asset) in missing_objects.iter().enumerate() {
-                            { let x = if index % 2 == 0 { 22 + (index / 2) * 9 } else { 78_usize.saturating_sub((index / 2) * 9) }; rsx! { div { class: if asset.kind == AssetKind::Character { "sf-placeholder sf-placeholder-character" } else { "sf-placeholder sf-placeholder-prop" }, style: "left: {x}%;",
-                                span { if asset.kind == AssetKind::Character { "Character" } else { "Prop" } }
-                                strong { "{asset.name.value}" }
-                            } } }
+                    if !frame.placeholders.is_empty() {
+                        div { class: "sf-placeholders", aria_label: "Missing artwork; positions are approximate",
+                            for placeholder in frame.placeholders.iter() {
+                                div { class: if placeholder.kind == AssetKind::Character { "sf-placeholder sf-placeholder-character" } else { "sf-placeholder sf-placeholder-prop" }, style: "left: {placeholder.left}%;",
+                                    span { if placeholder.kind == AssetKind::Character { "Character" } else { "Prop" } }
+                                    strong { "{placeholder.name}" }
+                                }
+                            }
                         }
                     }
-                }
-                if let Some(session) = session {
                     div { class: "sf-scene-label",
-                        "{session.runtime.plan().scenes[session.runtime.state().scene].id.0}"
-                        if let Some(beat) = &session.runtime.state().beat { " · {beat.name}" }
-                        if !missing.is_empty() { div { class: "sf-preview-note", "Missing artwork · positions are approximate" } }
-                        if ignored_directions { div { class: "sf-preview-note", "Unsupported visual directions are ignored in preview" } }
+                        "{frame.label.scene}"
+                        if let Some(beat) = frame.label.beat { " · {beat}" }
+                        if frame.label.missing_artwork { div { class: "sf-preview-note", "Missing artwork · positions are approximate" } }
+                        if frame.label.ignored_directions { div { class: "sf-preview-note", "Unsupported visual directions are ignored in preview" } }
                     }
                 }
                 section { class: if phase == Some(Phase::Choice) { "sf-reading sf-reading-choice" } else { "sf-reading" }, aria_label: "Current story",
                     if snapshot.error.is_some() { div { class: "sf-error", role: "alert", "Playback problem" button { class: "sf-text-button", title: "Show playback error details", onclick: move |_| panel.set(Some(ExtraPanel::Error)), "Details" } } }
-                    if let Some(instruction) = current {
-                        match phase {
-                            Some(Phase::Complete) => rsx! { h2 { "Story complete" } },
-                            Some(Phase::Budget) => rsx! {
+                    if let Some(frame) = &frame {
+                        match frame.passage {
+                            Passage::Complete => rsx! { h2 { "Story complete" } },
+                            Passage::Budget => rsx! {
                                 h2 { "A moment to pause" }
                                 p { class: "sf-secondary", "Automatic transitions reached their limit. Continue another batch, or choose a scene in Options." }
                             },
-                            _ => match &instruction.kind {
-                                InstructionKind::Speech { speaker, thought, text } => rsx! {
-                                    div { class: "sf-dialogue",
-                                        if let Some(portrait) = portrait {
-                                            img { class: "sf-portrait", src: "{portrait.image_url}", alt: "{portrait.binding.name}" }
-                                        } else if settings.show_diagnostics {
-                                            div { class: "sf-portrait sf-missing-portrait", aria_label: "Portrait unavailable", "?" }
-                                        }
-                                        div { class: "sf-dialogue-text",
-                                            p { class: "sf-speaker", "{speaker.name.value}" if *thought { " · thought" } }
-                                            p { class: if *thought { "sf-story-text sf-thought" } else { "sf-story-text" }, "{text.value}" }
-                                        }
+                            Passage::Speech { speaker, thought, text, portrait } => rsx! {
+                                div { class: "sf-dialogue",
+                                    match portrait {
+                                        Portrait::Image(visual) => rsx! { img { class: "sf-portrait", src: "{visual.image_url}", alt: "{visual.binding.name}" } },
+                                        Portrait::Missing => rsx! { div { class: "sf-portrait sf-missing-portrait", aria_label: "Portrait unavailable", "?" } },
+                                        Portrait::None => rsx! {},
                                     }
-                                },
-                                InstructionKind::Narration { text } => rsx! { p { class: "sf-story-text", "{text.value}" } },
-                                InstructionKind::Choice { prompt, options } => rsx! {
-                                    h2 { class: "sf-choice-prompt", "{prompt.value}" }
-                                    div { class: "sf-choices", onkeydown: control_keys,
-                                        for (index, option) in options.iter().enumerate() {
-                                            button { class: "sf-choice", title: "{option.label.value}", disabled: paused, onclick: move |_| {
-                                                model.write().dispatch(Command::SelectChoice { index });
-                                                focus_stage();
-                                            },
-                                                span { "{option.label.value}" } Icon { symbol: Symbol::Arrow }
-                                            }
-                                        }
+                                    div { class: "sf-dialogue-text",
+                                        p { class: "sf-speaker", "{speaker}" if thought { " · thought" } }
+                                        p { class: if thought { "sf-story-text sf-thought" } else { "sf-story-text" }, "{text}" }
                                     }
-                                },
-                                _ => rsx! {},
+                                }
                             },
+                            Passage::Narration(text) => rsx! { p { class: "sf-story-text", "{text}" } },
+                            Passage::Choice { prompt, options } => rsx! {
+                                h2 { class: "sf-choice-prompt", "{prompt}" }
+                                div { class: "sf-choices", onkeydown: control_keys,
+                                    for (index, option) in options.iter().enumerate() {
+                                        button { class: "sf-choice", title: "{option.label.value}", disabled: paused, onclick: move |_| {
+                                            model.write().dispatch(Command::SelectChoice { index });
+                                            focus_stage();
+                                        },
+                                            span { "{option.label.value}" } Icon { symbol: Symbol::Arrow }
+                                        }
+                                    }
+                                }
+                            },
+                            Passage::Silent => rsx! {},
                         }
                         div { class: "sf-story-actions", onkeydown: control_keys,
                             PlaybackNav { label: "Previous passage", title: "Previous passage", symbol: Symbol::Previous, disabled: !snapshot.can_back(), onclick: move |_| { autoplay.set(false); model.write().back(); } }
@@ -398,29 +317,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn staged_groups_space_instances_around_their_anchor() {
-        assert_eq!(actor_position(StageGroup::Left, 0), 20.0);
-        assert_eq!(actor_position(StageGroup::Center, 1), 42.0);
-        assert_eq!(actor_position(StageGroup::Center, 2), 58.0);
-        assert_eq!(actor_position(StageGroup::Right, 0), 80.0);
-    }
-
-    #[test]
-    fn stage_uses_the_shared_runtime_effects_and_resets() {
-        let active = storyfella_runtime::Presentation {
-            shot: Some(VisualDirection::Close),
-            mood: Some(VisualDirection::Tense),
-            style: Some(VisualDirection::Monochrome),
+    fn stage_classes_name_each_effect() {
+        let active = Effects {
+            close_shot: true,
+            tense: true,
+            monochrome: true,
         };
         assert_eq!(
             stage_class(active),
             "sf-stage sf-shot-close sf-mood-tense sf-style-monochrome"
         );
-        let reset = storyfella_runtime::Presentation {
-            shot: Some(VisualDirection::Wide),
-            mood: Some(VisualDirection::Neutral),
-            style: Some(VisualDirection::Normal),
-        };
-        assert_eq!(stage_class(reset), "sf-stage");
+        assert_eq!(stage_class(Effects::default()), "sf-stage");
     }
 }

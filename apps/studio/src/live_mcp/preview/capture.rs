@@ -11,7 +11,8 @@ use objc2::MainThreadMarker;
 use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
 use objc2_foundation::{NSDictionary, NSError, NSPoint, NSRect, NSSize};
 use objc2_web_kit::WKSnapshotConfiguration;
-use storyfella_playback_ui::{PlaybackModel, PlaybackPanel};
+use storyfella_playback_ui::PlaybackPanel;
+use storyfella_studio_core::playback::PlaybackModel;
 use storyfella_studio_core::playback::PlaybackSession;
 use tokio::{sync::oneshot, time::timeout};
 

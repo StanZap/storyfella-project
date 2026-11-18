@@ -1,7 +1,7 @@
-use crate::PlaybackModel;
 use dioxus::prelude::*;
 use storyfella_compiler::SceneId;
 use storyfella_runtime::Command;
+use storyfella_studio_core::playback::PlaybackModel;
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum ExtraPanel {

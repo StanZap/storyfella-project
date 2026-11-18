@@ -2,8 +2,9 @@ use super::{AppScreen, WriterCaret};
 use crate::state::AppState;
 use dioxus::prelude::*;
 use storyfella_compiler::{SourceWorkspace, WorkspaceError};
-use storyfella_playback_ui::{PlaybackModel, PlaybackPanel};
+use storyfella_playback_ui::PlaybackPanel;
 use storyfella_runtime::AssetPolicy;
+use storyfella_studio_core::playback::PlaybackModel;
 use storyfella_studio_core::playback::PlaybackSession;
 
 use storyfella_language::has_includes;

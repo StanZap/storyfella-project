@@ -3,7 +3,7 @@
 Storyfella is the workspace for story authoring and playback. The existing
 Dioxus application is **Storyfella Studio**; `sf-cli` provides story tools and an MCP server. Writer and Assets share persistent scene/beat associations
 and authoring tools with the catalog-backed LSP. Language, compiler and story
-runtime are implemented; Studio preview and the standalone visual Dioxus Player
+runtime are implemented; Studio preview and the standalone visual GPUI Player
 share deterministic execution, exact artwork bindings and controls. See
 [workspace boundaries](docs/architecture.md#storyfella-workspace-boundaries).
 
@@ -11,7 +11,7 @@ share deterministic execution, exact artwork bindings and controls. See
 storyfella/
 ├── apps/studio/       # storyfella-studio (Dioxus)
 ├── apps/cli/          # sf-cli: story tools and MCP server
-├── apps/player/       # storyfella-player (visual Dioxus desktop host)
+├── apps/player/       # storyfella-player (visual GPUI desktop host)
 ├── crates/studio-core/ # storyfella-studio-core (no GUI)
 ├── crates/language/    # shared lexer, parser, AST and analysis
 ├── crates/compiler/    # versioned story plans, linking and flow validation
@@ -132,12 +132,13 @@ apps/studio/         storyfella-studio — the Dioxus application:
   src/driver/           YAML plan driver (Guide/Check modes)
   Dioxus.toml, tailwind.css, assets/, package.json
 apps/cli/             sf-cli — story commands and project-scoped MCP
-apps/player/          storyfella-player — standalone visual Dioxus desktop host
+apps/player/          storyfella-player — standalone visual GPUI desktop host
 crates/language/      Shared front end and authoring services
 crates/compiler/      Versioned plans, linking and flow validation
 crates/lsp/           Catalog-backed stdio editor tooling
 crates/runtime/       Independent deterministic story execution
-crates/playback-ui/   Shared Dioxus presentation and controls
+crates/playback-ui/   Studio's Dioxus preview panel
+crates/playback-panel/ GPUI playback panel and stage, on the shared design system
 xtask/                cargo xtask — the developer task runner (build, run, bundle,
                       check, test); not part of any shipped artifact
 config/               plans/*.yaml (+ clipforge.example.toml) (data, at the workspace root)
@@ -158,11 +159,12 @@ In-depth material lives in the [documentation index](docs/README.md): current ar
 
 ## Prerequisites
 
-- Rust stable
+- Rust 1.98, pinned by `rust-toolchain.toml` (GPUI needs it)
+- The sibling `../gpui-design-system` checkout, for the Player
 - The current stable Dioxus CLI (`dx`)
 - Node.js/npm (for the pinned Tailwind CSS and CodeMirror diff-editor toolchain)
 - An LLM endpoint (llama.cpp `llama-server` or LM Studio), running separately when LLM features are exercised
-- Linux desktop builds: the system packages required by Dioxus/WebKitGTK
+- Linux desktop builds: the system packages required by Dioxus/WebKitGTK and GPUI (see CI)
 
 ## Run the desktop application
 

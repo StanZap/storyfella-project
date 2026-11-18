@@ -8,13 +8,15 @@
 #                   plan driver, and the compiled assets. Owns the `desktop`
 #                   feature.
 #   apps/cli      — `sf-cli` story commands and MCP.
-#   apps/player   — visual desktop Player with shared runtime and playback UI.
+#   apps/player   — the GPUI desktop Player.
+#   crates/playback-panel — the GPUI playback panel and stage, for the Player
+#                   and, once its shell moves to GPUI, Studio.
 #   xtask         — `cargo xtask`: the developer task runner (build/run/bundle/
 #                   check/test). Not part of any shipped artifact.
 #
 # The `.cargo/config.toml` target-dir redirect must stay at this level.
 [workspace]
-members = ["crates/studio-core", "crates/language", "crates/compiler", "crates/lsp", "crates/runtime", "crates/playback-ui", "apps/studio", "apps/cli", "apps/player", "xtask"]
+members = ["crates/studio-core", "crates/language", "crates/compiler", "crates/lsp", "crates/runtime", "crates/playback-ui", "crates/playback-panel", "apps/studio", "apps/cli", "apps/player", "xtask"]
 resolver = "2"
 
 [workspace.package]
@@ -30,6 +32,12 @@ storyfella-language = { path = "crates/language" }
 storyfella-compiler = { path = "crates/compiler" }
 storyfella-runtime = { path = "crates/runtime" }
 storyfella-playback-ui = { path = "crates/playback-ui" }
+storyfella-playback-panel = { path = "crates/playback-panel" }
+# GPUI apps share the design system with Atelier in ../storyfella-canvas, and
+# pin the same exact gpui-kit and gpui-pre releases it does.
+design-system = { path = "../gpui-design-system/crates/components" }
+gpui-kit = "=0.10.0"
+gpui = { package = "gpui-pre", version = "=0.3.12" }
 anyhow = "1.0.104"
 base64 = "0.23.0"
 clap = { version = "4.6.5", features = ["derive"] }

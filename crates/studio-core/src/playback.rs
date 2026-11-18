@@ -1,11 +1,15 @@
 //! Shared, GUI-free playback host: snapshot compilation and exact resource checks.
 pub mod fixture;
+mod model;
+pub mod stage;
+
 use crate::{
     authoring::{artifact_kind, AssetCatalog},
     persistence::ProjectDb,
     registry::{ArtifactRegistry, RevisionStatus},
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
+pub use model::PlaybackModel;
 use std::{
     io::Cursor,
     path::{Path, PathBuf},
