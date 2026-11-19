@@ -101,7 +101,7 @@ cargo xtask fmt [--check]         # cargo fmt --all
 cargo xtask test                  # cargo test --workspace
 cargo xtask doctor                # prerequisite tools + provisioned paths
 cargo xtask clean                 # cargo clean
-cargo xtask bundle [--install]    # macOS: dist/studio/Storyfella Studio.app
+cargo xtask bundle [--install]    # dist/studio/: the .app (macOS) or executable (Linux)
 ```
 
 Debug is the default; `-r`/`--release` and `-d`/`--debug` override it, and
@@ -113,11 +113,18 @@ root so the app's project-root path resolution finds `config/plans`.
 `-l`/`--log` tees the app's stdout/stderr to `.svs-e2e/logs/app-<unix>.log` for
 the GUI live-test workflow.
 
-`bundle` builds a signed development `.app` at
-`dist/studio/Storyfella Studio.app` (release unless `-d`), using
-`apps/studio/package-macos.sh`. `--install` copies it to `~/Applications` and
-links `storyfella-studio` from `$XDG_BIN_HOME`, else `~/.local/bin`. Studio is
-bundled on macOS only; elsewhere, run the binary.
+`bundle` defaults to release unless `-d`. On macOS it builds a signed
+development `.app` at `dist/studio/Storyfella Studio.app`, using
+`apps/studio/package-macos.sh`; `--install` copies it to `~/Applications` and
+links `storyfella-studio` from `$XDG_BIN_HOME`, else `~/.local/bin`. On Linux it
+copies the executable to `dist/studio/storyfella-studio`; `--install` copies
+that to the same bin directory and adds `dev.storyfella.studio.desktop` and its
+icon under `$XDG_DATA_HOME`, else `~/.local/share`, so desktop search finds
+Studio. Windows has no bundle; `cargo xtask build` produces the executable.
+
+The app icon is `apps/studio/packaging/studio.png`, a square PNG of at most
+256px. The macOS bundle's `AppIcon.icns` is rendered from it at packaging time,
+and `apps/studio/build.rs` embeds it in the Windows executable.
 
 `cargo xtask <command> --help` documents the flags.
 

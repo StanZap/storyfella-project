@@ -7281,6 +7281,7 @@ dependencies = [
  "anyhow",
  "base64 0.23.0",
  "design-system",
+ "embed-resource",
  "gpui-kit",
  "gpui-pre",
  "gpui-pre-apple",

@@ -102,6 +102,7 @@ pub fn open(studio: Entity<Studio>, cx: &mut App) -> Option<WindowHandle<Setting
             traffic_light_position: Some(super::traffic_lights()),
         }),
         focus: true,
+        app_id: Some(super::APP_ID.into()),
         ..WindowOptions::default()
     };
     cx.open_window(options, |window, cx| {

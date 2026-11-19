@@ -48,6 +48,9 @@ use crate::{
 pub use settings::Settings;
 
 pub const TITLE: &str = "Storyfella Studio";
+/// Linux matches running windows to the installed `dev.storyfella.studio.desktop`
+/// entry, and so to its icon, by this id; it is also the macOS bundle identifier.
+const APP_ID: &str = "dev.storyfella.studio";
 const CONTEXT: &str = "Studio";
 
 actions!(
@@ -221,6 +224,7 @@ fn window_options(size: Size<Pixels>, cx: &App) -> WindowOptions {
             traffic_light_position: Some(traffic_lights()),
         }),
         focus: true,
+        app_id: Some(APP_ID.into()),
         ..WindowOptions::default()
     }
 }

@@ -38,6 +38,8 @@ gpui = { package = "gpui-pre", version = "=0.3.12" }
 gpui-apple = { package = "gpui-pre-apple", version = "=0.3.12" }
 anyhow = "1.0.104"
 base64 = "0.23.0"
+# Embeds Studio's icon into the Windows executable (apps/studio/build.rs).
+embed-resource = "3.0.12"
 clap = { version = "4.6.5", features = ["derive"] }
 # The shared native-inference runtime (stable-diffusion.cpp `sd-server`): the
 # model store, the served profile, the resident process, and the `sdcpp` HTTP

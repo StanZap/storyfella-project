@@ -5,14 +5,15 @@
 //! only logic worth reading here is path resolution and exit-code propagation —
 //! everything else is a command assembled and handed to [`crate::proc`].
 
+use std::fs;
 use std::process::{Command as Process, ExitCode, ExitStatus};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::cli::{BuildArgs, BundleArgs, Cli, ClippyArgs, Command, FmtArgs, PlanArgs, RunArgs};
 use crate::proc;
-use crate::workspace::{Profile, Workspace, APP_PACKAGE};
+use crate::workspace::{Profile, Workspace, APP_BIN, APP_PACKAGE};
 
 /// Dispatch a parsed command line.
 pub fn dispatch(cli: Cli) -> Result<ExitCode> {
@@ -53,23 +54,46 @@ fn plan(ws: &Workspace, args: PlanArgs) -> Result<ExitCode> {
     launch_app(ws, args.profile.resolve(false), app_args, args.log)
 }
 
-/// Packages Studio with `apps/studio/package-macos.sh`, then optionally
-/// installs it. Linux and Windows have no Studio package yet.
+/// Packages Studio into `dist/studio`, then optionally installs it. macOS
+/// gets the `.app` from `apps/studio/package-macos.sh`; Linux gets the plain
+/// executable, which `--install` puts on `PATH` with a desktop entry. Windows
+/// has no package: `cargo xtask build` produces an executable with its icon.
 fn bundle(ws: &Workspace, args: BundleArgs) -> Result<ExitCode> {
-    if !cfg!(target_os = "macos") {
-        bail!("Studio can only be bundled on macOS; elsewhere, run the binary");
+    let profile = args.profile.resolve(true);
+    let out_dir = ws.dist().join("studio");
+    match std::env::consts::OS {
+        "macos" => {
+            let mut cmd = Process::new("sh");
+            cmd.current_dir(ws.root())
+                .arg("apps/studio/package-macos.sh")
+                .env("CARGO_TARGET_DIR", ws.target_dir()?);
+            if profile.is_release() {
+                cmd.arg("--release");
+            }
+            proc::require(&mut cmd)?;
+        }
+        "linux" => {
+            build_app(ws, profile, &[])?;
+            let binary = ws.app_binary(profile)?;
+            fs::create_dir_all(&out_dir)
+                .with_context(|| format!("creating {}", out_dir.display()))?;
+            // Replace by rename so a running Studio keeps the image it mapped.
+            let dest = out_dir.join(APP_BIN);
+            let staging = out_dir.join(format!(".{APP_BIN}.new"));
+            fs::copy(&binary, &staging).with_context(|| {
+                format!("copying {} into {}", binary.display(), out_dir.display())
+            })?;
+            fs::rename(&staging, &dest).with_context(|| format!("writing {}", dest.display()))?;
+            proc::done(format!("built {}", dest.display()));
+        }
+        _ => bail!(
+            "Studio bundles on macOS and Linux; on Windows, `cargo xtask build` \
+             produces the executable, with its icon"
+        ),
     }
-    let mut cmd = Process::new("sh");
-    cmd.current_dir(ws.root())
-        .arg("apps/studio/package-macos.sh")
-        .env("CARGO_TARGET_DIR", ws.target_dir()?);
-    if args.profile.resolve(true).is_release() {
-        cmd.arg("--release");
-    }
-    proc::require(&mut cmd)?;
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     if args.install {
-        crate::install::bundled(&ws.dist().join("studio"))?;
+        crate::install::bundled(ws.root(), &out_dir)?;
     }
     Ok(ExitCode::SUCCESS)
 }

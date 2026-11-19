@@ -9,7 +9,7 @@
 //! cargo xtask run          # build (debug) and launch the desktop app
 //! cargo xtask run -r       # …in release
 //! cargo xtask plan config/plans/smoke.yaml
-//! cargo xtask bundle -r --install   # macOS: build and install the .app
+//! cargo xtask bundle -r --install   # build and install Studio for this user
 //! ```
 //!
 //! Launch tasks default to debug; `-r`/`--release` opts into the release
@@ -17,7 +17,9 @@
 //! `cargo xtask plan … --mode check` can gate a script.
 
 mod cli;
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
+mod desktop;
+#[cfg(unix)]
 mod install;
 mod proc;
 mod tasks;

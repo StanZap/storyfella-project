@@ -1,9 +1,11 @@
 //! Installing the bundled app for the current user.
 //!
-//! `bundle --install` copies `Storyfella Studio.app` into `~/Applications` and
-//! links its executable as `<bin>/storyfella-studio`, where `<bin>` is
-//! `$XDG_BIN_HOME` when set, otherwise `~/.local/bin`. Nothing needs elevation,
-//! and the bundle stays in `dist/` for the next build to replace.
+//! On macOS `bundle --install` copies `Storyfella Studio.app` into
+//! `~/Applications` and links its executable as `<bin>/storyfella-studio`. On
+//! Linux it copies the executable to `<bin>/storyfella-studio` and adds the
+//! desktop entry and icon desktop search finds it by (see [`crate::desktop`]).
+//! `<bin>` is `$XDG_BIN_HOME` when set, otherwise `~/.local/bin`. Nothing needs
+//! elevation, and the bundle stays in `dist/` for the next build to replace.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,22 +17,46 @@ use crate::proc;
 
 /// The bundle `apps/studio/package-macos.sh` writes into `dist/studio`.
 pub const BUNDLE: &str = "Storyfella Studio.app";
-/// The executable inside it, `Contents/MacOS/<EXECUTABLE>`.
+/// The executable inside it, `Contents/MacOS/<EXECUTABLE>`, and the one the
+/// Linux bundle writes into `dist/studio`.
 const EXECUTABLE: &str = "storyfella-studio";
 /// The command placed in the user's bin directory.
 const COMMAND: &str = "storyfella-studio";
+/// The bundle identifier: the macOS bundle's, and the Linux desktop entry's,
+/// which Studio's windows set as their `app_id`.
+const ID: &str = "dev.storyfella.studio";
+/// The square icon PNG, relative to the workspace root.
+const ICON: &str = "apps/studio/packaging/studio.png";
 
 /// Installs the bundle in `out_dir`, returning the command now on `PATH`.
-pub fn bundled(out_dir: &Path) -> Result<PathBuf> {
+/// `root` is the workspace root Studio's icon is found under.
+pub fn bundled(root: &Path, out_dir: &Path) -> Result<PathBuf> {
     let home = std::env::var_os("HOME")
         .filter(|home| !home.is_empty())
-        .context("HOME is not set, so there is no per-user Applications directory")?;
+        .context("HOME is not set, so there is no per-user directory to install into")?;
     let home = PathBuf::from(home);
     let bin = match std::env::var_os("XDG_BIN_HOME").filter(|dir| !dir.is_empty()) {
         Some(dir) => PathBuf::from(dir),
         None => home.join(".local/bin"),
     };
-    let link = install(&out_dir.join(BUNDLE), &home.join("Applications"), &bin)?;
+    let link = if cfg!(target_os = "macos") {
+        install(&out_dir.join(BUNDLE), &home.join("Applications"), &bin)?
+    } else {
+        let installed = install_executable(&out_dir.join(EXECUTABLE), &bin)?;
+        let entry = crate::desktop::install(
+            &crate::desktop::Launcher {
+                id: ID,
+                name: "Storyfella Studio",
+                comment: "Write, arrange, and preview visual stories",
+                categories: "Office;",
+                exec: &installed,
+                icon: &root.join(ICON),
+            },
+            &crate::desktop::data_home()?,
+        )?;
+        proc::done(format!("added {}", entry.display()));
+        installed
+    };
     proc::done(format!("installed {}", link.display()));
     let on_path = std::env::var_os("PATH")
         .is_some_and(|paths| std::env::split_paths(&paths).any(|entry| entry == bin));
@@ -80,6 +106,28 @@ fn install(source: &Path, applications: &Path, bin: &Path) -> Result<PathBuf> {
     std::os::unix::fs::symlink(dest.join("Contents/MacOS").join(EXECUTABLE), &link)
         .with_context(|| format!("linking {}", link.display()))?;
     Ok(link)
+}
+
+/// Copies the executable `source` to `<bin>/<COMMAND>`, replacing an
+/// installed copy or an earlier link by rename.
+fn install_executable(source: &Path, bin: &Path) -> Result<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if !source.is_file() {
+        bail!(
+            "no Studio executable at {} — build one with `cargo xtask bundle`",
+            source.display()
+        );
+    }
+    fs::create_dir_all(bin).with_context(|| format!("creating {}", bin.display()))?;
+    let dest = bin.join(COMMAND);
+    let staging = bin.join(format!(".{COMMAND}.new"));
+    fs::copy(source, &staging)
+        .with_context(|| format!("copying {} into {}", source.display(), bin.display()))?;
+    fs::set_permissions(&staging, fs::Permissions::from_mode(0o755))
+        .with_context(|| format!("making {} executable", staging.display()))?;
+    fs::rename(&staging, &dest).with_context(|| format!("installing {}", dest.display()))?;
+    Ok(dest)
 }
 
 #[cfg(test)]
@@ -139,6 +187,29 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(left, [BUNDLE], "no staging or previous copy is left behind");
+    }
+
+    #[test]
+    fn installs_the_executable_over_an_earlier_link() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("dist").join(EXECUTABLE);
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, "studio").unwrap();
+        let bin = root.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(root.path().join("elsewhere"), bin.join(COMMAND)).unwrap();
+
+        let installed = install_executable(&source, &bin).unwrap();
+
+        assert_eq!(installed, bin.join(COMMAND));
+        assert!(!fs::symlink_metadata(&installed).unwrap().is_symlink());
+        assert_eq!(fs::read_to_string(&installed).unwrap(), "studio");
+        let mode = fs::metadata(&installed).unwrap().permissions().mode();
+        assert_eq!(mode & 0o111, 0o111, "the installed command is executable");
+        assert!(source.exists(), "the executable stays in dist");
+        assert!(!bin.join(format!(".{COMMAND}.new")).exists());
     }
 
     #[test]

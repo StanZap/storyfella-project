@@ -33,6 +33,9 @@ gpui-apple = { workspace = true, features = ["test-support"] }
 base64.workspace = true
 image.workspace = true
 
+[build-dependencies]
+embed-resource.workspace = true
+
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true

@@ -24,7 +24,7 @@ use crate::workspace::Profile;
         cargo xtask run -l                       …logging the app to .svs-e2e/logs/\n  \
         cargo xtask plan config/plans/smoke.yaml\n  \
         cargo xtask plan config/plans/ui-tour.yaml --mode guide\n  \
-        cargo xtask bundle --install             package Studio (macOS) and install it\n  \
+        cargo xtask bundle --install             package Studio and install it for this user\n  \
         cargo xtask test"
 )]
 pub struct Cli {
@@ -108,8 +108,9 @@ pub struct RunArgs {
 pub struct BundleArgs {
     #[command(flatten)]
     pub profile: ProfileArgs,
-    /// Install the bundle into `~/Applications` and link `storyfella-studio`
-    /// from `$XDG_BIN_HOME`, else `~/.local/bin`.
+    /// Install for this user: `storyfella-studio` in `$XDG_BIN_HOME`, else
+    /// `~/.local/bin`, plus the `.app` in `~/Applications` (macOS) or a desktop
+    /// entry and icon (Linux).
     #[arg(long)]
     pub install: bool,
 }
