@@ -1,17 +1,16 @@
 //! The story assistant's conversation: one per project, saved beside the
 //! project's workflow runs so it survives closing Studio.
 //!
-//! A turn records what was asked, the phases the writing workflow went
-//! through, and how it ended. A suggestion keeps its full proposal — one
-//! passage's, or the whole project's — so a review interrupted by closing
-//! Studio can be picked up again.
+//! A turn records what was asked, the steps the assistant took, and how it
+//! ended: what it said and which files it changed. The changes themselves
+//! are in the story already; reviewing them is the editor's.
 use std::path::Path;
 
 use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-use super::{novel::NovelProposal, writing::WritingProposal, RunStore};
+use super::{agent::AgentRequest, RunStore};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Conversation {
@@ -48,7 +47,7 @@ pub struct Answer {
     pub outcome: Outcome,
 }
 
-/// One phase of the writing workflow, such as checking the suggestion.
+/// One step the assistant took, such as editing a file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Step {
     pub label: String,
@@ -63,110 +62,37 @@ pub struct Step {
 pub enum Outcome {
     #[default]
     Working,
-    Proposed(Box<Proposed>),
-    /// The request was not an edit; the model answered in prose.
-    Replied(String),
-    /// The suggestion matched the passage as it stood.
-    Unchanged,
+    /// The request ran to its end; what it changed is in the story already.
+    Done(Done),
     Failed(String),
-    /// A model call's answer stopped at the output limit, even when asked
-    /// for again without thinking.
+    /// A model call's answer stopped at the output limit.
     CutOff(String),
-    /// The project workflow's plan still did not fit the story after its
-    /// repairs.
-    UnusablePlan(String),
+    /// The writer stopped it; what it changed by then stays in the story.
     Stopped,
     /// Studio closed while the reply was being written.
     Interrupted,
 }
 
-/// A suggested edit and what became of it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Proposed {
-    pub suggestion: Suggestion,
-    /// The files it changes, in the order they are reviewed.
+/// How a request that ran to its end left the story.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Done {
+    /// What the assistant said: what it changed, or its answer.
+    pub reply: String,
+    /// The files it changed.
     pub files: Vec<FileChange>,
-    pub decision: Decision,
+    /// It used every step it was allowed and may not have finished.
+    pub out_of_steps: bool,
+    /// The request to send to carry on, when it ran out of steps.
+    pub continuation: Option<Box<AgentRequest>>,
 }
 
-/// What a suggestion was asked of: one passage, or the whole project.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Suggestion {
-    Passage {
-        /// The file, relative to the entry story's folder.
-        file: String,
-        proposal: WritingProposal,
-    },
-    Project(NovelProposal),
-}
-
-/// One file a suggestion changes, and by how many lines.
+/// One file a request changed, and by how many lines.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileChange {
     /// Relative to the entry story's folder.
     pub file: String,
     pub added: usize,
     pub removed: usize,
-}
-
-impl Suggestion {
-    /// What the model said about its edit.
-    pub fn note(&self) -> Option<&str> {
-        match self {
-            Self::Passage { proposal, .. } => proposal.note.as_deref(),
-            Self::Project(proposal) => proposal.note.as_deref(),
-        }
-    }
-
-    /// Why the run ended before its files were finished and checked; such
-    /// a suggestion may not compile.
-    pub fn unfinished(&self) -> Option<&str> {
-        match self {
-            Self::Passage { .. } => None,
-            Self::Project(proposal) => proposal.unfinished.as_deref(),
-        }
-    }
-
-    /// The files it changes, each as it was asked about and as suggested.
-    pub fn texts(&self) -> Vec<(String, String, String)> {
-        match self {
-            Self::Passage { file, proposal } => {
-                let request = &proposal.request;
-                let mut after = request.source.clone();
-                after.replace_range(
-                    request.range.start..request.range.end,
-                    &proposal.replacement,
-                );
-                vec![(file.clone(), request.source.clone(), after)]
-            }
-            Self::Project(proposal) => proposal
-                .files
-                .iter()
-                .map(|(file, after)| {
-                    let before = proposal
-                        .request
-                        .workspace
-                        .files
-                        .get(file)
-                        .cloned()
-                        .unwrap_or_default();
-                    (file.clone(), before, after.clone())
-                })
-                .collect(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Decision {
-    #[default]
-    Pending,
-    /// Some or all of its changes were kept.
-    Kept {
-        kept: usize,
-        of: usize,
-    },
-    Discarded,
 }
 
 impl Conversation {

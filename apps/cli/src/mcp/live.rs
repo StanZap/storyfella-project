@@ -61,12 +61,11 @@ fn descriptors() -> Vec<McpToolDescriptor> {
                 "width":{"type":"integer","minimum":360,"maximum":960},
                 "height":{"type":"integer","minimum":360,"maximum":960}
             }), &["session","preview","width","height"]),
-            tool("storyfella_novel_suggest_start", "Start a writing request for the whole open novel. Poll and review every proposed file before applying.", McpPermission::Mutating, json!({
-                "session":session, "instructions":{"type":"string","maxLength":8192}, "expand":{"type":"boolean"}, "preserve_facts":{"type":"boolean"}
-            }), &["session","instructions","expand","preserve_facts"]),
-            tool("storyfella_novel_suggest_poll", "Check a novel-writing job and return its proposed file contents when ready.", McpPermission::ReadOnly, json!({"session":session,"job":session}), &["session","job"]),
-            tool("storyfella_novel_suggest_apply", "Apply the reviewed novel-writing proposal as one undoable Studio draft change if the novel is unchanged.", McpPermission::Mutating, json!({"session":session,"job":session}), &["session","job"]),
-            tool("storyfella_novel_suggest_cancel", "Cancel or discard a novel-writing job.", McpPermission::Mutating, json!({"session":session,"job":session}), &["session","job"]),
+            tool("storyfella_assistant_start", "Ask Studio's assistant to change the open story. It edits Studio's draft as it works, each edit one undoable change, checking the story after every edit. Poll for its answer.", McpPermission::Mutating, json!({
+                "session":session, "instructions":{"type":"string","maxLength":8192}, "preserve_facts":{"type":"boolean"}
+            }), &["session","instructions","preserve_facts"]),
+            tool("storyfella_assistant_poll", "Check an assistant job: whether it is running, and when done its answer, the files it changed and whether it ran out of steps.", McpPermission::ReadOnly, json!({"session":session,"job":session}), &["session","job"]),
+            tool("storyfella_assistant_cancel", "Stop an assistant job. Edits it already made stay in the draft.", McpPermission::Mutating, json!({"session":session,"job":session}), &["session","job"]),
         ]
 }
 
@@ -103,10 +102,9 @@ impl ServerHandler for Bridge {
             "storyfella_preview_start" => ("preview", "start"),
             "storyfella_preview_step" => ("preview", "step"),
             "storyfella_preview_capture" => ("preview", "capture"),
-            "storyfella_novel_suggest_start" => ("novel", "start"),
-            "storyfella_novel_suggest_poll" => ("novel", "poll"),
-            "storyfella_novel_suggest_apply" => ("novel", "apply"),
-            "storyfella_novel_suggest_cancel" => ("novel", "cancel"),
+            "storyfella_assistant_start" => ("assistant", "start"),
+            "storyfella_assistant_poll" => ("assistant", "poll"),
+            "storyfella_assistant_cancel" => ("assistant", "cancel"),
             _ => return Err(ErrorData::invalid_params("Unknown live Studio tool", None)),
         };
         let command = json!({(domain): {(operation): arguments}});
@@ -140,17 +138,16 @@ impl ServerHandler for Bridge {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn live_studio_exposes_novel_review_lifecycle() {
+    fn live_studio_exposes_the_assistant_job_lifecycle() {
         let names: Vec<_> = super::descriptors()
             .into_iter()
             .map(|tool| tool.name)
             .collect();
         for expected in [
             "storyfella_preview_capture",
-            "storyfella_novel_suggest_start",
-            "storyfella_novel_suggest_poll",
-            "storyfella_novel_suggest_apply",
-            "storyfella_novel_suggest_cancel",
+            "storyfella_assistant_start",
+            "storyfella_assistant_poll",
+            "storyfella_assistant_cancel",
         ] {
             assert!(
                 names.iter().any(|name| name == expected),

@@ -81,23 +81,20 @@ impl<C> Request<C> {
 pub enum Command {
     Writer(WriterCommand),
     Preview(PreviewCommand),
-    Novel(NovelCommand),
+    Assistant(AssistantCommand),
 }
 
+/// Asking Studio's assistant to change the open story. Its edits go into
+/// Studio's draft as it makes them, each one undoable there.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub enum NovelCommand {
+pub enum AssistantCommand {
     Start {
         session: Uuid,
         instructions: String,
-        expand: bool,
         preserve_facts: bool,
     },
     Poll {
-        session: Uuid,
-        job: Uuid,
-    },
-    Apply {
         session: Uuid,
         job: Uuid,
     },

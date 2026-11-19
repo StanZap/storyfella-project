@@ -1,41 +1,44 @@
-//! What the assistant column asks of the writing workflows: which passage —
-//! or the whole project — a request is about, and running it off the UI
-//! thread. Nothing here draws.
-use std::{ops::Range, path::PathBuf};
+//! What the assistant column asks of the story agent: what a request may
+//! change, where the writer is, and running it off the UI thread. The agent's
+//! edits come back to the UI thread as [`DraftCall`]s, which the column
+//! applies to the story the editor holds. Nothing here draws.
+use std::{collections::BTreeMap, ops::Range, path::PathBuf, sync::Arc};
 
+use storyfella_compiler::SourceWorkspace;
 use storyfella_language::{Source, Span};
 use storyfella_studio_core::{
     planner::PlannerBackend,
     registry::ArtifactRegistry,
     workflows::{
-        assistant::{Place, Suggestion},
+        agent::{self, AgentOutcome, AgentRequest, EditorContext, Passage, Story, StoryDraft},
+        assistant::Place,
         framework::SharedStreamingModel,
-        novel::{self, NovelRequest, NovelResult},
-        writing::{self, WritingAction, WritingRequest, WritingResult, WritingScope},
         AssistantSettings, Cancellation, Feedback, RunStore,
     },
 };
+use tokio::sync::{mpsc, oneshot};
 
 use crate::{state::AppState, writing as files};
 
-/// What a request is about: a passage of the open file, or every file.
+/// What a request may change: a passage of the open file, the file, or
+/// everything.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Scope {
     Selection,
-    #[default]
     Beat,
     Scene,
     File,
+    #[default]
     Project,
 }
 
 impl Scope {
     pub const ALL: [Self; 5] = [
-        Self::Selection,
-        Self::Beat,
-        Self::Scene,
-        Self::File,
         Self::Project,
+        Self::File,
+        Self::Scene,
+        Self::Beat,
+        Self::Selection,
     ];
 
     pub fn label(self) -> &'static str {
@@ -49,48 +52,14 @@ impl Scope {
     }
 }
 
-/// A request as sent: one passage of a file, or the whole project.
+/// A request as sent, with how its reach reads under it and where its
+/// passage began.
 #[derive(Clone, Debug)]
-pub enum Request {
-    Passage {
-        file: String,
-        request: WritingRequest,
-    },
-    Project(NovelRequest),
-}
-
-impl Request {
-    /// How the request's reach reads under it, such as "Beat · lines 4–9 of
-    /// chapter.sf" or "Project · 3 files".
-    pub fn describe(&self, scope: Scope) -> String {
-        match self {
-            Self::Passage { file, request } => {
-                describe(scope, file, &request.source, request.range)
-            }
-            Self::Project(request) => match request.workspace.files.len() {
-                1 => "Project · 1 file".into(),
-                count => format!("Project · {count} files"),
-            },
-        }
-    }
-
-    /// Where the passage begins; none for the whole project.
-    pub fn place(&self) -> Option<Place> {
-        match self {
-            Self::Passage { file, request } => Some(Place {
-                file: file.clone(),
-                offset: request.range.start,
-            }),
-            Self::Project(_) => None,
-        }
-    }
-}
-
-/// How a request was answered.
-#[derive(Clone, Debug)]
-pub enum Answered {
-    Edit(Box<Suggestion>),
-    Reply(String),
+pub struct Request {
+    pub agent: AgentRequest,
+    /// "Beat · lines 4–9 of chapter.sf" or "Project · 3 files".
+    pub describe: String,
+    pub place: Option<Place>,
 }
 
 /// Where the story's workflow runs and conversation are kept.
@@ -115,8 +84,8 @@ pub fn describe(scope: Scope, file: &str, source: &str, range: Span) -> String {
     }
 }
 
-/// A request about what `scope` names: the passage of `file` around the
-/// caret, or the whole project, following `instructions`.
+/// A request about what `scope` names around the caret in `file`,
+/// following `instructions`.
 pub fn capture(
     state: &AppState,
     file: &str,
@@ -125,82 +94,119 @@ pub fn capture(
     instructions: &str,
     keep_facts: bool,
 ) -> Result<Request, String> {
-    if scope == Scope::Project {
-        return capture_project(state, instructions, keep_facts).map(Request::Project);
-    }
-    capture_passage(state, file, scope, selection, instructions, keep_facts).map(|request| {
-        Request::Passage {
-            file: file.to_owned(),
-            request,
-        }
-    })
-}
-
-/// Every file of the story as it stands in the editor, drafts included.
-pub fn capture_project(
-    state: &AppState,
-    instructions: &str,
-    keep_facts: bool,
-) -> Result<NovelRequest, String> {
-    let project = state.project_path.clone().ok_or("Open a story first.")?;
-    let workspace = state.workspace_snapshot()?;
-    Ok(NovelRequest {
-        project,
-        workspace,
-        action: WritingAction::Rewrite,
-        instructions: instructions.trim().to_owned(),
-        preserve_facts: keep_facts,
-        catalog_digest: novel::catalog_digest(&state.registry)
-            .map_err(|error| error.to_string())?,
-    })
-}
-
-/// A rewrite of the passage of `file` that `scope` names around the caret.
-pub fn capture_passage(
-    state: &AppState,
-    file: &str,
-    scope: Scope,
-    selection: Range<usize>,
-    instructions: &str,
-    keep_facts: bool,
-) -> Result<WritingRequest, String> {
-    let project = state.project_path.as_deref().ok_or("Open a story first.")?;
-    let folder = state
-        .story
-        .path()
-        .and_then(|entry| entry.parent())
-        .ok_or("Save the story first.")?;
+    state.project_path.as_ref().ok_or("Open a story first.")?;
     let source = files::source(state, file).ok_or("Open a story file first.")?;
-    if source.trim().is_empty() {
-        return Err(format!(
-            "{file} is empty. The assistant edits passages that exist, so write a first line, \
-             then ask."
-        ));
-    }
-    let scope = match scope {
-        Scope::Selection if selection.is_empty() => {
-            return Err("Select the passage to work on first.".into())
+    let (agent_scope, describe, place) = match scope {
+        Scope::Project => {
+            let count = state.workspace_snapshot()?.files.len();
+            let describe = match count {
+                1 => "Project · 1 file".to_owned(),
+                count => format!("Project · {count} files"),
+            };
+            (agent::Scope::Project, describe, None)
         }
-        Scope::Selection => WritingScope::Selection(Span::new(selection.start, selection.end)),
-        Scope::Beat => WritingScope::Beat(selection.start),
-        Scope::Scene => WritingScope::Scene(selection.start),
-        Scope::File | Scope::Project => WritingScope::File,
+        Scope::File => (
+            agent::Scope::File {
+                file: file.to_owned(),
+            },
+            describe(scope, file, source, Span::new(0, source.len())),
+            Some(Place {
+                file: file.to_owned(),
+                offset: 0,
+            }),
+        ),
+        Scope::Selection | Scope::Beat | Scope::Scene => {
+            let passage = match scope {
+                Scope::Selection => Passage::Selection,
+                Scope::Beat => Passage::Beat,
+                _ => Passage::Scene,
+            };
+            let agent_scope = agent::Scope::passage(passage, file, source, selection.clone())
+                .map_err(|error| error.to_string())?;
+            let agent::Scope::Passage { span, .. } = &agent_scope else {
+                return Err("The passage could not be found.".into());
+            };
+            let (describe, place) = (
+                describe(scope, file, source, *span),
+                Some(Place {
+                    file: file.to_owned(),
+                    offset: span.start,
+                }),
+            );
+            (agent_scope, describe, place)
+        }
     };
-    let mut request =
-        WritingRequest::capture(project, &folder.join(file), source, scope, &state.registry)
-            .map_err(|error| error.to_string())?;
-    request.action = WritingAction::Rewrite;
-    request.instructions = instructions.trim().to_owned();
-    request.preserve_facts = keep_facts;
-    Ok(request)
+    Ok(Request {
+        agent: AgentRequest {
+            instructions: instructions.trim().to_owned(),
+            preserve_facts: keep_facts,
+            scope: agent_scope,
+            editor: Some(EditorContext {
+                file: file.to_owned(),
+                caret: selection.start,
+                selection: (selection.start < selection.end)
+                    .then(|| Span::new(selection.start, selection.end)),
+            }),
+            continuing: None,
+        },
+        describe,
+        place,
+    })
 }
 
-/// What writes the suggestion: the provider chosen in Settings, or a model
-/// handed in directly, as tests do.
+/// What writes the story: the provider chosen in Settings, or a model handed
+/// in directly, as tests do.
 #[derive(Clone)]
 pub enum Engine {
     Provider(PlannerBackend),
     Model(SharedStreamingModel),
+}
+
+/// What the running agent asks of the UI thread.
+pub enum DraftCall {
+    /// The story as the editor holds it.
+    Workspace(oneshot::Sender<Result<SourceWorkspace, String>>),
+    /// Replace these files, each still as in `base`, as one undoable change.
+    Write {
+        base: SourceWorkspace,
+        texts: BTreeMap<String, String>,
+        done: oneshot::Sender<Result<(), String>>,
+    },
+}
+
+/// Everything a running request sends the UI thread, in the order it
+/// happened.
+pub enum Heard {
+    Feedback(Feedback),
+    Draft(DraftCall),
+}
+
+/// The editor's story, reached from the agent's thread.
+struct Bridge(mpsc::UnboundedSender<Heard>);
+
+const CLOSED: &str = "Studio closed the story.";
+
+#[async_trait::async_trait]
+impl StoryDraft for Bridge {
+    async fn workspace(&self) -> Result<SourceWorkspace, String> {
+        let (send, receive) = oneshot::channel();
+        self.0
+            .send(Heard::Draft(DraftCall::Workspace(send)))
+            .map_err(|_| CLOSED.to_owned())?;
+        receive.await.map_err(|_| CLOSED.to_owned())?
+    }
+
+    async fn write(
+        &self,
+        base: SourceWorkspace,
+        texts: BTreeMap<String, String>,
+    ) -> Result<(), String> {
+        let (done, receive) = oneshot::channel();
+        self.0
+            .send(Heard::Draft(DraftCall::Write { base, texts, done }))
+            .map_err(|_| CLOSED.to_owned())?;
+        receive.await.map_err(|_| CLOSED.to_owned())?
+    }
 }
 
 /// The stack of the thread a request runs on. The workflow, its HTTP client
@@ -209,91 +215,64 @@ pub enum Engine {
 const WORKER_STACK: usize = 16 * 1024 * 1024;
 
 /// What a request ended in: `Ok(None)` when it was cancelled.
-pub type Finished = anyhow::Result<Option<Answered>>;
+pub type Finished = anyhow::Result<Option<AgentOutcome>>;
 
-/// Runs `request` to a suggestion or a reply on a thread of its own, whose
-/// answer arrives on the returned channel.
+/// Runs `request` on a thread of its own. Its progress and its calls on the
+/// story arrive on `heard`; its outcome on the returned channel.
 pub fn spawn(
-    request: Request,
+    request: AgentRequest,
     settings: AssistantSettings,
     engine: Engine,
     registry: ArtifactRegistry,
     store: PathBuf,
     cancel: Cancellation,
-    feedback: impl Fn(Feedback) + Send + Sync + 'static,
-) -> std::io::Result<tokio::sync::oneshot::Receiver<Finished>> {
-    let (send, receive) = tokio::sync::oneshot::channel();
+    heard: mpsc::UnboundedSender<Heard>,
+) -> std::io::Result<oneshot::Receiver<Finished>> {
+    let (send, receive) = oneshot::channel();
     std::thread::Builder::new()
         .name("assistant".into())
         .stack_size(WORKER_STACK)
         .spawn(move || {
-            let _ = send.send(suggest(
-                request, settings, engine, registry, store, cancel, feedback,
+            let _ = send.send(run(
+                request, settings, engine, registry, store, cancel, heard,
             ));
         })?;
     Ok(receive)
 }
 
-fn suggest(
-    request: Request,
+fn run(
+    request: AgentRequest,
     settings: AssistantSettings,
     engine: Engine,
     registry: ArtifactRegistry,
     store: PathBuf,
     cancel: Cancellation,
-    feedback: impl Fn(Feedback) + Send + Sync + 'static,
+    heard: mpsc::UnboundedSender<Heard>,
 ) -> Finished {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async move {
         let store = RunStore::open(&store)?;
-        Ok(match request {
-            Request::Passage { file, request } => {
-                let result = match engine {
-                    Engine::Provider(backend) => {
-                        writing::run_with_backend(
-                            request, settings, &backend, &registry, &store, cancel, feedback,
-                        )
-                        .await?
-                    }
-                    Engine::Model(model) => {
-                        writing::run_with_model(
-                            request, settings, model, &registry, &store, cancel, feedback,
-                        )
-                        .await?
-                    }
-                };
-                result.map(|result| match result {
-                    WritingResult::Proposal(proposal) => {
-                        Answered::Edit(Box::new(Suggestion::Passage { file, proposal }))
-                    }
-                    WritingResult::Reply { text, .. } => Answered::Reply(text),
-                })
+        let story = Story {
+            draft: Arc::new(Bridge(heard.clone())),
+            registry,
+        };
+        let feedback = move |event| {
+            let _ = heard.send(Heard::Feedback(event));
+        };
+        match engine {
+            Engine::Provider(backend) => {
+                agent::run_with_backend(
+                    request, settings, &backend, story, &store, cancel, feedback,
+                )
+                .await
             }
-            Request::Project(request) => {
-                let result = match engine {
-                    Engine::Provider(backend) => {
-                        novel::run_with_backend(
-                            request, settings, &backend, &registry, &store, cancel, feedback,
-                        )
-                        .await?
-                    }
-                    Engine::Model(model) => {
-                        novel::run_with_model(
-                            request, settings, model, &registry, &store, cancel, feedback,
-                        )
-                        .await?
-                    }
-                };
-                result.map(|result| match result {
-                    NovelResult::Proposal(proposal) => {
-                        Answered::Edit(Box::new(Suggestion::Project(proposal)))
-                    }
-                    NovelResult::Reply { text, .. } => Answered::Reply(text),
-                })
+            Engine::Model(model) => {
+                agent::run_with_model(request, settings, model, story, &store, cancel, feedback)
+                    .await
             }
-        })
+        }
     })
 }
 
@@ -302,7 +281,7 @@ mod tests {
     use std::{
         io::{BufRead, BufReader, Read, Write},
         net::TcpListener,
-        sync::{atomic::AtomicBool, Arc},
+        sync::atomic::AtomicBool,
         time::Duration,
     };
 
@@ -342,43 +321,51 @@ mod tests {
     }
 
     #[test]
-    fn a_request_is_answered_over_http_on_its_own_thread() {
+    fn a_request_reads_the_story_through_the_ui_and_is_answered_over_http() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
         let server = serve(listener, "Hello! Which scene should change?");
         let directory = tempfile::tempdir().unwrap();
-        let source = "scene harbor\n  narrate: Dusk.\n  end\n";
-        let registry = ArtifactRegistry::new();
-        let request = Request::Passage {
-            file: "story.sf".into(),
-            request: WritingRequest::capture(
-                &directory.path().join("story.db"),
-                &directory.path().join("story.sf"),
-                source,
-                WritingScope::File,
-                &registry,
-            )
-            .unwrap(),
-        };
         let model = OpenAiCompatibleChatModel::new(endpoint, "writing-model")
             .with_timeout(Duration::from_secs(5));
+        let (heard, mut hearing) = mpsc::unbounded_channel();
+        let request = AgentRequest {
+            instructions: "Hello".into(),
+            preserve_facts: true,
+            scope: agent::Scope::Project,
+            editor: None,
+            continuing: None,
+        };
         let answer = spawn(
             request,
             AssistantSettings::default(),
             Engine::Model(Arc::new(model)),
-            registry,
+            ArtifactRegistry::new(),
             directory.path().join("runs.sqlite3"),
             Arc::new(AtomicBool::new(false)),
-            |_| {},
+            heard,
         )
-        .unwrap()
-        .blocking_recv()
         .unwrap();
+        // The UI thread's part: answer the agent's reads of the story.
+        let mut reads = 0;
+        while let Some(heard) = hearing.blocking_recv() {
+            if let Heard::Draft(DraftCall::Workspace(reply)) = heard {
+                reads += 1;
+                let _ = reply.send(Ok(SourceWorkspace {
+                    entry: "story.sf".into(),
+                    files: BTreeMap::from([(
+                        "story.sf".into(),
+                        "scene harbor\n  narrate: Dusk.\n  end\n".into(),
+                    )]),
+                }));
+            }
+        }
+        let answer = answer.blocking_recv().unwrap();
         server.join().unwrap();
-        assert!(
-            matches!(answer, Ok(Some(Answered::Reply(ref text))) if text == "Hello! Which scene should change?"),
-            "{answer:?}"
-        );
+        assert_eq!(reads, 1);
+        let outcome = answer.unwrap().unwrap();
+        assert_eq!(outcome.reply, "Hello! Which scene should change?");
+        assert!(outcome.changed.is_empty());
     }
 
     #[test]

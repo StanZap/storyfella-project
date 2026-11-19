@@ -115,7 +115,7 @@ pub(crate) fn start(host: Mailbox) {
                 .enable_all()
                 .build()
                 .expect("Studio MCP runtime");
-            // Novel jobs share connection state, so they stay on this thread.
+            // Assistant jobs share connection state, so they stay on this thread.
             let local = tokio::task::LocalSet::new();
             if let Err(error) = local.block_on(&runtime, run(host, grant)) {
                 tracing::warn!(%error, "Studio MCP channel unavailable");
@@ -126,12 +126,12 @@ pub(crate) fn start(host: Mailbox) {
     }
 }
 
-async fn run(state: impl StateOwner, grant: Grant) -> Result<()> {
+async fn run(state: impl StateOwner + Clone + 'static, grant: Grant) -> Result<()> {
     let (sender, mut receiver) = mpsc::channel::<Call<Command>>(MAX_CONNECTIONS);
     let serve = desktop_bridge::serve(&grant.directory, sender);
     let dispatch = async {
         let mut previews = preview::Previews::default();
-        let mut novels = novel::Jobs::default();
+        let mut assistants = assistant::Jobs::default();
         while let Some(call) = receiver.recv().await {
             let Call {
                 request,
@@ -162,8 +162,8 @@ async fn run(state: impl StateOwner, grant: Grant) -> Result<()> {
                             )
                             .await,
                     ),
-                    Command::Novel(command) => {
-                        novels
+                    Command::Assistant(command) => {
+                        assistants
                             .dispatch(
                                 &state,
                                 &grant,
@@ -201,7 +201,7 @@ async fn run(state: impl StateOwner, grant: Grant) -> Result<()> {
     tokio::select! { result = serve => result, result = dispatch => result }
 }
 
-mod novel;
+mod assistant;
 #[path = "live_mcp/preview.rs"]
 mod preview;
 

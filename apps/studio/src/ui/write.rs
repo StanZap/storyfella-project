@@ -20,7 +20,7 @@ use gpui_kit::{prelude::*, *};
 use storyfella_language::{CompletionKind, Position};
 use storyfella_studio_core::errors::ErrorCode;
 
-use super::{assistant::Review, Studio};
+use super::Studio;
 use crate::{
     state::AppState,
     status::{Check, FileDiagnostic},
@@ -467,21 +467,17 @@ impl Studio {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         self.write.sync(&self.state, window, cx);
-        // A suggestion under review takes the editor's place while its file shows.
+        // The assistant's changes under review take the editor's place while
+        // their file shows.
         let review = self
             .assistant
+            .changes
             .review
             .as_ref()
-            .map(Review::shown)
+            .map(|review| review.shown())
             .filter(|(file, _)| self.write.file() == Some(*file))
             .map(|(_, diff)| diff.clone());
-        // So does a file being watched as the assistant writes it.
-        let watched = self
-            .assistant
-            .watching
-            .as_ref()
-            .filter(|watch| review.is_none() && self.write.file() == Some(watch.file.as_str()))
-            .map(|watch| watch.view.clone());
+        let changes = self.render_changes_bar(cx);
         div()
             .key_context(CONTEXT)
             .size_full()
@@ -507,9 +503,8 @@ impl Studio {
                             .flex()
                             .flex_col()
                             .child(self.render_file_bar(cx))
-                            .children(review.is_some().then(|| self.render_review_bar(cx)))
-                            .children(watched.is_some().then(|| self.render_watch_bar(cx)))
-                            .child(div().flex_1().min_h_0().child(match review.or(watched) {
+                            .children(changes)
+                            .child(div().flex_1().min_h_0().child(match review {
                                 Some(diff) => diff.into_any_element(),
                                 None => self.write.editor.clone().into_any_element(),
                             }))

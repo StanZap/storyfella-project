@@ -17,29 +17,26 @@ meets its acceptance criteria.
     inline problems and a problems list, completion, go to definition, rename
     and format. A run of typing is one undo step.
   - [x] Assistant: one saved conversation per project, docked in Write on the
-    Chat kit. It asks the writing workflow for an edit to a selection, beat,
-    scene or file; a suggestion is reviewed read-only in the editor's place
-    and kept as one undoable edit. Writing help's session and review modules
-    were removed.
+    Chat kit.
   - [x] Failures are an indication plus one Details dialog (DESIGN.md §2), in
     the status bar, the assistant and Settings.
-  - [x] Project scope in the assistant: the novel-wide request plans which
-    files change and which whole scenes move to which new files, moves those
-    itself, rewrites only the planned files, compiles the project and repairs the
-    files that break it; the review steps through each file and keeps the
-    result as one undoable edit.
-  - [x] Assistant settings in Settings › Models: thinking, reply length, a
-    managed text model's context, repair attempts and the whole-story size.
-  - [x] A Project request shows each file as it is written, can be watched as
-    a live diff, keeps what it wrote when stopped or failed, asks again
-    without thinking when an answer is cut off, and splits files by moving
-    whole scenes.
-  - [ ] Accept a file of a Project request while later files are still being
-    written, and Continue an unfinished one where it stopped.
+  - [x] The assistant is one agent that iterates (2026-11-19): it reads, edits,
+    creates and moves story files through tools, checks the whole story after
+    each change and fixes what it broke. Edits land in the draft as it works;
+    the writer keeps or undoes each change afterwards. The scope chip (Project
+    by default) is enforced by the tools, and the editor location is always
+    sent. Steps per request is set in Settings; a reply that used them all
+    offers Continue. Live MCP runs the same agent.
+  - [ ] Undoing a file the assistant created removes the file, not only its
+    text and `include`.
+  - [ ] A `rename_scene` tool that renames a scene and every `goto` and
+    `option` naming it, and "did you mean" suggestions in the compiler's
+    unknown-scene errors.
+  - [ ] Keep or undo live MCP's assistant edits in Studio's review, and keep
+    undecided changes across restarts.
   - [ ] Context size before sending and live token use, from typed usage and
     each deployment's context window in Agentkit.
-  - [ ] Assistant tools: Studio's story tools always, Atelier's while it
-    runs, every edit reviewed; then plans as assistant workflows.
+  - [ ] Atelier's tools in the assistant while Atelier runs.
   - [ ] Play split beside the source, with the line on stage highlighted.
   - [ ] Find references in Write (the language reports them; nothing lists
     them yet).

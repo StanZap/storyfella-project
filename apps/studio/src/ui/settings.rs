@@ -17,7 +17,7 @@ use storyfella_studio_core::{
     },
     errors::{CodedError, ErrorCode, ReportedError},
     runtime::{HealthStatus, ServiceHealth, ServiceId},
-    workflows::{AssistantSettings, Thinking, MAX_OUTPUT_TOKENS, REPAIR_ATTEMPTS, WHOLE_STORY_KIB},
+    workflows::{AssistantSettings, Thinking, MAX_OUTPUT_TOKENS, MAX_STEPS},
 };
 
 use super::{AutosaveMode, Studio, StudioEvent};
@@ -81,8 +81,7 @@ pub struct Settings {
     vision: Pickers,
     reply_limit: Entity<NumericControl>,
     context: Entity<NumericControl>,
-    repairs: Entity<NumericControl>,
-    whole_story: Entity<NumericControl>,
+    steps: Entity<NumericControl>,
     health: Option<Vec<ServiceHealth>>,
     checking: Option<Task<()>>,
     /// The last failure, indicated at the top of the window.
@@ -190,25 +189,9 @@ impl Settings {
             cx,
         );
         let defaults = AssistantSettings::default();
-        let repairs = numeric(
-            spec(
-                "Repair attempts",
-                "",
-                REPAIR_ATTEMPTS,
-                defaults.repair_attempts,
-            ),
-            assistant.repair_attempts,
-            window,
-            cx,
-        );
-        let whole_story = numeric(
-            spec(
-                "Whole story up to",
-                "KiB",
-                WHOLE_STORY_KIB,
-                defaults.whole_story_kib,
-            ),
-            assistant.whole_story_kib,
+        let steps = numeric(
+            spec("Steps per request", "", MAX_STEPS, defaults.max_steps),
+            assistant.max_steps,
             window,
             cx,
         );
@@ -223,25 +206,10 @@ impl Settings {
             }
         })
         .detach();
-        cx.subscribe_in(&repairs, window, |settings, _, event, window, cx| {
+        cx.subscribe_in(&steps, window, |settings, _, event, window, cx| {
             if let NumericEvent::Commit { value, .. } = event {
                 let value = *value as u32;
-                settings.update_assistant(
-                    |assistant| assistant.repair_attempts = value,
-                    window,
-                    cx,
-                );
-            }
-        })
-        .detach();
-        cx.subscribe_in(&whole_story, window, |settings, _, event, window, cx| {
-            if let NumericEvent::Commit { value, .. } = event {
-                let value = *value as u32;
-                settings.update_assistant(
-                    |assistant| assistant.whole_story_kib = value,
-                    window,
-                    cx,
-                );
+                settings.update_assistant(|assistant| assistant.max_steps = value, window, cx);
             }
         })
         .detach();
@@ -268,8 +236,7 @@ impl Settings {
             vision,
             reply_limit,
             context,
-            repairs,
-            whole_story,
+            steps,
             health: None,
             checking: None,
             error: None,
@@ -358,8 +325,7 @@ impl Settings {
             &self.text_size,
             &self.reply_limit,
             &self.context,
-            &self.repairs,
-            &self.whole_story,
+            &self.steps,
         ] {
             control.update(cx, |control, cx| control.set_theme(theme, cx));
         }
@@ -953,8 +919,7 @@ impl Settings {
                     note("Set by the text provider's own server. Studio sizes the context only of the models it starts."),
                 ),
             })
-            .child(row(c, "", self.repairs.clone()))
-            .child(row(c, "", self.whole_story.clone()))
+            .child(row(c, "", self.steps.clone()))
             .child(row(
                 c,
                 "",

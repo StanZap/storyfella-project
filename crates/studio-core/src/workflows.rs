@@ -1,11 +1,10 @@
 //! Application-owned workflow persistence and execution. Credentials and model
 //! bindings stay ephemeral; project context and results belong to the host.
+pub mod agent;
 pub mod assistant;
-pub mod novel;
+mod provider;
+pub mod reply;
 mod settings;
-#[cfg(test)]
-mod tests;
-pub mod writing;
 
 use std::{
     path::Path,
@@ -24,9 +23,7 @@ use anyhow::{bail, ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 pub use agentkit_workflow as framework;
-pub use settings::{
-    AssistantSettings, Thinking, MAX_OUTPUT_TOKENS, REPAIR_ATTEMPTS, WHOLE_STORY_KIB,
-};
+pub use settings::{AssistantSettings, Thinking, MAX_OUTPUT_TOKENS, MAX_STEPS};
 pub type Cancellation = Arc<AtomicBool>;
 
 /// A model call whose answer stopped at the output limit, before it finished.
@@ -45,26 +42,6 @@ pub enum Feedback {
     Detail(String),
     /// The model's reasoning, streamed apart from its answer.
     Reasoning(String),
-    /// A file of a project request as it stands now: its whole text, which
-    /// is the finished fragments followed by the rest as it was.
-    File {
-        path: String,
-        text: String,
-        state: FileState,
-    },
-}
-
-/// How far one file of a project request has got.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum FileState {
-    /// Fragment `part` of `parts` is being written.
-    Writing { part: usize, parts: usize },
-    /// Written in full; sent back with its errors.
-    Fixing,
-    /// The story compiles with this file, or has no new problems in it.
-    Compiles,
-    /// The new problems in this file, each as one line.
-    Problems(Vec<String>),
 }
 
 /// One database beside the owning project (or under the app's own data root).

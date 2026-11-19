@@ -132,14 +132,13 @@ pub enum ErrorCode {
     AppCommandInvalid,
     AppCheckpointRejected,
     AppStackEmpty,
-    WritingProposalFailed,
+    WritingFailed,
     AppStoryEdit,
     AppStoryFileOpen,
     AppStoriesFolder,
     AppConversation,
     AppProviderManager,
     WritingCutOff,
-    WritingUnusablePlan,
 }
 
 impl ErrorCode {
@@ -712,11 +711,12 @@ impl ErrorCode {
                 "The operation stack contained no operations. This is an \
                  internal error; check the logs.",
             ),
-            Self::WritingProposalFailed => (
+            Self::WritingFailed => (
                 "SVS-APP-106",
-                "Could not create a writing suggestion",
-                "Your story and request are unchanged. Check the text model in Settings, \
-                 or retry when the endpoint is available.",
+                "The assistant stopped with an error",
+                "Anything it changed before then is still in the story, ready to keep or \
+                 undo in the editor. Check the text model in Settings, or retry when the \
+                 endpoint is available.",
             ),
             Self::AppStoryEdit => (
                 "SVS-APP-107",
@@ -752,17 +752,11 @@ impl ErrorCode {
             Self::WritingCutOff => (
                 "SVS-APP-112",
                 "The model's answer was cut off",
-                "It ran out of room before it finished, usually while thinking, and asking \
-                 again without thinking did not help. Your story is unchanged. Ask about a \
-                 smaller part of the story, or give the model more room: turn off Limit \
-                 reply length or raise it, or raise the text model's context.",
-            ),
-            Self::WritingUnusablePlan => (
-                "SVS-APP-113",
-                "The model's plan did not fit the story",
-                "It kept naming files or scenes the story does not have. Your story is \
-                 unchanged. Say which scenes or files you mean, or ask about a smaller part \
-                 of the story.",
+                "It ran out of room before it finished, usually while thinking. Anything \
+                 it changed before then is still in the story, ready to keep or undo in \
+                 the editor. Ask about a smaller part of the story, or give the model more \
+                 room: turn off Limit reply length or raise it, or raise the text model's \
+                 context.",
             ),
         }
     }
@@ -982,13 +976,15 @@ mod tests {
     /// the list may only grow. Retiring is reserved for a code whose failure
     /// cannot happen any more — `SVS-RTE-103` ("could not resolve the runtime
     /// directory") went with the path anchoring that removed the fallible step
-    /// — and that leaves a gap in the numbering, never a shift. This test pins
+    /// — and `SVS-APP-113` ("the model's plan did not fit the story") went with
+    /// the planned project workflow; each leaves a gap in the numbering, never
+    /// a shift. This test pins
     /// the count so any change to the registry is deliberate.
     #[test]
     fn registry_size_is_pinned() {
         assert_eq!(
             codes().len(),
-            101,
+            100,
             "update the registry count when adding error codes"
         );
     }
@@ -1160,14 +1156,13 @@ mod tests {
             ErrorCode::AppCommandInvalid,
             ErrorCode::AppCheckpointRejected,
             ErrorCode::AppStackEmpty,
-            ErrorCode::WritingProposalFailed,
+            ErrorCode::WritingFailed,
             ErrorCode::AppStoryEdit,
             ErrorCode::AppStoryFileOpen,
             ErrorCode::AppStoriesFolder,
             ErrorCode::AppConversation,
             ErrorCode::AppProviderManager,
             ErrorCode::WritingCutOff,
-            ErrorCode::WritingUnusablePlan,
         ]
     }
 }

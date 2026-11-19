@@ -1,4 +1,4 @@
-//! Exercise Studio's writing host through a real inference-service allocation.
+//! Exercise Studio's story agent through a real inference-service allocation.
 //! This binary also serves as the isolated service host and fake llama worker.
 
 #[cfg(unix)]
@@ -71,13 +71,24 @@ fn worker(args: &[String]) {
                 std::thread::sleep(Duration::from_millis(10));
             }
             assert!(release.exists(), "test did not release request");
-            let reply = if calls == 1 {
-                "  beat\n"
+            let (delta, finish) = if calls == 1 {
+                let arguments = serde_json::json!({
+                    "path": "story.sf",
+                    "old_text": "The café is quiet.",
+                    "new_text": "The café is empty."
+                });
+                (
+                    serde_json::json!({"role":"assistant","tool_calls":[{"index":0,"id":"call_edit","type":"function","function":{"name":"edit_file","arguments":arguments.to_string()}}]}),
+                    "tool_calls",
+                )
             } else {
-                "  beat arrival\n    narrate: The café is empty.\n"
+                (
+                    serde_json::json!({"role":"assistant","content":"The café is empty now."}),
+                    "stop",
+                )
             };
-            let delta = serde_json::json!({"id":"reply", "choices":[{"index":0,"delta":{"role":"assistant","content":reply},"finish_reason":null}]});
-            let done = serde_json::json!({"id":"reply", "choices":[{"index":0,"delta":{},"finish_reason":"stop"}]});
+            let delta = serde_json::json!({"id":"reply", "choices":[{"index":0,"delta":delta,"finish_reason":null}]});
+            let done = serde_json::json!({"id":"reply", "choices":[{"index":0,"delta":{},"finish_reason":finish}]});
             (
                 "text/event-stream",
                 format!("data: {delta}\n\ndata: {done}\n\ndata: [DONE]\n\n"),
@@ -93,17 +104,36 @@ async fn run() {
         deployments::{ChatDeployment, ManagedChatServer},
         native::service,
     };
-    use std::sync::{atomic::AtomicBool, Arc};
+    use std::sync::{atomic::AtomicBool, Arc, Mutex};
     use std::time::Duration;
+    use storyfella_compiler::SourceWorkspace;
     use storyfella_studio_core::{
         config::AppConfig,
         planner::PlannerBackend,
         registry::ArtifactRegistry,
         workflows::{
-            writing::{self, WritingRequest, WritingScope},
+            agent::{self, AgentRequest, Scope, Story, StoryDraft},
             RunStore,
         },
     };
+
+    struct Memory(Mutex<SourceWorkspace>);
+
+    #[async_trait::async_trait]
+    impl StoryDraft for Memory {
+        async fn workspace(&self) -> Result<SourceWorkspace, String> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+
+        async fn write(
+            &self,
+            _base: SourceWorkspace,
+            texts: std::collections::BTreeMap<String, String>,
+        ) -> Result<(), String> {
+            self.0.lock().unwrap().files.extend(texts);
+            Ok(())
+        }
+    }
 
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
@@ -127,23 +157,28 @@ async fn run() {
         }),
     });
     let backend = PlannerBackend::new(&config);
-    let registry = ArtifactRegistry::new();
     let source = "scene harbor\n  beat arrival\n    narrate: The café is quiet.\n  beat departure\n    end\n";
-    let request = WritingRequest::capture(
-        &root.join("project.db"),
-        &root.join("project.sf"),
-        source,
-        WritingScope::Beat(40),
-        &registry,
-    )
-    .unwrap();
+    let draft = Arc::new(Memory(Mutex::new(SourceWorkspace {
+        entry: "story.sf".into(),
+        files: [("story.sf".to_owned(), source.to_owned())].into(),
+    })));
+    let request = AgentRequest {
+        instructions: "Empty the café.".into(),
+        preserve_facts: true,
+        scope: Scope::Project,
+        editor: None,
+        continuing: None,
+    };
     let store = RunStore::open(&root.join("runs.sqlite3")).unwrap();
     let service = service::Client::new(&state);
-    let run = writing::run_with_backend(
+    let run = agent::run_with_backend(
         request,
         storyfella_studio_core::workflows::AssistantSettings::default(),
         &backend,
-        &registry,
+        Story {
+            draft: draft.clone(),
+            registry: ArtifactRegistry::new(),
+        },
         &store,
         Arc::new(AtomicBool::new(false)),
         |_| {},
@@ -158,21 +193,21 @@ async fn run() {
                 }
             })
             .await
-            .expect("worker did not receive writing request");
+            .expect("worker did not receive the agent's request");
             let status = service.status().await.unwrap();
             assert_eq!(status.resident.len(), 1);
             assert_eq!(
                 status.resident[0].active, 1,
-                "allocation must survive each writing attempt"
+                "the allocation must last the whole request"
             );
             std::fs::write(model.with_extension(format!("release{call}")), b"go").unwrap();
         }
     };
     let (result, ()) = tokio::join!(run, check);
-    let Some(writing::WritingResult::Proposal(proposal)) = result.unwrap() else {
-        panic!("expected an edit");
-    };
-    assert!(proposal.replacement.contains("empty"));
+    let outcome = result.unwrap().expect("the request finished");
+    assert_eq!(outcome.reply, "The café is empty now.");
+    let story = draft.0.lock().unwrap().files["story.sf"].clone();
+    assert!(story.contains("The café is empty."), "{story}");
     service.shutdown().await.unwrap();
-    println!("managed writing routing and repair lease: passed");
+    println!("managed agent routing and lease: passed");
 }

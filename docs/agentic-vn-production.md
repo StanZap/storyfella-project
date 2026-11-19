@@ -203,20 +203,17 @@ connection keeps one playtest and checkpoint.
 Studio bounds the total pinned artwork in isolated playtests and evicts older
 sessions when the cache fills.
 
-The novel writing workflow can propose a coordinated change across all currently reachable
-story files in the open Studio. Call `storyfella_novel_suggest_start` with the
-inspected session, instructions, `expand`, and `preserve_facts`; poll the
-returned job with `storyfella_novel_suggest_poll`. Studio first plans which
-files the request changes, rewrites only those in bounded fragments, and
-validates their combined result, sending a file that breaks the build back
-with its errors. A ready job returns the complete replacement text for each
-changed file and the model's `note`; a request that asks for no change
-finishes as `answered` with the model's `message` and nothing to apply. `storyfella_novel_suggest_apply` checks that
-the captured project and every story file are unchanged, validates the proposed
-workspace, and applies the proposal as one undoable Studio draft change.
-Normal Studio save settings persist it. `storyfella_novel_suggest_cancel`
-requests cancellation or discards a finished proposal. These tools require the
-live Studio channel and its edit grant; they do not create new files.
+The story agent can change the open Studio story directly. Call
+`storyfella_assistant_start` with the inspected session, instructions and
+`preserve_facts`, then poll the returned job with `storyfella_assistant_poll`.
+The agent reads, edits, creates and moves story files in small steps, checks
+the whole story after each change and fixes the errors it caused. Each edit is
+applied to Studio's draft as it happens, as its own undoable change, and saved
+by Studio's normal save settings. A finished job returns `status: done` with
+the model's `message`, the changed `files`, `out_of_steps` when it used every
+step allowed in Settings, and its `run_id`. `storyfella_assistant_cancel`
+stops a running job; edits already made stay in the draft. These tools require
+the live Studio channel and its edit grant.
 
 Grant a local client access to an explicitly selected project folder and to
 specific scopes for inspection, editing, publishing and provider submission.

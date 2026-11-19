@@ -115,7 +115,7 @@ crates/studio-core/          storyfella-studio-core — the domain layer (no GUI
   src/story.rs          Exact .sf source, disk snapshots and save conflict checks
   src/authoring.rs      Source associations and shared asset catalog
   src/playback.rs       Snapshot compilation and pinned resource checks
-  src/planner.rs        Selected text-provider binding for the writing workflow
+  src/planner.rs        Selected text-provider binding for the story agent
   src/runtime/          Text and vision provider health
   src/errors.rs         Error-code registry
   src/config.rs         Configuration loading

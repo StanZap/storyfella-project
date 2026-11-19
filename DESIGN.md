@@ -76,6 +76,21 @@ wide and near-square sizes, checked staged portrait pixels, and showed
 the placeholder for Ivo's pending expression.
 Evidence is recorded in `.svs-e2e/coord/live-edits-preview.md`.
 
+### The assistant edits as it works · 2026-11-19
+
+This supersedes the repair attempts, suggestion review and unfinished-proposal
+rules in "Writing review and error recovery" and "Writing response
+boundaries". The assistant is one agent with story tools. Its edits go into the
+draft as it makes them, so the writer is not asked to supervise each step, and
+the compiler's report after every change lets it fix its own errors. There is no
+suggestion card and no "unfinished" verdict: a reply ends with the model's words
+and the files it changed. Undecided changes appear in a bar above the editor
+with Review, Undo all and Keep all. Review shows each file's diff against how it
+was before the assistant first touched it, and every change is kept or undone
+on its own. The scope chip defaults to Project and is enforced: a change outside
+it is refused, and the reply says what could not be done. A reply that ran out
+of steps says so and offers Continue.
+
 ### Story project explorer · 2026-11-08
 
 The Story workspace presents user-facing files and catalog assets together at

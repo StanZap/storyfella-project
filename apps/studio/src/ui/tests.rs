@@ -303,11 +303,43 @@ fn a_story_that_cannot_open_is_a_row_whose_details_open_on_request(cx: &mut Test
     assert!(trial.read(|studio| studio.home.recents.is_empty()));
 }
 
+/// A model that calls one tool, as a stream.
+#[cfg(test)]
+fn tool_call(
+    id: &str,
+    name: &str,
+    arguments: serde_json::Value,
+) -> Vec<agentkit_ai::ChatStreamEvent> {
+    vec![
+        agentkit_ai::ChatStreamEvent::ToolCallDelta {
+            index: 0,
+            id: Some(id.into()),
+            name: Some(name.into()),
+            arguments: Some(arguments.to_string()),
+        },
+        agentkit_ai::ChatStreamEvent::Done,
+    ]
+}
+
+/// A model's final words, as a stream.
+#[cfg(test)]
+fn says(text: &str) -> Vec<agentkit_ai::ChatStreamEvent> {
+    vec![
+        agentkit_ai::ChatStreamEvent::TextDelta {
+            content: text.into(),
+        },
+        agentkit_ai::ChatStreamEvent::Done,
+    ]
+}
+
 #[gpui::test]
-fn the_assistant_suggests_an_edit_that_is_kept_after_review(cx: &mut TestAppContext) {
-    use agentkit_ai::{providers::fake::FakeChatModel, ChatStreamEvent};
+fn the_assistant_edits_the_story_as_it_works_and_a_change_is_undone_in_review(
+    cx: &mut TestAppContext,
+) {
+    use agentkit_ai::providers::fake::FakeChatModel;
+    use design_system::kits::code::HunkState;
     use storyfella_studio_core::workflows::{
-        assistant::{Decision, Outcome, Turn},
+        assistant::{Done, FileChange, Outcome, Turn},
         RunStore,
     };
 
@@ -315,32 +347,25 @@ fn the_assistant_suggests_an_edit_that_is_kept_after_review(cx: &mut TestAppCont
     trial
         .act(|studio, _, cx| studio.create_project("Harbor", cx))
         .unwrap();
-    // An empty file has no passage to edit; the prompt stays and says so.
-    trial.act(|studio, window, cx| {
-        studio.assistant.model = Some(std::sync::Arc::new(FakeChatModel::new_streaming([])));
-        studio
-            .assistant
-            .prompt
-            .update(cx, |prompt, cx| prompt.set_text("Begin", window, cx));
-        studio.ask(window, cx);
-    });
-    assert!(trial.read(|studio| studio.assistant.notice.is_some()));
-    assert!(trial.read(|studio| studio.assistant.conversation().turns.is_empty()));
-
-    let before = "scene harbor\n  narrate: Dusk.\n  end\n";
-    let after = "scene harbor\n  narrate: Night falls.\n  end\n";
+    let before = "scene harbor\n  beat arrival\n    narrate: Dusk.\n  beat waiting\n    narrate: Gulls.\n  beat departure\n    narrate: Bells.\n    end\n";
     trial.act(|studio, _, cx| {
         studio.state.set_story_source(before.into());
         studio.changed(cx);
     });
     trial.act(|studio, window, cx| {
-        studio.assistant.model = Some(std::sync::Arc::new(FakeChatModel::new_streaming([vec![
-            ChatStreamEvent::TextDelta {
-                content: after.into(),
-            },
-            ChatStreamEvent::Done,
-        ]])));
-        studio.assistant.scope = crate::assistant::Scope::File;
+        studio.assistant.model = Some(std::sync::Arc::new(FakeChatModel::new_streaming([
+            tool_call(
+                "call_dusk",
+                "edit_file",
+                serde_json::json!({"path": "story.sf", "old_text": "Dusk.", "new_text": "Night falls."}),
+            ),
+            tool_call(
+                "call_bells",
+                "edit_file",
+                serde_json::json!({"path": "story.sf", "old_text": "Bells.", "new_text": "Silence."}),
+            ),
+            says("I made it night and quietened the departure."),
+        ])));
         studio.assistant.prompt.update(cx, |prompt, cx| {
             prompt.set_text("Make it night", window, cx)
         });
@@ -348,37 +373,60 @@ fn the_assistant_suggests_an_edit_that_is_kept_after_review(cx: &mut TestAppCont
     });
     trial.settle();
 
-    let proposed = |trial: &mut Trial| {
-        trial.read(
-            |studio| match studio.assistant.conversation().turns.as_slice() {
-                [Turn::Asked(_), Turn::Answered(answer)] => match &answer.outcome {
-                    Outcome::Proposed(proposed) => Some(proposed.decision),
-                    other => panic!("{other:?}"),
-                },
-                turns => panic!("{turns:?}"),
-            },
-        )
-    };
-    assert_eq!(proposed(&mut trial), Some(Decision::Pending));
+    let edited = before
+        .replace("Dusk.", "Night falls.")
+        .replace("Bells.", "Silence.");
     assert_eq!(
         trial.read(|studio| studio.state.story.source().to_owned()),
-        before,
-        "nothing is written before the review"
+        edited,
+        "the edits are in the story without a review"
+    );
+    assert_eq!(trial.editor_text(), edited);
+    let outcome = trial.read(
+        |studio| match studio.assistant.conversation().turns.as_slice() {
+            [Turn::Asked(asked), Turn::Answered(answer)] => {
+                assert_eq!(asked.scope, "Project · 1 file");
+                answer.outcome.clone()
+            }
+            turns => panic!("{turns:?}"),
+        },
+    );
+    assert_eq!(
+        outcome,
+        Outcome::Done(Done {
+            reply: "I made it night and quietened the departure.".into(),
+            files: vec![FileChange {
+                file: "story.sf".into(),
+                added: 2,
+                removed: 2,
+            }],
+            out_of_steps: false,
+            continuation: None,
+        })
     );
 
-    trial.act(|studio, window, cx| studio.start_review(1, window, cx));
-    assert!(trial.read(|studio| studio.assistant.review.is_some()));
+    // Each change is decided on its own: the first kept, the second undone.
+    trial.act(|studio, window, cx| studio.start_review(window, cx));
+    trial.act(|studio, _, cx| {
+        let review = studio.assistant.changes.review.as_ref().unwrap();
+        let (file, diff) = review.shown();
+        assert_eq!(file, "story.sf");
+        diff.update(cx, |diff, cx| {
+            assert_eq!(diff.states().len(), 2);
+            diff.set_states(&[HunkState::Accepted, HunkState::Rejected], cx)
+        });
+    });
     trial
-        .act(|studio, _, cx| studio.finish_review(Some(true), cx))
+        .act(|studio, _, cx| studio.finish_review(None, cx))
         .unwrap();
     assert_eq!(
         trial.read(|studio| studio.state.story.source().to_owned()),
-        after
+        before.replace("Dusk.", "Night falls.")
     );
-    assert_eq!(trial.editor_text(), after);
-    assert_eq!(
-        proposed(&mut trial),
-        Some(Decision::Kept { kept: 1, of: 1 })
+    assert!(trial.read(|studio| studio.assistant.changes.review.is_none()));
+    assert!(
+        trial.read(|studio| studio.assistant.changes.differing.is_empty()),
+        "nothing waits for a decision once the review ends"
     );
 
     // The conversation is the project's, and outlives the window.
@@ -394,9 +442,9 @@ fn the_assistant_suggests_an_edit_that_is_kept_after_review(cx: &mut TestAppCont
 }
 
 #[gpui::test]
-fn the_assistant_answers_a_question_in_prose_and_shows_each_phase(cx: &mut TestAppContext) {
+fn the_assistant_answers_a_question_in_prose_and_shows_each_step(cx: &mut TestAppContext) {
     use agentkit_ai::{providers::fake::FakeChatModel, ChatStreamEvent};
-    use storyfella_studio_core::workflows::assistant::{Outcome, Turn};
+    use storyfella_studio_core::workflows::assistant::{Done, Outcome, Turn};
 
     let mut trial = Trial::new(cx);
     trial
@@ -415,7 +463,6 @@ fn the_assistant_answers_a_question_in_prose_and_shows_each_phase(cx: &mut TestA
             },
             ChatStreamEvent::Done,
         ]])));
-        studio.assistant.scope = crate::assistant::Scope::File;
         studio
             .assistant
             .prompt
@@ -432,16 +479,19 @@ fn the_assistant_answers_a_question_in_prose_and_shows_each_phase(cx: &mut TestA
     );
     assert_eq!(
         answer.outcome,
-        Outcome::Replied("Hello! Which scene should change?".into())
+        Outcome::Done(Done {
+            reply: "Hello! Which scene should change?".into(),
+            ..Done::default()
+        })
     );
     assert!(answer.steps.iter().all(|step| step.millis.is_some()));
-    let writing = answer
+    let thinking = answer
         .steps
         .iter()
-        .find(|step| step.label == "Writing")
-        .expect("a writing phase");
+        .find(|step| step.label == "Thinking")
+        .expect("a thinking step");
     assert_eq!(
-        writing.detail.as_deref(),
+        thinking.detail.as_deref(),
         Some("Wrote 33 characters after 21 of thinking")
     );
     assert_eq!(
@@ -452,290 +502,68 @@ fn the_assistant_answers_a_question_in_prose_and_shows_each_phase(cx: &mut TestA
 }
 
 #[gpui::test]
-fn a_project_edit_is_reviewed_file_by_file_and_kept_as_one_undo(cx: &mut TestAppContext) {
-    use agentkit_ai::{providers::fake::FakeChatModel, ChatStreamEvent};
-    use storyfella_studio_core::workflows::assistant::{Decision, Outcome, Turn};
+fn a_request_out_of_steps_offers_to_continue_where_it_stopped(cx: &mut TestAppContext) {
+    use agentkit_ai::providers::fake::FakeChatModel;
+    use storyfella_studio_core::workflows::assistant::{Done, Outcome, Turn};
 
-    let reply = |text: &str| {
-        vec![
-            ChatStreamEvent::TextDelta {
-                content: text.into(),
-            },
-            ChatStreamEvent::Done,
-        ]
-    };
     let mut trial = Trial::new(cx);
     trial
         .act(|studio, _, cx| studio.create_project("Harbor", cx))
         .unwrap();
-    let entry = "include \"chapter.sf\"\nscene start\n  narrate: Dawn.\n  goto harbor\n";
-    let chapter = "scene harbor\n  narrate: Dusk.\n  end\n";
+    let source = "scene harbor\n  narrate: Dusk.\n  end\n";
     trial.act(|studio, window, cx| {
-        let folder = studio.state.story.path().unwrap().parent().unwrap().to_owned();
-        std::fs::write(folder.join("chapter.sf"), chapter).unwrap();
-        studio.state.set_story_source(entry.into());
+        studio.state.set_story_source(source.into());
         studio.changed(cx);
+        studio.config.assistant.max_steps = 4;
         studio.assistant.model = Some(std::sync::Arc::new(FakeChatModel::new_streaming([
-            reply(r#"{"files":["chapter.sf","story.sf"],"note":"Night falls in both scenes."}"#),
-            reply("```storyfella\nscene harbor\n  narrate: Night.\n  end\n```"),
-            reply(
-                "```storyfella\ninclude \"chapter.sf\"\nscene start\n  narrate: Midnight.\n  goto harbor\n```",
+            tool_call("call_1", "outline", serde_json::json!({})),
+            tool_call(
+                "call_2",
+                "read_file",
+                serde_json::json!({"path": "story.sf"}),
             ),
+            tool_call(
+                "call_3",
+                "edit_file",
+                serde_json::json!({"path": "story.sf", "old_text": "Dusk.", "new_text": "Night."}),
+            ),
+            says("I made it night; the ending is left."),
+            says("I rewrote the ending too."),
         ])));
-        studio.assistant.scope = crate::assistant::Scope::Project;
-        studio
-            .assistant
-            .prompt
-            .update(cx, |prompt, cx| prompt.set_text("Make it night", window, cx));
+        studio.assistant.prompt.update(cx, |prompt, cx| {
+            prompt.set_text("Make it night and end it", window, cx)
+        });
         studio.ask(window, cx);
     });
     trial.settle();
-
-    let (scope, proposed) =
+    let done = |trial: &mut Trial, turn: usize| {
         trial.read(
-            |studio| match studio.assistant.conversation().turns.as_slice() {
-                [Turn::Asked(asked), Turn::Answered(answer)] => match &answer.outcome {
-                    Outcome::Proposed(proposed) => (asked.scope.clone(), proposed.clone()),
-                    other => panic!("{other:?} after {:?}", answer.steps),
+            |studio| match &studio.assistant.conversation().turns[turn] {
+                Turn::Answered(answer) => match &answer.outcome {
+                    Outcome::Done(done) => done.clone(),
+                    other => panic!("{other:?}"),
                 },
-                turns => panic!("{turns:?}"),
-            },
-        );
-    assert_eq!(scope, "Project · 2 files");
-    assert_eq!(
-        proposed.suggestion.note(),
-        Some("Night falls in both scenes.")
-    );
-    let files: Vec<_> = proposed
-        .files
-        .iter()
-        .map(|change| change.file.as_str())
-        .collect();
-    assert_eq!(files, ["chapter.sf", "story.sf"]);
-
-    trial.act(|studio, window, cx| studio.start_review(1, window, cx));
-    assert_eq!(
-        trial.read(|studio| crate::writing::active(&studio.state)),
-        Some("chapter.sf".into()),
-        "the review opens its first file"
-    );
-    // Deciding the first file's only change moves on to the next file.
-    trial.act(|studio, _, cx| {
-        let review = studio.assistant.review.as_ref().unwrap();
-        let (_, diff) = review.shown();
-        diff.update(cx, |diff, cx| {
-            diff.set_states(&[design_system::kits::code::HunkState::Accepted], cx)
-        });
-    });
-    trial.act(|studio, window, cx| studio.decided(window, cx));
-    assert_eq!(
-        trial.read(|studio| crate::writing::active(&studio.state)),
-        Some("story.sf".into())
-    );
-    trial
-        .act(|studio, _, cx| studio.finish_review(Some(true), cx))
-        .unwrap();
-    let decision = trial.read(|studio| match &studio.assistant.conversation().turns[1] {
-        Turn::Answered(answer) => match &answer.outcome {
-            Outcome::Proposed(proposed) => proposed.decision,
-            other => panic!("{other:?}"),
-        },
-        other => panic!("{other:?}"),
-    });
-    assert_eq!(decision, Decision::Kept { kept: 2, of: 2 });
-    let texts = |trial: &mut Trial| {
-        trial.read(|studio| {
-            (
-                studio.state.story.source().to_owned(),
-                crate::writing::source(&studio.state, "chapter.sf").map(str::to_owned),
-            )
-        })
-    };
-    let (story, kept) = texts(&mut trial);
-    assert!(story.contains("Midnight"), "{story}");
-    assert!(kept.as_deref().unwrap_or("").contains("Night."), "{kept:?}");
-
-    // Both files return with one Undo.
-    trial.act(|studio, _, _| assert!(studio.state.undo()));
-    let (story, restored) = texts(&mut trial);
-    assert_eq!(story, entry);
-    assert_eq!(restored.as_deref(), Some(chapter));
-}
-
-#[gpui::test]
-fn a_split_creates_its_files_when_kept(cx: &mut TestAppContext) {
-    use agentkit_ai::{providers::fake::FakeChatModel, ChatStreamEvent};
-    use storyfella_studio_core::workflows::assistant::{Outcome, Turn};
-
-    let mut trial = Trial::new(cx);
-    trial
-        .act(|studio, _, cx| studio.create_project("Harbor", cx))
-        .unwrap();
-    let entry =
-        "scene start\n  narrate: Dawn.\n  goto harbor\n\nscene harbor\n  narrate: Dusk.\n  end\n";
-    let plan = serde_json::json!({
-        "files": [], "new_files": ["harbor.sf"],
-        "moves": [{"scene": "harbor", "to": "harbor.sf"}],
-        "note": "The harbor gets its own file.",
-    })
-    .to_string();
-    trial.act(|studio, window, cx| {
-        studio.state.set_story_source(entry.into());
-        studio.changed(cx);
-        studio.assistant.model = Some(std::sync::Arc::new(FakeChatModel::new_streaming([vec![
-            ChatStreamEvent::TextDelta { content: plan },
-            ChatStreamEvent::Done,
-        ]])));
-        studio.assistant.scope = crate::assistant::Scope::Project;
-        studio.assistant.prompt.update(cx, |prompt, cx| {
-            prompt.set_text("Split the story", window, cx)
-        });
-        studio.ask(window, cx);
-    });
-    trial.settle();
-    let files = trial.read(
-        |studio| match studio.assistant.conversation().turns.last() {
-            Some(Turn::Answered(answer)) => match &answer.outcome {
-                Outcome::Proposed(proposed) => proposed
-                    .files
-                    .iter()
-                    .map(|change| change.file.clone())
-                    .collect::<Vec<_>>(),
-                other => panic!("{other:?} after {:?}", answer.steps),
-            },
-            other => panic!("{other:?}"),
-        },
-    );
-    assert_eq!(files, ["harbor.sf", "story.sf"]);
-
-    trial.act(|studio, window, cx| studio.start_review(1, window, cx));
-    assert!(
-        trial.read(|studio| studio.assistant.review.is_some()),
-        "a new file can be reviewed"
-    );
-    trial
-        .act(|studio, _, cx| studio.finish_review(Some(true), cx))
-        .unwrap();
-    let (story, harbor, on_disk) = trial.read(|studio| {
-        let folder = studio
-            .state
-            .story
-            .path()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_owned();
-        (
-            studio.state.story.source().to_owned(),
-            crate::writing::source(&studio.state, "harbor.sf").map(str::to_owned),
-            folder.join("harbor.sf").exists(),
-        )
-    });
-    assert_eq!(
-        story,
-        "scene start\n  narrate: Dawn.\n  goto harbor\n\ninclude \"harbor.sf\"\n"
-    );
-    assert_eq!(
-        harbor.as_deref(),
-        Some("scene harbor\n  narrate: Dusk.\n  end\n")
-    );
-    assert!(on_disk, "the kept file exists, to be saved like any other");
-}
-
-#[gpui::test]
-fn a_file_being_written_can_be_watched_and_unfinished_work_is_kept(cx: &mut TestAppContext) {
-    use agentkit_ai::{providers::fake::FakeChatModel, ChatStreamEvent};
-    use storyfella_studio_core::workflows::{
-        assistant::{Outcome, Turn},
-        FileState,
-    };
-
-    let mut trial = Trial::new(cx);
-    trial
-        .act(|studio, _, cx| studio.create_project("Harbor", cx))
-        .unwrap();
-    let entry = "include \"chapter.sf\"\nscene start\n  narrate: Dawn.\n  goto harbor\n";
-    let chapter = "scene harbor\n  narrate: Dusk.\n  end\n";
-    trial.act(|studio, _, cx| {
-        let folder = studio
-            .state
-            .story
-            .path()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_owned();
-        std::fs::write(folder.join("chapter.sf"), chapter).unwrap();
-        studio.state.set_story_source(entry.into());
-        studio.changed(cx);
-    });
-
-    // The watched file's diff follows each part as it arrives.
-    let night = "scene harbor\n  narrate: Night.\n  end\n";
-    trial.act(|studio, window, cx| {
-        let writing = FileState::Writing { part: 1, parts: 1 };
-        studio.heard_file("chapter.sf".into(), chapter.into(), writing, cx);
-        studio.watch("chapter.sf", window, cx);
-    });
-    let hunks = |trial: &mut Trial| {
-        trial.act(|studio, _, cx| {
-            let watch = studio.assistant.watching.as_ref().expect("watching");
-            watch.view.read(cx).diff().hunks().len()
-        })
-    };
-    assert_eq!(hunks(&mut trial), 0, "nothing is written yet");
-    trial.act(|studio, _, cx| {
-        studio.heard_file("chapter.sf".into(), night.into(), FileState::Compiles, cx)
-    });
-    assert_eq!(hunks(&mut trial), 1);
-    assert_eq!(
-        trial.read(|studio| crate::writing::source(&studio.state, "chapter.sf").map(str::to_owned)),
-        Some(chapter.into()),
-        "watching changes nothing"
-    );
-
-    // A run whose edit never compiles still ends in a suggestion to review.
-    let reply = |text: &str| {
-        vec![
-            ChatStreamEvent::TextDelta {
-                content: text.into(),
-            },
-            ChatStreamEvent::Done,
-        ]
-    };
-    let broken = "```storyfella\nscene harbor\n  narrate: Night.\n  goto nowhere\n```";
-    trial.act(|studio, window, cx| {
-        studio.assistant.model = Some(std::sync::Arc::new(FakeChatModel::new_streaming([
-            reply(r#"{"files":["chapter.sf"],"note":"Night falls."}"#),
-            reply(broken),
-            reply(broken),
-            reply(broken),
-        ])));
-        studio.assistant.scope = crate::assistant::Scope::Project;
-        studio.assistant.prompt.update(cx, |prompt, cx| {
-            prompt.set_text("Make it night", window, cx)
-        });
-        studio.ask(window, cx);
-    });
-    trial.settle();
-    let unfinished = trial.read(|studio| {
-        assert!(
-            studio.assistant.watching.is_none(),
-            "the watch ends with the run"
-        );
-        match studio.assistant.conversation().turns.last() {
-            Some(Turn::Answered(answer)) => match &answer.outcome {
-                Outcome::Proposed(proposed) => proposed.suggestion.unfinished().map(str::to_owned),
                 other => panic!("{other:?}"),
             },
-            other => panic!("{other:?}"),
-        }
-    });
-    let unfinished = unfinished.expect("the run did not finish");
-    assert!(
-        unfinished.contains("could not produce a story that compiles"),
-        "{unfinished}"
+        )
+    };
+    let first: Done = done(&mut trial, 1);
+    assert!(first.out_of_steps);
+    let continuation = first.continuation.clone().expect("a way to carry on");
+    assert_eq!(continuation.instructions, "Make it night and end it");
+    assert_eq!(
+        continuation.continuing.as_deref(),
+        Some("I made it night; the ending is left.")
     );
+
+    trial.act(|studio, _, cx| studio.continue_request(1, cx));
+    trial.settle();
+    let turns = trial.read(|studio| studio.assistant.conversation().turns.clone());
+    assert_eq!(turns.len(), 4);
+    assert!(matches!(&turns[2], Turn::Asked(asked) if asked.text == "Continue"));
+    let second = done(&mut trial, 3);
+    assert_eq!(second.reply, "I rewrote the ending too.");
+    assert!(!second.out_of_steps);
 }
 
 #[gpui::test]
@@ -763,7 +591,7 @@ fn a_failure_is_indicated_and_explained_only_on_request(cx: &mut TestAppContext)
 #[gpui::test]
 fn a_failed_reply_is_tried_again_with_the_same_words(cx: &mut TestAppContext) {
     use agentkit_ai::{providers::fake::FakeChatModel, ChatStreamEvent};
-    use storyfella_studio_core::workflows::assistant::{Outcome, Place, Turn};
+    use storyfella_studio_core::workflows::assistant::{Done, Outcome, Place, Turn};
 
     let mut trial = Trial::new(cx);
     trial
@@ -816,7 +644,10 @@ fn a_failed_reply_is_tried_again_with_the_same_words(cx: &mut TestAppContext) {
             assert_eq!(asked.text, "Hello");
             assert_eq!(
                 answer.outcome,
-                Outcome::Replied("Hello! Which scene should change?".into())
+                Outcome::Done(Done {
+                    reply: "Hello! Which scene should change?".into(),
+                    ..Done::default()
+                })
             );
         }
         turns => panic!("{turns:?}"),

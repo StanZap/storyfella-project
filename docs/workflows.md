@@ -32,167 +32,102 @@ and the file list, for as long as Studio runs, and double-clicking one
 restores its width. A project has one conversation, kept in the story's
 `workflows.sqlite3` beside `story.db` and reloaded when the story opens. New
 conversation, in the column's header, clears it; it is unavailable while a
-reply runs or a suggestion is under review. A turn is a request and its reply; a reply lists the steps the
-workflow took and ends in one outcome: a suggestion, an answer in prose, no
-change, stopped, failed, or interrupted (Studio closed while it ran).
+reply runs. A turn is a request and its reply; a reply lists the steps the
+agent took and ends in one outcome: done, stopped, failed, or interrupted
+(Studio closed while it ran).
 
-While a reply runs, its steps stay open: Starting the text model (with the
-model and its address, or "Loading … on this computer" for a managed one),
-Writing, Checking the edit, and Fixing the edit (1 of 2) when a check fails.
-The running step's time counts up each second, and its line says what is
-arriving — "Thinking · 1,419 characters" while a reasoning model reasons,
-"Writing · 201 characters" once the answer starts — with the answer's
-readable part shown as a draft underneath. A finished step keeps a record of
-what it found: "Wrote 201 characters after 3,198 of thinking", "The story
-still compiles", or the first of its problems. When the reply ends, the steps
-fold to "Worked for 12.7s · 3 steps" — "Ran for 12.7s" when it failed — which
-opens them again.
+The assistant edits the story as it works. Each edit goes into the draft at
+once — the editor shows it, autosave writes it — and is its own undoable
+change. While a reply runs, its steps stay open: Starting the text model
+(with the model and its address, or "Loading … on this computer" for a
+managed one), Thinking, and one step per tool call — Reading, Editing,
+Rewriting, Creating, Moving scene — each recording what the compiler said
+afterwards. The running step's time counts up each second, and while the
+model answers its line says what is arriving — "Thinking · 1,419
+characters", then "Writing · 201 characters" — with the answer's readable
+part shown as a draft underneath. When the reply ends, the steps fold to
+"Worked for 12.7s · 6 steps" — "Ran for 12.7s" when it failed — which opens
+them again.
 
-A request names its reach with the scope chip beside Send, which opens a
-menu of Selection, the Beat or Scene around the caret, the whole File, or the
-Project — every story file. The passage, the instructions and Keep
-facts (on by default) are captured when the request is sent; editing
-afterwards does not change it. The caption under the request names the
-passage, and opens it in the editor while no review is open. An empty file,
-or Selection with nothing selected, is refused under the prompt, and the
-prompt keeps its text. Without a
-text provider in Settings, the prompt says so and Send is disabled.
+A request names its reach with the scope chip beside Send: Project (the
+default), File, Scene, Beat or Selection. The scope is enforced by the
+agent's tools, not by the prompt: under Project any file may change and new
+files may be created; under File only the current file; under Scene, Beat or
+Selection only that range of lines, which grows and shrinks with the agent's
+own edits. An edit outside the scope is refused with the reason, and the
+agent says in its answer what it could not change. Whatever the scope, the
+request carries where the writer is — the file, the caret, the selection,
+and the beat and scene around the caret — so "this beat" or "the selection"
+means the same under Project. The instructions and Keep facts (on by
+default) are captured when the request is sent. Selection with nothing
+selected is refused under the prompt, and the prompt keeps its text. Without
+a text provider in Settings, the prompt says so and Send is disabled.
 
-A request that is not an edit — a greeting, a question about the story — is
-answered in prose, and nothing is checked or changed. A suggestion arrives
-with what the model said about it, if anything, and a card naming the file
-and the lines it adds and removes. Review replaces the
-editor with a read-only diff of the file; each change is kept or reset, and
-Keep all / Discard all decide the rest. The story changes once, when the
-review ends, as one undoable edit of the kept changes. Reviewing is refused if
-the file changed since the suggestion was written. Asking again while a review
-is open refines it: the kept changes are applied, and the same passage is
-asked for again with both instructions. The card records what was decided —
-Kept, Kept 2 of 3, Discarded.
+A reply ends with what the model said and a card listing each changed file
+with the lines added and removed. A request that is not an edit — a
+greeting, a question about the story — is answered in prose and changes
+nothing. A reply that used every step says so and offers Continue, which
+asks again with the same instructions, scope and Keep facts, and with what
+the previous answer said was done and left.
 
-A Project request runs the project workflow below. Its steps are Planning
-(with the files it will change), Writing each of those files — "Writing
-chapter.sf (part 2 of 3)" for a long one — and Checking the story. While it
-runs, the reply lists each file it has reached with how it stands — Writing
-part 2 of 3, Fixing, Compiles, or its new problems — and the lines added and
-removed so far. A file's name shows it being written in the editor's place: a
-diff with no Accept or Reject that fills in as each part arrives, and changes
-nothing; Back to the file returns to the editor, and the run ending closes it.
-Its card
-lists every changed file with its line counts. Review opens the first file's
-diff; deciding a file's last change moves on to the next file with changes
-left, and the review bar steps between files. Nothing is written until the
-review ends, when every file's kept changes become one undoable edit. A
-review is refused if any of its files changed since the suggestion was
-written, whether or not that file is open. A file the suggestion creates is reviewed
-like the others, against nothing; keeping it creates the file empty in the
-story's folder and puts its text in as an unsaved change, saved with the rest.
-
-A Project request that stops, or fails after writing something, still ends in
-a card: what was written is the suggestion, the card says why it is
-unfinished and that it may not compile, and the review bar says the same. Its
-changes are kept or discarded like any other's, with errors if they have
-them. A request that fails before writing anything fails as before.
+Changes not yet decided are listed above the editor: "The assistant changed
+chapter.sf" (or "is changing", while it runs), with Review, Undo all and Keep
+all, which are unavailable while a reply runs. Review replaces the editor
+with a diff of each changed file against how it was before the assistant
+first touched it; each change is kept or undone on its own, and the review
+bar steps between files. Ending the review applies the decisions as one
+undoable change. Keep all accepts everything; Undo all puts every file back
+as it was. Changes waiting for a decision are held while Studio runs, not
+across restarts; once a file is saved they remain in its undo history.
 
 A failed reply says so once, in a card under its steps: the code's label
-("Could not create a writing suggestion"), Try again, which sends the same
-words about what the scope names now, and Details, which opens the shared
-details dialog (DESIGN.md §2). Expanding the steps marks the one that
-failed. A reply interrupted by Studio closing offers Try again too. A file
-name on a suggestion's card opens that file while no review is open.
+("The assistant stopped with an error"), Try again, which sends the same words,
+and Details, which opens the shared details dialog (DESIGN.md §2). Edits made
+before the failure stay in the story, to be kept or undone like any other.
+A reply interrupted by Studio closing offers Try again too.
 
-### The writing workflow
+### The story agent
 
-`storyfella_studio_core::workflows::writing` runs a request as an Agentkit
-workflow with a language-model step, through the text-provider binding from
-Settings. A managed (`llamacpp`) provider is reached through the worker the
-shared inference service allocates — the address in `clipforge.toml` is only
-the provider's identity — and its lease is held for the whole request, repair
-attempts included; a hosted provider is called at its configured address.
+`storyfella_studio_core::workflows::agent` runs a request as one Agentkit
+`language_model` step with a tool source, through the text-provider binding
+from Settings. A managed (`llamacpp`) provider is reached through the worker
+the shared inference service allocates — the address in `clipforge.toml` is
+only the provider's identity — and its lease is held for the whole request; a
+hosted provider is called at its configured address.
 
-Settings › Models › Assistant shapes both workflows; the choices are kept in
-the `[assistant]` section of Studio's settings. **Thinking** sets how much the
-model reasons before answering — Model default, Off, Low, Medium or High —
-which is the `thinking` field of the `language_model` step. A provider that
-cannot change it fails the run rather than ignoring it. **Limit reply length**
-caps each answer's tokens, reasoning included (`max_output_tokens`); off, the
-provider's own limit applies. **Context** is the context a managed text model
-is started with, shared by its two request slots, and is saved on its provider
-in `clipforge.toml`; a provider whose server Studio does not start keeps its
-own. **Repair attempts** (0–5, default 2) is how many times a rejected answer
-is sent back, and **Whole story up to** (4–256 KiB, default 24) is where a
-Project request stops sending every file's text.
+The first turn carries the request, its scope, Keep facts, the editor
+location, an outline of every story file with its scenes and beats, the
+assets the story may name, and the compiler errors the story already has. The
+agent works through five tools:
 
-The request carries the story once: the passage, and — for anything smaller
-than the whole file — the complete source, for surrounding structure and
-cross-scene links. Alongside it go the descriptions of the assets the
-passage's scene refers to. File scope captures the complete source, including
-comments and boundary whitespace, as the passage. Responses regain captured
-indentation, line endings and terminal blank lines that a provider may have
-trimmed; a partial-line selection is not reindented. The model answers in one of two forms: the replacement in a fenced block,
-with an optional sentence about it, or prose with no block when the request
-is not an edit. `writing::interpret` reads either, and also an unfenced
-replacement — taken as source when most of its lines are statements, or when
-the passage is part of one line — and drops `<think>` reasoning, including a
-closing tag whose opening tag the server stripped. A prose answer to the
-first attempt becomes the reply and skips the repairs; prose during a repair
-counts as an empty replacement. A whole-file answer to a smaller passage is
-cut back to the passage when the text around it is unchanged. An answer cut
-off at the provider's output limit is never checked: it is asked for once more
-with thinking off, which is usually what used the room up, and the rest of the
-request keeps thinking off. Cut off again, the run fails as cut off, with
-advice to ask about less or give the model more room rather than to check the
-provider. The project workflow does the same for each of its calls.
-A draft that already has errors is worked on like any other: the model is
-given them as `existing_problems`, so asking to fix them works, and an edit is
-held only to adding none — errors are matched by code and message, as many
-times as the draft has each. The check's line says "The story compiles now",
-"Fixes 1 of 2 problems" or "No new problems". Before review, the
-replacement is inserted into the captured document and compiled. Empty output,
-or output that adds errors, triggers up to the configured repair attempts using the
-original request, the rejected replacement and compiler diagnostics; repair runs link to their
-preceding attempt in the run store. Only a valid result becomes a suggestion,
-so compilation guarantees structural validity, not narrative quality or
-instruction fidelity. Stop cancels drafting and repair; a provider may
-continue remote compute after local cancellation.
+- `outline` — every file with its scenes and beats.
+- `read_file` — numbered lines, a range at most 400 lines and 32 KiB.
+- `edit_file` — replaces text that occurs exactly once, inside the scope.
+- `write_file` — replaces a file, or creates one under Project scope and adds
+  its `include` to the entry file.
+- `move_scene` — moves a whole scene, word for word, to another file, under
+  Project scope.
 
-Each request stores its exact source, byte range, project and source paths. A
-suggestion applies only to that same source.
+Each change is applied to the draft through `StoryDraft::write`, refused if
+the story moved on since it was read, and answered with the compiler's report
+on the whole story: "The story compiles.", or up to twelve errors with which
+of them were there before the request, and the story's scene names. Refusals
+come back as tool errors with their reason. The model is told to fix the
+errors it caused before it finishes; errors that predate the request are the
+writer's.
 
-### The project workflow
+Settings › Models › Assistant shapes the agent; the choices are kept in the
+`[assistant]` section of Studio's settings. **Thinking** sets how much the
+model reasons before answering — Model default, Off, Low, Medium or High.
+A provider that cannot change it fails the run rather than ignoring it.
+**Limit reply length** caps each answer's tokens, reasoning included
+(`max_output_tokens`); off, the provider's own limit applies. **Context** is
+the context a managed text model is started with, saved on its provider in
+`clipforge.toml`. **Steps per request** (4–200, default 30) is how many times
+the model is called; on the last call it is offered no tools, so it ends by
+saying what it did and what is left, and the outcome is marked out of steps.
 
-`storyfella_studio_core::workflows::novel` runs a request about the whole
-story. It plans first: the model reads the instructions against every file's
-text when the story is within the whole-story size, or each file's path, scenes and size
-when it is larger, and answers either in prose — the reply, after one call —
-or with a JSON plan and a note on what it will do. The plan names the files
-to rewrite, any new files, and any whole scenes to move. Studio moves the
-scenes itself, word for word, before anything is written: the model never
-retypes a scene to move it, so splitting a file is one short answer. A new
-file must sit beside an existing one; its `include` takes the place of the
-first scene moved into it, so the story plays in the same order from the same
-first scene, and a new file nothing moves into is included at the end of the
-entry for the model to write. A plan that names a file the story does not
-have without creating it, moves a scene that does not exist, or creates a file
-nothing goes into is sent back, up to the configured repair attempts, with
-what the story has instead — its scene names, and that a beat is not a scene.
-A plan that still does not fit fails with its own advice: say which scenes or
-files are meant, or ask about less.
-Each planned file is rewritten in fragments of at most 2 KiB, split between
-lines, each answered as one fenced block; an answer in prose is sent back.
-The changed files are then compiled together with the rest of the project.
-As in the writing workflow, a story that already has errors is worked on: the
-plan and each file's fragments are given them, and the result is held to
-adding none. A file with new errors is sent back whole, with its errors, up to
-the configured repair attempts; a file too long to send back whole fails the run with the errors listed by file and
-line. Every model call after the first is a run linked to the first in the
-run store. Each file is reported as it goes: first as it was, then with each
-finished part in place, then compiled together with the files written before
-it. A run that is stopped or fails after writing something returns what it
-wrote as a proposal marked unfinished, with the reason — a file that was
-being written has its finished parts and the rest as it was. The same
-workflow serves live MCP's novel tools; applying a proposal there still
-requires it to add no problems.
+The same agent serves live MCP's assistant tools, under Project scope.
 
 ## Atelier
 

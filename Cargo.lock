@@ -7279,6 +7279,7 @@ version = "0.1.0"
 dependencies = [
  "agentkit-ai",
  "anyhow",
+ "async-trait",
  "base64 0.23.0",
  "design-system",
  "embed-resource",
@@ -7310,6 +7311,7 @@ dependencies = [
  "agentkit-core",
  "agentkit-workflow",
  "anyhow",
+ "async-trait",
  "base64 0.23.0",
  "diffy",
  "directories",

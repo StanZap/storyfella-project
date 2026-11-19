@@ -105,41 +105,6 @@ impl AppState {
         Ok(id)
     }
 
-    pub fn apply_writing_proposal(
-        &mut self,
-        proposal: &storyfella_studio_core::workflows::writing::WritingProposal,
-    ) -> Result<(), String> {
-        if self.operation_in_progress {
-            return Err(
-                "Wait for the current operation before applying a writing proposal.".into(),
-            );
-        }
-        let project = self
-            .project_path
-            .as_deref()
-            .ok_or("Open the proposal's project first")?;
-        let path = self
-            .story
-            .path()
-            .ok_or("Open the proposal's source file first")?;
-        let source = proposal
-            .apply(project, path, self.story.source())
-            .map_err(|error| error.to_string())?;
-        let catalog = AssetCatalog::from_registry(&self.registry);
-        let analysis = analyze(&source, &catalog.assets);
-        if storyfella_compiler::compile_analysis(&analysis, &catalog.bindings)
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.severity == storyfella_language::Severity::Error)
-        {
-            return Err(
-                "The proposed source has errors. Review the diagnostics before applying.".into(),
-            );
-        }
-        self.set_story_source(source);
-        Ok(())
-    }
-
     pub fn description_draft(&self, id: Uuid) -> Option<&str> {
         self.description_drafts.get(&id).map(String::as_str)
     }
@@ -501,24 +466,6 @@ impl AppState {
         drafts.insert(entry.to_owned(), self.story.source().to_owned());
         storyfella_studio_core::story::load_source_workspace(path, &drafts)
             .map_err(|error| error.to_string())
-    }
-
-    /// Apply a validated multi-file proposal as one undoable draft change.
-    pub(crate) fn apply_novel_proposal(
-        &mut self,
-        proposal: &storyfella_studio_core::workflows::novel::NovelProposal,
-    ) -> Result<(), String> {
-        let project = self.project_path.as_deref().ok_or("Open a project first")?;
-        let current = self.workspace_snapshot()?;
-        let proposed = proposal
-            .validate(project, &current, &self.registry)
-            .map_err(|error| error.to_string())?;
-        let texts = proposal
-            .files
-            .keys()
-            .map(|file| (file.clone(), proposed.files[file].clone()))
-            .collect();
-        self.set_sources(&current, texts)
     }
 
     /// Replaces what several files say as one undoable draft change. Each
@@ -1160,11 +1107,7 @@ mod tests {
     use storyfella_studio_core::registry::{ArtifactKind, ArtifactRegistry, CreateArtifact};
 
     #[test]
-    fn novel_proposal_applies_multiple_files_as_one_undo_and_rejects_stale_drafts() {
-        use storyfella_studio_core::workflows::{
-            novel::{NovelProposal, NovelRequest},
-            writing::WritingAction,
-        };
+    fn several_files_change_as_one_undo_and_a_stale_base_is_refused() {
         let root =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.svs-e2e/tests");
         std::fs::create_dir_all(&root).unwrap();
@@ -1179,50 +1122,30 @@ mod tests {
             ..Default::default()
         };
         let baseline = state.workspace_snapshot().unwrap();
-        let request = NovelRequest {
-            project: state.project_path.clone().unwrap(),
-            workspace: baseline.clone(),
-            action: WritingAction::Rewrite,
-            instructions: String::new(),
-            preserve_facts: true,
-            catalog_digest: storyfella_studio_core::workflows::novel::catalog_digest(
-                &state.registry,
-            )
-            .unwrap(),
-        };
-        let proposal = NovelProposal {
-            run_id: "test".into(),
-            request,
-            files: std::collections::BTreeMap::from([
-                (
-                    "story.sf".into(),
-                    "# revised\ninclude \"chapter.sf\"\n".into(),
-                ),
-                (
-                    "chapter.sf".into(),
-                    "scene harbor\n  narrate: new\n  end\n".into(),
-                ),
-            ]),
-            note: None,
-            unfinished: None,
-        };
-        state.apply_novel_proposal(&proposal).unwrap();
+        let texts = std::collections::BTreeMap::from([
+            (
+                "story.sf".to_owned(),
+                "# revised\ninclude \"chapter.sf\"\ninclude \"coda.sf\"\n".to_owned(),
+            ),
+            (
+                "chapter.sf".to_owned(),
+                "scene harbor\n  narrate: new\n  goto coda\n".to_owned(),
+            ),
+            ("coda.sf".to_owned(), "scene coda\n  end\n".to_owned()),
+        ]);
+        state.set_sources(&baseline, texts.clone()).unwrap();
         assert!(state.story.source().starts_with("# revised"));
-        assert!(state
-            .additional_sources
-            .as_ref()
-            .unwrap()
-            .get("chapter.sf")
-            .unwrap()
-            .source()
-            .contains("new"));
+        let now = state.workspace_snapshot().unwrap();
+        assert!(now.files["chapter.sf"].contains("new"));
+        assert_eq!(now.files["coda.sf"], "scene coda\n  end\n");
         assert!(state.undo());
         assert_eq!(state.workspace_snapshot().unwrap(), baseline);
         assert!(state.redo());
         assert!(state.story.source().starts_with("# revised"));
         assert!(state.undo());
         state.set_story_source("# user edit\ninclude \"chapter.sf\"\n".into());
-        assert!(state.apply_novel_proposal(&proposal).is_err());
+        let stale = baseline;
+        assert!(state.set_sources(&stale, texts).is_err());
         assert!(state.story.source().starts_with("# user edit"));
     }
 
@@ -1663,54 +1586,6 @@ mod tests {
             )
             .expect("artifact should create");
         registry
-    }
-
-    #[test]
-    fn writing_acceptance_is_one_undo_and_refuses_concurrent_or_invalid_edits() {
-        use storyfella_studio_core::workflows::writing::{
-            WritingProposal, WritingRequest, WritingScope,
-        };
-        let directory = std::env::temp_dir().join(format!("writing-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&directory).unwrap();
-        let project = directory.join("story.db");
-        let path = directory.join("story.sf");
-        let original = "scene harbor\n  beat arrival\n    narrate: The sea is quiet.\n    end\n";
-        std::fs::write(&path, original).unwrap();
-        let mut state = AppState {
-            project_path: Some(project.clone()),
-            story: StoryDocument::open(&path).unwrap(),
-            ..Default::default()
-        };
-        state.reconcile_story();
-        let request = WritingRequest::capture(
-            &project,
-            state.story.path().unwrap(),
-            original,
-            WritingScope::Beat(40),
-            &state.registry,
-        )
-        .unwrap();
-        let proposal = WritingProposal {
-            run_id: "test".into(),
-            replacement: request.original().replace("quiet", "restless"),
-            request,
-            note: None,
-        };
-        let registry = state.registry.clone();
-        state.apply_writing_proposal(&proposal).unwrap();
-        assert!(state.story.source().contains("restless"));
-        assert_eq!(state.undo_stack.len(), 1);
-        assert!(state.has_unsaved_changes);
-        state.undo();
-        assert_eq!(state.story.source(), original);
-        assert_eq!(state.registry, registry);
-        let mut invalid = proposal.clone();
-        invalid.replacement = "scene\n".into();
-        assert!(state.apply_writing_proposal(&invalid).is_err());
-        state.set_story_source(format!("{original}# new edit\n"));
-        let before = state.clone();
-        assert!(state.apply_writing_proposal(&proposal).is_err());
-        assert_eq!(state, before);
     }
 
     /// State holding one named character (the common test fixture).

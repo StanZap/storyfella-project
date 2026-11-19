@@ -38,14 +38,7 @@ impl AppConfig {
                 "max_output_tokens",
                 settings.max_output_tokens.map(|tokens| tokens.to_string()),
             ),
-            (
-                "repair_attempts",
-                Some(settings.repair_attempts.to_string()),
-            ),
-            (
-                "whole_story_kib",
-                Some(settings.whole_story_kib.to_string()),
-            ),
+            ("max_steps", Some(settings.max_steps.to_string())),
         ] {
             write_key(&mut lines, "assistant", key, value);
         }
@@ -109,8 +102,7 @@ mod tests {
             .persist_assistant_settings(AssistantSettings {
                 thinking: Some(Thinking::Off),
                 max_output_tokens: Some(4096),
-                repair_attempts: 9,
-                whole_story_kib: 64,
+                max_steps: 900,
             })
             .unwrap();
         assert_eq!(
@@ -118,8 +110,7 @@ mod tests {
             AssistantSettings {
                 thinking: Some(Thinking::Off),
                 max_output_tokens: Some(4096),
-                repair_attempts: 5,
-                whole_story_kib: 64,
+                max_steps: 200,
             }
         );
         load()
