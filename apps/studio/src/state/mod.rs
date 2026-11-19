@@ -28,7 +28,7 @@ struct Typing {
 struct AuthoringSnapshot {
     registry: ArtifactRegistry,
     source: String,
-    additional: std::collections::BTreeMap<String, String>,
+    additional: std::collections::BTreeMap<String, Option<String>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -52,6 +52,10 @@ pub struct AppState {
     /// Exact Writer text, bound `.sf` path and disk snapshot for conflict checks.
     pub story: StoryDocument,
     pub additional_sources: Option<AdditionalSources>,
+    /// Each file the assistant changed that the writer has not decided on,
+    /// as it was before the assistant's first change to it; `None` for a
+    /// file the assistant created.
+    pub assistant_changes: std::collections::BTreeMap<String, Option<String>>,
     pub active_source: Option<String>,
     pub source_notice: Option<String>,
     description_drafts: std::collections::BTreeMap<Uuid, String>,
@@ -193,6 +197,7 @@ impl AppState {
         self.project_name = stored.name;
         self.story = stored.story;
         self.additional_sources = None;
+        self.assistant_changes.clear();
         self.active_source = None;
         self.source_notice = None;
         self.project_path = Some(path);
@@ -451,6 +456,46 @@ impl AppState {
         self.commit_workspace_edits(workspace, expanded, edits, registry)
     }
 
+    /// Renames the assistant's way: `scene` to `to` everywhere, through the
+    /// same rename the editor offers, remembering how each file it changes was
+    /// so the writer can decide on it later.
+    pub(crate) fn assistant_rename_scene(
+        &mut self,
+        base: &storyfella_compiler::SourceWorkspace,
+        scene: &str,
+        to: &str,
+    ) -> Result<(), String> {
+        let current = self.workspace_snapshot()?;
+        if &current != base {
+            return Err("The story changed while preparing the rename.".into());
+        }
+        let expanded = current.expand().map_err(|error| error.message)?;
+        let analysis = analyze(
+            &expanded.source,
+            &AssetCatalog::from_registry(&self.registry).assets,
+        );
+        let declared = analysis
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.kind == storyfella_language::SymbolKind::Scene && symbol.name.value == scene
+            })
+            .ok_or_else(|| format!("The story has no scene named {scene}."))?;
+        let (file, span) = expanded
+            .original_span(declared.name.span)
+            .ok_or("The scene's name crosses files.")?;
+        let file = file.to_owned();
+        crate::writing::rename(self, &file, span.start, to)?;
+        let renamed = self.workspace_snapshot()?;
+        for (file, text) in &current.files {
+            if renamed.files.get(file) != Some(text) && !self.assistant_changes.contains_key(file) {
+                self.assistant_changes
+                    .insert(file.clone(), Some(text.clone()));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn workspace_snapshot(
         &self,
     ) -> Result<storyfella_compiler::SourceWorkspace, String> {
@@ -468,12 +513,14 @@ impl AppState {
             .map_err(|error| error.to_string())
     }
 
-    /// Replaces what several files say as one undoable draft change. Each
-    /// file must still say what it said in `base`.
+    /// Replaces what several files say as one undoable draft change: a text
+    /// creates the file if the draft lacks it, and `None` removes it. Each
+    /// file must still say what it said in `base`, and a file removed must
+    /// no longer be part of the story.
     pub(crate) fn set_sources(
         &mut self,
         base: &storyfella_compiler::SourceWorkspace,
-        texts: std::collections::BTreeMap<String, String>,
+        texts: std::collections::BTreeMap<String, Option<String>>,
     ) -> Result<(), String> {
         if self.operation_in_progress || self.catalog_conflict.is_some() {
             return Err(
@@ -487,36 +534,81 @@ impl AppState {
                 return Err(format!("{file} changed while preparing the suggestion"));
             }
         }
+        if texts.get(&current.entry).is_some_and(Option::is_none) {
+            return Err(format!("{} is the story's entry and stays", current.entry));
+        }
         let mut before = match &self.additional_sources {
             Some(sources) => sources.clone(),
             None => AdditionalSources::new(&entry_path).map_err(|error| error.to_string())?,
         };
-        // A file the change creates is written empty now, so keeping it and
-        // saving work as for any other file; undo leaves it out of the story.
+        // A file the change creates joins the draft absent, so the undo step
+        // taken before it is applied takes the file away again.
         let root = entry_path.parent().ok_or("Open a story first")?;
         for file in texts.keys().filter(|file| *file != &current.entry) {
+            if before.tracks(file) {
+                continue;
+            }
             if current.files.contains_key(file) || root.join(file).exists() {
                 before.open(file).map_err(|error| error.to_string())?;
             } else {
-                before
-                    .create(&root.join(file))
-                    .map_err(|error| error.to_string())?;
+                before.add_absent(file).map_err(|error| error.to_string())?;
             }
         }
         let mut after = before.clone();
         for (file, text) in texts.iter().filter(|(file, _)| *file != &current.entry) {
-            after
-                .set_source(file, text.clone())
-                .map_err(|error| error.to_string())?;
+            match text {
+                Some(text) => after.set_source(file, text.clone()),
+                None => after.remove(file),
+            }
+            .map_err(|error| error.to_string())?;
+        }
+        let entry_text = match texts.get(&current.entry) {
+            Some(Some(text)) => text.clone(),
+            _ => self.story.source().to_owned(),
+        };
+        let mut drafts = after.overrides();
+        drafts.insert(current.entry.clone(), entry_text.clone());
+        let story = storyfella_studio_core::story::load_source_workspace(&entry_path, &drafts)
+            .map_err(|error| format!("The story would not load after this change: {error}"))?;
+        for (file, _) in texts.iter().filter(|(_, text)| text.is_none()) {
+            if story.files.contains_key(file) {
+                return Err(format!(
+                    "{file} is still included by the story; remove its include first"
+                ));
+            }
         }
         self.additional_sources = Some(before);
         self.snapshot_for_undo();
         self.additional_sources = Some(after);
-        if let Some(entry) = texts.get(&current.entry) {
-            self.story.set_source(entry.clone());
-        }
+        self.story.set_source(entry_text);
         self.reconcile_story();
         self.has_unsaved_changes = true;
+        Ok(())
+    }
+
+    /// Applies an edit of the assistant's, remembering how each file was
+    /// before its first change so the writer can decide on it later.
+    pub(crate) fn assistant_write(
+        &mut self,
+        base: &storyfella_compiler::SourceWorkspace,
+        texts: std::collections::BTreeMap<String, String>,
+    ) -> Result<(), String> {
+        let first: Vec<String> = texts
+            .keys()
+            .filter(|file| !self.assistant_changes.contains_key(*file))
+            .cloned()
+            .collect();
+        self.set_sources(
+            base,
+            texts
+                .into_iter()
+                .map(|(file, text)| (file, Some(text)))
+                .collect(),
+        )?;
+        for file in first {
+            let before = base.files.get(&file).cloned();
+            self.assistant_changes.insert(file, before);
+        }
         Ok(())
     }
 
@@ -1132,16 +1224,50 @@ mod tests {
                 "scene harbor\n  narrate: new\n  goto coda\n".to_owned(),
             ),
             ("coda.sf".to_owned(), "scene coda\n  end\n".to_owned()),
-        ]);
+        ])
+        .into_iter()
+        .map(|(file, text)| (file, Some(text)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+        let coda = directory.path().join("coda.sf");
         state.set_sources(&baseline, texts.clone()).unwrap();
         assert!(state.story.source().starts_with("# revised"));
         let now = state.workspace_snapshot().unwrap();
         assert!(now.files["chapter.sf"].contains("new"));
         assert_eq!(now.files["coda.sf"], "scene coda\n  end\n");
+        assert!(
+            !coda.exists(),
+            "a created file is written when the draft is saved"
+        );
+
+        // Undone before a save, the file never reaches the disk.
         assert!(state.undo());
         assert_eq!(state.workspace_snapshot().unwrap(), baseline);
+        let sources = state.additional_sources.as_mut().unwrap();
+        assert!(sources.get("coda.sf").is_none());
+        sources.save().unwrap();
+        assert!(!coda.exists());
+
+        // Saved, then undone: the save after the undo removes it again.
         assert!(state.redo());
         assert!(state.story.source().starts_with("# revised"));
+        state.additional_sources.as_mut().unwrap().save().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&coda).unwrap(),
+            "scene coda\n  end\n"
+        );
+        assert!(state.undo());
+        state.additional_sources.as_mut().unwrap().save().unwrap();
+        assert!(!coda.exists());
+
+        // A file still included is not removed.
+        assert!(state.redo());
+        state.additional_sources.as_mut().unwrap().save().unwrap();
+        let revised = state.workspace_snapshot().unwrap();
+        let removed = std::collections::BTreeMap::from([("coda.sf".to_owned(), None)]);
+        assert!(state
+            .set_sources(&revised, removed)
+            .unwrap_err()
+            .contains("still included"));
         assert!(state.undo());
         state.set_story_source("# user edit\ninclude \"chapter.sf\"\n".into());
         let stale = baseline;

@@ -61,7 +61,9 @@ impl RunStore {
                 run_id TEXT NOT NULL, sequence INTEGER NOT NULL, event TEXT NOT NULL,
                 PRIMARY KEY (run_id, sequence));
             CREATE TABLE IF NOT EXISTS assistant_conversations (
-                project TEXT PRIMARY KEY, conversation TEXT NOT NULL);",
+                project TEXT PRIMARY KEY, conversation TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS assistant_undecided (
+                project TEXT PRIMARY KEY, files TEXT NOT NULL);",
         )?;
         Ok(Self(Mutex::new(connection)))
     }

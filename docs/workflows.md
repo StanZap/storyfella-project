@@ -77,8 +77,18 @@ with a diff of each changed file against how it was before the assistant
 first touched it; each change is kept or undone on its own, and the review
 bar steps between files. Ending the review applies the decisions as one
 undoable change. Keep all accepts everything; Undo all puts every file back
-as it was. Changes waiting for a decision are held while Studio runs, not
-across restarts; once a file is saved they remain in its undo history.
+as it was. A file the assistant created is reviewed against nothing; undoing
+all of it removes the file, which a save then deletes from disk. Edits made by
+a live MCP assistant job wait here the same way. What waits is kept in the
+project's `workflows.sqlite3`, so it is still there when the project is opened
+again. A file the writer edits after the assistant does is reviewed with both
+edits, against how it was before the assistant.
+
+A file the story gains — from the assistant or an undo — exists in the draft
+until it is saved: it is written then, and a file the draft no longer has is
+deleted then, each only while the disk still matches what Studio last read. A
+change that would leave the story unreadable, or remove a file the story still
+includes, is refused.
 
 A failed reply says so once, in a card under its steps: the code's label
 ("The assistant stopped with an error"), Try again, which sends the same words,
@@ -98,7 +108,7 @@ hosted provider is called at its configured address.
 The first turn carries the request, its scope, Keep facts, the editor
 location, an outline of every story file with its scenes and beats, the
 assets the story may name, and the compiler errors the story already has. The
-agent works through five tools:
+agent works through six tools:
 
 - `outline` — every file with its scenes and beats.
 - `read_file` — numbered lines, a range at most 400 lines and 32 KiB.
@@ -107,8 +117,13 @@ agent works through five tools:
   its `include` to the entry file.
 - `move_scene` — moves a whole scene, word for word, to another file, under
   Project scope.
+- `rename_scene` — renames a scene's declaration and every `goto` and `option`
+  that names it, in every file, under Project scope. It uses the editor's
+  rename, so the scene's artwork stays with it, and needs a story without
+  errors.
 
-Each change is applied to the draft through `StoryDraft::write`, refused if
+Each change is applied to the draft through `StoryDraft::write` (or
+`StoryDraft::rename_scene`), refused if
 the story moved on since it was read, and answered with the compiler's report
 on the whole story: "The story compiles.", or up to twelve errors with which
 of them were there before the request, and the story's scene names. Refusals
@@ -127,7 +142,8 @@ the context a managed text model is started with, saved on its provider in
 the model is called; on the last call it is offered no tools, so it ends by
 saying what it did and what is left, and the outcome is marked out of steps.
 
-The same agent serves live MCP's assistant tools, under Project scope.
+The same agent serves live MCP's assistant tools, under Project scope; its
+edits wait in Studio's review like the column's.
 
 ## Atelier
 

@@ -209,18 +209,23 @@ pub fn analyze(source: &str, assets: &[Asset]) -> Analysis {
                     .collect();
                 if matches.len() == 1 {
                     reference.definition = Some(matches[0].name.span);
+                } else if matches.is_empty() {
+                    let declared = symbols
+                        .iter()
+                        .filter(|s| s.kind == kind)
+                        .map(|s| s.name.value.as_str());
+                    let hint = closest(&reference.name.value, declared)
+                        .map(|name| format!("; did you mean '{name}'?"))
+                        .unwrap_or_default();
+                    diagnostics.push(Diagnostic::error(
+                        code,
+                        format!("Unknown {label} '{}'{hint}", reference.name.value),
+                        reference.name.span,
+                    ));
                 } else {
                     diagnostics.push(Diagnostic::error(
                         code,
-                        format!(
-                            "{} {label} '{}'",
-                            if matches.is_empty() {
-                                "Unknown"
-                            } else {
-                                "Ambiguous"
-                            },
-                            reference.name.value
-                        ),
+                        format!("Ambiguous {label} '{}'", reference.name.value),
                         reference.name.span,
                     ));
                 }
@@ -262,6 +267,48 @@ pub fn analyze(source: &str, assets: &[Asset]) -> Analysis {
         references,
         diagnostics,
     }
+}
+
+/// The one declared name nearest `name` in spelling, ignoring case, when it is
+/// close enough to be a slip: at most a third of the name's letters apart.
+fn closest<'a>(name: &str, declared: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    let name = name.to_lowercase();
+    let limit = (name.chars().count() / 3).max(1);
+    let mut best: Option<(usize, &str)> = None;
+    let mut tied = false;
+    for candidate in declared {
+        let distance = edit_distance(&name, &candidate.to_lowercase());
+        if distance > limit {
+            continue;
+        }
+        match best {
+            Some((nearest, held)) if distance == nearest && held != candidate => tied = true,
+            Some((nearest, _)) if distance >= nearest => {}
+            _ => {
+                best = Some((distance, candidate));
+                tied = false;
+            }
+        }
+    }
+    best.filter(|_| !tied).map(|(_, name)| name)
+}
+
+/// Letters inserted, removed or replaced to turn `a` into `b`.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, x) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, y) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (above + 1)
+                .min(row[j] + 1)
+                .min(diagonal + usize::from(x != *y));
+            diagonal = above;
+        }
+    }
+    row[b.len()]
 }
 
 impl Analysis {

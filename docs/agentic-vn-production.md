@@ -208,8 +208,9 @@ The story agent can change the open Studio story directly. Call
 `preserve_facts`, then poll the returned job with `storyfella_assistant_poll`.
 The agent reads, edits, creates and moves story files in small steps, checks
 the whole story after each change and fixes the errors it caused. Each edit is
-applied to Studio's draft as it happens, as its own undoable change, and saved
-by Studio's normal save settings. A finished job returns `status: done` with
+applied to Studio's draft as it happens, as its own undoable change, saved
+by Studio's normal save settings, and waits in Studio's review to be kept or
+undone. A finished job returns `status: done` with
 the model's `message`, the changed `files`, `out_of_steps` when it used every
 step allowed in Settings, and its `run_id`. `storyfella_assistant_cancel`
 stops a running job; edits already made stay in the draft. These tools require

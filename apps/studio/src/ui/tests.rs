@@ -502,6 +502,140 @@ fn the_assistant_answers_a_question_in_prose_and_shows_each_step(cx: &mut TestAp
 }
 
 #[gpui::test]
+fn a_file_the_assistant_created_waits_while_another_project_is_open_and_undo_all_removes_it(
+    cx: &mut TestAppContext,
+) {
+    use agentkit_ai::providers::fake::FakeChatModel;
+    use storyfella_studio_core::workflows::RunStore;
+
+    let mut trial = Trial::new(cx);
+    trial
+        .act(|studio, _, cx| studio.create_project("Harbor", cx))
+        .unwrap();
+    let source = "scene harbor\n  narrate: Dusk.\n  goto harbor\n";
+    trial.act(|studio, window, cx| {
+        studio.state.set_story_source(source.into());
+        studio.changed(cx);
+        studio.assistant.model = Some(std::sync::Arc::new(FakeChatModel::new_streaming([
+            tool_call(
+                "call_coda",
+                "write_file",
+                serde_json::json!({"path": "coda.sf", "text": "scene coda\n  narrate: Bells.\n  end\n"}),
+            ),
+            says("I added a coda."),
+        ])));
+        studio
+            .assistant
+            .prompt
+            .update(cx, |prompt, cx| prompt.set_text("Add a coda", window, cx));
+        studio.ask(window, cx);
+    });
+    trial.settle();
+    let entry = trial.read(|studio| studio.state.story.source().to_owned());
+    assert!(entry.contains("include \"coda.sf\""), "{entry}");
+    let project = trial.read(|studio| studio.state.project_path.clone().unwrap());
+    let coda = trial.read(|studio| studio.state.story.path().unwrap().with_file_name("coda.sf"));
+    let undecided = trial.read(|studio| studio.state.assistant_changes.clone());
+    assert_eq!(undecided.get("coda.sf"), Some(&None));
+    assert_eq!(undecided.get("story.sf"), Some(&Some(source.to_owned())));
+    let store = RunStore::open(&project.with_extension("workflows.sqlite3")).unwrap();
+    assert_eq!(store.undecided(&project).unwrap(), undecided);
+
+    trial
+        .act(|studio, _, _| crate::commands::save_project(&mut studio.state))
+        .unwrap();
+    assert!(coda.exists());
+
+    // Opened again after another project, it still has the changes waiting.
+    trial
+        .act(|studio, _, cx| studio.create_project("Lighthouse", cx))
+        .unwrap();
+    assert!(trial.read(|studio| studio.assistant.changes.differing.is_empty()));
+    trial
+        .act(|studio, _, cx| {
+            let opened = crate::commands::open_project(&project, &mut studio.state);
+            studio.changed(cx);
+            opened
+        })
+        .unwrap();
+    assert_eq!(
+        trial.read(|studio| studio.assistant.changes.differing.clone()),
+        vec!["coda.sf".to_owned(), "story.sf".to_owned()]
+    );
+
+    trial.act(|studio, _, cx| studio.undo_all_changes(cx));
+    assert_eq!(
+        trial.read(|studio| studio.state.story.source().to_owned()),
+        source
+    );
+    trial
+        .act(|studio, _, _| crate::commands::save_project(&mut studio.state))
+        .unwrap();
+    assert!(
+        !coda.exists(),
+        "undoing a created file leaves nothing behind"
+    );
+    assert!(store.undecided(&project).unwrap().is_empty());
+}
+
+#[gpui::test]
+fn the_assistant_renames_a_scene_in_every_file_that_names_it(cx: &mut TestAppContext) {
+    use agentkit_ai::providers::fake::FakeChatModel;
+
+    let mut trial = Trial::new(cx);
+    trial
+        .act(|studio, _, cx| studio.create_project("Harbor", cx))
+        .unwrap();
+    let entry = "include \"market.sf\"\nscene harbor\n  narrate: Dusk.\n  goto market\n";
+    let market =
+        "scene market\n  choice \"Back?\"\n    option \"Yes\": harbor\n    option \"No\": market\n";
+    trial.act(|studio, _, cx| {
+        let base = studio.state.workspace_snapshot().unwrap();
+        studio
+            .state
+            .set_sources(
+                &base,
+                std::collections::BTreeMap::from([
+                    ("story.sf".to_owned(), Some(entry.to_owned())),
+                    ("market.sf".to_owned(), Some(market.to_owned())),
+                ]),
+            )
+            .unwrap();
+        studio.changed(cx);
+    });
+    assert!(trial.read(|studio| studio.state.workspace_snapshot().unwrap().files.len() == 2));
+    trial.act(|studio, window, cx| {
+        studio.assistant.model = Some(std::sync::Arc::new(FakeChatModel::new_streaming([
+            tool_call(
+                "call_rename",
+                "rename_scene",
+                serde_json::json!({"scene": "harbor", "to": "quay"}),
+            ),
+            says("I renamed harbor to quay."),
+        ])));
+        studio.assistant.prompt.update(cx, |prompt, cx| {
+            prompt.set_text("Call the harbor the quay", window, cx)
+        });
+        studio.ask(window, cx);
+    });
+    trial.settle();
+    let now = trial.read(|studio| studio.state.workspace_snapshot().unwrap());
+    assert_eq!(
+        now.files["story.sf"],
+        entry.replace("scene harbor", "scene quay")
+    );
+    assert_eq!(now.files["market.sf"], market.replace(": harbor", ": quay"));
+    assert_eq!(
+        trial.read(|studio| studio.assistant.changes.differing.clone()),
+        vec!["market.sf".to_owned(), "story.sf".to_owned()]
+    );
+    trial.act(|studio, _, cx| studio.undo_all_changes(cx));
+    let undone = trial.read(|studio| studio.state.workspace_snapshot().unwrap());
+    assert_eq!(undone.files["story.sf"], entry);
+    assert_eq!(undone.files["market.sf"], market);
+}
+
+#[gpui::test]
 fn a_request_out_of_steps_offers_to_continue_where_it_stopped(cx: &mut TestAppContext) {
     use agentkit_ai::providers::fake::FakeChatModel;
     use storyfella_studio_core::workflows::assistant::{Done, Outcome, Turn};

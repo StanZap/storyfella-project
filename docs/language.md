@@ -66,7 +66,10 @@ scene locked
 `flag NAME true|false` declares the initial value. `set NAME true|false`
 updates it immediately. `if [not] NAME goto SCENE else SCENE` checks the flag
 and ends the scene with one of the two explicit jumps. Unknown or duplicate
-flags and invalid scene targets are errors. Static reachability considers
+flags and invalid scene targets are errors. An unknown scene (`SF202`) or flag
+(`SF208`) names the declared one it was probably meant to be — "Unknown scene
+'harbour'; did you mean 'harbor'?" — when exactly one is within a third of its
+letters, ignoring case. Static reachability considers
 both conditional targets. Flags survive scene changes and restore through
 verified replay. Restart resets them to the declared values. Explicit scene
 jumps keep the current values.

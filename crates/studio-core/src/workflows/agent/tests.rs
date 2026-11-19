@@ -295,6 +295,39 @@ async fn a_passage_request_cannot_change_anything_outside_its_passage() {
 }
 
 #[tokio::test]
+async fn renaming_a_scene_needs_project_scope_and_a_draft_that_can_rename() {
+    for (scope, refusal) in [
+        (
+            Scope::File {
+                file: "story.sf".into(),
+            },
+            "Renaming a scene is outside the scope",
+        ),
+        (Scope::Project, "This story cannot rename scenes"),
+    ] {
+        let draft = Memory::new(&[("story.sf", STORY)]);
+        let model = Scripted::new(vec![
+            Turn::Calls(vec![(
+                "rename_scene",
+                json!({"scene": "harbor", "to": "quay"}),
+            )]),
+            Turn::Text("I could not rename it."),
+        ]);
+        let outcome = run(
+            request("Call the harbor the quay", scope),
+            model.clone(),
+            draft.clone(),
+            AssistantSettings::default(),
+        )
+        .await;
+        let results = model.tool_results();
+        assert!(results[0].contains(refusal), "{}", results[0]);
+        assert_eq!(draft.file("story.sf").unwrap(), STORY);
+        assert!(outcome.changed.is_empty());
+    }
+}
+
+#[tokio::test]
 async fn a_request_out_of_steps_answers_without_tools_and_says_so() {
     let draft = Memory::new(&[("story.sf", STORY)]);
     let model = Scripted::new(vec![

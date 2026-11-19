@@ -1,8 +1,11 @@
 //! What the assistant changed and the writer has not decided on yet. Its
 //! edits are in the story as soon as it makes them — saved like any other
-//! edit — and each file remembers how it was before the assistant first
-//! touched it. A bar above the editor says so; Review shows each changed file
-//! as a diff against that, whose changes are kept or undone one by one.
+//! edit — and the story's state remembers how each file was before the
+//! assistant first touched it (`AppState::assistant_changes`), whether the
+//! edit came from this column or a live MCP job. A bar above the editor says
+//! so; Review shows each changed file as a diff against that, whose changes
+//! are kept or undone one by one. Undoing every change to a file the
+//! assistant created removes the file.
 use std::collections::BTreeMap;
 
 use design_system::{
@@ -12,24 +15,26 @@ use design_system::{
 use gpui_kit::{prelude::*, *};
 use storyfella_compiler::SourceWorkspace;
 
+use storyfella_studio_core::errors::ErrorCode;
+
 use super::Studio;
 use crate::{assistant::DraftCall, host::Place};
 
 #[derive(Default)]
 pub(in crate::ui) struct Changes {
-    /// Each changed file as it was before the assistant's first change to
-    /// it; empty for a file it created.
-    before: BTreeMap<String, String>,
-    /// The files in `before` that still differ, as of the last change to
-    /// the story; reading them is not cheap enough to do on every frame.
+    /// The files the assistant changed that still differ, as of the last
+    /// change to the story; reading them is not cheap enough to do on every
+    /// frame.
     pub(in crate::ui) differing: Vec<String>,
+    /// What was last saved to the run store, so the bar outlives Studio.
+    saved: BTreeMap<String, Option<String>>,
     pub(in crate::ui) review: Option<Review>,
 }
 
 impl Changes {
     pub(super) fn set_theme(&self, theme: Theme, cx: &mut App) {
         if let Some(review) = &self.review {
-            for (_, diff) in &review.files {
+            for (_, _, diff) in &review.files {
                 diff.update(cx, |diff, cx| diff.set_theme(theme, cx));
             }
         }
@@ -38,7 +43,8 @@ impl Changes {
 
 /// The changes under review in the editor's place, one file at a time.
 pub(in crate::ui) struct Review {
-    files: Vec<(String, Entity<DiffView>)>,
+    /// Each file, whether it existed before the assistant, and its diff.
+    files: Vec<(String, bool, Entity<DiffView>)>,
     /// The file shown, as an index into `files`.
     current: usize,
     /// The story as the review opened on it.
@@ -48,23 +54,25 @@ pub(in crate::ui) struct Review {
 impl Review {
     /// The file shown and its diff.
     pub(in crate::ui) fn shown(&self) -> (&str, &Entity<DiffView>) {
-        let (file, diff) = &self.files[self.current];
+        let (file, _, diff) = &self.files[self.current];
         (file, diff)
     }
 
     /// Changes decided, and changes in all, across every file.
     fn decided(&self, cx: &App) -> (usize, usize) {
-        self.files.iter().fold((0, 0), |(decided, of), (_, diff)| {
-            let states = diff.read(cx).states();
-            (
-                decided
-                    + states
-                        .iter()
-                        .filter(|state| **state != HunkState::Pending)
-                        .count(),
-                of + states.len(),
-            )
-        })
+        self.files
+            .iter()
+            .fold((0, 0), |(decided, of), (_, _, diff)| {
+                let states = diff.read(cx).states();
+                (
+                    decided
+                        + states
+                            .iter()
+                            .filter(|state| **state != HunkState::Pending)
+                            .count(),
+                    of + states.len(),
+                )
+            })
     }
 
     /// The next file, after the one shown, with a change still undecided.
@@ -73,7 +81,7 @@ impl Review {
             .map(|step| (self.current + step) % self.files.len())
             .find(|&index| {
                 self.files[index]
-                    .1
+                    .2
                     .read(cx)
                     .states()
                     .contains(&HunkState::Pending)
@@ -83,65 +91,60 @@ impl Review {
 
 impl Studio {
     /// Answers the running agent's call on the story: what it says now, or
-    /// one of its edits, applied as one undoable change.
+    /// one of its changes, applied as one undoable change.
     pub(super) fn draft_call(&mut self, call: DraftCall, cx: &mut Context<Self>) {
-        match call {
-            DraftCall::Workspace(reply) => {
-                let _ = reply.send(self.state.workspace_snapshot());
-            }
-            DraftCall::Write { base, texts, done } => {
-                let first: Vec<_> = texts
-                    .keys()
-                    .filter(|file| !self.assistant.changes.before.contains_key(*file))
-                    .cloned()
-                    .collect();
-                let written = self.state.set_sources(&base, texts);
-                if written.is_ok() {
-                    for file in first {
-                        let before = base.files.get(&file).cloned().unwrap_or_default();
-                        self.assistant.changes.before.insert(file, before);
-                    }
-                    self.changed(cx);
-                }
-                let _ = done.send(written);
-            }
+        if call.answer(&mut self.state) {
+            self.changed(cx);
         }
     }
 
-    /// Each file the assistant changed, as it was and as it is, leaving out
-    /// files that are back to how they were.
-    fn changed_files(&self) -> Vec<(String, String, String)> {
+    /// Each file the assistant changed, as it was and as it is — `None`
+    /// where the story does not have it — leaving out files that are back to
+    /// how they were.
+    fn changed_files(&self) -> Vec<(String, Option<String>, Option<String>)> {
         let Ok(now) = self.state.workspace_snapshot() else {
             return Vec::new();
         };
-        self.assistant
-            .changes
-            .before
+        self.state
+            .assistant_changes
             .iter()
             .filter_map(|(file, before)| {
-                let after = now.files.get(file)?;
-                (before != after).then(|| (file.clone(), before.clone(), after.clone()))
+                let after = now.files.get(file);
+                (before.as_ref() != after).then(|| (file.clone(), before.clone(), after.cloned()))
             })
             .collect()
     }
 
     /// Follows a change to the story: a file put back as it was, by the
-    /// writer or an undo, no longer waits for a decision.
-    pub(in crate::ui) fn refresh_changes(&mut self) {
-        if self.assistant.changes.before.is_empty() {
-            self.assistant.changes.differing.clear();
-            return;
-        }
+    /// writer or an undo, no longer waits for a decision. What still waits
+    /// is saved with the project's conversation.
+    pub(in crate::ui) fn refresh_changes(&mut self, cx: &mut Context<Self>) {
         let differing: Vec<String> = self
             .changed_files()
             .into_iter()
             .map(|(file, _, _)| file)
             .collect();
-        self.assistant
-            .changes
-            .before
+        self.state
+            .assistant_changes
             .retain(|file, _| differing.contains(file));
         self.assistant.changes.differing = differing;
+        if self.assistant.changes.saved != self.state.assistant_changes {
+            let undecided = self.state.assistant_changes.clone();
+            match self.assistant.save_undecided(&undecided) {
+                Ok(()) => self.assistant.changes.saved = undecided,
+                Err(message) => self.fail(ErrorCode::AppConversation, message, cx),
+            }
+        }
+    }
+
+    /// Loads what the assistant changed in the open project and nobody has
+    /// decided on, from before Studio last closed.
+    pub(super) fn restore_changes(&mut self, undecided: BTreeMap<String, Option<String>>) {
+        self.assistant.changes = Changes {
+            saved: undecided.clone(),
+            ..Changes::default()
+        };
+        self.state.assistant_changes = undecided;
     }
 
     /// Opens the assistant's changes for review in the editor's place,
@@ -152,7 +155,7 @@ impl Studio {
         }
         let texts = self.changed_files();
         if texts.is_empty() {
-            self.refresh_changes();
+            self.refresh_changes(cx);
             return cx.notify();
         }
         let base = match self.state.workspace_snapshot() {
@@ -163,15 +166,23 @@ impl Studio {
         let files: Vec<_> = texts
             .into_iter()
             .map(|(file, before, after)| {
-                let label = format!("The assistant's changes to {file}");
-                let view =
-                    cx.new(|_| DiffView::new(Diff::new(&before, &after), theme).label(label));
+                let label = match (&before, &after) {
+                    (None, _) => format!("{file}, which the assistant created"),
+                    (_, None) => format!("{file}, which the assistant removed"),
+                    _ => format!("The assistant's changes to {file}"),
+                };
+                let existed = before.is_some();
+                let diff = Diff::new(
+                    before.as_deref().unwrap_or_default(),
+                    after.as_deref().unwrap_or_default(),
+                );
+                let view = cx.new(|_| DiffView::new(diff, theme).label(label));
                 cx.subscribe_in(&view, window, |studio, _, event, window, cx| {
                     let DiffViewEvent::Decided { .. } = event;
                     studio.decided(window, cx);
                 })
                 .detach();
-                (file, view)
+                (file, existed, view)
             })
             .collect();
         let first = files[0].0.clone();
@@ -226,7 +237,8 @@ impl Studio {
     /// Ends the open review. `Some(true)` keeps the changes not yet decided
     /// and `Some(false)` undoes them; a change decided one by one keeps its
     /// decision. What is undone, in every file, is one undoable edit, and the
-    /// reviewed files are the writer's again.
+    /// reviewed files are the writer's again. A file the assistant created
+    /// that is left empty is removed, with its last change undone.
     pub(in crate::ui) fn finish_review(
         &mut self,
         all: Option<bool>,
@@ -236,7 +248,7 @@ impl Studio {
             return Ok(());
         };
         let mut texts = BTreeMap::new();
-        for (file, diff) in &review.files {
+        for (file, existed, diff) in &review.files {
             let merged = diff.update(cx, |view, cx| {
                 if let Some(all) = all {
                     let state = if all {
@@ -256,7 +268,8 @@ impl Studio {
                 }
                 view.merged()
             });
-            if review.base.files.get(file) != Some(&merged) {
+            let merged = (*existed || !merged.is_empty()).then_some(merged);
+            if review.base.files.get(file) != merged.as_ref() {
                 texts.insert(file.clone(), merged);
             }
         }
@@ -266,8 +279,8 @@ impl Studio {
                 return Err(format!("{message}; nothing was undone."));
             }
         }
-        for (file, _) in &review.files {
-            self.assistant.changes.before.remove(file);
+        for (file, _, _) in &review.files {
+            self.state.assistant_changes.remove(file);
         }
         self.changed(cx);
         Ok(())
@@ -284,8 +297,8 @@ impl Studio {
             }
             return;
         }
-        self.assistant.changes.before.clear();
-        self.refresh_changes();
+        self.state.assistant_changes.clear();
+        self.refresh_changes(cx);
         cx.notify();
     }
 
@@ -313,7 +326,7 @@ impl Studio {
         if let Err(message) = self.state.set_sources(&base, texts) {
             return self.refuse(format!("{message}; nothing was undone."), cx);
         }
-        self.assistant.changes.before.clear();
+        self.state.assistant_changes.clear();
         self.changed(cx);
     }
 

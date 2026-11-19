@@ -181,6 +181,11 @@ pub struct StoryDocument {
     path: Option<PathBuf>,
     source: String,
     saved_source: String,
+    /// The draft has this file. Only an additional source can lack it: one
+    /// created and not yet saved, then undone, or one the draft removes.
+    exists: bool,
+    /// The file was on disk at the last read or write.
+    on_disk: bool,
 }
 
 impl StoryDocument {
@@ -194,7 +199,23 @@ impl StoryDocument {
             path: Some(canonical),
             saved_source: source.clone(),
             source,
+            exists: true,
+            on_disk: true,
         })
+    }
+
+    /// A file the draft does not have yet, to be written at `path` when the
+    /// draft that gives it text is saved.
+    fn absent(path: PathBuf) -> Self {
+        Self {
+            path: Some(path),
+            ..Self::default()
+        }
+    }
+
+    /// Whether the draft has this file.
+    pub fn exists(&self) -> bool {
+        self.exists
     }
 
     pub fn path(&self) -> Option<&Path> {
@@ -210,19 +231,32 @@ impl StoryDocument {
         &self.saved_source
     }
 
+    /// Gives the draft this text, and so this file.
     pub fn set_source(&mut self, source: String) {
         self.source = source;
+        self.exists = self.path.is_some();
+    }
+
+    /// Takes this file out of the draft; saving removes it from disk.
+    fn remove(&mut self) {
+        self.source.clear();
+        self.exists = false;
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.source != self.saved_source
+        self.exists != self.on_disk || self.source != self.saved_source
     }
 
     /// Validate the exact source snapshot before committing a catalog/source
     /// pair. The catalog transaction serializes cooperating Studio writers.
     pub(crate) fn check_disk(&self) -> Result<(), StoryFileError> {
         let path = self.path.as_deref().ok_or(StoryFileError::Unbound)?;
-        if read(path)? != self.saved_source {
+        let unchanged = if self.on_disk {
+            read(path)? == self.saved_source
+        } else {
+            !path.exists()
+        };
+        if !unchanged {
             return Err(StoryFileError::Conflict {
                 path: path.to_owned(),
             });
@@ -238,18 +272,24 @@ impl StoryDocument {
 
     /// A clean editor incorporates external edits; a dirty one must still
     /// match its last disk snapshot before replacing the file.
+    /// A file the draft creates is written new and one it removes is
+    /// deleted, each only while the disk still matches the last snapshot.
     pub fn save(&mut self) -> Result<(), StoryFileError> {
         let path = self.path.as_deref().ok_or(StoryFileError::Unbound)?;
         if !self.is_dirty() {
-            return self.reload();
+            return if self.on_disk { self.reload() } else { Ok(()) };
         }
-        if read(path)? != self.saved_source {
-            return Err(StoryFileError::Conflict {
+        self.check_disk()?;
+        match (self.exists, self.on_disk) {
+            (true, true) => replace(path, &self.source, &self.saved_source)?,
+            (true, false) => write_new(path, &self.source)?,
+            (false, _) => fs::remove_file(path).map_err(|source| StoryFileError::Write {
                 path: path.to_owned(),
-            });
+                source,
+            })?,
         }
-        replace(path, &self.source, &self.saved_source)?;
         self.saved_source.clone_from(&self.source);
+        self.on_disk = self.exists;
         Ok(())
     }
 
@@ -259,6 +299,8 @@ impl StoryDocument {
         let source = read(path)?;
         self.saved_source.clone_from(&source);
         self.source = source;
+        self.exists = true;
+        self.on_disk = true;
         Ok(())
     }
 }
@@ -295,26 +337,26 @@ impl AdditionalSources {
                 .documents
                 .get_mut(relative)
                 .ok_or(StoryFileError::Unbound)?;
+            if !document.exists() {
+                return Err(StoryFileError::Read {
+                    path: relative.into(),
+                    source: io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "This file is not in the draft",
+                    ),
+                });
+            }
             if !document.is_dirty() {
                 document.reload()?;
             }
             return Ok(document);
         }
-        use std::path::Component;
-        let path = Path::new(relative);
-        if relative.is_empty()
-            || !path.components().all(|c| matches!(c, Component::Normal(_)))
-            || path.extension().is_none_or(|ext| ext != "sf")
-        {
-            return Err(StoryFileError::Read {
-                path: path.to_owned(),
-                source: io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Enter a project-relative .sf path",
-                ),
-            });
-        }
-        let candidate = self.root.join(path);
+        let candidate = self
+            .candidate(relative)
+            .map_err(|source| StoryFileError::Read {
+                path: relative.into(),
+                source,
+            })?;
         let canonical = candidate
             .canonicalize()
             .map_err(|source| StoryFileError::Read {
@@ -348,8 +390,73 @@ impl AdditionalSources {
         Ok(&self.documents[relative])
     }
 
+    /// `relative` resolved under the root, once it names a `.sf` file
+    /// there by a plain relative path.
+    fn candidate(&self, relative: &str) -> io::Result<PathBuf> {
+        use std::path::Component;
+        let path = Path::new(relative);
+        if relative.is_empty()
+            || !path.components().all(|c| matches!(c, Component::Normal(_)))
+            || path.extension().is_none_or(|ext| ext != "sf")
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Enter a project-relative .sf path",
+            ));
+        }
+        Ok(self.root.join(path))
+    }
+
+    /// The file at `relative`, while the draft has it.
     pub fn get(&self, relative: &str) -> Option<&StoryDocument> {
-        self.documents.get(relative)
+        self.documents
+            .get(relative)
+            .filter(|document| document.exists())
+    }
+
+    /// Whether this holds `relative` at all, as a file the draft has or one
+    /// it created or removed.
+    pub fn tracks(&self, relative: &str) -> bool {
+        self.documents.contains_key(relative)
+    }
+
+    /// Adds `relative`, which is on no disk yet, as a file the draft does not
+    /// have; giving it text creates it, and saving writes it.
+    pub fn add_absent(&mut self, relative: &str) -> Result<(), StoryFileError> {
+        let fail = |message: &str| StoryFileError::Write {
+            path: relative.into(),
+            source: io::Error::new(io::ErrorKind::InvalidInput, message.to_owned()),
+        };
+        if self.documents.contains_key(relative) {
+            return Err(fail("This file is already part of the story"));
+        }
+        if !storyfella_language::valid_source_path(relative) {
+            return Err(fail("Source path contains unsupported characters"));
+        }
+        let candidate = self
+            .candidate(relative)
+            .map_err(|source| StoryFileError::Write {
+                path: relative.into(),
+                source,
+            })?;
+        let parent = candidate
+            .parent()
+            .ok_or_else(|| fail("Choose a folder inside this project"))?
+            .canonicalize()
+            .map_err(|source| StoryFileError::Write {
+                path: candidate.clone(),
+                source,
+            })?;
+        if !parent.starts_with(&self.root) {
+            return Err(fail("Choose a folder inside this project"));
+        }
+        let path = parent.join(candidate.file_name().ok_or_else(|| fail("Name the file"))?);
+        if fs::symlink_metadata(&path).is_ok() {
+            return Err(fail("A file with this name already exists"));
+        }
+        self.documents
+            .insert(relative.to_owned(), StoryDocument::absent(path));
+        Ok(())
     }
 
     /// Create an empty source without replacing any existing file.
@@ -394,6 +501,8 @@ impl AdditionalSources {
         Ok(relative)
     }
 
+    /// Gives `relative` this text in the draft, creating it if the draft
+    /// did not have it.
     pub fn set_source(&mut self, relative: &str, source: String) -> Result<(), StoryFileError> {
         self.documents
             .get_mut(relative)
@@ -402,10 +511,26 @@ impl AdditionalSources {
         Ok(())
     }
 
-    pub fn drafts(&self) -> BTreeMap<String, String> {
+    /// Takes `relative` out of the draft. Saving deletes it from disk.
+    pub fn remove(&mut self, relative: &str) -> Result<(), StoryFileError> {
+        self.documents
+            .get_mut(relative)
+            .ok_or(StoryFileError::Unbound)?
+            .remove();
+        Ok(())
+    }
+
+    /// Every file this holds, with its text, or `None` when the draft does
+    /// not have it.
+    pub fn drafts(&self) -> BTreeMap<String, Option<String>> {
         self.documents
             .iter()
-            .map(|(path, document)| (path.clone(), document.source().to_owned()))
+            .map(|(path, document)| {
+                (
+                    path.clone(),
+                    document.exists().then(|| document.source().to_owned()),
+                )
+            })
             .collect()
     }
 
@@ -413,17 +538,21 @@ impl AdditionalSources {
     pub fn overrides(&self) -> BTreeMap<String, String> {
         self.documents
             .iter()
-            .filter(|(_, document)| document.is_dirty())
+            .filter(|(_, document)| document.exists() && document.is_dirty())
             .map(|(path, document)| (path.clone(), document.source().to_owned()))
             .collect()
     }
 
-    /// Restore editor text without replacing the disk baselines used for
-    /// conflict detection. Files opened after the snapshot stay unchanged.
-    pub fn restore_drafts(&mut self, drafts: &BTreeMap<String, String>) {
+    /// Restore editor text, and which files the draft has, without replacing
+    /// the disk baselines used for conflict detection. Files opened after the
+    /// snapshot stay unchanged.
+    pub fn restore_drafts(&mut self, drafts: &BTreeMap<String, Option<String>>) {
         for (path, source) in drafts {
             if let Some(document) = self.documents.get_mut(path) {
-                document.set_source(source.clone());
+                match source {
+                    Some(source) => document.set_source(source.clone()),
+                    None => document.remove(),
+                }
             }
         }
     }

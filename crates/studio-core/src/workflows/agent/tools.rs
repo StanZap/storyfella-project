@@ -1,5 +1,5 @@
 //! The tools the assistant works with: look over the story, read a file, make
-//! an exact edit, write or create a file, and move a scene. Every change goes
+//! an exact edit, write or create a file, move a scene, and rename one. Every change goes
 //! to the writer's draft at once, is held to the request's scope, and answers
 //! with what the compiler now says about the whole story.
 use std::{
@@ -243,9 +243,37 @@ impl StoryTools {
                 let report = self.write(&mut state, workspace, texts).await?;
                 Ok(format!("Moved scene {scene} to {to}. {report}"))
             }
+            "rename_scene" => {
+                let RenameScene { scene, to } = arguments_of(arguments)?;
+                self.status(format!("Renaming scene {scene} to {to}"));
+                if !state.scope.is_project() {
+                    return Err(format!(
+                        "Renaming a scene is outside the scope. {}",
+                        describe_scope(&state.scope, &workspace)
+                    )
+                    .into());
+                }
+                self.draft
+                    .rename_scene(workspace.clone(), scene.clone(), to.clone())
+                    .await
+                    .map_err(Refused)?;
+                let renamed = self.draft.workspace().await.map_err(Refused)?;
+                let texts: BTreeMap<String, String> = renamed
+                    .files
+                    .iter()
+                    .filter(|(path, text)| workspace.files.get(*path) != Some(*text))
+                    .map(|(path, text)| (path.clone(), text.clone()))
+                    .collect();
+                let files: Vec<&str> = texts.keys().map(String::as_str).collect();
+                let report = self.applied(&mut state, workspace, texts.clone());
+                Ok(format!(
+                    "Renamed scene {scene} to {to} in {}. {report}",
+                    files.join(", ")
+                ))
+            }
             other => Err(format!(
                 "There is no tool named {other}. The tools are outline, read_file, edit_file, \
-                 write_file and move_scene."
+                 write_file, move_scene and rename_scene."
             )
             .into()),
         }
@@ -256,13 +284,23 @@ impl StoryTools {
     async fn write(
         &self,
         state: &mut State,
-        mut workspace: SourceWorkspace,
+        workspace: SourceWorkspace,
         texts: BTreeMap<String, String>,
     ) -> Result<String, Refused> {
         self.draft
             .write(workspace.clone(), texts.clone())
             .await
             .map_err(|error| format!("{error} Read the file again before editing it."))?;
+        Ok(self.applied(state, workspace, texts))
+    }
+
+    /// Follows `texts`, now in the draft, and checks the story with them.
+    fn applied(
+        &self,
+        state: &mut State,
+        mut workspace: SourceWorkspace,
+        texts: BTreeMap<String, String>,
+    ) -> String {
         for (path, text) in texts {
             if let Some(old) = workspace.files.get(&path) {
                 state.scope.follow(&path, old, &text);
@@ -275,7 +313,7 @@ impl StoryTools {
         }
         let found = check::problems(&workspace, &AssetCatalog::from_registry(&self.registry));
         self.detail(check::summary(&found));
-        Ok(check::report(&workspace, &found, &state.before))
+        check::report(&workspace, &found, &state.before)
     }
 }
 
@@ -335,6 +373,13 @@ struct WriteFile {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MoveScene {
+    scene: String,
+    to: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RenameScene {
     scene: String,
     to: String,
 }
@@ -399,6 +444,15 @@ fn definitions() -> Vec<ToolDefinition> {
             json!({"type": "object", "properties": {
                 "scene": {"type": "string", "description": "The scene's name"},
                 "to": path
+            }, "required": ["scene", "to"], "additionalProperties": false}),
+        ),
+        tool(
+            "rename_scene",
+            "Rename a scene everywhere: its declaration and every goto and option that names it, in every file. Use this rather than editing each place. The story must have no errors. Returns what the compiler says about the whole story.",
+            ToolRisk::Mutating,
+            json!({"type": "object", "properties": {
+                "scene": {"type": "string", "description": "The scene's name now"},
+                "to": {"type": "string", "description": "Its new name"}
             }, "required": ["scene", "to"], "additionalProperties": false}),
         ),
     ]

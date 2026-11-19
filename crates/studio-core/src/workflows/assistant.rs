@@ -113,6 +113,10 @@ impl Conversation {
     }
 }
 
+/// Files the assistant changed and the writer has not decided on, each as it
+/// was before the assistant's first change: `None` for a file it created.
+pub type Undecided = std::collections::BTreeMap<String, Option<String>>;
+
 impl RunStore {
     /// The conversation saved for `project`, empty when there is none.
     pub fn conversation(&self, project: &Path) -> Result<Conversation> {
@@ -143,11 +147,61 @@ impl RunStore {
         )?;
         Ok(())
     }
+
+    /// Each file the assistant changed in `project` that the writer has not
+    /// decided on, as it was before: `None` for a file it created.
+    pub fn undecided(&self, project: &Path) -> Result<Undecided> {
+        let saved: Option<String> = self
+            .0
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT files FROM assistant_undecided WHERE project = ?1",
+                params![project.to_string_lossy()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(match saved {
+            Some(saved) => serde_json::from_str(&saved)?,
+            None => Undecided::new(),
+        })
+    }
+
+    pub fn save_undecided(&self, project: &Path, files: &Undecided) -> Result<()> {
+        self.0.lock().unwrap().execute(
+            "INSERT INTO assistant_undecided (project, files) VALUES (?1, ?2)
+             ON CONFLICT(project) DO UPDATE SET files = excluded.files",
+            params![project.to_string_lossy(), serde_json::to_string(files)?],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn undecided_changes_survive_reopening_the_store() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("story.workflows.sqlite3");
+        let project = directory.path().join("story.db");
+        let store = RunStore::open(&path).unwrap();
+        assert!(store.undecided(&project).unwrap().is_empty());
+        let files = Undecided::from([
+            (
+                "story.sf".to_owned(),
+                Some("scene harbor\n  end\n".to_owned()),
+            ),
+            ("coda.sf".to_owned(), None),
+        ]);
+        store.save_undecided(&project, &files).unwrap();
+        drop(store);
+        let store = RunStore::open(&path).unwrap();
+        assert_eq!(store.undecided(&project).unwrap(), files);
+        store.save_undecided(&project, &Undecided::new()).unwrap();
+        assert!(store.undecided(&project).unwrap().is_empty());
+    }
 
     #[test]
     fn a_conversation_survives_reopening_and_an_unfinished_reply_is_interrupted() {

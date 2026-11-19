@@ -27,13 +27,13 @@ meets its acceptance criteria.
     by default) is enforced by the tools, and the editor location is always
     sent. Steps per request is set in Settings; a reply that used them all
     offers Continue. Live MCP runs the same agent.
-  - [ ] Undoing a file the assistant created removes the file, not only its
-    text and `include`.
-  - [ ] A `rename_scene` tool that renames a scene and every `goto` and
-    `option` naming it, and "did you mean" suggestions in the compiler's
-    unknown-scene errors.
-  - [ ] Keep or undo live MCP's assistant edits in Studio's review, and keep
-    undecided changes across restarts.
+  - [x] A file the story gains or loses is part of the draft until saved, so
+    undoing a file the assistant created removes it. Live MCP's assistant
+    edits wait in Studio's review, and undecided changes are kept with the
+    project. A `rename_scene` tool renames a scene in every file through the
+    editor's rename, and unknown scenes and flags suggest the nearest name.
+  - [ ] Review only the assistant's part of a file the writer also edited
+    since, rather than both edits against the file before the assistant.
   - [ ] Context size before sending and live token use, from typed usage and
     each deployment's context window in Agentkit.
   - [ ] Atelier's tools in the assistant while Atelier runs.

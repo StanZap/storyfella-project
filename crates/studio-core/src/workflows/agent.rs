@@ -53,6 +53,20 @@ pub trait StoryDraft: Send + Sync {
         base: SourceWorkspace,
         texts: BTreeMap<String, String>,
     ) -> Result<(), String>;
+
+    /// Renames `scene` to `to` everywhere the story names it, as one change,
+    /// keeping whatever the host ties to the scene — its artwork — with it.
+    /// The story must still be as it is in `base`. A draft that cannot do this
+    /// says so.
+    async fn rename_scene(
+        &self,
+        base: SourceWorkspace,
+        scene: String,
+        to: String,
+    ) -> Result<(), String> {
+        let _ = (base, scene, to);
+        Err("This story cannot rename scenes; edit each place that names it.".into())
+    }
 }
 
 /// Where the writer is in the editor, so that "this beat" or "the selection"

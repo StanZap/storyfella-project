@@ -172,6 +172,43 @@ pub enum DraftCall {
         texts: BTreeMap<String, String>,
         done: oneshot::Sender<Result<(), String>>,
     },
+    /// Rename a scene everywhere, the story still as in `base`, as one
+    /// undoable change.
+    RenameScene {
+        base: SourceWorkspace,
+        scene: String,
+        to: String,
+        done: oneshot::Sender<Result<(), String>>,
+    },
+}
+
+impl DraftCall {
+    /// Answers the call from Studio's draft, and says whether it changed.
+    pub fn answer(self, state: &mut AppState) -> bool {
+        match self {
+            Self::Workspace(reply) => {
+                let _ = reply.send(state.workspace_snapshot());
+                false
+            }
+            Self::Write { base, texts, done } => {
+                let written = state.assistant_write(&base, texts);
+                let changed = written.is_ok();
+                let _ = done.send(written);
+                changed
+            }
+            Self::RenameScene {
+                base,
+                scene,
+                to,
+                done,
+            } => {
+                let renamed = state.assistant_rename_scene(&base, &scene, &to);
+                let changed = renamed.is_ok();
+                let _ = done.send(renamed);
+                changed
+            }
+        }
+    }
 }
 
 /// Everything a running request sends the UI thread, in the order it
@@ -204,6 +241,24 @@ impl StoryDraft for Bridge {
         let (done, receive) = oneshot::channel();
         self.0
             .send(Heard::Draft(DraftCall::Write { base, texts, done }))
+            .map_err(|_| CLOSED.to_owned())?;
+        receive.await.map_err(|_| CLOSED.to_owned())?
+    }
+
+    async fn rename_scene(
+        &self,
+        base: SourceWorkspace,
+        scene: String,
+        to: String,
+    ) -> Result<(), String> {
+        let (done, receive) = oneshot::channel();
+        self.0
+            .send(Heard::Draft(DraftCall::RenameScene {
+                base,
+                scene,
+                to,
+                done,
+            }))
             .map_err(|_| CLOSED.to_owned())?;
         receive.await.map_err(|_| CLOSED.to_owned())?
     }

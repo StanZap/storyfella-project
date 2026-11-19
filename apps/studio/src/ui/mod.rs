@@ -468,7 +468,7 @@ impl Studio {
             self.autosave_now(cx);
         }
         self.follow_project_in_assistant(cx);
-        self.refresh_changes();
+        self.refresh_changes(cx);
         self.write.story_changed();
         self.board.story_changed();
         self.follow_caret(true, cx);

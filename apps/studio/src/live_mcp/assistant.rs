@@ -1,7 +1,8 @@
 //! Nonblocking, connection-scoped assistant jobs for the live Studio owner.
 //! A job runs the same story agent as the assistant column, on its own
 //! thread; its reads and edits of the story come back here and are applied
-//! to Studio's draft, each edit one undoable change.
+//! to Studio's draft, each edit one undoable change, and wait in Studio's
+//! review like the column's own.
 use super::{owned, owner, Grant, StateOwner};
 use serde_json::json;
 use std::{
@@ -155,19 +156,10 @@ impl Jobs {
     }
 }
 
-/// Answers a running job's call on the story from Studio's draft.
+/// Answers a running job's call on the story from Studio's draft. Once
+/// Studio has closed the call goes unanswered, which the job reports.
 async fn serve(state: &impl StateOwner, call: DraftCall) {
-    const CLOSED: &str = "Studio closed. Open the project in Studio and reconnect.";
-    match call {
-        DraftCall::Workspace(reply) => {
-            let workspace = state.with(|app| app.workspace_snapshot()).await;
-            let _ = reply.send(workspace.unwrap_or_else(|| Err(CLOSED.into())));
-        }
-        DraftCall::Write { base, texts, done } => {
-            let written = state.with(move |app| app.set_sources(&base, texts)).await;
-            let _ = done.send(written.unwrap_or_else(|| Err(CLOSED.into())));
-        }
-    }
+    state.with(move |app| call.answer(app)).await;
 }
 
 #[cfg(test)]
@@ -264,6 +256,14 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         assert!(state.borrow().story.source().contains("new"));
+        assert_eq!(
+            state.borrow().assistant_changes,
+            std::collections::BTreeMap::from([(
+                "story.sf".to_owned(),
+                Some("scene harbor\n  narrate: old\n  end\n".to_owned())
+            )]),
+            "the edit waits for a decision in Studio"
+        );
         assert!(state.borrow_mut().undo());
         assert!(state.borrow().story.source().contains("old"));
     }

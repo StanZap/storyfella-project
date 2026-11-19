@@ -7,7 +7,7 @@
 //! A request that runs out of steps says what is left and offers to
 //! continue.
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     path::PathBuf,
     sync::{atomic::AtomicBool, Arc},
     time::{Duration, Instant},
@@ -148,6 +148,20 @@ impl Assistant {
             .and_then(|store| store.save_conversation(project, &self.conversation))
             .map_err(|error| format!("Could not save the conversation: {error}"))
     }
+
+    /// Saves the assistant's changes nobody has decided on, so the bar and
+    /// review outlive Studio.
+    pub(super) fn save_undecided(
+        &self,
+        undecided: &BTreeMap<String, Option<String>>,
+    ) -> Result<(), String> {
+        let Some(project) = &self.owner else {
+            return Ok(());
+        };
+        RunStore::open(&project.with_extension("workflows.sqlite3"))
+            .and_then(|store| store.save_undecided(project, undecided))
+            .map_err(|error| format!("Could not save the assistant's changes: {error}"))
+    }
 }
 
 /// Lines a change adds and removes.
@@ -174,18 +188,22 @@ impl Studio {
                 .cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
-        self.assistant.changes = Changes::default();
         self.assistant.streamed.clear();
         self.assistant.open_activity.clear();
-        self.assistant.conversation = match &project {
-            Some(project) => RunStore::open(&project.with_extension("workflows.sqlite3"))
-                .and_then(|store| store.conversation(project))
-                .unwrap_or_else(|error| {
-                    self.fail(ErrorCode::AppConversation, error.to_string(), cx);
-                    Conversation::default()
-                }),
-            None => Conversation::default(),
+        let saved = project.as_ref().map(|project| {
+            RunStore::open(&project.with_extension("workflows.sqlite3"))
+                .and_then(|store| Ok((store.conversation(project)?, store.undecided(project)?)))
+        });
+        let (conversation, undecided) = match saved {
+            Some(Ok(saved)) => saved,
+            Some(Err(error)) => {
+                self.fail(ErrorCode::AppConversation, error.to_string(), cx);
+                Default::default()
+            }
+            None => Default::default(),
         };
+        self.assistant.conversation = conversation;
+        self.restore_changes(undecided);
         self.assistant.owner = project;
         self.assistant
             .transcript

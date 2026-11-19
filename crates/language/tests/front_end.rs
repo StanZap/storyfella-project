@@ -313,3 +313,32 @@ fn tokens_cover_arbitrary_utf8_without_gaps() {
         );
     }
 }
+
+#[test]
+fn an_unknown_scene_names_the_one_it_was_probably_meant_to_be() {
+    let message = |source: &str| {
+        analyze(source, &[])
+            .diagnostics
+            .into_iter()
+            .find(|d| d.code == "SF202")
+            .map(|d| d.message)
+    };
+    assert_eq!(
+        message("scene harbor\n  goto harbour\nscene market\n  end\n").as_deref(),
+        Some("Unknown scene 'harbour'; did you mean 'harbor'?")
+    );
+    assert_eq!(
+        message("scene harbor\n  goto Market\nscene market\n  end\n").as_deref(),
+        Some("Unknown scene 'Market'; did you mean 'market'?")
+    );
+    assert_eq!(
+        message("scene harbor\n  goto lighthouse\nscene market\n  end\n").as_deref(),
+        Some("Unknown scene 'lighthouse'"),
+        "nothing close enough is suggested"
+    );
+    assert_eq!(
+        message("scene cat\n  goto bat\nscene hat\n  end\n").as_deref(),
+        Some("Unknown scene 'bat'"),
+        "two names equally close are not guessed between"
+    );
+}
