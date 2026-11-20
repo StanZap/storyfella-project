@@ -29,10 +29,16 @@ in SF-PLAN-28.
 
 Write docks the assistant on its right; dragging the dividers resizes it
 and the file list, for as long as Studio runs, and double-clicking one
-restores its width. A project has one conversation, kept in the story's
-`workflows.sqlite3` beside `story.db` and reloaded when the story opens. New
-conversation, in the column's header, clears it; it is unavailable while a
-reply runs. A turn is a request and its reply; a reply lists the steps the
+restores its width. A project keeps any number of conversations in the
+story's `workflows.sqlite3` beside `story.db`; the newest shows when the story
+opens. The header's sidebar button shows or hides the list of them beside the
+transcript — a column that resizes like the others — grouped by how recently
+each changed. Choosing one shows it; its menu renames or deletes it, and Clear
+history deletes them all, each after asking. Deleting never touches the story.
+New conversation starts an empty one, named by its first request; the title in
+the header renames it. One reply runs at a time: it keeps writing into its own
+conversation while another is shown, and its row shows a dot. A turn is a
+request and its reply; a reply lists the steps the
 agent took and ends in one outcome: done, stopped, failed, or interrupted
 (Studio closed while it ran).
 

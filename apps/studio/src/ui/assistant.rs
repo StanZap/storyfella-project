@@ -1,5 +1,6 @@
-//! The assistant column docked at Write's right: the project's saved
-//! conversation, and a prompt that asks the story agent for a change. The
+//! The assistant column docked at Write's right: the conversation shown, the
+//! project's saved [`conversations`] beside it, and a prompt that asks the
+//! story agent for a change. The
 //! agent edits the story as it works — each edit lands in the editor as one
 //! undoable change — and what it changed waits in [`changes`] for the writer
 //! to keep or undo, change by change.
@@ -21,8 +22,8 @@ use design_system::{
         },
         code::{Diff, LineKind},
     },
-    ButtonKind, Glyph, Menu, MenuButton, MenuItem, PromptBar, TextArea, TextAreaEvent, Theme,
-    TypeScale, Typography,
+    ButtonKind, Glyph, InlineEdit, InlineEditEvent, Menu, MenuButton, MenuItem, PromptBar,
+    SplitSide, SplitState, SplitView, TextArea, TextAreaEvent, Theme, TypeScale, Typography,
 };
 use gpui_kit::{prelude::*, *};
 use storyfella_studio_core::{
@@ -38,12 +39,18 @@ use storyfella_studio_core::{
 use super::Studio;
 use crate::assistant::{self, Engine, Heard, Request, Scope};
 pub(super) use changes::Changes;
+use conversations::Confirm;
 
 mod changes;
+mod conversations;
 
 pub(super) struct Assistant {
-    conversation: Conversation,
-    /// The project the conversation belongs to.
+    /// The project's conversations, newest first. The one shown may be a
+    /// new conversation not saved yet; there is always one.
+    conversations: Vec<Conversation>,
+    /// The id of the conversation shown.
+    current: String,
+    /// The project the conversations belong to.
     owner: Option<PathBuf>,
     transcript: TranscriptState,
     pub(super) prompt: Entity<TextArea>,
@@ -61,12 +68,24 @@ pub(super) struct Assistant {
     /// Why the last request could not be sent, shown under the prompt.
     pub(super) notice: Option<String>,
     open_activity: HashSet<usize>,
+    /// The shown conversation's title, in the column's header.
+    title: Entity<InlineEdit>,
+    /// Whether the saved conversations show beside the transcript.
+    pub(super) conversations_open: bool,
+    conversations_split: SplitState,
+    /// The listed conversation whose menu is open, and where.
+    menu: Option<(usize, Point<Pixels>)>,
+    /// The last question asked, kept while its dialog fades out.
+    confirm: Option<Confirm>,
+    confirm_open: bool,
     /// Stands in for the Settings provider in tests.
     #[cfg(test)]
     pub(super) model: Option<storyfella_studio_core::workflows::framework::SharedStreamingModel>,
 }
 
 struct Running {
+    /// The conversation it answers in, which need not be the one shown.
+    conversation: String,
     cancel: Cancellation,
     step_started: Instant,
     /// The story when the request was sent, to count what it changed.
@@ -82,6 +101,13 @@ impl Assistant {
     /// A reply is being written.
     pub(super) fn is_running(&self) -> bool {
         self.running.is_some()
+    }
+
+    /// A reply is being written in the conversation `id`.
+    fn running_in(&self, id: &str) -> bool {
+        self.running
+            .as_ref()
+            .is_some_and(|running| running.conversation == id)
     }
 
     pub(super) fn new(theme: Theme, window: &mut Window, cx: &mut Context<Studio>) -> Self {
@@ -103,8 +129,24 @@ impl Assistant {
             },
         )
         .detach();
+        let conversation = Conversation::new();
+        let title = cx.new(|cx| {
+            InlineEdit::new(
+                conversation.title.clone(),
+                "Conversation title",
+                theme,
+                window,
+                cx,
+            )
+        });
+        cx.subscribe(&title, |studio, _, event: &InlineEditEvent, cx| {
+            let InlineEditEvent::Committed(text) = event;
+            studio.rename_conversation(text.to_string(), cx);
+        })
+        .detach();
         Self {
-            conversation: Conversation::default(),
+            current: conversation.id.clone(),
+            conversations: vec![conversation],
             owner: None,
             transcript: TranscriptState::new(0),
             prompt,
@@ -117,6 +159,12 @@ impl Assistant {
             changes: Changes::default(),
             notice: None,
             open_activity: HashSet::new(),
+            title,
+            conversations_open: false,
+            conversations_split: SplitState::new(px(180.)).limits(px(140.), px(360.)),
+            menu: None,
+            confirm: None,
+            confirm_open: false,
             #[cfg(test)]
             model: None,
         }
@@ -125,27 +173,68 @@ impl Assistant {
     pub(super) fn set_theme(&mut self, theme: Theme, cx: &mut Context<Studio>) {
         self.prompt
             .update(cx, |prompt, cx| prompt.set_theme(theme, cx));
+        self.title
+            .update(cx, |title, cx| title.set_theme(theme, cx));
         self.changes.set_theme(theme, cx);
     }
 
-    #[cfg(test)]
-    pub(super) fn conversation(&self) -> &Conversation {
-        &self.conversation
+    /// The conversation shown.
+    pub(super) fn current(&self) -> &Conversation {
+        self.conversations
+            .iter()
+            .find(|conversation| conversation.id == self.current)
+            .expect("the shown conversation is listed")
     }
 
-    fn answer_mut(&mut self, turn: usize) -> Option<&mut Answer> {
-        match self.conversation.turns.get_mut(turn) {
+    fn current_mut(&mut self) -> &mut Conversation {
+        let id = self.current.clone();
+        self.conversation_mut(&id)
+            .expect("the shown conversation is listed")
+    }
+
+    fn conversation_mut(&mut self, id: &str) -> Option<&mut Conversation> {
+        self.conversations
+            .iter_mut()
+            .find(|conversation| conversation.id == id)
+    }
+
+    #[cfg(test)]
+    pub(super) fn conversations(&self) -> &[Conversation] {
+        &self.conversations
+    }
+
+    /// The reply at `turn` of the conversation `id`.
+    fn answer_mut(&mut self, id: &str, turn: usize) -> Option<&mut Answer> {
+        match self.conversation_mut(id)?.turns.get_mut(turn) {
             Some(Turn::Answered(answer)) => Some(answer),
             _ => None,
         }
     }
 
-    fn save(&self) -> Result<(), String> {
-        let Some(project) = &self.owner else {
+    /// The project's run store and the project, when a project is open.
+    fn store(&self) -> Option<anyhow::Result<(RunStore, PathBuf)>> {
+        let project = self.owner.clone()?;
+        Some(
+            RunStore::open(&project.with_extension("workflows.sqlite3"))
+                .map(|store| (store, project)),
+        )
+    }
+
+    /// Saves the conversation `id`; a new one is saved once it has a
+    /// question.
+    fn save(&self, id: &str) -> Result<(), String> {
+        let Some(conversation) = self
+            .conversations
+            .iter()
+            .find(|conversation| conversation.id == id && !conversation.turns.is_empty())
+        else {
             return Ok(());
         };
-        RunStore::open(&project.with_extension("workflows.sqlite3"))
-            .and_then(|store| store.save_conversation(project, &self.conversation))
+        let Some(store) = self.store() else {
+            return Ok(());
+        };
+        store
+            .and_then(|(store, project)| store.save_conversation(&project, conversation))
             .map_err(|error| format!("Could not save the conversation: {error}"))
     }
 
@@ -176,8 +265,9 @@ fn line_counts(diff: &Diff) -> (usize, usize) {
 }
 
 impl Studio {
-    /// Loads the open project's conversation when the project changes. What
-    /// the assistant changed in the last project is the writer's now.
+    /// Loads the open project's conversations when the project changes and
+    /// shows the newest. What the assistant changed in the last project is
+    /// the writer's now.
     pub(super) fn follow_project_in_assistant(&mut self, cx: &mut Context<Self>) {
         let project = self.state.project_path.clone();
         if project == self.assistant.owner {
@@ -192,9 +282,9 @@ impl Studio {
         self.assistant.open_activity.clear();
         let saved = project.as_ref().map(|project| {
             RunStore::open(&project.with_extension("workflows.sqlite3"))
-                .and_then(|store| Ok((store.conversation(project)?, store.undecided(project)?)))
+                .and_then(|store| Ok((store.conversations(project)?, store.undecided(project)?)))
         });
-        let (conversation, undecided) = match saved {
+        let (conversations, undecided) = match saved {
             Some(Ok(saved)) => saved,
             Some(Err(error)) => {
                 self.fail(ErrorCode::AppConversation, error.to_string(), cx);
@@ -202,12 +292,10 @@ impl Studio {
             }
             None => Default::default(),
         };
-        self.assistant.conversation = conversation;
         self.restore_changes(undecided);
         self.assistant.owner = project;
-        self.assistant
-            .transcript
-            .reset(self.assistant.conversation.turns.len());
+        self.assistant.conversations = conversations;
+        self.show_newest(cx);
     }
 
     fn engine(&self) -> Result<Engine, String> {
@@ -263,10 +351,11 @@ impl Studio {
         if self.assistant.is_running() {
             return;
         }
+        let turns = &self.assistant.current().turns;
         let Some((Turn::Asked(asked), Turn::Answered(answer))) = turn
             .checked_sub(1)
-            .and_then(|asked| self.assistant.conversation.turns.get(asked))
-            .zip(self.assistant.conversation.turns.get(turn))
+            .and_then(|asked| turns.get(asked))
+            .zip(turns.get(turn))
         else {
             return;
         };
@@ -289,16 +378,18 @@ impl Studio {
         self.send("Continue".into(), request, engine, cx);
     }
 
-    /// Records the request in the conversation and runs it.
+    /// Records the request in the shown conversation and runs it.
     fn send(&mut self, text: String, request: Request, engine: Engine, cx: &mut Context<Self>) {
-        let turns = &mut self.assistant.conversation.turns;
-        turns.push(Turn::Asked(Asked {
+        let conversation = self.assistant.current_mut();
+        let turn = conversation.ask(Asked {
             text,
             scope: request.describe,
             place: request.place,
-        }));
-        turns.push(Turn::Answered(Answer::default()));
-        let turn = turns.len() - 1;
+        });
+        let title = conversation.title.clone();
+        self.assistant
+            .title
+            .update(cx, |field, cx| field.set_value(title, cx));
         self.assistant.transcript.push(2);
         self.assistant.transcript.scroll_to_end();
         self.assistant.streamed.clear();
@@ -310,7 +401,7 @@ impl Studio {
     pub(super) fn retry(&mut self, turn: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(Turn::Asked(asked)) = turn
             .checked_sub(1)
-            .and_then(|asked| self.assistant.conversation.turns.get(asked))
+            .and_then(|asked| self.assistant.current().turns.get(asked))
         else {
             return;
         };
@@ -341,6 +432,7 @@ impl Studio {
             Ok(workspace) => workspace,
             Err(message) => return self.refuse(message, cx),
         };
+        let conversation = self.assistant.current.clone();
         let cancel: Cancellation = Arc::new(AtomicBool::new(false));
         let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
         let worker = assistant::spawn(
@@ -370,11 +462,12 @@ impl Studio {
             this.update(cx, |studio, cx| studio.answered(turn, result, cx))
                 .ok();
         });
+        let shown = conversation.clone();
         let tick = cx.spawn(
             async move |this: WeakEntity<Self>, cx: &mut AsyncApp| loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 let alive = this.update(cx, |studio, cx| {
-                    studio.assistant.transcript.changed(turn);
+                    studio.assistant_changed(&shown, turn);
                     cx.notify();
                 });
                 if alive.is_err() {
@@ -383,6 +476,7 @@ impl Studio {
             },
         );
         self.assistant.running = Some(Running {
+            conversation: conversation.clone(),
             cancel,
             step_started: Instant::now(),
             started_with,
@@ -390,8 +484,16 @@ impl Studio {
             _task: task,
             _tick: tick,
         });
-        self.save_conversation(cx);
+        self.save_conversation(&conversation, cx);
         cx.notify();
+    }
+
+    /// The reply at `turn` of the conversation `id` changed size, which
+    /// matters only while it shows.
+    fn assistant_changed(&self, id: &str, turn: usize) {
+        if self.assistant.current == id {
+            self.assistant.transcript.changed(turn);
+        }
     }
 
     /// Progress from the agent, or its call on the story.
@@ -400,16 +502,15 @@ impl Studio {
             Heard::Draft(call) => return self.draft_call(call, cx),
             Heard::Feedback(event) => event,
         };
+        let Some(running) = &self.assistant.running else {
+            return;
+        };
+        let (id, started) = (running.conversation.clone(), running.step_started);
         let now = Instant::now();
-        let started = self
-            .assistant
-            .running
-            .as_ref()
-            .map_or(now, |running| running.step_started);
         let streamed = streamed_detail(&self.assistant.streamed, self.assistant.reasoned, false);
         match event {
             Feedback::Status(label) => {
-                if let Some(answer) = self.assistant.answer_mut(turn) {
+                if let Some(answer) = self.assistant.answer_mut(&id, turn) {
                     close_step(answer, now.duration_since(started), streamed);
                     answer.steps.push(Step {
                         label: label.trim_end_matches('…').to_owned(),
@@ -426,7 +527,7 @@ impl Studio {
             Feedback::Detail(detail) => {
                 if let Some(step) = self
                     .assistant
-                    .answer_mut(turn)
+                    .answer_mut(&id, turn)
                     .and_then(|answer| answer.steps.last_mut())
                 {
                     step.detail = Some(detail);
@@ -436,12 +537,16 @@ impl Studio {
             Feedback::Reasoning(text) => self.assistant.reasoned += text.chars().count(),
             Feedback::Event(_) => return,
         }
-        self.assistant.transcript.changed(turn);
+        self.assistant_changed(&id, turn);
         cx.notify();
     }
 
     fn answered(&mut self, turn: usize, result: assistant::Finished, cx: &mut Context<Self>) {
-        let running = self.assistant.running.take();
+        let Some(running) = self.assistant.running.take() else {
+            return;
+        };
+        let id = running.conversation.clone();
+        let running = Some(running);
         let outcome = match result {
             Ok(Some(outcome)) => {
                 let now = self.state.workspace_snapshot().ok();
@@ -486,7 +591,7 @@ impl Studio {
             Err(error) => Outcome::Failed(format!("{error:#}")),
         };
         let streamed = streamed_detail(&self.assistant.streamed, self.assistant.reasoned, false);
-        if let Some(answer) = self.assistant.answer_mut(turn) {
+        if let Some(answer) = self.assistant.answer_mut(&id, turn) {
             close_step(
                 answer,
                 running.map_or(Duration::ZERO, |running| running.step_started.elapsed()),
@@ -494,24 +599,13 @@ impl Studio {
             );
             answer.outcome = outcome;
         }
+        if let Some(conversation) = self.assistant.conversation_mut(&id) {
+            conversation.touch();
+        }
         self.assistant.streamed.clear();
         self.assistant.reasoned = 0;
-        self.assistant.transcript.changed(turn);
-        self.save_conversation(cx);
-        cx.notify();
-    }
-
-    /// Starts over: the project's saved conversation is emptied. The story
-    /// is not touched, and nothing runs while it clears.
-    pub(super) fn new_conversation(&mut self, cx: &mut Context<Self>) {
-        if self.assistant.is_running() {
-            return;
-        }
-        self.assistant.conversation = Conversation::default();
-        self.assistant.open_activity.clear();
-        self.assistant.notice = None;
-        self.assistant.transcript.reset(0);
-        self.save_conversation(cx);
+        self.assistant_changed(&id, turn);
+        self.save_conversation(&id, cx);
         cx.notify();
     }
 
@@ -524,8 +618,8 @@ impl Studio {
         cx.notify();
     }
 
-    fn save_conversation(&mut self, cx: &mut Context<Self>) {
-        if let Err(message) = self.assistant.save() {
+    fn save_conversation(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Err(message) = self.assistant.save(id) {
             self.fail(ErrorCode::AppConversation, message, cx);
         }
     }
@@ -533,12 +627,11 @@ impl Studio {
     pub(super) fn render_assistant(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let c = self.theme;
         let studio = cx.entity().downgrade();
-        let turns = self.assistant.conversation.turns.clone();
-        let running_turn = self
-            .assistant
-            .running
-            .as_ref()
-            .map(|_| turns.len().saturating_sub(1));
+        let turns = self.assistant.current().turns.clone();
+        let turns_empty = turns.is_empty();
+        let running_here = self.assistant.running_in(&self.assistant.current);
+        let running_elsewhere = self.assistant.is_running() && !running_here;
+        let running_turn = running_here.then(|| turns.len().saturating_sub(1));
         let streamed = self.assistant.streamed.clone();
         let reasoned = self.assistant.reasoned;
         let started = self
@@ -548,6 +641,7 @@ impl Studio {
             .map(|running| running.step_started);
         let reviewing = self.assistant.changes.review.is_some();
         let last = turns.len().saturating_sub(1);
+        let idle = !self.assistant.is_running();
         let open = self.assistant.open_activity.clone();
         let item = move |index: usize, _: &mut Window, _: &mut App| -> AnyElement {
             match &turns[index] {
@@ -601,22 +695,21 @@ impl Studio {
                         .as_ref(),
                     Shown {
                         browsing: !reviewing,
-                        can_continue: index == last && running_turn.is_none(),
+                        can_continue: index == last && idle,
                     },
                     open.contains(&index),
                     studio.clone(),
                 ),
             }
         };
-        let running = self.assistant.is_running();
         let empty = self.assistant.prompt.read(cx).text(cx).trim().is_empty();
         let configured = self.engine().is_ok();
-        let action = if running {
+        let action = if running_here {
             c.icon_action("assistant-stop", Glyph::Stop, "Stop", ButtonKind::Secondary)
                 .on_click(cx.listener(|studio, _, _, cx| studio.stop_assistant(cx)))
         } else {
             // Send takes the accent only when there is something to send.
-            let ready = !empty && configured;
+            let ready = !empty && configured && !running_elsewhere;
             c.icon_action(
                 "assistant-send",
                 Glyph::ArrowUp,
@@ -684,9 +777,43 @@ impl Studio {
         bar = bar.action(action);
         if !configured {
             bar = bar.message("Choose a text provider in Settings to use the assistant.");
+        } else if running_elsewhere {
+            bar = bar.message(
+                "A reply is being written in another conversation. Wait for it, or stop it there.",
+            );
         } else if let Some(notice) = &self.assistant.notice {
             bar = bar.message(notice.clone());
         }
+        let shown = div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(div().flex_1().min_h_0().child(if turns_empty {
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .justify_center()
+                    .px(px(24.))
+                    .gap(px(6.))
+                    .text_color(c.text_muted)
+                    .type_scale(TypeScale::Small)
+                    .child(
+                        div()
+                            .text_color(c.text)
+                            .child("Ask for a change to the story"),
+                    )
+                    .child(
+                        "Say what should change. The assistant edits the story as it \
+                         works; keep or undo each change in the editor afterwards. \
+                         Choose a passage below to limit what it may touch.",
+                    )
+                    .into_any_element()
+            } else {
+                Transcript::new("assistant-transcript", c, &self.assistant.transcript, item)
+                    .into_any_element()
+            }))
+            .child(div().p(px(10.)).child(bar));
         div()
             .size_full()
             .flex()
@@ -698,15 +825,18 @@ impl Studio {
                     .flex_none()
                     .flex()
                     .items_center()
-                    .px(px(12.))
+                    .gap(px(4.))
+                    .pl(px(4.))
+                    .pr(px(12.))
                     .border_b_1()
                     .border_color(c.hairline)
+                    .child(self.render_conversations_toggle(cx))
                     .child(
                         div()
                             .flex_1()
-                            .type_scale(TypeScale::Caption)
-                            .text_color(c.text_muted)
-                            .child("Assistant"),
+                            .min_w_0()
+                            .type_scale(TypeScale::Small)
+                            .child(self.assistant.title.clone()),
                     )
                     .child(
                         c.icon_action(
@@ -715,8 +845,12 @@ impl Studio {
                             "New conversation",
                             ButtonKind::Quiet,
                         )
-                        .disabled(running || self.assistant.conversation.turns.is_empty())
-                        .on_click(cx.listener(|studio, _, _, cx| studio.new_conversation(cx))),
+                        .disabled(turns_empty)
+                        .on_click(
+                            cx.listener(|studio, _, window, cx| {
+                                studio.new_conversation(window, cx)
+                            }),
+                        ),
                     )
                     .child(
                         c.switch("keep-facts", "Keep facts", self.assistant.keep_facts)
@@ -726,34 +860,26 @@ impl Studio {
                             })),
                     ),
             )
-            .child(div().flex_1().min_h_0().child(
-                if self.assistant.conversation.turns.is_empty() {
-                    div()
-                        .size_full()
-                        .flex()
-                        .flex_col()
-                        .justify_center()
-                        .px(px(24.))
-                        .gap(px(6.))
-                        .text_color(c.text_muted)
-                        .type_scale(TypeScale::Small)
-                        .child(
-                            div()
-                                .text_color(c.text)
-                                .child("Ask for a change to the story"),
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(if self.assistant.conversations_open {
+                        SplitView::new(
+                            "assistant-conversations-split",
+                            c,
+                            &self.assistant.conversations_split,
+                            self.render_conversation_column(cx),
+                            shown,
                         )
-                        .child(
-                            "Say what should change. The assistant edits the story as it \
-                             works; keep or undo each change in the editor afterwards. \
-                             Choose a passage below to limit what it may touch.",
-                        )
+                        .sized(SplitSide::Start)
+                        .rest(px(240.))
                         .into_any_element()
-                } else {
-                    Transcript::new("assistant-transcript", c, &self.assistant.transcript, item)
-                        .into_any_element()
-                },
-            ))
-            .child(div().p(px(10.)).child(bar))
+                    } else {
+                        shown.into_any_element()
+                    }),
+            )
+            .child(self.render_conversation_confirm(cx))
     }
 }
 

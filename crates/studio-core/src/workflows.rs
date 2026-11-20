@@ -59,8 +59,12 @@ impl RunStore {
             CREATE TABLE IF NOT EXISTS workflow_events (
                 run_id TEXT NOT NULL, sequence INTEGER NOT NULL, event TEXT NOT NULL,
                 PRIMARY KEY (run_id, sequence));
-            CREATE TABLE IF NOT EXISTS assistant_conversations (
-                project TEXT PRIMARY KEY, conversation TEXT NOT NULL);
+            DROP TABLE IF EXISTS assistant_conversations;
+            CREATE TABLE IF NOT EXISTS assistant_chats (
+                id TEXT PRIMARY KEY, project TEXT NOT NULL,
+                updated INTEGER NOT NULL, conversation TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS assistant_chats_by_project
+                ON assistant_chats (project, updated);
             CREATE TABLE IF NOT EXISTS assistant_undecided (
                 project TEXT PRIMARY KEY, files TEXT NOT NULL);",
         )?;

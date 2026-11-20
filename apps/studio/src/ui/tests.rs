@@ -382,15 +382,13 @@ fn the_assistant_edits_the_story_as_it_works_and_a_change_is_undone_in_review(
         "the edits are in the story without a review"
     );
     assert_eq!(trial.editor_text(), edited);
-    let outcome = trial.read(
-        |studio| match studio.assistant.conversation().turns.as_slice() {
-            [Turn::Asked(asked), Turn::Answered(answer)] => {
-                assert_eq!(asked.scope, "Project · 1 file");
-                answer.outcome.clone()
-            }
-            turns => panic!("{turns:?}"),
-        },
-    );
+    let outcome = trial.read(|studio| match studio.assistant.current().turns.as_slice() {
+        [Turn::Asked(asked), Turn::Answered(answer)] => {
+            assert_eq!(asked.scope, "Project · 1 file");
+            answer.outcome.clone()
+        }
+        turns => panic!("{turns:?}"),
+    });
     assert_eq!(
         outcome,
         Outcome::Done(Done {
@@ -433,12 +431,90 @@ fn the_assistant_edits_the_story_as_it_works_and_a_change_is_undone_in_review(
     let project = trial.read(|studio| studio.state.project_path.clone().unwrap());
     let saved = RunStore::open(&project.with_extension("workflows.sqlite3"))
         .unwrap()
-        .conversation(&project)
+        .conversations(&project)
         .unwrap();
     assert_eq!(
         saved,
-        trial.read(|studio| studio.assistant.conversation().clone())
+        [trial.read(|studio| studio.assistant.current().clone())]
     );
+}
+
+#[gpui::test]
+fn a_reply_lands_in_its_own_conversation_while_another_is_shown(cx: &mut TestAppContext) {
+    use agentkit_ai::providers::fake::FakeChatModel;
+    use storyfella_studio_core::workflows::{
+        assistant::{Outcome, Turn, UNTITLED},
+        RunStore,
+    };
+
+    let mut trial = Trial::new(cx);
+    trial
+        .act(|studio, _, cx| studio.create_project("Harbor", cx))
+        .unwrap();
+    trial.act(|studio, window, cx| {
+        studio
+            .state
+            .set_story_source("scene harbor\n  narrate: Dusk.\n  end\n".into());
+        studio.changed(cx);
+        studio.assistant.model = Some(std::sync::Arc::new(FakeChatModel::new_streaming([
+            says("The harbor is at dusk."),
+            says("Ivo waits on the pier."),
+        ])));
+        studio.assistant.prompt.update(cx, |prompt, cx| {
+            prompt.set_text("Where are we?", window, cx)
+        });
+        studio.ask(window, cx);
+        // A new conversation is shown while the first one's reply runs.
+        studio.new_conversation(window, cx);
+    });
+    trial.settle();
+    let (first, shown) = trial.read(|studio| {
+        let listed = studio.assistant.conversations();
+        assert_eq!(listed.len(), 2);
+        (listed[1].clone(), studio.assistant.current().clone())
+    });
+    assert_eq!(first.title, "Where are we?");
+    assert!(matches!(
+        &first.turns[..],
+        [Turn::Asked(_), Turn::Answered(answer)]
+            if matches!(&answer.outcome, Outcome::Done(done) if done.reply == "The harbor is at dusk.")
+    ));
+    assert_eq!(shown.title, UNTITLED);
+    assert!(shown.turns.is_empty());
+
+    trial.act(|studio, window, cx| {
+        studio.assistant.prompt.update(cx, |prompt, cx| {
+            prompt.set_text("Who is there?", window, cx)
+        });
+        studio.ask(window, cx);
+    });
+    trial.settle();
+    let project = trial.read(|studio| studio.state.project_path.clone().unwrap());
+    let saved = || {
+        RunStore::open(&project.with_extension("workflows.sqlite3"))
+            .unwrap()
+            .conversations(&project)
+            .unwrap()
+    };
+    assert_eq!(
+        saved().iter().map(|c| c.title.as_str()).collect::<Vec<_>>(),
+        ["Who is there?", "Where are we?"],
+        "both are saved, newest first"
+    );
+
+    // Choosing the first shows it; deleting it shows the other and forgets
+    // it for good.
+    trial.act(|studio, _, cx| studio.select_conversation(first.id.clone(), cx));
+    assert_eq!(
+        trial.read(|studio| studio.assistant.current().id.clone()),
+        first.id
+    );
+    trial.act(|studio, _, cx| studio.delete_conversation(&first.id, cx));
+    assert_eq!(
+        trial.read(|studio| studio.assistant.current().title.clone()),
+        "Who is there?"
+    );
+    assert_eq!(saved().len(), 1);
 }
 
 #[gpui::test]
@@ -471,12 +547,10 @@ fn the_assistant_answers_a_question_in_prose_and_shows_each_step(cx: &mut TestAp
     });
     trial.settle();
 
-    let answer = trial.read(
-        |studio| match studio.assistant.conversation().turns.as_slice() {
-            [Turn::Asked(_), Turn::Answered(answer)] => answer.clone(),
-            turns => panic!("{turns:?}"),
-        },
-    );
+    let answer = trial.read(|studio| match studio.assistant.current().turns.as_slice() {
+        [Turn::Asked(_), Turn::Answered(answer)] => answer.clone(),
+        turns => panic!("{turns:?}"),
+    });
     assert_eq!(
         answer.outcome,
         Outcome::Done(Done {
@@ -671,15 +745,13 @@ fn a_request_out_of_steps_offers_to_continue_where_it_stopped(cx: &mut TestAppCo
     });
     trial.settle();
     let done = |trial: &mut Trial, turn: usize| {
-        trial.read(
-            |studio| match &studio.assistant.conversation().turns[turn] {
-                Turn::Answered(answer) => match &answer.outcome {
-                    Outcome::Done(done) => done.clone(),
-                    other => panic!("{other:?}"),
-                },
+        trial.read(|studio| match &studio.assistant.current().turns[turn] {
+            Turn::Answered(answer) => match &answer.outcome {
+                Outcome::Done(done) => done.clone(),
                 other => panic!("{other:?}"),
             },
-        )
+            other => panic!("{other:?}"),
+        })
     };
     let first: Done = done(&mut trial, 1);
     assert!(first.out_of_steps);
@@ -692,7 +764,7 @@ fn a_request_out_of_steps_offers_to_continue_where_it_stopped(cx: &mut TestAppCo
 
     trial.act(|studio, _, cx| studio.continue_request(1, cx));
     trial.settle();
-    let turns = trial.read(|studio| studio.assistant.conversation().turns.clone());
+    let turns = trial.read(|studio| studio.assistant.current().turns.clone());
     assert_eq!(turns.len(), 4);
     assert!(matches!(&turns[2], Turn::Asked(asked) if asked.text == "Continue"));
     let second = done(&mut trial, 3);
@@ -746,7 +818,7 @@ fn a_failed_reply_is_tried_again_with_the_same_words(cx: &mut TestAppContext) {
         studio.ask(window, cx);
     });
     trial.settle();
-    let turns = trial.read(|studio| studio.assistant.conversation().turns.clone());
+    let turns = trial.read(|studio| studio.assistant.current().turns.clone());
     match turns.as_slice() {
         [Turn::Asked(asked), Turn::Answered(answer)] => {
             assert!(matches!(answer.outcome, Outcome::Failed(_)), "{answer:?}");
@@ -772,7 +844,7 @@ fn a_failed_reply_is_tried_again_with_the_same_words(cx: &mut TestAppContext) {
         studio.retry(1, window, cx);
     });
     trial.settle();
-    let turns = trial.read(|studio| studio.assistant.conversation().turns.clone());
+    let turns = trial.read(|studio| studio.assistant.current().turns.clone());
     match turns.as_slice() {
         [_, _, Turn::Asked(asked), Turn::Answered(answer)] => {
             assert_eq!(asked.text, "Hello");

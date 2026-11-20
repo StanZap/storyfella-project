@@ -156,28 +156,6 @@ fn is_database(path: &Path) -> Result<bool> {
     Ok(header == b"SQLite format 3\0")
 }
 
-fn remap_session(value: &mut serde_json::Value, mappings: &[(PathBuf, PathBuf)]) {
-    match value {
-        serde_json::Value::Object(object) => {
-            for (key, item) in object {
-                if matches!(key.as_str(), "project" | "source_path") {
-                    if let Some(path) = item.as_str() {
-                        *item = remap(path, mappings).into();
-                    }
-                } else {
-                    remap_session(item, mappings);
-                }
-            }
-        }
-        serde_json::Value::Array(array) => {
-            for item in array {
-                remap_session(item, mappings);
-            }
-        }
-        _ => {}
-    }
-}
-
 fn remap_database(path: &Path, mappings: &[(PathBuf, PathBuf)]) -> Result<()> {
     let mut db = Connection::open(path)?;
     let tx = db.transaction()?;
@@ -209,28 +187,6 @@ fn remap_database(path: &Path, mappings: &[(PathBuf, PathBuf)]) -> Result<()> {
             }
         }
     }
-    // A conversation is keyed by its project and quotes its files' paths.
-    let conversations: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'assistant_conversations')",
-        [],
-        |row| row.get(0),
-    )?;
-    if conversations {
-        let values = tx
-            .prepare("SELECT project, conversation FROM assistant_conversations")?
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        for (before, conversation) in values {
-            let mut conversation: serde_json::Value = serde_json::from_str(&conversation)?;
-            remap_session(&mut conversation, mappings);
-            tx.execute(
-                "UPDATE assistant_conversations SET project=?1, conversation=?2 WHERE project=?3",
-                [remap(&before, mappings), conversation.to_string(), before],
-            )?;
-        }
-    }
     tx.commit()?;
     Ok(())
 }
@@ -238,43 +194,6 @@ fn remap_database(path: &Path, mappings: &[(PathBuf, PathBuf)]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn sqlite3_conversations_keep_their_text_and_relocate_only_their_paths() {
-        let root = tempfile::tempdir().unwrap();
-        let old = root.path().join("old");
-        let new = root.path().join("new");
-        fs::create_dir(&old).unwrap();
-        let source = old.join("story.sf").to_string_lossy().into_owned();
-        let project = old.join("story.db").to_string_lossy().into_owned();
-        let text = format!("// Keep literal path {source}\r\n");
-        let conversation = serde_json::json!({"turns":[{"proposal":{"request":{"project":project,"source_path":source,"source":text}}}]});
-        let db = Connection::open(old.join("workflows.sqlite3")).unwrap();
-        db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE assistant_conversations(project TEXT PRIMARY KEY, conversation TEXT NOT NULL);").unwrap();
-        db.execute(
-            "INSERT INTO assistant_conversations VALUES (?1, ?2)",
-            [&project, &conversation.to_string()],
-        )
-        .unwrap();
-        migrate_roots(&[(old, new.clone())]).unwrap();
-        let copied = Connection::open(new.join("workflows.sqlite3")).unwrap();
-        let (key, json): (String, String) = copied
-            .query_row(
-                "SELECT project, conversation FROM assistant_conversations",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_str(&json).unwrap();
-        let request = &json["turns"][0]["proposal"]["request"];
-        assert_eq!(key, new.join("story.db").to_string_lossy());
-        assert_eq!(request["project"], key);
-        assert_eq!(
-            request["source_path"],
-            new.join("story.sf").to_string_lossy().as_ref()
-        );
-        assert_eq!(request["source"], text);
-    }
 
     #[test]
     fn failed_migration_publishes_nothing_and_can_retry_without_losing_originals() {

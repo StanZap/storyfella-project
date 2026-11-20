@@ -16,8 +16,9 @@ meets its acceptance criteria.
   - [x] Write on the design system's Code kit: the story's files, highlighting,
     inline problems and a problems list, completion, go to definition, rename
     and format. A run of typing is one undo step.
-  - [x] Assistant: one saved conversation per project, docked in Write on the
-    Chat kit.
+  - [x] Assistant: saved conversations per project, docked in Write on the
+    Chat kit, with a resizable, hideable list of them beside the transcript
+    (2026-11-20).
   - [x] Failures are an indication plus one Details dialog (DESIGN.md §2), in
     the status bar, the assistant and Settings.
   - [x] The assistant is one agent that iterates (2026-11-19): it reads, edits,

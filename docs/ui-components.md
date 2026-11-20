@@ -24,6 +24,7 @@ and visual rules; [ROADMAP](ROADMAP.md) owns planned work.
 | Source text | `kits::code::CodeEditor`, given tokens, problems and suggestions by the host | Write's editor |
 | Problems to jump to | `kits::code::DiagnosticsList` of `ProblemItem`s | Write's problems list |
 | A conversation | `kits::chat::Transcript` over a `TranscriptState`, of `UserMessage`s and `AssistantMessage`s | The assistant column |
+| Saved conversations | `kits::chat::ConversationList` in a `ContextMenu` (Rename, Delete…), beside the transcript in a `SplitView` | The assistant's conversations |
 | Steps a reply took | `kits::chat::Steps` of `Step`s, each with its time and a line of detail | An assistant reply's phases |
 | An answer still arriving | `kits::chat::Draft`, the last lines in the code font | An assistant reply while it writes |
 | A reply that failed | `AssistantMessage::error` with the code's label, `on_retry` and `on_error_details`, drawn as one card | An assistant reply |
