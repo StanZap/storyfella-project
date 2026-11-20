@@ -149,8 +149,12 @@ async fn run() {
         timeout: Duration::from_secs(30),
         server: Some(ManagedChatServer {
             executable: std::env::current_exe().unwrap(),
-            model_path: model.clone(),
-            mmproj: None,
+            architecture: None,
+            model_dir: root.join("models"),
+            weights: agentkit_ai::native::llama::Weights {
+                model: Some(model.clone()),
+                mmproj: None,
+            },
             context_tokens: agentkit_ai::native::llama::DEFAULT_CONTEXT_TOKENS,
             host: "127.0.0.1".into(),
             port: 1,

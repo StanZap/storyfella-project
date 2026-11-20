@@ -158,7 +158,7 @@ pub fn capture(
 /// in directly, as tests do.
 #[derive(Clone)]
 pub enum Engine {
-    Provider(PlannerBackend),
+    Provider(Box<PlannerBackend>),
     Model(SharedStreamingModel),
 }
 

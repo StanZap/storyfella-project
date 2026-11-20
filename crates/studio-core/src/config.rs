@@ -1625,8 +1625,10 @@ mod tests {
                 &shared,
                 &NewChatConfig {
                     id: "local".into(),
+                    local: true,
                     base_url: "http://127.0.0.1:8080/v1".into(),
                     model: "second".into(),
+                    architecture: None,
                     vision: true,
                     model_path: Some("/models/second.gguf".into()),
                     mmproj: Some("/models/second-projector.gguf".into()),
@@ -1644,9 +1646,9 @@ mod tests {
         ] {
             assert_eq!(deployment.model, "second");
             let server = deployment.server.as_ref().unwrap();
-            assert_eq!(server.model_path, PathBuf::from("/models/second.gguf"));
+            assert_eq!(server.model_path(), PathBuf::from("/models/second.gguf"));
             assert_eq!(
-                server.mmproj.as_deref(),
+                server.mmproj().as_deref(),
                 Some(Path::new("/models/second-projector.gguf"))
             );
         }

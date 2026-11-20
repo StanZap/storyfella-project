@@ -152,7 +152,7 @@ impl Jobs {
                 "Choose a text provider in Studio Settings.",
             ));
         }
-        Ok((Engine::Provider(backend), config.assistant))
+        Ok((Engine::Provider(Box::new(backend)), config.assistant))
     }
 }
 

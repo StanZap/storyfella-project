@@ -217,7 +217,7 @@ impl Studio {
         }
         let backend = PlannerBackend::new(&self.config);
         if backend.has_llm() {
-            Ok(Engine::Provider(backend))
+            Ok(Engine::Provider(Box::new(backend)))
         } else {
             Err("Choose a text provider in Settings to use the assistant.".into())
         }
