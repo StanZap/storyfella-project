@@ -31,7 +31,7 @@ use storyfella_studio_core::{
     workflows::{
         agent::AgentRequest,
         assistant::{Answer, Asked, Conversation, Done, FileChange, Outcome, Step, Turn},
-        reply, Cancellation, CutOff, Feedback, RunStore,
+        Cancellation, CutOff, Feedback, RunStore,
     },
 };
 
@@ -878,7 +878,7 @@ fn render_answer(
     match &answer.outcome {
         Outcome::Working => {
             if let Some(live) = live {
-                let preview = reply::preview(live.streamed);
+                let preview = agentkit_ai::reasoning::visible(live.streamed);
                 if !preview.text.trim().is_empty() {
                     message = message.block(
                         Draft::new(("draft", index), c, preview.text.clone())

@@ -202,7 +202,9 @@ pub async fn run_with_model(
     let sink = feedback.clone();
     let state = execute(runner, state, store, cancel.clone(), move |event| {
         if let Feedback::Event(event) = &event {
-            if matches!(event.event, WorkflowEventKind::NodeStarted { node } if node == model_node)
+            // The scheduler can start the model node again without calling the
+            // model, so only a finished node counts as a step.
+            if matches!(&event.event, WorkflowEventKind::NodeFinished(result) if result.node == model_node)
             {
                 counted.fetch_add(1, Ordering::Relaxed);
             }
@@ -218,7 +220,7 @@ pub async fn run_with_model(
         .get(&model_node)
         .and_then(|ports| ports.get("reply"))
     {
-        Some(Value::Text(text)) => super::reply::without_thinking(text).trim().to_owned(),
+        Some(Value::Text(text)) => agentkit_ai::reasoning::visible(text).text.trim().to_owned(),
         _ => String::new(),
     };
     Ok(Some(AgentOutcome {

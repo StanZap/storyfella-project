@@ -371,6 +371,36 @@ async fn a_request_out_of_steps_answers_without_tools_and_says_so() {
 }
 
 #[tokio::test]
+async fn a_request_that_answers_with_a_step_to_spare_is_not_out_of_steps() {
+    let draft = Memory::new(&[("story.sf", STORY)]);
+    let model = Scripted::new(vec![
+        Turn::Calls(vec![("outline", json!({}))]),
+        Turn::Calls(vec![
+            ("read_file", json!({"path": "story.sf"})),
+            (
+                "read_file",
+                json!({"path": "story.sf", "start_line": 4, "end_line": 6}),
+            ),
+        ]),
+        Turn::Text("<think>Both beats are short.</think>\nThe harbor has two beats."),
+    ]);
+    let outcome = run(
+        request("How long is the harbor?", Scope::Project),
+        model.clone(),
+        draft,
+        AssistantSettings {
+            max_steps: 4,
+            ..AssistantSettings::default()
+        },
+    )
+    .await;
+
+    assert_eq!(model.seen.lock().unwrap().len(), 3);
+    assert!(!outcome.out_of_steps, "three of four steps were used");
+    assert_eq!(outcome.reply, "The harbor has two beats.");
+}
+
+#[tokio::test]
 async fn the_request_tells_the_model_where_the_writer_is_and_what_the_story_holds() {
     let draft = Memory::new(&[("story.sf", STORY)]);
     let model = Scripted::new(vec![Turn::Text("The arrival beat opens on fog.")]);

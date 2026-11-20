@@ -3,7 +3,6 @@
 pub mod agent;
 pub mod assistant;
 mod provider;
-pub mod reply;
 mod settings;
 
 use std::{
